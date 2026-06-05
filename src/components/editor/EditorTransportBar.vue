@@ -13,6 +13,7 @@ import {
 } from '@vicons/ionicons5'
 import { formatTime } from '@/utils/editorTime'
 import type { TransportPendingAction, TransportVisualState } from '@/stores/editorPlayback'
+import AppBrandMark from '@/components/AppBrandMark.vue'
 
 const props = defineProps<{
   sessionName: string
@@ -85,7 +86,7 @@ function handleTransportClick() {
 <template>
   <header class="editor-transport">
     <div class="editor-transport__brand">
-      <span class="brand-mark">P</span>
+      <AppBrandMark :size="34" shadow />
       <div class="brand-copy">
         <strong>{{ sessionName }}</strong>
         <span>{{ sessionHint }}</span>
@@ -189,12 +190,6 @@ function handleTransportClick() {
 .brand-mark {
   width: 34px;
   height: 34px;
-  display: grid;
-  place-items: center;
-  border-radius: 12px;
-  color: #fff;
-  font-weight: 800;
-  background: linear-gradient(135deg, #ff7b54, #f2b45a);
 }
 
 .brand-copy {

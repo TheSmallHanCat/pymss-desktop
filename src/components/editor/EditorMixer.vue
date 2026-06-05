@@ -410,7 +410,7 @@ defineExpose({
   background: color-mix(in srgb, var(--surface-2) 90%, transparent);
   cursor: help;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1;
 }
 

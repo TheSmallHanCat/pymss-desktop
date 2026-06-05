@@ -204,6 +204,6 @@ onMounted(() => {
 .theme-switcher button.active {
   color: var(--primary-strong);
   background: var(--primary-soft);
-  font-weight: 700;
+  font-weight: 600;
 }
 </style>

@@ -139,7 +139,7 @@ function formatAssetMeta(source: EditorSource) {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }

@@ -350,7 +350,7 @@ function formatTrackVolume(value: number) {
   border-radius: 8px;
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .toggle-square small {
@@ -428,7 +428,7 @@ function formatTrackVolume(value: number) {
 
 .stats-grid dd {
   margin: 0;
-  font-weight: 700;
+  font-weight: 600;
   font-size: 13px;
   line-height: 1.15;
   overflow: hidden;

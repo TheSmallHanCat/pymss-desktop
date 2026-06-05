@@ -284,7 +284,7 @@ function hasSectionContent(type: 'local' | 'external') {
 
 .editor-assets__head strong {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .editor-assets__summary {

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import AppBrandMark from '@/components/AppBrandMark.vue'
 
 const route = useRoute()
 const { t } = useI18n()
@@ -36,7 +37,7 @@ onUnmounted(() => unlisten?.())
 <template>
   <header class="title-bar">
     <div class="title-brand" @mousedown.left="startDrag">
-      <div class="brand-mark">P</div>
+      <AppBrandMark :size="22" variant="compact" />
       <div class="brand-copy">
         <strong>{{ t('app.name') }}</strong>
         <span>{{ pageTitle }}</span>

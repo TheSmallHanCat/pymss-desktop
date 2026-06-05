@@ -1,3 +1,19 @@
+@font-face {
+  font-family: 'MiSans';
+  src: url('../assets/fonts/MiSans-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'MiSans';
+  src: url('../assets/fonts/MiSans-Semibold.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ===== Theme Variables ===== */
 :root,
 .dark-theme {
@@ -39,12 +55,29 @@
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
 
 body {
-  font-family: MiSans, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family:
+    MiSans,
+    Inter,
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Hiragino Sans",
+    "Noto Sans CJK SC",
+    "Noto Sans JP",
+    "Microsoft YaHei",
+    "Yu Gothic UI",
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
   background: var(--surface);
   color: var(--on-surface);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 a { color: inherit; text-decoration: none; }
 
 /* ===== App Shell ===== */
@@ -132,10 +165,11 @@ a { color: inherit; text-decoration: none; }
   display: grid;
   place-items: center;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
   color: white;
   background: linear-gradient(135deg, var(--primary), #a78bfa);
 }
+
 
 .brand-copy {
   display: flex;
@@ -304,7 +338,7 @@ a { color: inherit; text-decoration: none; }
 .page-header-compact h1 {
   margin: 0;
   font-size: 26px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: -0.03em;
 }
 .page-header-compact p {

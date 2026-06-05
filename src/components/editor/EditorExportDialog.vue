@@ -183,7 +183,7 @@ const exportSummaryRows = computed(() => [
 
 .export-dialog__section-title {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1;
 }
 

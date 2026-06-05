@@ -383,7 +383,7 @@ function formatTime(value: number) {
 .stem-line span {
   color: var(--primary-strong);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .stem-line code {

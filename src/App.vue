@@ -4,6 +4,7 @@ import { darkTheme } from 'naive-ui'
 import type { GlobalThemeOverrides } from 'naive-ui'
 import TitleBar from '@/components/TitleBar.vue'
 import SideNav from '@/components/SideNav.vue'
+import AppBrandMark from '@/components/AppBrandMark.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { resolvedIsDark } from '@/utils/theme'
@@ -149,7 +150,7 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
           </div>
           <transition name="boot-fade">
             <div v-if="!bootReady" class="boot-splash">
-              <div class="boot-splash__mark">P</div>
+              <AppBrandMark class="boot-splash__mark" :size="58" shadow />
             <div class="boot-splash__copy">
               <strong>Pymss Studio</strong>
                 <span>{{ t('app.bootPreparing') }}</span>
@@ -178,16 +179,7 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
 }
 
 .boot-splash__mark {
-  width: 58px;
-  height: 58px;
-  border-radius: 18px;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-weight: 800;
-  font-size: 24px;
-  background: linear-gradient(135deg, var(--primary), #8ab5ff);
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.18);
+  flex: 0 0 auto;
 }
 
 .boot-splash__copy {

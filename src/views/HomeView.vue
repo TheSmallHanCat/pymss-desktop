@@ -15,6 +15,7 @@ import {
 import { useAppStore } from '@/stores/app'
 import { useModelStore } from '@/stores/model'
 import { useTaskStore } from '@/stores/task'
+import AppBrandMark from '@/components/AppBrandMark.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -114,7 +115,7 @@ async function checkEnv() {
     <!-- Hero -->
     <section class="home-hero">
       <div class="home-hero__icon">
-        <n-icon :component="MusicalNotesOutline" />
+        <AppBrandMark :size="60" variant="hero" shadow />
       </div>
       <div class="home-hero__copy">
         <h1>{{ t('home.heroBrand') }}</h1>
@@ -232,11 +233,46 @@ async function checkEnv() {
   flex: 0 0 auto;
   display: grid;
   place-items: center;
-  border-radius: 18px;
-  font-size: 30px;
-  color: #fff;
-  background: linear-gradient(135deg, var(--primary), #8ab5ff);
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
+  isolation: isolate;
+}
+
+.home-hero__icon :deep(.app-brand-mark) {
+  will-change: transform;
+  transform-origin: center center;
+}
+
+.home-hero__icon:hover :deep(.app-brand-mark) {
+  animation: home-hero-jelly 760ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes home-hero-jelly {
+  0% {
+    transform: scale3d(1, 1, 1);
+  }
+  18% {
+    transform: scale3d(1.12, 0.9, 1);
+  }
+  36% {
+    transform: scale3d(0.92, 1.08, 1);
+  }
+  52% {
+    transform: scale3d(1.04, 0.96, 1);
+  }
+  68% {
+    transform: scale3d(0.985, 1.02, 1);
+  }
+  84% {
+    transform: scale3d(1.01, 0.995, 1);
+  }
+  100% {
+    transform: scale3d(1, 1, 1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-hero__icon:hover :deep(.app-brand-mark) {
+    animation: none;
+  }
 }
 
 .home-hero__copy {
@@ -249,7 +285,7 @@ async function checkEnv() {
 .home-hero__copy h1 {
   margin: 0;
   font-size: 28px;
-  font-weight: 800;
+  font-weight: 600;
   line-height: 1.1;
   letter-spacing: -0.03em;
 }
@@ -331,7 +367,7 @@ async function checkEnv() {
 
 .stat-card__value {
   font-size: 24px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.1;
   letter-spacing: -0.02em;
 }
@@ -436,7 +472,7 @@ async function checkEnv() {
   place-items: center;
   border-radius: 10px;
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--on-surface-muted);
   background: var(--surface-2);
 }
