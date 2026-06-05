@@ -4,6 +4,7 @@ mod commands;
 mod error;
 mod python;
 mod state;
+mod storage;
 
 use state::AppState;
 
@@ -25,10 +26,12 @@ fn main() {
             commands::app_cmd::download_model,
             commands::app_cmd::editor_project_exists,
             commands::app_cmd::export_editor_mix,
+            commands::app_cmd::get_app_paths,
             commands::app_cmd::get_env_info,
             commands::app_cmd::generate_waveform_peaks,
             commands::app_cmd::get_audio_metadata,
             commands::app_cmd::get_model_info,
+            commands::app_cmd::load_app_store,
             commands::app_cmd::list_audio_files,
             commands::app_cmd::list_models,
             commands::app_cmd::import_editor_assets,
@@ -42,6 +45,7 @@ fn main() {
             commands::app_cmd::get_model_storage_summary,
             commands::app_cmd::scan_audio_paths,
             commands::app_cmd::scan_editor_assets,
+            commands::app_cmd::save_app_store,
             commands::app_cmd::save_editor_project,
             commands::app_cmd::start_env_check,
             commands::app_cmd::start_model_download,

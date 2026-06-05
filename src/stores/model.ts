@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { loadAppStore, saveAppStore } from '@/utils/appStore'
 import { useSettingsStore } from '@/stores/settings'
 
 export type ModelEntry = {
@@ -38,10 +39,8 @@ type ModelsPayload = {
   modelDir: string
 }
 
-const MODEL_CACHE_KEY = 'pymss:model_catalog_cache'
-const MODEL_DOWNLOAD_TASKS_KEY = 'pymss:model_download_tasks'
-
 type DownloadStatus = 'idle' | 'downloading' | 'done' | 'error' | 'cancelled' | 'paused' | 'interrupted'
+
 export type DownloadTask = {
   taskId: string
   model: string
@@ -61,6 +60,7 @@ export type ModelStorageItem = {
   expectedSizeBytes: number
   files: ModelStorageFile[]
 }
+
 export type ModelStorageSummary = {
   modelDir: string
   totalBytes: number
@@ -70,55 +70,31 @@ export type ModelStorageSummary = {
   residualBytes: number
 }
 
-
-
-function loadDownloadTasks(): Record<string, DownloadTask> {
-  try {
-    const raw = localStorage.getItem(MODEL_DOWNLOAD_TASKS_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as Record<string, DownloadTask>
-    const next: Record<string, DownloadTask> = {}
-    Object.entries(parsed || {}).forEach(([name, task]) => {
-      if (!task?.model) return
-      next[name] = {
-        ...task,
-        status: task.status === 'downloading' ? 'interrupted' : task.status,
-        message: task.status === 'downloading' ? '下载已中断' : task.message,
-        updatedAt: Date.now(),
-      }
-    })
-    return next
-  } catch {
-    return {}
-  }
+type StoredModelState = {
+  models?: ModelEntry[]
+  categories?: string[]
+  categoriesCn?: string[]
+  count?: number
+  modelDir?: string
+  downloadTasks?: Record<string, DownloadTask>
 }
 
-function saveDownloadTasks(tasks: Record<string, DownloadTask>) {
-  localStorage.setItem(MODEL_DOWNLOAD_TASKS_KEY, JSON.stringify(tasks))
-}
-
-function loadModelCache(): Partial<ModelsPayload> | null {
-  try {
-    const raw = localStorage.getItem(MODEL_CACHE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<ModelsPayload>
-    return Array.isArray(parsed.models) ? parsed : null
-  } catch {
-    return null
-  }
-}
-
-function saveModelCache(payload: Partial<ModelsPayload> & { models: ModelEntry[] }) {
-  localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify({
-    models: payload.models,
-    categories: payload.categories || [],
-    categoriesCn: payload.categoriesCn || [],
-    count: payload.count ?? payload.models.length,
-    modelDir: payload.modelDir || '',
-  }))
+function normalizeDownloadTasks(input?: Record<string, DownloadTask>) {
+  const next: Record<string, DownloadTask> = {}
+  Object.entries(input || {}).forEach(([name, task]) => {
+    if (!task?.model) return
+    next[name] = {
+      ...task,
+      status: task.status === 'downloading' ? 'interrupted' : task.status,
+      message: task.status === 'downloading' ? '下载已中断' : task.message,
+      updatedAt: Date.now(),
+    }
+  })
+  return next
 }
 
 export const useModelStore = defineStore('model', () => {
+  const initialized = ref(false)
   const models = ref<ModelEntry[]>([])
   const categories = ref<string[]>([])
   const categoriesCn = ref<string[]>([])
@@ -133,32 +109,12 @@ export const useModelStore = defineStore('model', () => {
   const category = ref('')
   const downloadStates = ref<Record<string, DownloadStatus>>({})
   const downloadErrors = ref<Record<string, string>>({})
-  const downloadTasks = ref<Record<string, DownloadTask>>(loadDownloadTasks())
+  const downloadTasks = ref<Record<string, DownloadTask>>({})
   const downloadTaskIndex = ref<Record<string, string>>({})
   const modelStorageSummary = ref<ModelStorageSummary | null>(null)
   const storageLoading = ref(false)
-  const cached = loadModelCache()
-  if (cached?.models?.length) {
-    models.value = cached.models as ModelEntry[]
-    categories.value = cached.categories || []
-    categoriesCn.value = cached.categoriesCn || []
-    modelDir.value = cached.modelDir || ''
-  }
 
-  Object.values(downloadTasks.value).forEach((task) => {
-    downloadTaskIndex.value[task.taskId] = task.model
-    if (task.status === 'downloading') downloadStates.value[task.model] = 'downloading'
-    if (task.status === 'error') downloadStates.value[task.model] = 'error'
-  })
-
-  watch(downloadTasks, (value) => saveDownloadTasks(value), { deep: true })
-
-
-  watch(supportedOnly, () => {
-    if (selectedInfo.value && !filteredModels.value.some((item) => item.name === selectedInfo.value?.name)) {
-      selectedInfo.value = null
-    }
-  })
+  let saveTimer: ReturnType<typeof setTimeout> | null = null
 
   const filteredModels = computed(() => {
     const q = search.value.trim().toLowerCase()
@@ -181,19 +137,60 @@ export const useModelStore = defineStore('model', () => {
   })
   const downloadedModels = computed(() => models.value.filter((model) => model.supported && model.downloaded))
 
-  function persistModelCache() {
-    saveModelCache({
+  async function persistState() {
+    if (!initialized.value) return
+    await saveAppStore('model-state', {
       models: models.value,
       categories: categories.value,
       categoriesCn: categoriesCn.value,
       count: models.value.length,
       modelDir: modelDir.value,
+      downloadTasks: downloadTasks.value,
+    } satisfies StoredModelState)
+  }
+
+  function queuePersist() {
+    if (!initialized.value) return
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => {
+      saveTimer = null
+      void persistState()
+    }, 120)
+  }
+
+  async function initialize() {
+    if (initialized.value) return
+    const stored = await loadAppStore<StoredModelState>('model-state')
+    if (stored?.models?.length) {
+      models.value = stored.models
+      categories.value = stored.categories || []
+      categoriesCn.value = stored.categoriesCn || []
+      modelDir.value = stored.modelDir || ''
+    }
+    downloadTasks.value = normalizeDownloadTasks(stored?.downloadTasks)
+    Object.values(downloadTasks.value).forEach((task) => {
+      downloadTaskIndex.value[task.taskId] = task.model
+      if (task.status === 'downloading') downloadStates.value[task.model] = 'downloading'
+      if (task.status === 'error') downloadStates.value[task.model] = 'error'
     })
+    initialized.value = true
+  }
+
+  watch(downloadTasks, () => queuePersist(), { deep: true })
+  watch(supportedOnly, () => {
+    if (selectedInfo.value && !filteredModels.value.some((item) => item.name === selectedInfo.value?.name)) {
+      selectedInfo.value = null
+    }
+  })
+
+  function persistModelCache() {
+    queuePersist()
   }
 
   function upsertModel(modelInfo: ModelEntry) {
     const index = models.value.findIndex((item) => item.name === modelInfo.name)
     if (index >= 0) models.value[index] = modelInfo
+    else models.value.push(modelInfo)
     if (selectedModel.value === modelInfo.name) selectedInfo.value = modelInfo
     persistModelCache()
   }
@@ -215,7 +212,7 @@ export const useModelStore = defineStore('model', () => {
       categories.value = result.categories
       categoriesCn.value = result.categoriesCn
       modelDir.value = result.modelDir
-      saveModelCache(result)
+      persistModelCache()
       const firstDownloaded = models.value.find((model) => model.supported && model.downloaded)
       if (!models.value.some((model) => model.name === selectedModel.value && model.downloaded)) {
         selectedModel.value = firstDownloaded?.name || ''
@@ -254,7 +251,6 @@ export const useModelStore = defineStore('model', () => {
       if (selectedModel.value === name) detailLoading.value = false
     })
   }
-
 
   function handleWorkerEvent(event: any) {
     const taskId = event?.taskId as string | undefined
@@ -373,12 +369,10 @@ export const useModelStore = defineStore('model', () => {
         modelDir: settings.modelDir || null,
       },
     })
-    // Update model in local state to reflect deleted status
     const modelInfo = (result as any)?.modelInfo || (result as any)?.payload?.modelInfo
     if (modelInfo) {
       upsertModel(modelInfo)
     } else {
-      // Fallback: mark model as not downloaded locally
       const idx = models.value.findIndex((m) => m.name === name)
       if (idx >= 0) {
         models.value[idx] = { ...models.value[idx], downloaded: false, missingPaths: [models.value[idx].modelPath] }
@@ -388,7 +382,6 @@ export const useModelStore = defineStore('model', () => {
       }
       persistModelCache()
     }
-    // Clean up download task if any
     if (downloadTasks.value[name]) {
       const { [name]: _, ...rest } = downloadTasks.value
       downloadTasks.value = rest
@@ -431,8 +424,8 @@ export const useModelStore = defineStore('model', () => {
     }
   }
 
-
   return {
+    initialized,
     models,
     categories,
     categoriesCn,
@@ -452,6 +445,7 @@ export const useModelStore = defineStore('model', () => {
     storageLoading,
     filteredModels,
     downloadedModels,
+    initialize,
     loadModels,
     selectModel,
     deleteModel,

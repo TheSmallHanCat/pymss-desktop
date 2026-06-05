@@ -1,5 +1,6 @@
 use crate::error::{AppError, AppResult};
 use crate::python::protocol::WorkerEnvelope;
+use crate::storage;
 use crate::state::AppState;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -138,15 +139,7 @@ fn embedded_python_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
 
 
 fn default_output_dir(app: &AppHandle) -> AppResult<PathBuf> {
-    if cfg!(debug_assertions) {
-        Ok(dev_workspace_root().join("results"))
-    } else {
-        let app_data = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| AppError::Worker(e.to_string()))?;
-        Ok(app_data.join("results"))
-    }
+    storage::outputs_dir(app)
 }
 
 fn make_payload_file(command: &str, task_id: Option<&str>, payload: Value) -> AppResult<PathBuf> {
@@ -197,6 +190,9 @@ fn build_worker_command(app: &AppHandle, command: &str, payload_file: Option<&Pa
             }
         }
         cmd.env("PYTHONPATH", python_path);
+    }
+    if let Ok(models_dir) = storage::models_dir(app) {
+        cmd.env("PYMSS_MODEL_DIR", models_dir.to_string_lossy().to_string());
     }
     if let Some(path) = payload_file {
         cmd.arg("--payload").arg(path);

@@ -1,4 +1,5 @@
 import { computed, onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
+import { loadAppStore, saveAppStore } from '@/utils/appStore'
 
 type ResizeSide = 'assets' | 'inspector'
 
@@ -20,14 +21,13 @@ type UseEditorLayoutOptions = {
   maxInspectorWidth: number
   initialAssetWidth: number
   initialInspectorWidth?: number
-  assetCollapsedStorageKey?: string
-  assetPanelWidthStorageKey?: string
-  inspectorWidthStorageKey?: string
 }
 
-const DEFAULT_ASSET_COLLAPSED_STORAGE_KEY = 'pymss:editor:asset-collapsed'
-const DEFAULT_ASSET_PANEL_WIDTH_STORAGE_KEY = 'pymss:editor:asset-width'
-const DEFAULT_INSPECTOR_WIDTH_STORAGE_KEY = 'pymss:editor:inspector-width'
+type EditorUiState = {
+  assetCollapsed?: boolean
+  assetPanelWidth?: number
+  inspectorPanelWidth?: number
+}
 
 export function useEditorLayout(options: UseEditorLayoutOptions) {
   const {
@@ -41,9 +41,6 @@ export function useEditorLayout(options: UseEditorLayoutOptions) {
     maxInspectorWidth,
     initialAssetWidth,
     initialInspectorWidth = 288,
-    assetCollapsedStorageKey = DEFAULT_ASSET_COLLAPSED_STORAGE_KEY,
-    assetPanelWidthStorageKey = DEFAULT_ASSET_PANEL_WIDTH_STORAGE_KEY,
-    inspectorWidthStorageKey = DEFAULT_INSPECTOR_WIDTH_STORAGE_KEY,
   } = options
 
   const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1440)
@@ -51,6 +48,7 @@ export function useEditorLayout(options: UseEditorLayoutOptions) {
   const assetPanelWidth = ref(initialAssetWidth)
   const isAssetCollapsed = ref(false)
   const activeResize = ref<ResizeState | null>(null)
+  const initialized = ref(false)
 
   const inspectorVisible = computed(() => viewportWidth.value > 1320)
   const assetPanelVisible = computed(() => !isAssetCollapsed.value && viewportWidth.value > 920)
@@ -109,14 +107,19 @@ export function useEditorLayout(options: UseEditorLayoutOptions) {
     return clamp(width, minAssetWidth, Math.max(minAssetWidth, Math.min(maxAssetWidth, responsiveMax)))
   }
 
+  let saveTimer: ReturnType<typeof setTimeout> | null = null
+
   function savePanelWidths() {
-    try {
-      localStorage.setItem(assetCollapsedStorageKey, isAssetCollapsed.value ? '1' : '0')
-      localStorage.setItem(assetPanelWidthStorageKey, String(assetPanelWidth.value))
-      localStorage.setItem(inspectorWidthStorageKey, String(inspectorPanelWidth.value))
-    } catch {
-      // ignore storage errors
-    }
+    if (!initialized.value) return
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => {
+      saveTimer = null
+      void saveAppStore('editor-ui', {
+        assetCollapsed: isAssetCollapsed.value,
+        assetPanelWidth: assetPanelWidth.value,
+        inspectorPanelWidth: inspectorPanelWidth.value,
+      } satisfies EditorUiState)
+    }, 80)
   }
 
   function handleResizeMove(event: MouseEvent) {
@@ -152,17 +155,12 @@ export function useEditorLayout(options: UseEditorLayoutOptions) {
     window.addEventListener('mouseup', stopResize)
   }
 
-  function restorePanelWidths() {
-    try {
-      isAssetCollapsed.value = localStorage.getItem(assetCollapsedStorageKey) === '1'
-      const storedAssetWidth = Number(localStorage.getItem(assetPanelWidthStorageKey) || assetPanelWidth.value)
-      const storedInspectorWidth = Number(localStorage.getItem(inspectorWidthStorageKey) || inspectorPanelWidth.value)
-      assetPanelWidth.value = clampAssetWidth(storedAssetWidth)
-      inspectorPanelWidth.value = clampInspectorWidth(storedInspectorWidth)
-    } catch {
-      assetPanelWidth.value = clampAssetWidth(assetPanelWidth.value)
-      inspectorPanelWidth.value = clampInspectorWidth(inspectorPanelWidth.value)
-    }
+  async function restorePanelWidths() {
+    const stored = await loadAppStore<EditorUiState>('editor-ui')
+    isAssetCollapsed.value = Boolean(stored?.assetCollapsed)
+    assetPanelWidth.value = clampAssetWidth(Number(stored?.assetPanelWidth || assetPanelWidth.value))
+    inspectorPanelWidth.value = clampInspectorWidth(Number(stored?.inspectorPanelWidth || inspectorPanelWidth.value))
+    initialized.value = true
   }
 
   function syncPanelWidthsToViewport() {
@@ -179,7 +177,7 @@ export function useEditorLayout(options: UseEditorLayoutOptions) {
   }
 
   onMounted(() => {
-    restorePanelWidths()
+    void restorePanelWidths()
     window.addEventListener('resize', syncPanelWidthsToViewport)
   })
 

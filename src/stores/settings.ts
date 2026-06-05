@@ -1,26 +1,57 @@
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { applyTheme, getThemeMode, type ThemeMode } from '@/utils/theme'
-import { detectLocale, setLocale, type SupportedLocale } from '@/i18n'
+import {
+  applyTheme,
+  DEFAULT_THEME_ACCENT,
+  DEFAULT_THEME_MODE,
+  normalizeThemeAccent,
+  type ThemeAccent,
+  type ThemeMode,
+} from '@/utils/theme'
+import { setLocale, type SupportedLocale } from '@/i18n'
+import { loadAppStore, saveAppStore } from '@/utils/appStore'
 import type { EnvInfo } from '@/stores/app'
 
-function loadSetting<T>(key: string, fallback: T): T {
-  try {
-    const value = localStorage.getItem(`pymss:${key}`)
-    return value === null ? fallback : JSON.parse(value)
-  } catch {
-    return fallback
-  }
+type AppPathsPayload = {
+  dataRoot: string
+  settingsDir: string
+  modelsDir: string
+  outputsDir: string
+  editorProjectsDir: string
+  logsDir: string
+  tempDir: string
 }
 
-function saveSetting(key: string, value: unknown) {
-  localStorage.setItem(`pymss:${key}`, JSON.stringify(value))
+type StoredSettings = {
+  themeMode?: ThemeMode
+  themeAccent?: ThemeAccent
+  locale?: SupportedLocale
+  modelDir?: string
+  outputDir?: string
+  separateTaskOutputDir?: boolean
+  defaultDevice?: string
+  defaultFormat?: string
+  downloadSource?: string
+  maxConcurrentSeparations?: number
+  wavBitDepth?: string
+  flacBitDepth?: string
+  mp3BitRate?: string
+  m4aBitRate?: string
+  m4aCodec?: string
 }
 
-function defaultOutputDir() {
-  return 'results'
-}
+const DEFAULT_LOCALE: SupportedLocale = 'zh-CN'
+const DEFAULT_DOWNLOAD_SOURCE = 'modelscope'
+const DEFAULT_DEFAULT_DEVICE = 'auto'
+const DEFAULT_DEFAULT_FORMAT = 'wav'
+const DEFAULT_CONCURRENT_SEPARATIONS = 1
+const MAX_CONCURRENT_SEPARATIONS = 16
+const DEFAULT_WAV_BIT_DEPTH = 'FLOAT'
+const DEFAULT_FLAC_BIT_DEPTH = 'PCM_24'
+const DEFAULT_MP3_BIT_RATE = '320k'
+const DEFAULT_M4A_BIT_RATE = '192k'
+const DEFAULT_M4A_CODEC = 'aac_at'
 
 export type AudioParams = {
   wavBitDepth: string
@@ -43,37 +74,120 @@ export type DeviceOption = {
 }
 
 export const useSettingsStore = defineStore('settings', () => {
-  const themeMode = ref<ThemeMode>(getThemeMode())
-  const locale = ref<SupportedLocale>(detectLocale())
-  const modelDir = ref(loadSetting('model_dir', ''))
-  const outputDir = ref(loadSetting('output_dir', defaultOutputDir()))
-  const separateTaskOutputDir = ref(loadSetting('separate_task_output_dir', true))
-  const defaultDevice = ref(loadSetting('default_device', 'auto'))
-  const defaultFormat = ref(loadSetting('default_format', 'wav'))
-  const downloadSource = ref(loadSetting('download_source', 'modelscope'))
-  const maxConcurrentSeparations = ref(loadSetting('max_concurrent_separations', 1))
-  const wavBitDepth = ref(loadSetting('wav_bit_depth', 'FLOAT'))
-  const flacBitDepth = ref(loadSetting('flac_bit_depth', 'PCM_24'))
-  const mp3BitRate = ref(loadSetting('mp3_bit_rate', '320k'))
-  const m4aBitRate = ref(loadSetting('m4a_bit_rate', '192k'))
-  const m4aCodec = ref(loadSetting('m4a_codec', 'aac_at'))
+  const initialized = ref(false)
+  const appPaths = ref<AppPathsPayload | null>(null)
+  const themeMode = ref<ThemeMode>(DEFAULT_THEME_MODE)
+  const themeAccent = ref<ThemeAccent>(DEFAULT_THEME_ACCENT)
+  const locale = ref<SupportedLocale>(DEFAULT_LOCALE)
+  const modelDir = ref('')
+  const outputDir = ref('')
+  const separateTaskOutputDir = ref(true)
+  const defaultDevice = ref(DEFAULT_DEFAULT_DEVICE)
+  const defaultFormat = ref(DEFAULT_DEFAULT_FORMAT)
+  const downloadSource = ref(DEFAULT_DOWNLOAD_SOURCE)
+  const maxConcurrentSeparations = ref(DEFAULT_CONCURRENT_SEPARATIONS)
+  const wavBitDepth = ref(DEFAULT_WAV_BIT_DEPTH)
+  const flacBitDepth = ref(DEFAULT_FLAC_BIT_DEPTH)
+  const mp3BitRate = ref(DEFAULT_MP3_BIT_RATE)
+  const m4aBitRate = ref(DEFAULT_M4A_BIT_RATE)
+  const m4aCodec = ref(DEFAULT_M4A_CODEC)
 
-  watch(themeMode, (value) => applyTheme(value), { immediate: true })
-  watch(locale, (value) => setLocale(value), { immediate: true })
+  const dataRoot = computed(() => appPaths.value?.dataRoot || '')
+  const settingsDir = computed(() => appPaths.value?.settingsDir || '')
+  const editorProjectsDir = computed(() => appPaths.value?.editorProjectsDir || '')
+  const logsDir = computed(() => appPaths.value?.logsDir || '')
+  const tempDir = computed(() => appPaths.value?.tempDir || '')
 
-  const persisted = {
-    model_dir: modelDir, output_dir: outputDir,
-    separate_task_output_dir: separateTaskOutputDir,
-    default_device: defaultDevice, default_format: defaultFormat,
-    download_source: downloadSource,
-    max_concurrent_separations: maxConcurrentSeparations,
-    wav_bit_depth: wavBitDepth, flac_bit_depth: flacBitDepth,
-    mp3_bit_rate: mp3BitRate, m4a_bit_rate: m4aBitRate,
-    m4a_codec: m4aCodec,
+  const persistable = computed<StoredSettings>(() => ({
+    themeMode: themeMode.value,
+    themeAccent: themeAccent.value,
+    locale: locale.value,
+    modelDir: modelDir.value,
+    outputDir: outputDir.value,
+    separateTaskOutputDir: separateTaskOutputDir.value,
+    defaultDevice: defaultDevice.value,
+    defaultFormat: defaultFormat.value,
+    downloadSource: downloadSource.value,
+    maxConcurrentSeparations: maxConcurrentSeparations.value,
+    wavBitDepth: wavBitDepth.value,
+    flacBitDepth: flacBitDepth.value,
+    mp3BitRate: mp3BitRate.value,
+    m4aBitRate: m4aBitRate.value,
+    m4aCodec: m4aCodec.value,
+  }))
+
+  let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+  function queuePersist() {
+    if (!initialized.value) return
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => {
+      saveTimer = null
+      void saveAppStore('app-settings', persistable.value)
+    }, 80)
   }
-  Object.entries(persisted).forEach(([key, value]) => {
-    watch(value, (next) => saveSetting(key, next), { deep: true })
+
+  async function initialize() {
+    if (initialized.value) return
+    const [paths, stored] = await Promise.all([
+      invoke<AppPathsPayload>('get_app_paths'),
+      loadAppStore<StoredSettings>('app-settings'),
+    ])
+
+    appPaths.value = paths
+    themeMode.value = stored?.themeMode || DEFAULT_THEME_MODE
+    themeAccent.value = normalizeThemeAccent(stored?.themeAccent, DEFAULT_THEME_ACCENT)
+    locale.value = stored?.locale || DEFAULT_LOCALE
+    modelDir.value = (stored?.modelDir || paths.modelsDir).trim() || paths.modelsDir
+    outputDir.value = (stored?.outputDir || paths.outputsDir).trim() || paths.outputsDir
+    separateTaskOutputDir.value = stored?.separateTaskOutputDir ?? true
+    defaultDevice.value = stored?.defaultDevice || DEFAULT_DEFAULT_DEVICE
+    defaultFormat.value = stored?.defaultFormat || DEFAULT_DEFAULT_FORMAT
+    downloadSource.value = stored?.downloadSource || DEFAULT_DOWNLOAD_SOURCE
+    maxConcurrentSeparations.value = Number.isFinite(Number(stored?.maxConcurrentSeparations))
+      ? Math.min(MAX_CONCURRENT_SEPARATIONS, Math.max(1, Math.trunc(Number(stored?.maxConcurrentSeparations))))
+      : DEFAULT_CONCURRENT_SEPARATIONS
+    wavBitDepth.value = stored?.wavBitDepth || DEFAULT_WAV_BIT_DEPTH
+    flacBitDepth.value = stored?.flacBitDepth || DEFAULT_FLAC_BIT_DEPTH
+    mp3BitRate.value = stored?.mp3BitRate || DEFAULT_MP3_BIT_RATE
+    m4aBitRate.value = stored?.m4aBitRate || DEFAULT_M4A_BIT_RATE
+    m4aCodec.value = stored?.m4aCodec || DEFAULT_M4A_CODEC
+
+    applyTheme(themeMode.value, themeAccent.value)
+    setLocale(locale.value)
+    initialized.value = true
+  }
+
+  watch(themeMode, (value) => {
+    applyTheme(value, themeAccent.value)
+    queuePersist()
   })
+  watch(themeAccent, (value) => {
+    applyTheme(themeMode.value, value)
+    queuePersist()
+  })
+  watch(locale, (value) => {
+    setLocale(value)
+    queuePersist()
+  })
+  watch(
+    [
+      modelDir,
+      outputDir,
+      separateTaskOutputDir,
+      defaultDevice,
+      defaultFormat,
+      downloadSource,
+      maxConcurrentSeparations,
+      wavBitDepth,
+      flacBitDepth,
+      mp3BitRate,
+      m4aBitRate,
+      m4aCodec,
+    ],
+    () => queuePersist(),
+    { deep: true },
+  )
 
   function deviceOptions(env?: EnvInfo | null): DeviceOption[] {
     const options: DeviceOption[] = [
@@ -136,10 +250,34 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   return {
-    themeMode, locale, modelDir, outputDir, separateTaskOutputDir,
-    defaultDevice, defaultFormat, downloadSource, maxConcurrentSeparations,
-    wavBitDepth, flacBitDepth, mp3BitRate, m4aBitRate, m4aCodec,
-    pickModelDir, pickOutputDir,
-    deviceOptions, getRuntimeDeviceConfig, getAudioParams,
+    initialized,
+    appPaths,
+    dataRoot,
+    settingsDir,
+    editorProjectsDir,
+    logsDir,
+    tempDir,
+    themeMode,
+    themeAccent,
+    locale,
+    modelDir,
+    outputDir,
+    separateTaskOutputDir,
+    defaultDevice,
+    defaultFormat,
+    downloadSource,
+    maxConcurrentSeparations,
+    MAX_CONCURRENT_SEPARATIONS,
+    wavBitDepth,
+    flacBitDepth,
+    mp3BitRate,
+    m4aBitRate,
+    m4aCodec,
+    initialize,
+    pickModelDir,
+    pickOutputDir,
+    deviceOptions,
+    getRuntimeDeviceConfig,
+    getAudioParams,
   }
 })

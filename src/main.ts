@@ -5,13 +5,27 @@ import router from './router'
 import i18n from './i18n'
 import { initTheme } from './utils/theme'
 import { registerWorkerEvents } from './utils/events'
+import { useSettingsStore } from '@/stores/settings'
 import './styles/global.scss'
 
-initTheme()
-registerWorkerEvents()
+async function bootstrap() {
+  const pinia = createPinia()
+  const app = createApp(App)
+  app.use(pinia)
 
-const app = createApp(App)
-app.use(createPinia())
-app.use(router)
-app.use(i18n)
-app.mount('#app')
+  const settings = useSettingsStore(pinia)
+  await settings.initialize()
+  const tasks = await import('@/stores/task').then((mod) => mod.useTaskStore(pinia))
+  const models = await import('@/stores/model').then((mod) => mod.useModelStore(pinia))
+  await Promise.all([tasks.initialize(), models.initialize()])
+  initTheme(settings.themeMode, settings.themeAccent)
+  registerWorkerEvents()
+
+  app.use(router)
+  app.use(i18n)
+  app.mount('#app')
+}
+
+bootstrap().catch((error) => {
+  console.error('Failed to bootstrap application', error)
+})

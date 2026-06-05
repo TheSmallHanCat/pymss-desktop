@@ -15,8 +15,7 @@
 }
 
 /* ===== Theme Variables ===== */
-:root,
-.dark-theme {
+:root {
   --surface: #111318;
   --surface-1: #181b21;
   --surface-2: #20242b;
@@ -27,27 +26,13 @@
   --primary: #7aa2ff;
   --primary-strong: #9bb8ff;
   --primary-soft: rgba(122, 162, 255, 0.14);
+  --primary-softer: rgba(122, 162, 255, 0.08);
+  --primary-border: rgba(122, 162, 255, 0.32);
+  --primary-glow: rgba(122, 162, 255, 0.18);
   --success: #4caf7d;
   --warning: #d6a33a;
   --danger: #dc6675;
   --shadow-soft: 0 18px 60px rgba(0, 0, 0, 0.22);
-}
-
-.light-theme {
-  --surface: #f7f8fb;
-  --surface-1: #ffffff;
-  --surface-2: #eef1f6;
-  --surface-3: #e5e9f0;
-  --on-surface: #171a1f;
-  --on-surface-muted: #667085;
-  --outline: rgba(17, 24, 39, 0.10);
-  --primary: #315fbd;
-  --primary-strong: #234a95;
-  --primary-soft: rgba(49, 95, 189, 0.10);
-  --success: #2e7d58;
-  --warning: #9a6b00;
-  --danger: #b4233a;
-  --shadow-soft: 0 18px 60px rgba(31, 41, 55, 0.10);
 }
 
 /* ===== Reset & Base ===== */
@@ -95,7 +80,9 @@ a { color: inherit; text-decoration: none; }
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(circle at 14% 8%, var(--primary-soft), transparent 28%),
+    radial-gradient(circle at 14% 8%, color-mix(in srgb, var(--primary-glow) 92%, transparent), transparent 34%),
+    radial-gradient(circle at 84% 12%, color-mix(in srgb, var(--primary-soft) 72%, transparent), transparent 26%),
+    radial-gradient(circle at 48% 0%, color-mix(in srgb, var(--primary-softer) 78%, transparent), transparent 30%),
     linear-gradient(180deg, rgba(255,255,255,.025), transparent 40%);
 }
 
@@ -167,7 +154,14 @@ a { color: inherit; text-decoration: none; }
   font-size: 12px;
   font-weight: 600;
   color: white;
-  background: linear-gradient(135deg, var(--primary), #a78bfa);
+  background: linear-gradient(
+    135deg,
+    var(--primary),
+    color-mix(in srgb, var(--primary-strong) 78%, white 22%)
+  );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 72%, transparent),
+    0 8px 18px color-mix(in srgb, var(--primary-glow) 58%, transparent);
 }
 
 
@@ -235,7 +229,17 @@ a { color: inherit; text-decoration: none; }
   position: relative;
 }
 .nav-item:hover { background: var(--surface-2); color: var(--on-surface); }
-.nav-item.active { background: var(--primary-soft); color: var(--primary-strong); }
+.nav-item.active {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--primary-soft) 96%, transparent),
+      color-mix(in srgb, var(--primary-softer) 86%, transparent)
+    ),
+    var(--surface-1);
+  color: var(--primary-strong);
+  box-shadow: inset 0 0 0 1px var(--primary-border);
+}
 .nav-item.active::before {
   content: '';
   position: absolute;
@@ -246,6 +250,7 @@ a { color: inherit; text-decoration: none; }
   height: 20px;
   border-radius: 0 3px 3px 0;
   background: var(--primary);
+  box-shadow: 0 0 12px var(--primary-glow);
 }
 
 .nav-icon {
@@ -279,8 +284,30 @@ a { color: inherit; text-decoration: none; }
   --n-text-color: var(--on-surface);
 }
 
+.app-shell:not(.app-shell--editor) .n-card {
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    border-color 180ms ease,
+    background-color 180ms ease;
+}
+
+.app-shell:not(.app-shell--editor) .n-card:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 16px 34px color-mix(in srgb, var(--primary-glow) 32%, transparent),
+    var(--shadow-soft);
+}
+
 .n-button {
   --n-font: inherit;
+}
+
+.n-input.n-input--focus,
+.n-base-selection.n-base-selection--active,
+.n-input-number.n-input-number--focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-glow) 78%, transparent);
+  border-radius: 12px;
 }
 
 /* ===== Utility Helpers ===== */
@@ -340,10 +367,12 @@ a { color: inherit; text-decoration: none; }
   font-size: 26px;
   font-weight: 600;
   letter-spacing: -0.03em;
+  color: color-mix(in srgb, var(--primary-strong) 28%, var(--on-surface));
+  text-shadow: 0 1px 0 color-mix(in srgb, var(--primary-softer) 52%, transparent);
 }
 .page-header-compact p {
   margin: 4px 0 0;
-  color: var(--on-surface-muted);
+  color: color-mix(in srgb, var(--primary-strong) 26%, var(--on-surface-muted));
   font-size: 13px;
 }
 

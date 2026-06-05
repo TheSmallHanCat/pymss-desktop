@@ -103,6 +103,22 @@ function statusLabel(status: string) {
   return labels[status] || status
 }
 
+function normalizeProgressMessage(message?: string) {
+  const value = (message || '').trim().toLowerCase()
+  if (!value) return ''
+  const mapped: Record<string, string> = {
+    'task started': t('tasks.progressPreparingTask'),
+    'validating input': t('tasks.progressValidatingInput'),
+    'checking model files': t('tasks.progressCheckingModel'),
+    'loading model': t('tasks.progressLoadingModel'),
+    'separating audio': t('tasks.progressSeparatingHint'),
+    'processing audio chunks': t('tasks.progressProcessingChunks'),
+    'processing vr batches': t('tasks.progressProcessingVrBatches'),
+    'collecting outputs': t('tasks.progressCollectingOutputs'),
+  }
+  return mapped[value] || message || ''
+}
+
 function progressStatus(status: string) {
   switch (status) {
     case 'done': return 'success' as const
@@ -122,6 +138,28 @@ function taskDuration(item: SeparationTask) {
   const minutes = Math.floor(seconds / 60)
   const rest = seconds % 60
   return `${minutes}m ${rest}s`
+}
+
+function progressDetail(item: SeparationTask) {
+  if (
+    item.status === 'separating'
+    && typeof item.progressCurrent === 'number'
+    && typeof item.progressTotal === 'number'
+    && item.progressTotal > 0
+  ) {
+    return `${Math.round(item.progressCurrent)} / ${Math.round(item.progressTotal)}`
+  }
+  return ''
+}
+
+function progressTitle(item: SeparationTask) {
+  if (item.status === 'separating') return t('tasks.progressTitleSeparating')
+  return statusLabel(item.status)
+}
+
+function taskSubMessage(item: SeparationTask) {
+  if (item.error) return item.error
+  return normalizeProgressMessage(item.progressDetail || item.message)
 }
 
 function statusIcon(status: string) {
@@ -227,7 +265,10 @@ onMounted(() => {
 
             <div class="task-workbench-card__progress">
               <div class="task-progress-head">
-                <span>{{ item.stageLabel || statusLabel(item.status) }}</span>
+                <div class="task-progress-head__main">
+                  <span>{{ progressTitle(item) }}</span>
+                  <span v-if="progressDetail(item)" class="task-progress-head__detail">{{ progressDetail(item) }}</span>
+                </div>
                 <span>{{ Math.round(item.progress || 0) }}%</span>
               </div>
               <n-progress
@@ -238,7 +279,7 @@ onMounted(() => {
                 :height="8"
                 :show-indicator="false"
               />
-              <p class="text-muted text-sm task-message">{{ item.error || item.message }}</p>
+              <p v-if="taskSubMessage(item)" class="text-muted text-sm task-message">{{ taskSubMessage(item) }}</p>
             </div>
 
             <div class="task-workbench-card__meta">
@@ -523,6 +564,19 @@ onMounted(() => {
   color: var(--on-surface);
   font-size: 12px;
   font-weight: 600;
+}
+
+.task-progress-head__main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-progress-head__detail {
+  color: var(--on-surface-muted);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .task-message {

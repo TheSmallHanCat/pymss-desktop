@@ -860,6 +860,34 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         "m4a_aac_at_quality": 2,
     }
 
+    last_reported_done: float | None = None
+    last_reported_total: float | None = None
+    last_progress_message = ""
+
+    def emit_separation_progress(done: Any, total: Any, message: str | None = None) -> None:
+        nonlocal last_reported_done, last_reported_total, last_progress_message
+        try:
+            total_value = float(total)
+            done_value = float(done)
+        except (TypeError, ValueError):
+            return
+        safe_message = message or "Separating audio"
+        if (
+            done_value == last_reported_done
+            and total_value == last_reported_total
+            and safe_message == last_progress_message
+        ):
+            return
+        last_reported_done = done_value
+        last_reported_total = total_value
+        last_progress_message = safe_message
+        emit("task_progress", {
+            "stage": "separating",
+            "message": safe_message,
+            "done": done_value,
+            "total": total_value,
+        }, task_id=task_id)
+
     try:
         emit("task_started", {"model": model_name, "input": input_path, "output": output_dir}, task_id=task_id)
         emit("task_stage", {"stage": "validating_input", "message": "Validating input"}, task_id=task_id)
@@ -894,6 +922,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
             audio_params=audio_params,
             logger=logger,
             debug=debug,
+            progress_callback=emit_separation_progress,
             inference_params=inference_params,
         )
         emit("task_stage", {"stage": "separating", "message": "Separating audio"}, task_id=task_id)

@@ -10,8 +10,6 @@ export const SUPPORTED_LOCALES = [
 export type SupportedLocale = typeof SUPPORTED_LOCALES[number]['code']
 
 export function detectLocale(): SupportedLocale {
-  const stored = localStorage.getItem('pymss:locale')
-  if (stored === 'zh-CN' || stored === 'en') return stored
   const nav = navigator.language || 'zh-CN'
   return nav.startsWith('zh') ? 'zh-CN' : 'en'
 }
@@ -28,7 +26,6 @@ const i18n = createI18n({
 
 export function setLocale(locale: SupportedLocale) {
   ;(i18n.global.locale as any).value = locale
-  localStorage.setItem('pymss:locale', locale)
   document.documentElement.lang = locale
 }
 

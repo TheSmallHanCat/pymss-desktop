@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { loadAppStore, saveAppStore } from '@/utils/appStore'
 import { useSettingsStore } from '@/stores/settings'
 import { useModelStore } from '@/stores/model'
 
@@ -36,6 +37,9 @@ export type SeparationTask = {
   updatedAt: number
   progress: number
   stageLabel: string
+  progressCurrent?: number
+  progressTotal?: number
+  progressDetail?: string
   files: string[]
   outputs: StemOutput[]
   logs: string[]
@@ -43,25 +47,11 @@ export type SeparationTask = {
   runConfig?: SeparationRunConfig
 }
 
-const HISTORY_KEY = 'pymss:tasks'
+type PersistedTaskState = {
+  tasks?: Partial<SeparationTask>[]
+}
+
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus']
-
-function isAudioPath(path: string) {
-  const ext = path.split('.').pop()?.toLowerCase() || ''
-  return AUDIO_EXTENSIONS.includes(ext)
-}
-
-function loadHistory(): SeparationTask[] {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw) as Partial<SeparationTask>[]
-    return parsed.map((task) => normalizeTask(task))
-  } catch {
-    return []
-  }
-}
-
 const TERMINAL_STATUSES: TaskStatus[] = ['done', 'failed', 'cancelled']
 const INTERRUPTIBLE_STATUSES: TaskStatus[] = ['queued', 'preparing', 'validating_input', 'downloading_model', 'ensuring_model', 'loading_model', 'separating', 'writing_output']
 
@@ -72,12 +62,19 @@ const STAGE_META: Record<TaskStatus, { progress: number; label: string }> = {
   downloading_model: { progress: 22, label: 'Checking model files' },
   ensuring_model: { progress: 22, label: 'Checking model files' },
   loading_model: { progress: 35, label: 'Loading model' },
-  separating: { progress: 68, label: 'Separating audio' },
+  separating: { progress: 0, label: 'Separating audio' },
   writing_output: { progress: 92, label: 'Collecting outputs' },
   done: { progress: 100, label: 'Done' },
   failed: { progress: 100, label: 'Failed' },
   cancelled: { progress: 100, label: 'Cancelled' },
 }
+
+function isAudioPath(path: string) {
+  const ext = path.split('.').pop()?.toLowerCase() || ''
+  return AUDIO_EXTENSIONS.includes(ext)
+}
+
+const MAX_CONCURRENT_SEPARATIONS = 16
 
 function normalizeStatus(status: unknown): TaskStatus {
   if (typeof status !== 'string') return 'queued'
@@ -86,7 +83,7 @@ function normalizeStatus(status: unknown): TaskStatus {
 }
 
 function normalizeOutputPath(value?: string | null) {
-  return value && value.trim() ? value : 'results'
+  return value && value.trim() ? value : 'outputs'
 }
 
 function joinOutputPath(base: string, child: string) {
@@ -112,6 +109,25 @@ function outputsFromFiles(outputDir: string, files: string[], outputFormat = 'wa
   })
 }
 
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.max(minimum, Math.min(maximum, value))
+}
+
+function resolveStageProgress(status: TaskStatus, current?: number, total?: number) {
+  const meta = STAGE_META[status]
+  if (status !== 'separating') return meta.progress
+  if (
+    typeof current !== 'number'
+    || typeof total !== 'number'
+    || !Number.isFinite(current)
+    || !Number.isFinite(total)
+    || total <= 0
+  ) {
+    return meta.progress
+  }
+  return Math.round(clamp(current / total, 0, 1) * 100)
+}
+
 function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
   let status = normalizeStatus(task.status)
   let interrupted = false
@@ -134,6 +150,9 @@ function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
     updatedAt: task.updatedAt || task.createdAt || Date.now(),
     progress: TERMINAL_STATUSES.includes(status) ? 100 : progress,
     stageLabel: interrupted ? '已中断' : (task.stageLabel || meta.label),
+    progressCurrent: typeof task.progressCurrent === 'number' ? task.progressCurrent : undefined,
+    progressTotal: typeof task.progressTotal === 'number' ? task.progressTotal : undefined,
+    progressDetail: task.progressDetail || undefined,
     files: task.files || [],
     outputs: task.outputs || [],
     logs: interrupted
@@ -145,14 +164,14 @@ function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
 }
 
 export const useTaskStore = defineStore('task', () => {
-  const tasks = ref<SeparationTask[]>(loadHistory())
-  const activeTaskId = ref<string | null>(tasks.value[0]?.id || null)
+  const initialized = ref(false)
+  const tasks = ref<SeparationTask[]>([])
+  const activeTaskId = ref<string | null>(null)
   const focusedResultTaskId = ref<string | null>(null)
   const focusedTaskId = ref<string | null>(null)
   const inputFiles = ref<string[]>([])
   const useTta = ref(false)
   const debug = ref(false)
-  // Inference params
   const batchSize = ref(1)
   const overlapSize = ref(0)
   const chunkSize = ref(0)
@@ -166,9 +185,7 @@ export const useTaskStore = defineStore('task', () => {
   const split = ref(true)
   const overlap = ref(0.25)
 
-  // 兼容旧逻辑：inputPath 取候选列表第一个
   const inputPath = computed(() => inputFiles.value[0] || '')
-
   const activeTask = computed(() => tasks.value.find((task) => task.id === activeTaskId.value) || null)
   const completedTasks = computed(() => tasks.value.filter((task) => task.status === 'done'))
   const runningTasks = computed(() => tasks.value.filter((task) => !TERMINAL_STATUSES.includes(task.status)))
@@ -179,11 +196,41 @@ export const useTaskStore = defineStore('task', () => {
   const spotlightTasks = computed(() => tasks.value.filter((task) => !TERMINAL_STATUSES.includes(task.status) || task.status === 'failed'))
   const historyTasks = computed(() => tasks.value.filter((task) => !spotlightTasks.value.some((candidate) => candidate.id === task.id)))
 
-  watch(tasks, (value) => {
-    const persistable = value.slice(0, 80).map((task) => ({ ...task, logs: task.logs.slice(-120) }))
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(persistable))
-  }, { deep: true })
+  let saveTimer: ReturnType<typeof setTimeout> | null = null
+  let progressPersistTimer: ReturnType<typeof setTimeout> | null = null
 
+  async function persistTasks() {
+    if (!initialized.value) return
+    await saveAppStore('task-history', {
+      tasks: tasks.value.slice(0, 80).map((task) => ({ ...task, logs: task.logs.slice(-120) })),
+    } satisfies PersistedTaskState)
+  }
+
+  function queuePersist() {
+    if (!initialized.value) return
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => {
+      saveTimer = null
+      void persistTasks()
+    }, 120)
+  }
+
+  function queueProgressPersist() {
+    if (!initialized.value) return
+    if (progressPersistTimer) return
+    progressPersistTimer = setTimeout(() => {
+      progressPersistTimer = null
+      void persistTasks()
+    }, 800)
+  }
+
+  async function initialize() {
+    if (initialized.value) return
+    const stored = await loadAppStore<PersistedTaskState>('task-history')
+    tasks.value = (stored?.tasks || []).map((task) => normalizeTask(task))
+    activeTaskId.value = tasks.value[0]?.id || null
+    initialized.value = true
+  }
 
   watch(() => useSettingsStore().maxConcurrentSeparations, () => {
     scheduleQueue()
@@ -203,13 +250,14 @@ export const useTaskStore = defineStore('task', () => {
     task.logs.push(...normalized)
     task.logs = task.logs.slice(-300)
     touch(task)
+    queuePersist()
   }
 
   function maxConcurrentSeparations() {
     const settings = useSettingsStore()
     const value = Number(settings.maxConcurrentSeparations || 1)
     if (!Number.isFinite(value)) return 1
-    return Math.min(3, Math.max(1, Math.trunc(value)))
+    return Math.min(MAX_CONCURRENT_SEPARATIONS, Math.max(1, Math.trunc(value)))
   }
 
   function buildRunConfig(inferenceParams: Record<string, unknown>): SeparationRunConfig {
@@ -249,6 +297,7 @@ export const useTaskStore = defineStore('task', () => {
     }
     tasks.value.unshift(task)
     activeTaskId.value = id
+    queuePersist()
     return task
   }
 
@@ -286,6 +335,7 @@ export const useTaskStore = defineStore('task', () => {
       task.stageLabel = STAGE_META.failed.label
       task.progress = 100
       appendTaskLogs(task, `error: ${task.error}`)
+      queuePersist()
       scheduleQueue()
       return false
     }
@@ -311,13 +361,22 @@ export const useTaskStore = defineStore('task', () => {
     task.status = status
     task.stageLabel = meta.label
     task.message = message || meta.label
+    if (status !== 'separating') {
+      task.progressCurrent = undefined
+      task.progressTotal = undefined
+      task.progressDetail = undefined
+    }
     const nextProgress = progress ?? meta.progress
+    const normalizedProgress = Math.min(99, Math.max(0, nextProgress))
     task.progress = status === 'done' || status === 'failed' || status === 'cancelled'
       ? 100
-      : Math.max(task.progress || 0, Math.min(99, nextProgress))
+      : status === 'separating'
+        ? normalizedProgress
+        : Math.max(task.progress || 0, normalizedProgress)
     task.logs.push(`${new Date().toLocaleTimeString()} ${task.message}`)
     task.logs = task.logs.slice(-300)
     touch(task)
+    queuePersist()
   }
 
   function handleWorkerEvent(event: any) {
@@ -330,6 +389,23 @@ export const useTaskStore = defineStore('task', () => {
     } else if (event.type === 'task_stage') {
       const stage = normalizeStatus(event.payload?.stage)
       setTaskStatus(taskId, stage, event.payload?.message || STAGE_META[stage].label, event.payload?.progress)
+    } else if (event.type === 'task_progress') {
+      const stage = normalizeStatus(event.payload?.stage)
+      const done = Number(event.payload?.done)
+      const total = Number(event.payload?.total)
+      const detail = typeof event.payload?.message === 'string' ? event.payload.message : undefined
+      task.status = stage
+      task.stageLabel = STAGE_META[stage].label
+      task.message = detail || STAGE_META[stage].label
+      task.progressCurrent = Number.isFinite(done) ? done : undefined
+      task.progressTotal = Number.isFinite(total) ? total : undefined
+      task.progressDetail = detail
+      const resolvedProgress = Math.min(99, resolveStageProgress(stage, task.progressCurrent, task.progressTotal))
+      task.progress = stage === 'separating'
+        ? resolvedProgress
+        : Math.max(task.progress || 0, resolvedProgress)
+      touch(task)
+      queueProgressPersist()
     } else if (event.type === 'task_log') {
       appendTaskLogs(task, `${event.payload?.level || 'info'}: ${event.payload?.message || ''}`)
     } else if (event.type === 'error') {
@@ -339,6 +415,9 @@ export const useTaskStore = defineStore('task', () => {
       const recoverable = Boolean(event.payload?.recoverable)
       task.error = message
       task.message = message
+      task.progressCurrent = undefined
+      task.progressTotal = undefined
+      task.progressDetail = undefined
       if (recoverable) {
         task.stageLabel = task.stageLabel || STAGE_META.failed.label
         task.progress = Math.min(99, Math.max(task.progress || 0, 1))
@@ -347,13 +426,15 @@ export const useTaskStore = defineStore('task', () => {
         task.stageLabel = STAGE_META.failed.label
         task.progress = 100
       }
-      appendTaskLogs(task, [`error: ${code}${message}`, detail ? `traceback:
-${detail}` : ''])
+      appendTaskLogs(task, [`error: ${code}${message}`, detail ? `traceback:\n${detail}` : ''])
     } else if (event.type === 'task_done') {
       task.status = 'done'
       task.message = 'Done'
       task.stageLabel = STAGE_META.done.label
       task.progress = 100
+      task.progressCurrent = undefined
+      task.progressTotal = undefined
+      task.progressDetail = undefined
       task.files = event.payload?.files || []
       if (event.payload?.outputDir) task.output = event.payload.outputDir
       task.outputs = event.payload?.outputs?.length
@@ -361,17 +442,21 @@ ${detail}` : ''])
         : outputsFromFiles(task.output, task.files, event.payload?.outputFormat || 'wav')
       task.error = undefined
       touch(task)
+      queuePersist()
     } else if (event.type === 'task_cancelled') {
       task.status = 'cancelled'
       task.message = event.payload?.message || 'Cancelled'
       task.stageLabel = STAGE_META.cancelled.label
       task.progress = 100
+      task.progressCurrent = undefined
+      task.progressTotal = undefined
+      task.progressDetail = undefined
       touch(task)
+      queuePersist()
     }
     if (TERMINAL_STATUSES.includes(task.status)) scheduleQueue()
   }
 
-  // 将一批路径加入候选列表（去重，仅保留音频文件）。返回实际新增数量。
   function addInputFiles(paths: string[]) {
     const valid = paths.filter((p) => p?.trim() && isAudioPath(p))
     if (!valid.length) return 0
@@ -389,14 +474,12 @@ ${detail}` : ''])
     inputFiles.value = []
   }
 
-  // 选择音频文件（多选）：全部加入候选列表，返回选取数量
   async function pickFiles() {
     const files = await invoke<string[]>('pick_audio_files')
     addInputFiles(files || [])
     return files?.length || 0
   }
 
-  // 选择输入文件夹：扫描其中音频文件加入候选列表，返回扫描到的数量
   async function scanAndAddPaths(paths: string[]) {
     if (!paths?.length) return { added: 0, warnings: [] as string[] }
     const result = await invoke<ScanAudioPathsResult>('scan_audio_paths', { paths })
@@ -440,10 +523,12 @@ ${detail}` : ''])
     if (activeTaskId.value === id) activeTaskId.value = tasks.value[0]?.id || null
     if (focusedResultTaskId.value === id) focusedResultTaskId.value = null
     if (focusedTaskId.value === id) focusedTaskId.value = null
+    queuePersist()
   }
 
   function clearHistory() {
     tasks.value = tasks.value.filter((task) => runningTasks.value.includes(task))
+    queuePersist()
   }
 
   async function cancelTask(id: string) {
@@ -455,6 +540,7 @@ ${detail}` : ''])
       task.stageLabel = STAGE_META.cancelled.label
       task.progress = 100
       appendTaskLogs(task, 'Cancelled before execution')
+      queuePersist()
       scheduleQueue()
       return true
     }
@@ -465,12 +551,12 @@ ${detail}` : ''])
       task.stageLabel = STAGE_META.cancelled.label
       task.progress = 100
       touch(task)
+      queuePersist()
       scheduleQueue()
     }
     return cancelled
   }
 
-  // 构建本次推理参数（仅设置非默认值）
   function buildInferenceParams(): Record<string, unknown> {
     const inferenceParams: Record<string, unknown> = {}
     if (batchSize.value > 1) inferenceParams.batch_size = batchSize.value
@@ -509,7 +595,7 @@ ${detail}` : ''])
   }
 
   async function retryTask(taskId: string) {
-    const existing = tasks.value.find(t => t.id === taskId)
+    const existing = tasks.value.find((t) => t.id === taskId)
     if (!existing) return
     const modelStore = useModelStore()
     modelStore.selectedModel = existing.model
@@ -520,6 +606,7 @@ ${detail}` : ''])
   }
 
   return {
+    initialized,
     tasks,
     activeTaskId,
     activeTask,
@@ -549,6 +636,7 @@ ${detail}` : ''])
     shifts,
     split,
     overlap,
+    initialize,
     handleWorkerEvent,
     pickFiles,
     pickInputFolder,

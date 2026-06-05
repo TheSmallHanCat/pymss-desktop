@@ -1,5 +1,6 @@
 use crate::error::{AppError, AppResult};
 use crate::python::worker::{run_worker_once, run_worker_with_payload, spawn_worker_background};
+use crate::storage;
 use crate::state::AppState;
 use serde::Serialize;
 use serde_json::Value;
@@ -126,14 +127,23 @@ pub async fn start_separation(app: AppHandle, state: State<'_, AppState>, payloa
     Ok(serde_json::json!({ "taskId": task_id, "started": true }))
 }
 
-fn app_data_dir(app: &AppHandle) -> AppResult<PathBuf> {
-    app.path()
-        .app_data_dir()
-        .map_err(|error| AppError::Worker(error.to_string()))
+#[tauri::command]
+pub async fn get_app_paths(app: AppHandle) -> AppResult<storage::AppPathsPayload> {
+    storage::app_paths_payload(&app)
+}
+
+#[tauri::command]
+pub async fn load_app_store(app: AppHandle, name: String) -> AppResult<Value> {
+    storage::read_app_store(&app, &name)
+}
+
+#[tauri::command]
+pub async fn save_app_store(app: AppHandle, name: String, data: Value) -> AppResult<()> {
+    storage::write_app_store(&app, &name, &data)
 }
 
 fn editor_projects_root(app: &AppHandle) -> AppResult<PathBuf> {
-    Ok(app_data_dir(app)?.join("editor-projects"))
+    storage::editor_projects_dir(app)
 }
 
 fn safe_file_name(value: &str) -> String {
