@@ -1,13 +1,18 @@
 use crate::error::{AppError, AppResult};
+use crate::model_dir_migration::{
+    self, CancelModelDirMigrationRequest, ConfirmModelDirMigrationSwitchRequest,
+    PrepareModelDirChangeRequest, RespondModelDirMigrationConflictRequest,
+    StartModelDirMigrationRequest,
+};
 use crate::python::worker::{run_worker_once, run_worker_with_payload, spawn_worker_background};
-use crate::storage;
 use crate::state::AppState;
+use crate::storage;
 use serde::Serialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri::webview::PageLoadEvent;
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
@@ -91,7 +96,11 @@ pub async fn download_model(app: AppHandle, payload: Value) -> AppResult<Value> 
 }
 
 #[tauri::command]
-pub async fn start_model_download(app: AppHandle, state: State<'_, AppState>, payload: Value) -> AppResult<Value> {
+pub async fn start_model_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> AppResult<Value> {
     let model = payload
         .get("model")
         .and_then(Value::as_str)
@@ -100,7 +109,13 @@ pub async fn start_model_download(app: AppHandle, state: State<'_, AppState>, pa
         .get("taskId")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| format!("download_{}_{}", model.replace(|c: char| !c.is_ascii_alphanumeric(), "_"), chrono_like_timestamp()));
+        .unwrap_or_else(|| {
+            format!(
+                "download_{}_{}",
+                model.replace(|c: char| !c.is_ascii_alphanumeric(), "_"),
+                chrono_like_timestamp()
+            )
+        });
     let mut payload = payload;
     if let Some(object) = payload.as_object_mut() {
         object.insert("taskId".to_string(), Value::String(task_id.clone()));
@@ -117,7 +132,11 @@ fn chrono_like_timestamp() -> u128 {
 }
 
 #[tauri::command]
-pub async fn start_separation(app: AppHandle, state: State<'_, AppState>, payload: Value) -> AppResult<Value> {
+pub async fn start_separation(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> AppResult<Value> {
     let task_id = payload
         .get("taskId")
         .and_then(Value::as_str)
@@ -174,10 +193,7 @@ fn safe_asset_file_name(value: &str) -> String {
             c => c,
         })
         .collect();
-    let trimmed = sanitized
-        .trim()
-        .trim_matches('.')
-        .trim_matches('_');
+    let trimmed = sanitized.trim().trim_matches('.').trim_matches('_');
     if trimmed.is_empty() {
         "audio".to_string()
     } else {
@@ -251,15 +267,25 @@ fn unique_path_for_file(dir: &Path, file_name: &str) -> PathBuf {
     candidate
 }
 
-fn import_audio_file_to_project(app: &AppHandle, project_id: &str, source_path: &Path, relative_path: Option<&Path>) -> AppResult<PathBuf> {
+fn import_audio_file_to_project(
+    app: &AppHandle,
+    project_id: &str,
+    source_path: &Path,
+    relative_path: Option<&Path>,
+) -> AppResult<PathBuf> {
     if !source_path.is_file() {
-        return Err(AppError::Worker(format!("asset is not a file: {}", source_path.display())));
+        return Err(AppError::Worker(format!(
+            "asset is not a file: {}",
+            source_path.display()
+        )));
     }
 
     let assets_dir = editor_project_assets_dir(app, project_id)?;
     std::fs::create_dir_all(&assets_dir)?;
 
-    if let (Ok(source_canon), Ok(assets_canon)) = (source_path.canonicalize(), assets_dir.canonicalize()) {
+    if let (Ok(source_canon), Ok(assets_canon)) =
+        (source_path.canonicalize(), assets_dir.canonicalize())
+    {
         if source_canon.starts_with(&assets_canon) {
             return Ok(source_path.to_path_buf());
         }
@@ -275,7 +301,10 @@ fn import_audio_file_to_project(app: &AppHandle, project_id: &str, source_path: 
             .filter(|part| !part.is_empty())
             .collect();
         if safe_parts.is_empty() {
-            unique_path_for_file(&assets_dir, &file_name_from_path(&source_path.to_string_lossy()))
+            unique_path_for_file(
+                &assets_dir,
+                &file_name_from_path(&source_path.to_string_lossy()),
+            )
         } else {
             let mut target_dir = assets_dir.clone();
             for part in safe_parts.iter().take(safe_parts.len().saturating_sub(1)) {
@@ -285,7 +314,10 @@ fn import_audio_file_to_project(app: &AppHandle, project_id: &str, source_path: 
             unique_path_for_file(&target_dir, safe_parts.last().unwrap())
         }
     } else {
-        unique_path_for_file(&assets_dir, &file_name_from_path(&source_path.to_string_lossy()))
+        unique_path_for_file(
+            &assets_dir,
+            &file_name_from_path(&source_path.to_string_lossy()),
+        )
     };
 
     if let Some(parent) = destination.parent() {
@@ -296,7 +328,11 @@ fn import_audio_file_to_project(app: &AppHandle, project_id: &str, source_path: 
 }
 
 fn migrate_editor_project_asset_paths(app: &AppHandle, project: &mut Value) -> AppResult<bool> {
-    let Some(project_id) = project.get("id").and_then(Value::as_str).map(str::to_string) else {
+    let Some(project_id) = project
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
         return Ok(false);
     };
 
@@ -342,7 +378,10 @@ fn stem_rank(stem: &str) -> usize {
     let lower = stem.to_ascii_lowercase();
     if lower.contains("vocal") || lower.contains("voice") {
         0
-    } else if lower.contains("instrument") || lower.contains("accompaniment") || lower.contains("karaoke") {
+    } else if lower.contains("instrument")
+        || lower.contains("accompaniment")
+        || lower.contains("karaoke")
+    {
         1
     } else if lower.contains("drum") {
         2
@@ -359,7 +398,10 @@ fn display_stem_name(stem: &str) -> String {
     let lower = stem.to_ascii_lowercase();
     if lower.contains("vocal") || lower.contains("voice") {
         "人声".to_string()
-    } else if lower.contains("instrument") || lower.contains("accompaniment") || lower.contains("karaoke") {
+    } else if lower.contains("instrument")
+        || lower.contains("accompaniment")
+        || lower.contains("karaoke")
+    {
         "伴奏".to_string()
     } else if lower.contains("drum") {
         "鼓组".to_string()
@@ -379,7 +421,10 @@ fn write_editor_project(app: &AppHandle, project: &Value) -> AppResult<Value> {
         .ok_or_else(|| AppError::Worker("missing editor project id".into()))?;
     let dir = editor_project_dir(app, project_id)?;
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("project.json"), serde_json::to_string_pretty(project)?)?;
+    std::fs::write(
+        dir.join("project.json"),
+        serde_json::to_string_pretty(project)?,
+    )?;
     Ok(project.clone())
 }
 
@@ -392,12 +437,20 @@ pub async fn open_editor_window(app: AppHandle, payload: Value) -> AppResult<Val
         .to_string();
     let label = format!("editor-{}", safe_file_name(&project_id));
     if let Some(window) = app.get_webview_window(&label) {
-        let _ = window.emit("pymss://editor-open-project", serde_json::json!({ "projectId": project_id, "label": label }));
+        let _ = window.emit(
+            "pymss://editor-open-project",
+            serde_json::json!({ "projectId": project_id, "label": label }),
+        );
         let _ = window.set_focus();
-        return Ok(serde_json::json!({ "projectId": project_id, "label": label, "opened": true, "reused": true }));
+        return Ok(
+            serde_json::json!({ "projectId": project_id, "label": label, "opened": true, "reused": true }),
+        );
     }
 
-    let url = format!("index.html#/editor?projectId={}&windowLabel={}", project_id, label);
+    let url = format!(
+        "index.html#/editor?projectId={}&windowLabel={}",
+        project_id, label
+    );
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
         .title("Pymss Studio Editor")
         .inner_size(1440.0, 900.0)
@@ -413,7 +466,9 @@ pub async fn open_editor_window(app: AppHandle, payload: Value) -> AppResult<Val
         })
         .build()
         .map_err(|error| AppError::Worker(error.to_string()))?;
-    Ok(serde_json::json!({ "projectId": project_id, "label": label, "opened": true, "reused": false }))
+    Ok(
+        serde_json::json!({ "projectId": project_id, "label": label, "opened": true, "reused": false }),
+    )
 }
 
 #[tauri::command]
@@ -423,8 +478,14 @@ pub async fn create_editor_project_from_task(app: AppHandle, payload: Value) -> 
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::Worker("missing taskId".into()))?;
 
-    let input = payload.get("input").and_then(Value::as_str).unwrap_or("Untitled");
-    let output_dir = payload.get("outputDir").and_then(Value::as_str).unwrap_or("");
+    let input = payload
+        .get("input")
+        .and_then(Value::as_str)
+        .unwrap_or("Untitled");
+    let output_dir = payload
+        .get("outputDir")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let outputs = payload
         .get("outputs")
         .and_then(Value::as_array)
@@ -451,7 +512,11 @@ pub async fn create_editor_project_from_task(app: AppHandle, payload: Value) -> 
             .map(|path| (stem_from_path(&path), path))
             .collect();
     }
-    paths.sort_by(|a, b| stem_rank(&a.0).cmp(&stem_rank(&b.0)).then_with(|| a.0.cmp(&b.0)));
+    paths.sort_by(|a, b| {
+        stem_rank(&a.0)
+            .cmp(&stem_rank(&b.0))
+            .then_with(|| a.0.cmp(&b.0))
+    });
 
     let project_id = format!("edit_{}", safe_file_name(task_id));
     let timestamp = now_millis();
@@ -464,34 +529,38 @@ pub async fn create_editor_project_from_task(app: AppHandle, payload: Value) -> 
     let sources: Vec<Value> = imported_paths
         .iter()
         .enumerate()
-        .map(|(index, (stem, path))| serde_json::json!({
-            "id": format!("source_{}_{}", index, safe_file_name(stem)),
-            "role": "stem",
-            "stemKey": stem,
-            "path": path,
-            "name": file_name_from_path(path),
-            "duration": 0,
-            "sampleRate": 0,
-            "channels": 0,
-            "peaksPath": Value::Null,
-            "peaks": [],
-        }))
+        .map(|(index, (stem, path))| {
+            serde_json::json!({
+                "id": format!("source_{}_{}", index, safe_file_name(stem)),
+                "role": "stem",
+                "stemKey": stem,
+                "path": path,
+                "name": file_name_from_path(path),
+                "duration": 0,
+                "sampleRate": 0,
+                "channels": 0,
+                "peaksPath": Value::Null,
+                "peaks": [],
+            })
+        })
         .collect();
     let tracks: Vec<Value> = imported_paths
         .iter()
         .enumerate()
-        .map(|(index, (stem, _))| serde_json::json!({
-            "id": format!("track_{}", index),
-            "sourceId": format!("source_{}_{}", index, safe_file_name(stem)),
-            "role": "stem",
-            "name": display_stem_name(stem),
-            "color": Value::Null,
-            "volume": 1,
-            "muted": false,
-            "solo": false,
-            "fadeIn": 0,
-            "fadeOut": 0
-        }))
+        .map(|(index, (stem, _))| {
+            serde_json::json!({
+                "id": format!("track_{}", index),
+                "sourceId": format!("source_{}_{}", index, safe_file_name(stem)),
+                "role": "stem",
+                "name": display_stem_name(stem),
+                "color": Value::Null,
+                "volume": 1,
+                "muted": false,
+                "solo": false,
+                "fadeIn": 0,
+                "fadeOut": 0
+            })
+        })
         .collect();
 
     let project = serde_json::json!({
@@ -515,7 +584,11 @@ pub async fn scan_editor_assets(paths: Vec<String>) -> AppResult<ScanAudioPathsR
 }
 
 #[tauri::command]
-pub async fn import_editor_assets(app: AppHandle, project_id: String, paths: Vec<String>) -> AppResult<Vec<String>> {
+pub async fn import_editor_assets(
+    app: AppHandle,
+    project_id: String,
+    paths: Vec<String>,
+) -> AppResult<Vec<String>> {
     let assets_dir = editor_project_assets_dir(&app, &project_id)?;
     std::fs::create_dir_all(&assets_dir)?;
 
@@ -524,7 +597,11 @@ pub async fn import_editor_assets(app: AppHandle, project_id: String, paths: Vec
         let target = PathBuf::from(&raw);
         if target.is_file() {
             if is_audio_file(&target) {
-                imported.push(import_audio_file_to_project(&app, &project_id, &target, None)?.to_string_lossy().to_string());
+                imported.push(
+                    import_audio_file_to_project(&app, &project_id, &target, None)?
+                        .to_string_lossy()
+                        .to_string(),
+                );
             }
             continue;
         }
@@ -534,7 +611,11 @@ pub async fn import_editor_assets(app: AppHandle, project_id: String, paths: Vec
             for file in scanned.files {
                 let file_path = PathBuf::from(&file);
                 let relative = file_path.strip_prefix(&target).ok();
-                imported.push(import_audio_file_to_project(&app, &project_id, &file_path, relative)?.to_string_lossy().to_string());
+                imported.push(
+                    import_audio_file_to_project(&app, &project_id, &file_path, relative)?
+                        .to_string_lossy()
+                        .to_string(),
+                );
             }
         }
     }
@@ -559,7 +640,10 @@ pub async fn generate_waveform_peaks(app: AppHandle, payload: Value) -> AppResul
                 .unwrap_or("shared");
             let cache_dir = editor_project_dir(&app, project_id)?.join("peaks");
             std::fs::create_dir_all(&cache_dir)?;
-            object.insert("cacheDir".into(), Value::String(cache_dir.to_string_lossy().to_string()));
+            object.insert(
+                "cacheDir".into(),
+                Value::String(cache_dir.to_string_lossy().to_string()),
+            );
         }
     }
     run_worker_with_payload(&app, "waveform_peaks", Some(payload))
@@ -603,24 +687,38 @@ pub async fn export_editor_mix(app: AppHandle, payload: Value) -> AppResult<Valu
         if !object.contains_key("exportDir") {
             let export_dir = editor_project_dir(&app, project_id)?.join("exports");
             std::fs::create_dir_all(&export_dir)?;
-            object.insert("exportDir".into(), Value::String(export_dir.to_string_lossy().to_string()));
+            object.insert(
+                "exportDir".into(),
+                Value::String(export_dir.to_string_lossy().to_string()),
+            );
         }
     }
     run_worker_with_payload(&app, "export_editor_mix", Some(payload))
 }
 
 #[tauri::command]
-pub async fn cancel_task(app: AppHandle, state: State<'_, AppState>, task_id: String) -> AppResult<bool> {
-    let child = state.tasks.lock().ok().and_then(|mut tasks| tasks.remove(&task_id));
+pub async fn cancel_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> AppResult<bool> {
+    let child = state
+        .tasks
+        .lock()
+        .ok()
+        .and_then(|mut tasks| tasks.remove(&task_id));
     if let Some(child) = child {
         if let Ok(mut child) = child.lock() {
             let _ = child.kill();
         }
-        let _ = app.emit("pymss://worker-event", serde_json::json!({
-            "type": "task_cancelled",
-            "taskId": task_id,
-            "payload": { "message": "Cancelled" }
-        }));
+        let _ = app.emit(
+            "pymss://worker-event",
+            serde_json::json!({
+                "type": "task_cancelled",
+                "taskId": task_id,
+                "payload": { "message": "Cancelled" }
+            }),
+        );
         Ok(true)
     } else {
         Ok(false)
@@ -632,7 +730,10 @@ pub async fn pick_audio_files(app: AppHandle) -> AppResult<Vec<String>> {
     let files = app
         .dialog()
         .file()
-        .add_filter("Audio", &["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"])
+        .add_filter(
+            "Audio",
+            &["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"],
+        )
         .blocking_pick_files()
         .unwrap_or_default();
     Ok(files.into_iter().map(|p| p.to_string()).collect())
@@ -640,12 +741,62 @@ pub async fn pick_audio_files(app: AppHandle) -> AppResult<Vec<String>> {
 
 #[tauri::command]
 pub async fn pick_input_folder(app: AppHandle) -> AppResult<Option<String>> {
-    Ok(app.dialog().file().blocking_pick_folder().map(|p| p.to_string()))
+    Ok(app
+        .dialog()
+        .file()
+        .blocking_pick_folder()
+        .map(|p| p.to_string()))
 }
 
 #[tauri::command]
 pub async fn pick_output_folder(app: AppHandle) -> AppResult<Option<String>> {
-    Ok(app.dialog().file().blocking_pick_folder().map(|p| p.to_string()))
+    Ok(app
+        .dialog()
+        .file()
+        .blocking_pick_folder()
+        .map(|p| p.to_string()))
+}
+
+#[tauri::command]
+pub async fn prepare_model_dir_change(
+    app: AppHandle,
+    payload: PrepareModelDirChangeRequest,
+) -> AppResult<model_dir_migration::PrepareModelDirChangePayload> {
+    model_dir_migration::prepare_model_dir_change(&app, payload)
+}
+
+#[tauri::command]
+pub async fn start_model_dir_migration(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: StartModelDirMigrationRequest,
+) -> AppResult<Value> {
+    model_dir_migration::start_model_dir_migration(app, state, payload)
+}
+
+#[tauri::command]
+pub async fn respond_model_dir_migration_conflict(
+    state: State<'_, AppState>,
+    payload: RespondModelDirMigrationConflictRequest,
+) -> AppResult<Value> {
+    model_dir_migration::respond_model_dir_migration_conflict(state, payload)
+}
+
+#[tauri::command]
+pub async fn confirm_model_dir_migration_switch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: ConfirmModelDirMigrationSwitchRequest,
+) -> AppResult<Value> {
+    model_dir_migration::confirm_model_dir_migration_switch(app, state, payload)
+}
+
+#[tauri::command]
+pub async fn cancel_model_dir_migration(
+    state: State<'_, AppState>,
+    payload: CancelModelDirMigrationRequest,
+) -> AppResult<Value> {
+    model_dir_migration::cancel_model_dir_migration(state, payload)
 }
 
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"];

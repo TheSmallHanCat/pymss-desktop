@@ -2,6 +2,7 @@
 
 mod commands;
 mod error;
+mod model_dir_migration;
 mod python;
 mod state;
 mod storage;
@@ -40,8 +41,13 @@ fn main() {
             commands::app_cmd::pick_audio_files,
             commands::app_cmd::pick_input_folder,
             commands::app_cmd::pick_output_folder,
+            commands::app_cmd::prepare_model_dir_change,
             commands::app_cmd::reveal_path,
+            commands::app_cmd::respond_model_dir_migration_conflict,
+            commands::app_cmd::confirm_model_dir_migration_switch,
+            commands::app_cmd::cancel_model_dir_migration,
             commands::app_cmd::cleanup_model_residual_files,
+            commands::app_cmd::start_model_dir_migration,
             commands::app_cmd::get_model_storage_summary,
             commands::app_cmd::scan_audio_paths,
             commands::app_cmd::scan_editor_assets,

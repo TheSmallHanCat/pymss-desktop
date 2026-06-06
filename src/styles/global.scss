@@ -244,6 +244,14 @@ a { color: inherit; text-decoration: none; }
 }
 .window-actions button:hover { background: var(--surface-2); color: var(--on-surface); }
 .window-actions button.danger:hover { background: var(--danger); color: white; }
+.window-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.window-actions button:disabled:hover {
+  background: transparent;
+  color: var(--on-surface-muted);
+}
 
 /* ===== Side Navigation ===== */
 .side-nav {

@@ -1,5 +1,6 @@
 import { listen } from '@tauri-apps/api/event'
 import { useAppStore } from '@/stores/app'
+import { useSettingsStore } from '@/stores/settings'
 import { useTaskStore } from '@/stores/task'
 import { useModelStore } from '@/stores/model'
 
@@ -11,9 +12,11 @@ export function registerWorkerEvents() {
   registered = true
   listen('pymss://worker-event', (event) => {
     const app = useAppStore()
+    const settings = useSettingsStore()
     const tasks = useTaskStore()
     const models = useModelStore()
     app.pushWorkerEvent(event.payload)
+    void settings.handleWorkerEvent(event.payload)
     tasks.handleWorkerEvent(event.payload)
     models.handleWorkerEvent(event.payload)
   }).catch(() => {})

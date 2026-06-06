@@ -23,6 +23,51 @@ type AppPathsPayload = {
   tempDir: string
 }
 
+export type ModelDirMigrationConflict = {
+  sourcePath: string
+  relativePath: string
+  destinationPath: string
+  existingSizeBytes: number
+  incomingSizeBytes: number
+}
+
+export type PrepareModelDirChangePayload = {
+  currentModelDir: string
+  targetModelDir: string
+  sameAsCurrent: boolean
+  sourceDirExists: boolean
+  targetDirExists: boolean
+  targetDirEmpty: boolean
+  fileCount: number
+  totalBytes: number
+  conflictCount: number
+  diskAvailableBytes: number | null
+  diskInsufficient: boolean
+}
+
+export type ModelDirMigrationResolution = 'overwrite' | 'skip' | 'abort'
+export type ModelDirMigrationStatus = 'idle' | 'confirm' | 'running' | 'conflict' | 'ready_to_switch' | 'finalizing_cleanup' | 'success' | 'failed' | 'aborted'
+export type ModelDirMigrationState = {
+  status: ModelDirMigrationStatus
+  taskId: string
+  sourceModelDir: string
+  targetModelDir: string
+  previousModelDir: string
+  totalFiles: number
+  completedFiles: number
+  totalBytes: number
+  copiedBytes: number
+  currentPath: string
+  message: string
+  skippedFiles: string[]
+  overwrittenFiles: string[]
+  cleanupFailedFiles: string[]
+  conflict: ModelDirMigrationConflict | null
+  error: string
+  preparation: PrepareModelDirChangePayload | null
+  resolvingConflict: boolean
+}
+
 type StoredSettings = {
   themeMode?: ThemeMode
   themeAccent?: ThemeAccent
@@ -52,6 +97,29 @@ const DEFAULT_FLAC_BIT_DEPTH = 'PCM_24'
 const DEFAULT_MP3_BIT_RATE = '320k'
 const DEFAULT_M4A_BIT_RATE = '192k'
 const DEFAULT_M4A_CODEC = 'aac_at'
+
+function createEmptyModelDirMigrationState(): ModelDirMigrationState {
+  return {
+    status: 'idle',
+    taskId: '',
+    sourceModelDir: '',
+    targetModelDir: '',
+    previousModelDir: '',
+    totalFiles: 0,
+    completedFiles: 0,
+    totalBytes: 0,
+    copiedBytes: 0,
+    currentPath: '',
+    message: '',
+    skippedFiles: [],
+    overwrittenFiles: [],
+    cleanupFailedFiles: [],
+    conflict: null,
+    error: '',
+    preparation: null,
+    resolvingConflict: false,
+  }
+}
 
 export type AudioParams = {
   wavBitDepth: string
@@ -91,12 +159,14 @@ export const useSettingsStore = defineStore('settings', () => {
   const mp3BitRate = ref(DEFAULT_MP3_BIT_RATE)
   const m4aBitRate = ref(DEFAULT_M4A_BIT_RATE)
   const m4aCodec = ref(DEFAULT_M4A_CODEC)
+  const modelDirMigrationState = ref<ModelDirMigrationState>(createEmptyModelDirMigrationState())
 
   const dataRoot = computed(() => appPaths.value?.dataRoot || '')
   const settingsDir = computed(() => appPaths.value?.settingsDir || '')
   const editorProjectsDir = computed(() => appPaths.value?.editorProjectsDir || '')
   const logsDir = computed(() => appPaths.value?.logsDir || '')
   const tempDir = computed(() => appPaths.value?.tempDir || '')
+  const isModelDirMigrating = computed(() => ['running', 'conflict', 'ready_to_switch', 'finalizing_cleanup'].includes(modelDirMigrationState.value.status))
 
   const persistable = computed<StoredSettings>(() => ({
     themeMode: themeMode.value,
@@ -240,13 +310,327 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   async function pickModelDir() {
-    const folder = await invoke<string | null>('pick_output_folder')
-    if (folder) modelDir.value = folder
+    return invoke<string | null>('pick_output_folder')
   }
 
   async function pickOutputDir() {
     const folder = await invoke<string | null>('pick_output_folder')
     if (folder) outputDir.value = folder
+  }
+
+  async function refreshModelDataAfterDirChange() {
+    const { useModelStore } = await import('@/stores/model')
+    const modelStore = useModelStore()
+    await modelStore.loadModels()
+    await modelStore.loadModelStorageSummary()
+    const selectedModelName = modelStore.selectedModel
+    if (selectedModelName) {
+      const nextSelected = modelStore.models.find((item) => item.name === selectedModelName) || null
+      modelStore.selectedInfo = nextSelected
+      if (nextSelected) {
+        await modelStore.selectModel(selectedModelName).catch(() => {})
+      }
+    } else {
+      modelStore.selectedInfo = null
+    }
+  }
+
+  async function applyModelDirWithoutMigration(targetModelDir: string) {
+    const previousModelDir = modelDir.value
+    modelDir.value = targetModelDir
+    try {
+      await refreshModelDataAfterDirChange()
+      return { targetModelDir }
+    } catch (error) {
+      modelDir.value = previousModelDir
+      await refreshModelDataAfterDirChange().catch(() => {})
+      throw error
+    }
+  }
+
+  async function prepareModelDirChange(targetDir: string) {
+    const payload = await invoke<PrepareModelDirChangePayload>('prepare_model_dir_change', {
+      payload: {
+        currentModelDir: modelDir.value,
+        targetModelDir: targetDir,
+      },
+    })
+
+    if (payload.sameAsCurrent) {
+      return { outcome: 'noop' as const, payload }
+    }
+
+    if (payload.fileCount <= 0) {
+      await applyModelDirWithoutMigration(payload.targetModelDir)
+      return { outcome: 'switched' as const, payload }
+    }
+
+    modelDirMigrationState.value = {
+      ...createEmptyModelDirMigrationState(),
+      status: 'confirm',
+      sourceModelDir: payload.currentModelDir,
+      targetModelDir: payload.targetModelDir,
+      previousModelDir: modelDir.value,
+      totalFiles: payload.fileCount,
+      totalBytes: payload.totalBytes,
+      preparation: payload,
+      message: '',
+    }
+    return { outcome: 'confirm' as const, payload }
+  }
+
+  function cancelModelDirChangeConfirmation() {
+    modelDirMigrationState.value = createEmptyModelDirMigrationState()
+  }
+
+  async function confirmModelDirMigration() {
+    const preparation = modelDirMigrationState.value.preparation
+    if (!preparation) {
+      throw new Error('No model directory migration is pending confirmation')
+    }
+    const taskId = `model_dir_migration_${Date.now()}`
+    modelDirMigrationState.value = {
+      ...modelDirMigrationState.value,
+      status: 'running',
+      taskId,
+      sourceModelDir: preparation.currentModelDir,
+      targetModelDir: preparation.targetModelDir,
+      previousModelDir: modelDir.value,
+      totalFiles: preparation.fileCount,
+      totalBytes: preparation.totalBytes,
+      conflict: null,
+      error: '',
+      message: '正在复制模型目录',
+      resolvingConflict: false,
+    }
+    try {
+      await invoke('start_model_dir_migration', {
+        payload: {
+          taskId,
+          currentModelDir: preparation.currentModelDir,
+          targetModelDir: preparation.targetModelDir,
+        },
+      })
+    } catch (error) {
+      modelDirMigrationState.value = {
+        ...modelDirMigrationState.value,
+        status: 'confirm',
+        taskId: '',
+        message: '',
+      }
+      throw error
+    }
+  }
+
+  async function resolveModelDirConflict(resolution: ModelDirMigrationResolution) {
+    const taskId = modelDirMigrationState.value.taskId
+    if (!taskId) {
+      throw new Error('No model directory migration is waiting for conflict resolution')
+    }
+    modelDirMigrationState.value = {
+      ...modelDirMigrationState.value,
+      resolvingConflict: true,
+    }
+    try {
+      await invoke('respond_model_dir_migration_conflict', {
+        payload: {
+          taskId,
+          resolution,
+        },
+      })
+      modelDirMigrationState.value = {
+        ...modelDirMigrationState.value,
+        status: 'running',
+        conflict: null,
+        resolvingConflict: false,
+        message: resolution === 'overwrite'
+          ? '已选择覆盖同名文件，正在继续复制'
+          : resolution === 'skip'
+            ? '已选择跳过同名文件，正在继续复制'
+            : '正在终止模型目录迁移',
+      }
+    } catch (error) {
+      modelDirMigrationState.value = {
+        ...modelDirMigrationState.value,
+        resolvingConflict: false,
+      }
+      throw error
+    }
+  }
+
+  async function finalizeModelDirSwitch(taskId: string, payload: any) {
+    const previousModelDir = modelDirMigrationState.value.previousModelDir || modelDir.value
+    const targetModelDir = String(payload.targetModelDir || modelDirMigrationState.value.targetModelDir || '')
+    modelDirMigrationState.value = {
+      ...modelDirMigrationState.value,
+      status: 'finalizing_cleanup',
+      message: payload.message || '正在切换模型目录并清理旧目录',
+      currentPath: '',
+      conflict: null,
+      resolvingConflict: false,
+      error: '',
+    }
+    modelDir.value = targetModelDir
+    try {
+      await refreshModelDataAfterDirChange()
+      await invoke('confirm_model_dir_migration_switch', {
+        payload: { taskId },
+      })
+    } catch (error) {
+      await invoke('cancel_model_dir_migration', {
+        payload: { taskId },
+      }).catch(() => {})
+      modelDir.value = previousModelDir
+      await refreshModelDataAfterDirChange().catch(() => {})
+      modelDirMigrationState.value = {
+        ...modelDirMigrationState.value,
+        status: 'failed',
+        message: error instanceof Error ? error.message : String(error),
+        error: error instanceof Error ? error.message : String(error),
+        currentPath: '',
+        resolvingConflict: false,
+        conflict: null,
+      }
+    }
+  }
+
+  async function handleWorkerEvent(event: any) {
+    const type = event?.type as string | undefined
+    if (!type?.startsWith('model_dir_migration_')) return
+    const payload = event?.payload || {}
+    const taskId = String(event?.taskId || '')
+    if (modelDirMigrationState.value.taskId && taskId && modelDirMigrationState.value.taskId !== taskId) return
+
+    if (type === 'model_dir_migration_started') {
+      modelDirMigrationState.value = {
+        ...modelDirMigrationState.value,
+        status: 'running',
+        taskId,
+        sourceModelDir: payload.sourceModelDir || modelDirMigrationState.value.sourceModelDir,
+        targetModelDir: payload.targetModelDir || modelDirMigrationState.value.targetModelDir,
+        totalFiles: Number(payload.totalFiles || modelDirMigrationState.value.totalFiles || 0),
+        completedFiles: Number(payload.completedFiles || 0),
+        totalBytes: Number(payload.totalBytes || modelDirMigrationState.value.totalBytes || 0),
+        copiedBytes: Number(payload.copiedBytes || 0),
+        currentPath: payload.currentPath || '',
+        message: payload.message || '正在复制模型目录',
+        conflict: null,
+        error: '',
+        resolvingConflict: false,
+      }
+      return
+    }
+
+    if (type === 'model_dir_migration_progress') {
+      modelDirMigrationState.value = {
+        ...modelDirMigrationState.value,
+        status: 'running',
+        taskId,
+        completedFiles: Number(payload.completedFiles || 0),
+        totalFiles: Number(payload.totalFiles || modelDirMigrationState.value.totalFiles || 0),
+        totalBytes: Number(payload.totalBytes || modelDirMigrationState.value.totalBytes || 0),
+        copiedBytes: Number(payload.copiedBytes || 0),
+        currentPath: payload.currentPath || '',
+        message: payload.message || '正在复制模型目录',
+        skippedFiles: Array.isArray(payload.skippedFiles) ? payload.skippedFiles : modelDirMigrationState.value.skippedFiles,
+        overwrittenFiles: Array.isArray(payload.overwrittenFiles) ? payload.overwrittenFiles : modelDirMigrationState.value.overwrittenFiles,
+        conflict: null,
+        resolvingConflict: false,
+      }
+      return
+    }
+
+    if (type === 'model_dir_migration_conflict') {
+      modelDirMigrationState.value = {
+        ...modelDirMigrationState.value,
+        status: 'conflict',
+        taskId,
+        completedFiles: Number(payload.completedFiles || modelDirMigrationState.value.completedFiles || 0),
+        totalFiles: Number(payload.totalFiles || modelDirMigrationState.value.totalFiles || 0),
+        totalBytes: Number(payload.totalBytes || modelDirMigrationState.value.totalBytes || 0),
+        copiedBytes: Number(payload.copiedBytes || modelDirMigrationState.value.copiedBytes || 0),
+        currentPath: payload.currentPath || '',
+        message: payload.message || '目标目录存在同名文件',
+        conflict: payload.conflict || null,
+        resolvingConflict: false,
+      }
+      return
+    }
+
+    if (type === 'model_dir_migration_ready_to_switch') {
+      modelDirMigrationState.value = {
+        ...modelDirMigrationState.value,
+        status: 'ready_to_switch',
+        taskId,
+        completedFiles: Number(payload.completedFiles || modelDirMigrationState.value.totalFiles || 0),
+        totalFiles: Number(payload.totalFiles || modelDirMigrationState.value.totalFiles || 0),
+        totalBytes: Number(payload.totalBytes || modelDirMigrationState.value.totalBytes || 0),
+        copiedBytes: Number(payload.copiedBytes || modelDirMigrationState.value.totalBytes || 0),
+        currentPath: '',
+        message: payload.message || '复制完成，正在切换模型目录',
+        skippedFiles: Array.isArray(payload.skippedFiles) ? payload.skippedFiles : modelDirMigrationState.value.skippedFiles,
+        overwrittenFiles: Array.isArray(payload.overwrittenFiles) ? payload.overwrittenFiles : modelDirMigrationState.value.overwrittenFiles,
+        conflict: null,
+        resolvingConflict: false,
+      }
+      await finalizeModelDirSwitch(taskId, payload)
+      return
+    }
+
+    if (type === 'model_dir_migration_done') {
+      modelDirMigrationState.value = {
+        ...modelDirMigrationState.value,
+        status: 'success',
+        taskId,
+        sourceModelDir: payload.sourceModelDir || modelDirMigrationState.value.sourceModelDir,
+        targetModelDir: payload.targetModelDir || modelDirMigrationState.value.targetModelDir,
+        completedFiles: Number(payload.completedFiles || modelDirMigrationState.value.completedFiles || 0),
+        totalFiles: Number(payload.totalFiles || modelDirMigrationState.value.totalFiles || 0),
+        totalBytes: Number(payload.totalBytes || modelDirMigrationState.value.totalBytes || 0),
+        copiedBytes: Number(payload.copiedBytes || modelDirMigrationState.value.copiedBytes || 0),
+        currentPath: '',
+        message: payload.message || '模型目录迁移完成',
+        skippedFiles: Array.isArray(payload.skippedFiles) ? payload.skippedFiles : [],
+        overwrittenFiles: Array.isArray(payload.overwrittenFiles) ? payload.overwrittenFiles : [],
+        cleanupFailedFiles: Array.isArray(payload.cleanupFailedFiles) ? payload.cleanupFailedFiles : [],
+        conflict: null,
+        error: '',
+        resolvingConflict: false,
+      }
+      modelDir.value = payload.targetModelDir || modelDirMigrationState.value.targetModelDir
+      return
+    }
+
+    if (type === 'model_dir_migration_failed') {
+      modelDirMigrationState.value = {
+        ...modelDirMigrationState.value,
+        status: 'failed',
+        taskId,
+        currentPath: '',
+        message: payload.message || '模型目录迁移失败',
+        error: payload.message || '模型目录迁移失败',
+        conflict: null,
+        resolvingConflict: false,
+      }
+      return
+    }
+
+    if (type === 'model_dir_migration_aborted') {
+      modelDirMigrationState.value = {
+        ...modelDirMigrationState.value,
+        status: 'aborted',
+        taskId,
+        currentPath: '',
+        message: payload.message || '用户终止了模型目录迁移',
+        error: '',
+        conflict: null,
+        resolvingConflict: false,
+      }
+    }
+  }
+
+  function clearModelDirMigrationState() {
+    modelDirMigrationState.value = createEmptyModelDirMigrationState()
   }
 
   return {
@@ -257,6 +641,7 @@ export const useSettingsStore = defineStore('settings', () => {
     editorProjectsDir,
     logsDir,
     tempDir,
+    isModelDirMigrating,
     themeMode,
     themeAccent,
     locale,
@@ -273,9 +658,16 @@ export const useSettingsStore = defineStore('settings', () => {
     mp3BitRate,
     m4aBitRate,
     m4aCodec,
+    modelDirMigrationState,
     initialize,
     pickModelDir,
     pickOutputDir,
+    prepareModelDirChange,
+    cancelModelDirChangeConfirmation,
+    confirmModelDirMigration,
+    resolveModelDirConflict,
+    clearModelDirMigrationState,
+    handleWorkerEvent,
     deviceOptions,
     getRuntimeDeviceConfig,
     getAudioParams,
