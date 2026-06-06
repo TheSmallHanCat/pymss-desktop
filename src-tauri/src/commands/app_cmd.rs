@@ -221,7 +221,7 @@ fn stem_from_path(path: &str) -> String {
 }
 
 fn unique_path_for_file(dir: &Path, file_name: &str) -> PathBuf {
-    let fallback_name = safe_file_name(file_name);
+    let fallback_name = safe_asset_file_name(file_name);
     let fallback = if fallback_name.is_empty() {
         "audio".to_string()
     } else {

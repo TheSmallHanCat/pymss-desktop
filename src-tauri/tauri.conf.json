@@ -27,7 +27,8 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$APPDATA/**"
+          "$APPDATA/**",
+          "$HOME/.pymss-studio/**"
         ]
       }
     }
