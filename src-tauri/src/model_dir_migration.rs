@@ -36,14 +36,25 @@ fn disk_available_bytes(path: &Path) -> Option<u64> {
     }
     #[cfg(not(windows))]
     {
+        // `df -Pk` is POSIX-compatible and works on both GNU/Linux and macOS/BSD.
+        // The `Available` column is reported in 1024-byte blocks.
         let output = std::process::Command::new("df")
-            .arg("-B1")
-            .arg("--output=avail")
+            .arg("-Pk")
             .arg(check)
             .output()
             .ok()?;
+        if !output.status.success() {
+            return None;
+        }
         let text = String::from_utf8_lossy(&output.stdout);
-        text.lines().nth(1)?.trim().parse::<u64>().ok()
+        let available_blocks = text
+            .lines()
+            .nth(1)?
+            .split_whitespace()
+            .nth(3)?
+            .parse::<u64>()
+            .ok()?;
+        available_blocks.checked_mul(1024)
     }
 }
 
@@ -53,6 +64,14 @@ pub struct ModelDirMigrationFilePayload {
     pub source_path: String,
     pub relative_path: String,
     pub size_bytes: u64,
+    pub kind: ModelDirMigrationFileKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelDirMigrationFileKind {
+    File,
+    Symlink,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,6 +243,24 @@ fn chrono_like_timestamp() -> u128 {
         .unwrap_or_default()
 }
 
+fn lexical_normalize_path(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
+}
+
 fn normalize_directory_path(path: &str) -> AppResult<PathBuf> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -238,7 +275,7 @@ fn normalize_directory_path(path: &str) -> AppResult<PathBuf> {
     if absolute.exists() {
         Ok(absolute.canonicalize()?)
     } else {
-        Ok(absolute)
+        Ok(lexical_normalize_path(absolute))
     }
 }
 
@@ -274,7 +311,17 @@ fn path_eq(left: &Path, right: &Path) -> bool {
 }
 
 fn display_path(path: &Path) -> String {
-    path.to_string_lossy().to_string()
+    let value = path.to_string_lossy().to_string();
+    #[cfg(windows)]
+    {
+        if let Some(rest) = value.strip_prefix("\\\\?\\UNC\\") {
+            return format!("\\\\{}", rest);
+        }
+        if let Some(rest) = value.strip_prefix("\\\\?\\") {
+            return rest.to_string();
+        }
+    }
+    value
 }
 
 fn canonical_relative_path(base: &Path, full: &Path) -> String {
@@ -320,22 +367,29 @@ fn collect_directory_files(root: &Path) -> AppResult<Vec<ModelDirMigrationFilePa
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_dir() {
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
                 walk(root, &path, files)?;
                 continue;
             }
-            if !path.is_file() {
+            let (size_bytes, kind) = if file_type.is_file() {
+                (entry.metadata()?.len(), ModelDirMigrationFileKind::File)
+            } else if file_type.is_symlink() {
+                // Keep symlinks as symlinks during migration. Use the link metadata
+                // size for progress/space estimation; do not follow it here.
+                (fs::symlink_metadata(&path)?.len(), ModelDirMigrationFileKind::Symlink)
+            } else {
                 continue;
-            }
+            };
             let relative_path = canonical_relative_path(root, &path);
             if relative_path.is_empty() {
                 continue;
             }
-            let size_bytes = path.metadata()?.len();
             files.push(ModelDirMigrationFilePayload {
                 source_path: display_path(&path),
                 relative_path,
                 size_bytes,
+                kind,
             });
         }
         Ok(())
@@ -355,6 +409,40 @@ fn collect_directory_files(root: &Path) -> AppResult<Vec<ModelDirMigrationFilePa
     walk(root, root, &mut files)?;
     files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(files)
+}
+
+fn collect_directory_dirs(root: &Path) -> AppResult<Vec<String>> {
+    fn walk(root: &Path, dir: &Path, dirs: &mut Vec<String>) -> AppResult<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if !file_type.is_dir() {
+                continue;
+            }
+            let relative_path = canonical_relative_path(root, &path);
+            if !relative_path.is_empty() {
+                dirs.push(relative_path);
+            }
+            walk(root, &path, dirs)?;
+        }
+        Ok(())
+    }
+
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    if !root.is_dir() {
+        return Err(AppError::Worker(format!(
+            "模型目录不是文件夹：{}",
+            root.display()
+        )));
+    }
+
+    let mut dirs = Vec::new();
+    walk(root, root, &mut dirs)?;
+    dirs.sort();
+    Ok(dirs)
 }
 
 fn count_conflicts(
@@ -412,11 +500,64 @@ fn cleanup_source_tree(source_root: &Path) -> Vec<String> {
     remaining
 }
 
-fn copy_file(source: &Path, destination: &Path) -> AppResult<()> {
+fn remove_existing_destination(destination: &Path) -> AppResult<()> {
+    let metadata = fs::symlink_metadata(destination)?;
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(destination)?;
+    } else {
+        fs::remove_file(destination)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_symlink(source: &Path, destination: &Path) -> AppResult<()> {
+    use std::os::unix::fs::symlink;
+    let target = fs::read_link(source)?;
+    symlink(target, destination)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn copy_symlink(source: &Path, destination: &Path) -> AppResult<()> {
+    use std::os::windows::fs::{symlink_dir, symlink_file};
+    let target = fs::read_link(source)?;
+    let target_metadata = fs::metadata(source).ok();
+    let is_dir = target_metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+    let result = if is_dir {
+        symlink_dir(&target, destination)
+    } else {
+        symlink_file(&target, destination)
+    };
+    if result.is_err() {
+        // Symlink creation requires SeCreateSymbolicLinkPrivilege or Developer Mode.
+        // Fall back to copying the file content so migration can still succeed.
+        if is_dir {
+            return Err(AppError::Worker(format!(
+                "无法创建目录符号链接（权限不足），已跳过：{}",
+                destination.display()
+            )));
+        }
+        fs::copy(source, destination)?;
+    }
+    Ok(())
+}
+
+fn copy_entry(source: &Path, destination: &Path, kind: ModelDirMigrationFileKind, overwrite: bool) -> AppResult<()> {
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::copy(source, destination)?;
+    if overwrite && fs::symlink_metadata(destination).is_ok() {
+        remove_existing_destination(destination)?;
+    }
+    match kind {
+        ModelDirMigrationFileKind::File => {
+            fs::copy(source, destination)?;
+        }
+        ModelDirMigrationFileKind::Symlink => {
+            copy_symlink(source, destination)?;
+        }
+    }
     Ok(())
 }
 
@@ -492,7 +633,7 @@ fn build_conflict_payload(
         source_path: file.source_path.clone(),
         relative_path: file.relative_path.clone(),
         destination_path: display_path(destination),
-        existing_size_bytes: destination.metadata().map(|meta| meta.len()).unwrap_or_default(),
+        existing_size_bytes: fs::symlink_metadata(destination).map(|meta| meta.len()).unwrap_or_default(),
         incoming_size_bytes: file.size_bytes,
     }
 }
@@ -506,10 +647,14 @@ fn run_model_dir_migration(
     let source_root = normalize_directory_path(&request.current_model_dir)?;
     let target_root = normalize_target_model_dir_path(&request.target_model_dir)?;
     let files = collect_directory_files(&source_root)?;
+    let dirs = collect_directory_dirs(&source_root)?;
     let total_files = files.len();
     let total_bytes = files.iter().map(|item| item.size_bytes).sum::<u64>();
 
     fs::create_dir_all(&target_root)?;
+    for dir in &dirs {
+        fs::create_dir_all(target_root.join(Path::new(dir)))?;
+    }
     emit_model_dir_migration_event(
         &app,
         &task_id,
@@ -535,11 +680,13 @@ fn run_model_dir_migration(
     for file in &files {
         let source = PathBuf::from(&file.source_path);
         let destination = target_root.join(Path::new(&file.relative_path));
-        if !source.exists() {
+        if fs::symlink_metadata(&source).is_err() {
             return Err(AppError::Worker(format!("源文件不存在：{}", source.display())));
         }
 
-        if destination.exists() && !path_eq(&source, &destination) {
+        let has_destination = fs::symlink_metadata(&destination).is_ok();
+        let mut should_overwrite = false;
+        if has_destination && !path_eq(&source, &destination) {
             let resolution = if let Some(choice) = &default_resolution {
                 choice.clone()
             } else {
@@ -570,6 +717,7 @@ fn run_model_dir_migration(
             match resolution {
                 ModelDirMigrationConflictResolution::Overwrite => {
                     overwritten_files.push(display_path(&destination));
+                    should_overwrite = true;
                 }
                 ModelDirMigrationConflictResolution::Skip => {
                     skipped_files.push(display_path(&destination));
@@ -599,7 +747,7 @@ fn run_model_dir_migration(
             }
         }
 
-        copy_file(&source, &destination)?;
+        copy_entry(&source, &destination, file.kind, should_overwrite)?;
         completed_files += 1;
         copied_bytes = copied_bytes.saturating_add(file.size_bytes);
         emit_model_dir_migration_event(

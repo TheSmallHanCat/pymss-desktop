@@ -11,6 +11,7 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
     "core:window:allow-close",
+    "core:window:allow-destroy",
     "core:window:allow-show",
     "dialog:default",
     "shell:default",

@@ -405,13 +405,13 @@ onMounted(() => {
       <div class="migration-dialog">
         <p class="migration-dialog__lead">{{ t('settings.modelDirMigrationConfirmLead') }}</p>
         <div class="migration-summary-grid">
-          <div class="migration-summary-card">
+          <div class="migration-summary-card migration-summary-card--path">
             <span>{{ t('settings.modelDirMigrationSource') }}</span>
-            <code>{{ modelDirMigrationState.sourceModelDir }}</code>
+            <code :title="modelDirMigrationState.sourceModelDir">{{ modelDirMigrationState.sourceModelDir }}</code>
           </div>
-          <div class="migration-summary-card">
+          <div class="migration-summary-card migration-summary-card--path">
             <span>{{ t('settings.modelDirMigrationTarget') }}</span>
-            <code>{{ modelDirMigrationState.targetModelDir }}</code>
+            <code :title="modelDirMigrationState.targetModelDir">{{ modelDirMigrationState.targetModelDir }}</code>
           </div>
           <div class="migration-summary-card">
             <span>{{ t('settings.modelDirMigrationFileCount') }}</span>
@@ -421,22 +421,15 @@ onMounted(() => {
             <span>{{ t('settings.modelDirMigrationTotalSize') }}</span>
             <strong>{{ formatBytes(modelDirMigrationState.totalBytes) }}</strong>
           </div>
-          <div class="migration-summary-card">
-            <span>{{ t('settings.modelDirMigrationConflictCount') }}</span>
-            <strong>{{ modelDirMigrationState.preparation?.conflictCount || 0 }}</strong>
-          </div>
         </div>
 
         <n-alert v-if="modelDirMigrationState.preparation?.diskInsufficient" type="error" :show-icon="true" style="margin-top: 12px">
           {{ t('settings.modelDirMigrationDiskInsufficientHint', { available: formatBytes(modelDirMigrationState.preparation?.diskAvailableBytes ?? 0), needed: formatBytes(modelDirMigrationState.totalBytes) }) }}
         </n-alert>
-        <n-alert v-else-if="modelDirMigrationState.preparation?.diskAvailableBytes != null" type="info" :show-icon="true" style="margin-top: 12px">
-          {{ t('settings.modelDirMigrationDiskSpaceHint', { available: formatBytes(modelDirMigrationState.preparation?.diskAvailableBytes ?? 0), needed: formatBytes(modelDirMigrationState.totalBytes) }) }}
-        </n-alert>
-        <n-alert type="warning" :show-icon="true" style="margin-top: 12px">
+        <n-alert v-else type="warning" :show-icon="true" style="margin-top: 12px">
           {{ t('settings.modelDirMigrationCloseWarning') }}
         </n-alert>
-        <n-alert v-if="(modelDirMigrationState.preparation?.conflictCount || 0) > 0" type="info" :show-icon="true" style="margin-top: 12px">
+        <n-alert v-if="(modelDirMigrationState.preparation?.conflictCount || 0) > 0" type="info" :show-icon="true" style="margin-top: 8px">
           {{ t('settings.modelDirMigrationConflictHint', { count: modelDirMigrationState.preparation?.conflictCount || 0 }) }}
         </n-alert>
       </div>
@@ -992,6 +985,10 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.migration-summary-card--path {
+  grid-column: 1 / -1;
 }
 
 .migration-summary-card {

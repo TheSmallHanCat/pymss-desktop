@@ -92,6 +92,25 @@ const DEFAULT_DEFAULT_DEVICE = 'auto'
 const DEFAULT_DEFAULT_FORMAT = 'wav'
 const DEFAULT_CONCURRENT_SEPARATIONS = 1
 const MAX_CONCURRENT_SEPARATIONS = 16
+
+function displayModelDirPath(path: unknown): string {
+  const value = String(path || '').trim()
+  if (!value) return ''
+  return value
+    .replace(/^\\\\\?\\UNC\\/i, '\\\\')
+    .replace(/^\\\\\?\\/, '')
+    .replace(/^\/\/\?\/UNC\//i, '//')
+    .replace(/^\/\/\?\//, '')
+}
+
+function normalizePrepareModelDirChangePayload(payload: PrepareModelDirChangePayload): PrepareModelDirChangePayload {
+  return {
+    ...payload,
+    currentModelDir: displayModelDirPath(payload.currentModelDir),
+    targetModelDir: displayModelDirPath(payload.targetModelDir),
+  }
+}
+
 const DEFAULT_WAV_BIT_DEPTH = 'FLOAT'
 const DEFAULT_FLAC_BIT_DEPTH = 'PCM_24'
 const DEFAULT_MP3_BIT_RATE = '320k'
@@ -337,7 +356,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function applyModelDirWithoutMigration(targetModelDir: string) {
     const previousModelDir = modelDir.value
-    modelDir.value = targetModelDir
+    modelDir.value = displayModelDirPath(targetModelDir)
     try {
       await refreshModelDataAfterDirChange()
       return { targetModelDir }
@@ -349,12 +368,12 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   async function prepareModelDirChange(targetDir: string) {
-    const payload = await invoke<PrepareModelDirChangePayload>('prepare_model_dir_change', {
+    const payload = normalizePrepareModelDirChangePayload(await invoke<PrepareModelDirChangePayload>('prepare_model_dir_change', {
       payload: {
         currentModelDir: modelDir.value,
         targetModelDir: targetDir,
       },
-    })
+    }))
 
     if (payload.sameAsCurrent) {
       return { outcome: 'noop' as const, payload }
@@ -460,11 +479,11 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function finalizeModelDirSwitch(taskId: string, payload: any) {
     const previousModelDir = modelDirMigrationState.value.previousModelDir || modelDir.value
-    const targetModelDir = String(payload.targetModelDir || modelDirMigrationState.value.targetModelDir || '')
+    const targetModelDir = displayModelDirPath(payload.targetModelDir || modelDirMigrationState.value.targetModelDir || '')
     modelDirMigrationState.value = {
       ...modelDirMigrationState.value,
       status: 'finalizing_cleanup',
-      message: payload.message || '正在切换模型目录并清理旧目录',
+      message: payload.message || '',
       currentPath: '',
       conflict: null,
       resolvingConflict: false,
@@ -506,14 +525,14 @@ export const useSettingsStore = defineStore('settings', () => {
         ...modelDirMigrationState.value,
         status: 'running',
         taskId,
-        sourceModelDir: payload.sourceModelDir || modelDirMigrationState.value.sourceModelDir,
-        targetModelDir: payload.targetModelDir || modelDirMigrationState.value.targetModelDir,
+        sourceModelDir: displayModelDirPath(payload.sourceModelDir || modelDirMigrationState.value.sourceModelDir),
+        targetModelDir: displayModelDirPath(payload.targetModelDir || modelDirMigrationState.value.targetModelDir),
         totalFiles: Number(payload.totalFiles || modelDirMigrationState.value.totalFiles || 0),
         completedFiles: Number(payload.completedFiles || 0),
         totalBytes: Number(payload.totalBytes || modelDirMigrationState.value.totalBytes || 0),
         copiedBytes: Number(payload.copiedBytes || 0),
-        currentPath: payload.currentPath || '',
-        message: payload.message || '正在复制模型目录',
+        currentPath: displayModelDirPath(payload.currentPath || ''),
+        message: payload.message || '',
         conflict: null,
         error: '',
         resolvingConflict: false,
@@ -530,8 +549,8 @@ export const useSettingsStore = defineStore('settings', () => {
         totalFiles: Number(payload.totalFiles || modelDirMigrationState.value.totalFiles || 0),
         totalBytes: Number(payload.totalBytes || modelDirMigrationState.value.totalBytes || 0),
         copiedBytes: Number(payload.copiedBytes || 0),
-        currentPath: payload.currentPath || '',
-        message: payload.message || '正在复制模型目录',
+        currentPath: displayModelDirPath(payload.currentPath || ''),
+        message: payload.message || '',
         skippedFiles: Array.isArray(payload.skippedFiles) ? payload.skippedFiles : modelDirMigrationState.value.skippedFiles,
         overwrittenFiles: Array.isArray(payload.overwrittenFiles) ? payload.overwrittenFiles : modelDirMigrationState.value.overwrittenFiles,
         conflict: null,
@@ -549,9 +568,9 @@ export const useSettingsStore = defineStore('settings', () => {
         totalFiles: Number(payload.totalFiles || modelDirMigrationState.value.totalFiles || 0),
         totalBytes: Number(payload.totalBytes || modelDirMigrationState.value.totalBytes || 0),
         copiedBytes: Number(payload.copiedBytes || modelDirMigrationState.value.copiedBytes || 0),
-        currentPath: payload.currentPath || '',
-        message: payload.message || '目标目录存在同名文件',
-        conflict: payload.conflict || null,
+        currentPath: displayModelDirPath(payload.currentPath || ''),
+        message: payload.message || '',
+        conflict: payload.conflict ? { ...payload.conflict, sourcePath: displayModelDirPath(payload.conflict.sourcePath), destinationPath: displayModelDirPath(payload.conflict.destinationPath) } : null,
         resolvingConflict: false,
       }
       return
@@ -567,7 +586,7 @@ export const useSettingsStore = defineStore('settings', () => {
         totalBytes: Number(payload.totalBytes || modelDirMigrationState.value.totalBytes || 0),
         copiedBytes: Number(payload.copiedBytes || modelDirMigrationState.value.totalBytes || 0),
         currentPath: '',
-        message: payload.message || '复制完成，正在切换模型目录',
+        message: payload.message || '',
         skippedFiles: Array.isArray(payload.skippedFiles) ? payload.skippedFiles : modelDirMigrationState.value.skippedFiles,
         overwrittenFiles: Array.isArray(payload.overwrittenFiles) ? payload.overwrittenFiles : modelDirMigrationState.value.overwrittenFiles,
         conflict: null,
@@ -582,14 +601,14 @@ export const useSettingsStore = defineStore('settings', () => {
         ...modelDirMigrationState.value,
         status: 'success',
         taskId,
-        sourceModelDir: payload.sourceModelDir || modelDirMigrationState.value.sourceModelDir,
-        targetModelDir: payload.targetModelDir || modelDirMigrationState.value.targetModelDir,
+        sourceModelDir: displayModelDirPath(payload.sourceModelDir || modelDirMigrationState.value.sourceModelDir),
+        targetModelDir: displayModelDirPath(payload.targetModelDir || modelDirMigrationState.value.targetModelDir),
         completedFiles: Number(payload.completedFiles || modelDirMigrationState.value.completedFiles || 0),
         totalFiles: Number(payload.totalFiles || modelDirMigrationState.value.totalFiles || 0),
         totalBytes: Number(payload.totalBytes || modelDirMigrationState.value.totalBytes || 0),
         copiedBytes: Number(payload.copiedBytes || modelDirMigrationState.value.copiedBytes || 0),
         currentPath: '',
-        message: payload.message || '模型目录迁移完成',
+        message: payload.message || '',
         skippedFiles: Array.isArray(payload.skippedFiles) ? payload.skippedFiles : [],
         overwrittenFiles: Array.isArray(payload.overwrittenFiles) ? payload.overwrittenFiles : [],
         cleanupFailedFiles: Array.isArray(payload.cleanupFailedFiles) ? payload.cleanupFailedFiles : [],
@@ -597,7 +616,7 @@ export const useSettingsStore = defineStore('settings', () => {
         error: '',
         resolvingConflict: false,
       }
-      modelDir.value = payload.targetModelDir || modelDirMigrationState.value.targetModelDir
+      modelDir.value = displayModelDirPath(payload.targetModelDir || modelDirMigrationState.value.targetModelDir)
       return
     }
 
@@ -607,8 +626,8 @@ export const useSettingsStore = defineStore('settings', () => {
         status: 'failed',
         taskId,
         currentPath: '',
-        message: payload.message || '模型目录迁移失败',
-        error: payload.message || '模型目录迁移失败',
+        message: payload.message || '',
+        error: payload.message || '',
         conflict: null,
         resolvingConflict: false,
       }
@@ -621,7 +640,7 @@ export const useSettingsStore = defineStore('settings', () => {
         status: 'aborted',
         taskId,
         currentPath: '',
-        message: payload.message || '用户终止了模型目录迁移',
+        message: payload.message || '',
         error: '',
         conflict: null,
         resolvingConflict: false,

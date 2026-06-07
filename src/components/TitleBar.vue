@@ -24,12 +24,17 @@ async function refreshMaximized() {
 }
 function minimize() { appWindow?.minimize().catch(() => {}) }
 function toggleMaximize() { appWindow?.toggleMaximize().then(refreshMaximized).catch(() => {}) }
-function close() {
+async function close() {
   if (closeDisabled.value) {
     message.warning(t('settings.modelDirMigrationCloseBlocked'))
     return
   }
-  appWindow?.close().catch(() => {})
+  if (!appWindow) return
+  try {
+    await appWindow.destroy()
+  } catch {
+    try { await appWindow.close() } catch {}
+  }
 }
 function startDrag(event: MouseEvent) {
   if (event.detail > 1) { toggleMaximize(); return }
