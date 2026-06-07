@@ -112,7 +112,7 @@ jobs:
           $stage = "release/Pymss-Studio-$version-windows-x64-cuda"
           $zip = "release/Pymss-Studio-$version-windows-x64-cuda.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
-          Compress-Archive -Path "$stage\*" -DestinationPath $zip -CompressionLevel Optimal
+          7z a -mx=5 -mmt=on "$zip" "$stage\*"
 
       - name: Build Inno Setup installer with LZMA
         shell: pwsh
@@ -218,8 +218,6 @@ jobs:
         include:
           - os: macos-14
             arch: arm64
-          - os: macos-13
-            arch: x64
     runs-on: ${{ matrix.os }}
     env:
       PYMSS_VERSION: ${{ github.event.inputs.version || github.ref_name }}
@@ -257,7 +255,7 @@ jobs:
         env:
           TORCH_VERSION: "2.7.1"
           TORCH_INDEX_URL: ""
-        run: bash scripts/prepare-python-runtime.sh cuda
+        run: bash scripts/prepare-python-runtime.sh mps
 
       - name: Copy clean resources for Tauri bundling
         run: |
