@@ -71,7 +71,18 @@ if ($sitePackages -and (Test-Path -LiteralPath $sitePackages)) {
         }
 }
 
+# Prune torch build metadata that is not needed at runtime.
+# Do not remove torch Python subpackages here: modules such as distributed/_functorch
+# are imported by PyTorch during normal startup or lazy feature registration.
+if ($sitePackages -and (Test-Path -LiteralPath $sitePackages)) {
+    $torchDir = Join-Path $sitePackages "torch"
+    if (Test-Path -LiteralPath $torchDir) {
+        $cmake = Join-Path $torchDir "share\cmake"
+        if (Test-Path -LiteralPath $cmake) {
+            Remove-Item -LiteralPath $cmake -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 $size = (Get-ChildItem -LiteralPath $runtime -Recurse -Force -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
 Write-Host ("Pruned runtime size: {0:N2} GB" -f ($size / 1GB))
-
-# Note: do not remove site-packages/torch/testing. PyTorch imports torch.testing during normal startup.

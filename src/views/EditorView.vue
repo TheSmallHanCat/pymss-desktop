@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
@@ -133,6 +133,22 @@ const {
   playbackLoop,
 })
 
+let pendingInitialZoomFitSessionId = ''
+let appliedInitialZoomFitSessionId = ''
+
+function scheduleInitialZoomFit(sessionId: string) {
+  if (!sessionId || appliedInitialZoomFitSessionId === sessionId) return
+  pendingInitialZoomFitSessionId = sessionId
+  void nextTick(() => {
+    requestAnimationFrame(() => {
+      if (pendingInitialZoomFitSessionId !== sessionId) return
+      if (editor.session?.id !== sessionId || editor.duration <= 0 || !mixerScrollEl.value) return
+      zoomFit()
+      appliedInitialZoomFitSessionId = sessionId
+    })
+  })
+}
+
 async function togglePlayback() {
   const ok = await toggleTransport()
   if (!ok && playbackError.value) message.error(playbackError.value)
@@ -205,6 +221,11 @@ useEditorShortcuts({
 })
 
 watch(() => editor.session?.id, stopPlaybackAndReset)
+watch(
+  () => [editor.session?.id || '', editor.duration, Boolean(mixerScrollEl.value)] as const,
+  ([sessionId]) => scheduleInitialZoomFit(sessionId),
+  { immediate: true },
+)
 </script>
 
 <template>

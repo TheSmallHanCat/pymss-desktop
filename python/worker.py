@@ -553,6 +553,32 @@ def _load_audio_mono(path: Path, sample_rate: int = 8000) -> tuple[Any, int]:
     return audio, int(sr)
 
 
+def _waveform_peaks_soundfile(path: Path, resolution: int) -> tuple[list[float], dict[str, Any]]:
+    import numpy as np  # type: ignore
+    import soundfile as sf  # type: ignore
+
+    with sf.SoundFile(str(path)) as audio_file:
+        frames = int(audio_file.frames)
+        sample_rate = int(audio_file.samplerate)
+        channels = int(audio_file.channels)
+        duration = frames / sample_rate if sample_rate else 0.0
+        bucket = max(1, math.ceil(max(1, frames) / max(1, resolution)))
+        peaks: list[float] = []
+        while True:
+            block = audio_file.read(bucket, dtype="float32", always_2d=True)
+            if block.size == 0:
+                break
+            peak = float(np.max(np.abs(block))) if block.size else 0.0
+            peaks.append(round(peak, 5))
+    return peaks, {
+        "path": str(path),
+        "name": path.name,
+        "duration": max(0.0, duration),
+        "sampleRate": sample_rate,
+        "channels": channels,
+    }
+
+
 def _resample_audio(audio: Any, source_rate: int, target_rate: int) -> Any:
     if source_rate == target_rate:
         return audio
@@ -614,19 +640,28 @@ def cmd_waveform_peaks(payload: dict[str, Any]) -> int:
 
         import numpy as np  # type: ignore
 
-        audio, sr = _load_audio_mono(path)
-        total = int(audio.shape[-1])
-        if total <= 0:
-            peaks = []
-        else:
-            bucket = max(1, math.ceil(total / resolution))
-            padded = int(math.ceil(total / bucket) * bucket)
-            if padded > total:
-                audio = np.pad(audio, (0, padded - total))
-            shaped = audio.reshape(-1, bucket)
-            maxima = np.max(np.abs(shaped), axis=1)
-            peaks = [round(float(value), 5) for value in maxima]
-        metadata = _audio_metadata(path)
+        try:
+            peaks, metadata = _waveform_peaks_soundfile(path, resolution)
+            sr = int(metadata.get("sampleRate") or 0)
+        except Exception:
+            audio, sr = _load_audio_mono(path)
+            total = int(audio.shape[-1])
+
+            def build_peaks(target_resolution: int) -> list[float]:
+                if total <= 0 or target_resolution <= 0:
+                    return []
+                bucket = max(1, math.ceil(total / target_resolution))
+                padded = int(math.ceil(total / bucket) * bucket)
+                work = audio
+                if padded > total:
+                    work = np.pad(audio, (0, padded - total))
+                shaped = work.reshape(-1, bucket)
+                maxima = np.max(np.abs(shaped), axis=1)
+                return [round(float(value), 5) for value in maxima]
+
+            peaks = build_peaks(resolution)
+            metadata = _audio_metadata(path)
+
         data = {
             "path": str(path),
             "peaksPath": str(peaks_path),

@@ -62,6 +62,7 @@ type PersistedSession = EditorSession & { version?: number }
 
 const HISTORY_LIMIT = 80
 const AUTO_SAVE_DELAY = 420
+const WAVEFORM_FULL_RESOLUTION = 2200
 const COLOR_BY_STEM: Record<string, string> = {
   vocals: '#ff6b7c',
   vocal: '#ff6b7c',
@@ -207,6 +208,8 @@ function toPersistedSession(session: EditorSession) {
   }
 }
 
+const hasPeaks = (p?: number[]) => p !== undefined && p.length > 0 && !(p.length === 1 && p[0] === -1)
+
 function sourceToExportAsset(source: EditorSource) {
   return {
     id: source.id,
@@ -218,6 +221,18 @@ function sourceToExportAsset(source: EditorSource) {
     peaksPath: source.peaksPath || null,
     peaks: [],
   }
+}
+
+function runLimited<T>(items: T[], limit: number, runner: (item: T) => Promise<void>) {
+  let index = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (index < items.length) {
+      const item = items[index]
+      index += 1
+      await runner(item)
+    }
+  })
+  return Promise.all(workers)
 }
 
 function trackToExportTrack(track: EditorTrack, source?: EditorSource) {
@@ -258,6 +273,7 @@ export const useEditorStore = defineStore('editor', () => {
   const undoStack = ref<HistorySnapshot[]>([])
   const redoStack = ref<HistorySnapshot[]>([])
   const interactionDepth = ref(0)
+  const pendingPeaks = new Map<string, Promise<EditorSource | null>>()
 
   const canUndo = computed(() => undoStack.value.length > 0)
   const canRedo = computed(() => redoStack.value.length > 0)
@@ -522,24 +538,55 @@ export const useEditorStore = defineStore('editor', () => {
   async function ensurePeaks(sourceId: string) {
     if (!session.value) return null
     const source = session.value.sources.find((item) => item.id === sourceId)
-    if (!source || source.peaks?.length) return source || null
-    try {
-      const result = await invoke<WaveformPeaks>('generate_waveform_peaks', {
-        payload: {
-          projectId: session.value.id,
-          path: source.path,
-          resolution: 2200,
-        },
+    if (!source || hasPeaks(source.peaks)) return source || null
+    const pending = pendingPeaks.get(sourceId)
+    if (pending) return pending
+    const projectId = session.value.id
+    const task = (async () => {
+      try {
+        const result = await invoke<WaveformPeaks>('generate_waveform_peaks', {
+          payload: {
+            projectId,
+            path: source.path,
+            resolution: WAVEFORM_FULL_RESOLUTION,
+          },
+        })
+        if (!session.value || session.value.id !== projectId) return source
+        const current = session.value.sources.find((item) => item.id === sourceId)
+        if (!current) return source
+        current.peaks = result.peaks?.length ? result.peaks : [-1]
+        current.peaksPath = result.peaksPath
+        current.duration = Number(result.duration || current.duration)
+        current.sampleRate = Number(result.sampleRate || current.sampleRate)
+        current.channels = Number(result.channels || current.channels)
+        return current
+      } catch {
+        return source
+      } finally {
+        pendingPeaks.delete(sourceId)
+      }
+    })()
+    pendingPeaks.set(sourceId, task)
+    return task
+  }
+
+  function ensurePeaksInBackground(sourceId: string) {
+    void ensurePeaks(sourceId)
+      .then(() => {
+        if (!session.value) return
+        scheduleSave()
       })
-      source.peaks = result.peaks || []
-      source.peaksPath = result.peaksPath
-      source.duration = Number(result.duration || source.duration)
-      source.sampleRate = Number(result.sampleRate || source.sampleRate)
-      source.channels = Number(result.channels || source.channels)
-      return source
-    } catch {
-      return source
-    }
+      .catch(() => {})
+  }
+
+  async function ensurePeaksForAllSources(projectId = session.value?.id || '') {
+    if (!session.value || !projectId || session.value.id !== projectId) return
+    const sources = [...session.value.sources]
+    await runLimited(sources, 2, async (source) => {
+      if (!session.value || session.value.id !== projectId) return
+      if (hasPeaks(source.peaks)) return
+      await ensurePeaks(source.id)
+    })
   }
 
   function hydrateSessionSourcesInBackground(projectId: string) {
@@ -580,11 +627,6 @@ export const useEditorStore = defineStore('editor', () => {
         }
       }
 
-      if (!source.peaks?.length) {
-        await ensurePeaks(source.id)
-        if (!session.value || session.value.id !== projectId) break
-      }
-
       if (
         source.name !== beforeMetadata.name
         || source.duration !== beforeMetadata.duration
@@ -595,6 +637,8 @@ export const useEditorStore = defineStore('editor', () => {
         changed = true
       }
     }
+
+    await ensurePeaksForAllSources(projectId)
 
     return changed
   }
@@ -631,7 +675,7 @@ export const useEditorStore = defineStore('editor', () => {
       peaks: [],
     }
     session.value.sources.push(source)
-    await ensurePeaks(source.id)
+    ensurePeaksInBackground(source.id)
     scheduleSave()
     return source
   }
@@ -795,7 +839,7 @@ export const useEditorStore = defineStore('editor', () => {
   }
 
   function setZoom(value: number) {
-    pixelsPerSecond.value = clamp(Math.round(value), 40, 240)
+    pixelsPerSecond.value = clamp(Math.round(value), 4, 240)
   }
 
   function zoomIn() {
@@ -842,6 +886,7 @@ export const useEditorStore = defineStore('editor', () => {
     saveProject,
     getMetadata,
     ensurePeaks,
+    ensurePeaksInBackground,
     hydrateSessionSources,
     hydrateSessionSourcesInBackground,
     ensureSourceByPath,

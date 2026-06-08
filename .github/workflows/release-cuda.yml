@@ -105,14 +105,17 @@ jobs:
           echo "PYMSS_INSTALLER_OUTPUT=$releaseFull" >> $env:GITHUB_ENV
           echo "PYMSS_VERSION=$version" >> $env:GITHUB_ENV
 
-      - name: Build Windows portable zip
+      - name: Build Windows portable 7z archive
         shell: pwsh
         run: |
           $version = '${{ env.PYMSS_VERSION }}'
-          $stage = "release/Pymss-Studio-$version-windows-x64-cuda"
-          $zip = "release/Pymss-Studio-$version-windows-x64-cuda.zip"
-          if (Test-Path $zip) { Remove-Item $zip -Force }
-          7z a -mx=5 -mmt=on "$zip" "$stage\*"
+          $stageName = "Pymss-Studio-$version-windows-x64-cuda"
+          $stage = "release/$stageName"
+          $archive = "release/$stageName.7z"
+          if (Test-Path $archive) { Remove-Item $archive -Force }
+          Push-Location "release"
+          & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=9 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
+          Pop-Location
 
       - name: Build Inno Setup installer with LZMA
         shell: pwsh
@@ -125,14 +128,14 @@ jobs:
           name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-setup
           path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-setup.exe
 
-      - name: Upload Windows portable zip artifact
+      - name: Upload Windows portable archive artifact
         uses: actions/upload-artifact@v4
         with:
           name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-portable
-          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda.zip
+          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda.7z
 
   linux-cuda:
-    name: Linux x64 CUDA tar.zst
+    name: Linux x64 CUDA 7z archive
     runs-on: ubuntu-22.04
     env:
       PYMSS_VERSION: ${{ github.event.inputs.version || github.ref_name }}
@@ -170,7 +173,7 @@ jobs:
           # which would otherwise break apt-get update for all packages.
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf zstd
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf p7zip-full
 
       - name: Install frontend dependencies
         working-directory: .
@@ -187,7 +190,8 @@ jobs:
       - name: Stage Linux package
         run: |
           VERSION="${PYMSS_VERSION#v}"
-          STAGE="release/Pymss-Studio-${VERSION}-linux-x64-cuda"
+          STAGE_NAME="Pymss-Studio-${VERSION}-linux-x64-cuda"
+          STAGE="release/${STAGE_NAME}"
           rm -rf "$STAGE"
           mkdir -p "$STAGE"
           cp src-tauri/target/release/pymss-studio "$STAGE/Pymss Studio"
@@ -201,14 +205,14 @@ jobs:
           Run ./Pymss\ Studio after extracting.
           NVIDIA driver is required for GPU acceleration.
           EOF
-          tar --zstd -cf "release/Pymss-Studio-${VERSION}-linux-x64-cuda.tar.zst" -C "release" "Pymss-Studio-${VERSION}-linux-x64-cuda"
+          (cd release && 7z a -t7z -m0=lzma2 -mx=9 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "${STAGE_NAME}.7z" "${STAGE_NAME}")
           echo "PYMSS_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: Pymss-Studio-${{ env.PYMSS_VERSION }}-linux-x64-cuda
-          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-linux-x64-cuda.tar.zst
+          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-linux-x64-cuda.7z
 
   macos-gpu-dmg:
     name: macOS DMG bundled runtime / MPS-capable
@@ -300,7 +304,7 @@ jobs:
 
   github-release:
     name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     needs: [windows-cuda, linux-cuda, macos-gpu-dmg]
     runs-on: ubuntu-latest
     steps:
@@ -308,8 +312,56 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Split oversized release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          max_size=$((1900 * 1024 * 1024))
+          has_split=0
+
+          shopt -s nullglob
+          for file in artifacts/*; do
+            [ -f "$file" ] || continue
+            size=$(stat -c%s "$file")
+            if [ "$size" -gt "$max_size" ]; then
+              echo "Splitting $(basename "$file") (${size} bytes)"
+              sha256sum "$file" > "$file.sha256"
+              split -b "$max_size" -d -a 3 "$file" "$file.part-"
+              rm "$file"
+              has_split=1
+            fi
+          done
+
+          if [ "$has_split" = "1" ]; then
+            cat > artifacts/SPLIT-ASSETS-README.txt <<'EOF'
+          Some release assets are split because GitHub Releases require each file to be under 2 GiB.
+
+          Linux/macOS:
+            cat Pymss-Studio-xxx.part-* > Pymss-Studio-xxx
+            sha256sum -c Pymss-Studio-xxx.sha256
+
+          Windows CMD:
+            copy /b Pymss-Studio-xxx.part-000+Pymss-Studio-xxx.part-001 Pymss-Studio-xxx
+
+          Download all parts for the same filename before merging.
+          EOF
+          fi
+      - name: Resolve release tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="${{ github.ref_name }}"
+          fi
+          version="${version#v}"
+          echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=Pymss Studio v${version}" >> "$GITHUB_ENV"
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_NAME }}
+          generate_release_notes: true
           files: artifacts/*
 
 
