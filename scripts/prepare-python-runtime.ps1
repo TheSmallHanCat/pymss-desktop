@@ -37,4 +37,12 @@ if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) {
 & $runtimePython -m pip install --no-cache-dir av librosa numpy pyyaml tqdm
 
 & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $runtime
+$previousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
+$env:PYTHONDONTWRITEBYTECODE = "1"
 & $runtimePython -c "import torch, librosa, av, yaml, tqdm; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__)"
+if ($null -eq $previousDontWriteBytecode) {
+    Remove-Item Env:\PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
+} else {
+    $env:PYTHONDONTWRITEBYTECODE = $previousDontWriteBytecode
+}
+& (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $runtime

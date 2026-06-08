@@ -26,9 +26,10 @@ fi
 "$PY" -m pip install --no-cache-dir av librosa numpy pyyaml tqdm
 
 bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR"
-"$PY" - <<'PY'
+PYTHONDONTWRITEBYTECODE=1 "$PY" - <<'PY'
 import torch, librosa, av, yaml, tqdm
 print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available())
 print('librosa', librosa.__version__)
 print('av', av.__version__)
 PY
+bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR"

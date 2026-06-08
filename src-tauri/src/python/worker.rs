@@ -137,6 +137,48 @@ fn embedded_python_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
     Ok(None)
 }
 
+fn bundled_bin_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
+    let mut dirs = Vec::new();
+    if let Ok(resource) = app.path().resource_dir() {
+        dirs.push(resource.join("bin"));
+        dirs.push(resource.join("resources").join("bin"));
+    }
+    let exe_dir = std::env::current_exe()?
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    dirs.push(exe_dir.join("bin"));
+
+    Ok(dirs.into_iter().filter(|dir| dir.is_dir()).collect())
+}
+
+fn path_separator() -> &'static str {
+    if cfg!(windows) {
+        ";"
+    } else {
+        ":"
+    }
+}
+
+fn prepend_path(existing: Option<String>, dirs: Vec<PathBuf>) -> Option<String> {
+    if dirs.is_empty() {
+        return existing;
+    }
+
+    let mut parts: Vec<String> = dirs
+        .into_iter()
+        .map(|dir| dir.to_string_lossy().to_string())
+        .collect();
+
+    if let Some(value) = existing {
+        if !value.trim().is_empty() {
+            parts.push(value);
+        }
+    }
+
+    Some(parts.join(path_separator()))
+}
+
 
 fn default_output_dir(app: &AppHandle) -> AppResult<PathBuf> {
     storage::outputs_dir(app)
@@ -181,6 +223,9 @@ fn build_worker_command(app: &AppHandle, command: &str, payload_file: Option<&Pa
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
         .env("PYMSS_STUDIO_DEFAULT_OUTPUT_DIR", default_output_dir(app)?.to_string_lossy().to_string());
+    if let Some(path) = prepend_path(std::env::var("PATH").ok(), bundled_bin_dirs(app)?) {
+        cmd.env("PATH", path);
+    }
     if let Some(pymss_source) = pymss_source_path(app)? {
         let mut python_path = pymss_source.to_string_lossy().to_string();
         if let Ok(existing) = std::env::var("PYTHONPATH") {
