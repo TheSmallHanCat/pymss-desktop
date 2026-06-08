@@ -29,9 +29,15 @@ fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
         Ok(cwd.join("python").join("worker.py"))
     } else {
         if let Ok(resource) = app.path().resource_dir() {
-            let path = resource.join("python").join("worker.py");
-            if path.exists() {
-                return Ok(path);
+            let candidates = [
+                resource.join("python").join("worker.py"),
+                resource.join("resources").join("python").join("worker.py"),
+                resource.join("worker.py"),
+            ];
+            for path in candidates {
+                if path.exists() {
+                    return Ok(path);
+                }
             }
         }
         let exe_dir = std::env::current_exe()?

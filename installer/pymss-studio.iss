@@ -7,6 +7,7 @@
 #define MyAppExeName "Pymss Studio.exe"
 #define SourceDir GetEnv("PYMSS_PORTABLE_DIR")
 #define OutputDir GetEnv("PYMSS_INSTALLER_OUTPUT") == "" ? "..\release" : GetEnv("PYMSS_INSTALLER_OUTPUT")
+#define PackageSuffix GetEnv("PYMSS_PACKAGE_SUFFIX") == "" ? "windows-x64-cuda" : GetEnv("PYMSS_PACKAGE_SUFFIX")
 
 #if SourceDir == ""
   #error PYMSS_PORTABLE_DIR is required. It must point to the staged portable directory.
@@ -25,7 +26,7 @@ DisableProgramGroupPage=yes
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 OutputDir={#OutputDir}
-OutputBaseFilename=Pymss-Studio-{#MyAppVersion}-windows-x64-cuda-setup
+OutputBaseFilename=Pymss-Studio-{#MyAppVersion}-{#PackageSuffix}-setup
 Compression=lzma2/ultra64
 LZMAUseSeparateProcess=yes
 LZMADictionarySize=1048576

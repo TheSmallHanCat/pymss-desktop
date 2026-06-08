@@ -128,6 +128,7 @@ jobs:
           $releaseFull = (Resolve-Path "release").Path
           echo "PYMSS_PORTABLE_DIR=$stageFull" >> $env:GITHUB_ENV
           echo "PYMSS_INSTALLER_OUTPUT=$releaseFull" >> $env:GITHUB_ENV
+          echo "PYMSS_PACKAGE_SUFFIX=windows-x64-cuda" >> $env:GITHUB_ENV
           echo "PYMSS_VERSION=$version" >> $env:GITHUB_ENV
 
       - name: Build Windows portable 7z archive
@@ -190,6 +191,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Install Inno Setup Chinese language file
+        shell: pwsh
+        run: |
+          $languages = "C:\Program Files (x86)\Inno Setup 6\Languages"
+          New-Item -ItemType Directory -Force -Path $languages | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/master/ChineseSimplified.isl" `
+            -OutFile (Join-Path $languages "ChineseSimplified.isl")
+          if (!(Test-Path (Join-Path $languages "ChineseSimplified.isl"))) {
+            throw "ChineseSimplified.isl was not installed"
+          }
 
       - name: Install frontend dependencies
         working-directory: .
@@ -254,6 +270,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Staged CPU Python worker env_info failed with exit code $LASTEXITCODE" }
           & "$stage\python-runtime\python.exe" "$stage\python\worker.py" list_models --payload "{}"
           if ($LASTEXITCODE -ne 0) { throw "Staged CPU Python worker list_models failed with exit code $LASTEXITCODE" }
+          $stageFull = (Resolve-Path $stage).Path
+          $releaseFull = (Resolve-Path "release").Path
+          echo "PYMSS_PORTABLE_DIR=$stageFull" >> $env:GITHUB_ENV
+          echo "PYMSS_INSTALLER_OUTPUT=$releaseFull" >> $env:GITHUB_ENV
+          echo "PYMSS_PACKAGE_SUFFIX=windows-x64-cpu" >> $env:GITHUB_ENV
           echo "PYMSS_VERSION=$version" >> $env:GITHUB_ENV
 
       - name: Build Windows CPU portable 7z archive
@@ -266,6 +287,17 @@ jobs:
           Push-Location "release"
           & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=9 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
           Pop-Location
+
+      - name: Build Windows CPU Inno Setup installer with LZMA
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
+
+      - name: Upload Windows CPU installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cpu-setup
+          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cpu-setup.exe
 
       - name: Upload Windows CPU portable archive artifact
         uses: actions/upload-artifact@v4
@@ -345,7 +377,7 @@ jobs:
           Run ./Pymss\ Studio after extracting.
           NVIDIA driver is required for GPU acceleration.
           EOF
-          (cd release && 7z a -t7z -m0=lzma2 -mx=9 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "${STAGE_NAME}.7z" "${STAGE_NAME}")
+          (cd release && 7z a -t7z -m0=lzma2 -mx=9 -mfb=128 -md=768m -ms=on -mmt=2 "${STAGE_NAME}.7z" "${STAGE_NAME}")
           echo "PYMSS_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Upload Linux artifact
@@ -423,7 +455,7 @@ jobs:
           Run ./Pymss\ Studio after extracting.
           This package uses CPU PyTorch and is intended for users without CUDA GPUs.
           EOF
-          (cd release && 7z a -t7z -m0=lzma2 -mx=9 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "${STAGE_NAME}.7z" "${STAGE_NAME}")
+          (cd release && 7z a -t7z -m0=lzma2 -mx=9 -mfb=128 -md=768m -ms=on -mmt=2 "${STAGE_NAME}.7z" "${STAGE_NAME}")
           echo "PYMSS_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Upload Linux CPU artifact
@@ -482,7 +514,9 @@ jobs:
       - name: Copy clean resources for Tauri bundling
         run: |
           mkdir -p src-tauri/resources
-          rm -rf src-tauri/resources/python-runtime src-tauri/resources/pymss
+          rm -rf src-tauri/resources/python src-tauri/resources/python-runtime src-tauri/resources/pymss
+          mkdir -p src-tauri/resources/python
+          rsync -a --exclude '__pycache__' --exclude '*.pyc' python/ src-tauri/resources/python/
           cp -R python-runtime src-tauri/resources/python-runtime
           mkdir -p src-tauri/resources/pymss
           rsync -a --exclude '.git' --exclude '.github' --exclude '.claude' --exclude '.omc' --exclude '.spec-workflow' --exclude '__pycache__' --exclude '*.pyc' pymss-core/ src-tauri/resources/pymss/
@@ -490,7 +524,7 @@ jobs:
       - name: Build Tauri app bundle
         working-directory: .
         env:
-          TAURI_CONFIG: '{"bundle":{"resources":["../python/*","resources/python-runtime","resources/pymss"]}}'
+          TAURI_CONFIG: '{"bundle":{"resources":["resources/python","resources/python-runtime","resources/pymss"]}}'
         run: pnpm tauri build --bundles app
 
       - name: Build DMG with hdiutil
@@ -534,7 +568,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          max_size=$((1900 * 1024 * 1024))
+          max_size=$((2040 * 1024 * 1024))
           has_split=0
 
           shopt -s nullglob
