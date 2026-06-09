@@ -55,6 +55,14 @@ PY
     done
     install_name_tool -id "@loader_path/Python" "$RUNTIME_DIR/Python"
   fi
+
+  for EXE in "$RUNTIME_DIR/bin/python" "$RUNTIME_DIR/bin/python3" "$RUNTIME_DIR/bin/python${PY_VERSION}"; do
+    if [[ -f "$EXE" ]] && otool -L "$EXE" | grep -q '/Library/Frameworks/Python.framework/Versions/'; then
+      echo "Bundled macOS Python executable still links system Python framework: $EXE" >&2
+      otool -L "$EXE" >&2
+      exit 1
+    fi
+  done
 else
   "$PYTHON_BIN" -m venv "$RUNTIME_DIR"
   PY="$RUNTIME_DIR/bin/python"
