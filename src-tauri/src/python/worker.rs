@@ -245,9 +245,6 @@ fn build_worker_command(app: &AppHandle, command: &str, payload_file: Option<&Pa
     if let Ok(Some(embedded)) = embedded_python_path(app) {
         if let Some(runtime_root) = embedded.parent().and_then(|path| path.parent()) {
             cmd.env("PYTHONHOME", runtime_root.to_string_lossy().to_string());
-            if runtime_root.join("Python").is_file() {
-                cmd.env("DYLD_FRAMEWORK_PATH", runtime_root.to_string_lossy().to_string());
-            }
         }
     }
     if let Some(pymss_source) = pymss_source_path(app)? {

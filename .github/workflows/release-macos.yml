@@ -40,14 +40,14 @@ jobs:
 
       - name: Verify prepared macOS runtime
         run: |
-          test -f python-runtime/Python
-          test -f python-runtime/Python.framework/Versions/3.12/Python || test -f python-runtime/Python.framework/Versions/3.13/Python
-          for exe in python-runtime/bin/python python-runtime/bin/python3; do
-            if [ -f "$exe" ]; then
-              otool -L "$exe"
-            fi
-          done
-          DYLD_FRAMEWORK_PATH="$PWD/python-runtime" PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
+          test -f python-runtime/bin/python3
+          test -d python-runtime/lib/python3.12
+          if otool -L python-runtime/bin/python3 | grep -q '/Library/Frameworks/Python.framework/Versions/'; then
+            echo "Standalone runtime unexpectedly links system Python framework"
+            otool -L python-runtime/bin/python3
+            exit 1
+          fi
+          PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
 
       - name: Copy clean resources for Tauri bundling
         run: |
@@ -58,16 +58,6 @@ jobs:
           cp -R python-runtime src-tauri/resources/python-runtime
           mkdir -p src-tauri/resources/pymss
           rsync -a --exclude '.git' --exclude '.github' --exclude '.claude' --exclude '.omc' --exclude '.spec-workflow' --exclude '__pycache__' --exclude '*.pyc' pymss-core/ src-tauri/resources/pymss/
-
-      - name: Strip embedded macOS runtime signatures before bundling
-        run: |
-          RUNTIME="$PWD/src-tauri/resources/python-runtime"
-          find "$RUNTIME" -name '_CodeSignature' -type d -prune -exec rm -rf {} +
-          while IFS= read -r -d '' file; do
-            if file "$file" | grep -q 'Mach-O'; then
-              codesign --remove-signature "$file" 2>/dev/null || true
-            fi
-          done < <(find "$RUNTIME" -type f -print0)
 
       - name: Build Tauri app bundle
         working-directory: .
@@ -103,9 +93,13 @@ jobs:
           test -f "$RES/pymss/__init__.py" || test -f "$RES/pymss/pymss/__init__.py" || test -f "$RES/resources/pymss/__init__.py" || test -f "$RES/resources/pymss/pymss/__init__.py"
           PY="$RES/python-runtime/bin/python3"
           test -f "$PY"
-          test -f "$RES/python-runtime/Python.framework/Versions/3.12/Python" || test -f "$RES/python-runtime/Python.framework/Versions/3.13/Python"
-          otool -L "$PY"
-          DYLD_FRAMEWORK_PATH="$RES/python-runtime" PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
+          test -d "$RES/python-runtime/lib/python3.12"
+          if otool -L "$PY" | grep -q '/Library/Frameworks/Python.framework/Versions/'; then
+            echo "Bundled app runtime unexpectedly links system Python framework: $PY"
+            otool -L "$PY"
+            exit 1
+          fi
+          PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
           codesign --verify --verbose=4 "$APP"
 
       - name: Build DMG with hdiutil
