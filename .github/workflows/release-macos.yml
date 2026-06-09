@@ -59,6 +59,16 @@ jobs:
           mkdir -p src-tauri/resources/pymss
           rsync -a --exclude '.git' --exclude '.github' --exclude '.claude' --exclude '.omc' --exclude '.spec-workflow' --exclude '__pycache__' --exclude '*.pyc' pymss-core/ src-tauri/resources/pymss/
 
+      - name: Strip embedded macOS runtime signatures before bundling
+        run: |
+          RUNTIME="$PWD/src-tauri/resources/python-runtime"
+          find "$RUNTIME" -name '_CodeSignature' -type d -prune -exec rm -rf {} +
+          while IFS= read -r -d '' file; do
+            if file "$file" | grep -q 'Mach-O'; then
+              codesign --remove-signature "$file" 2>/dev/null || true
+            fi
+          done < <(find "$RUNTIME" -type f -print0)
+
       - name: Build Tauri app bundle
         working-directory: .
         run: |
@@ -96,6 +106,7 @@ jobs:
           test -f "$RES/python-runtime/Python.framework/Versions/3.12/Python" || test -f "$RES/python-runtime/Python.framework/Versions/3.13/Python"
           otool -L "$PY"
           DYLD_FRAMEWORK_PATH="$RES/python-runtime" PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
+          codesign --verify --verbose=4 "$APP"
 
       - name: Build DMG with hdiutil
         run: |
