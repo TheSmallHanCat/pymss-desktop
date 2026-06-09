@@ -9,11 +9,15 @@ on:
         type: string
 
 jobs:
-  windows-cuda:
-    name: Windows x64 CUDA Inno Setup
+  windows-cuda-prepare:
+    name: Windows x64 CUDA prepare
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      stage_name: ${{ steps.meta.outputs.stage_name }}
+      stage_artifact: ${{ steps.meta.outputs.stage_artifact }}
     env:
-      PYMSS_VERSION: ${{ inputs.version }}
+      PYMSS_VERSION_INPUT: ${{ inputs.version }}
       TORCH_VERSION: 2.7.1
       TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
     steps:
@@ -27,28 +31,22 @@ jobs:
 
       - uses: ./.github/actions/setup-release-env
 
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
-
-      - name: Install Inno Setup Chinese language file
+      - name: Resolve package metadata
+        id: meta
         shell: pwsh
         run: |
-          $languages = "C:\Program Files (x86)\Inno Setup 6\Languages"
-          New-Item -ItemType Directory -Force -Path $languages | Out-Null
-          Invoke-WebRequest `
-            -Uri "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/master/ChineseSimplified.isl" `
-            -OutFile (Join-Path $languages "ChineseSimplified.isl")
-          if (!(Test-Path (Join-Path $languages "ChineseSimplified.isl"))) {
-            throw "ChineseSimplified.isl was not installed"
-          }
+          $version = '${{ env.PYMSS_VERSION_INPUT }}'.TrimStart('v')
+          $stageName = "Pymss-Studio-$version-windows-x64-cuda"
+          $artifactName = "$stageName-stage"
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "stage_name=$stageName" >> $env:GITHUB_OUTPUT
+          echo "stage_artifact=$artifactName" >> $env:GITHUB_OUTPUT
 
       - name: Prepare embedded CUDA Python runtime
-        working-directory: .
         shell: pwsh
         run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL
 
       - name: Build Tauri production app
-        working-directory: .
         run: pnpm tauri build --no-bundle
 
       - name: Prepare Windows bundled tools
@@ -78,8 +76,8 @@ jobs:
       - name: Stage portable directory
         shell: pwsh
         run: |
-          $version = '${{ env.PYMSS_VERSION }}'.TrimStart('v')
-          $stage = "release/Pymss-Studio-$version-windows-x64-cuda"
+          $version = '${{ steps.meta.outputs.version }}'
+          $stage = "release/${{ steps.meta.outputs.stage_name }}"
           if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
@@ -101,57 +99,50 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Staged Python worker env_info failed with exit code $LASTEXITCODE" }
           & "$stage\python-runtime\python.exe" "$stage\python\worker.py" list_models --payload "{}"
           if ($LASTEXITCODE -ne 0) { throw "Staged Python worker list_models failed with exit code $LASTEXITCODE" }
-          $stageFull = (Resolve-Path $stage).Path
-          $releaseFull = (Resolve-Path "release").Path
-          echo "PYMSS_PORTABLE_DIR=$stageFull" >> $env:GITHUB_ENV
-          echo "PYMSS_INSTALLER_OUTPUT=$releaseFull" >> $env:GITHUB_ENV
-          echo "PYMSS_PACKAGE_SUFFIX=windows-x64-cuda" >> $env:GITHUB_ENV
-          echo "PYMSS_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Upload CUDA stage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.stage_artifact }}
+          path: release/${{ steps.meta.outputs.stage_name }}
+          compression-level: 0
+
+  windows-cuda-7z:
+    name: Windows x64 CUDA portable 7z
+    runs-on: windows-latest
+    needs: windows-cuda-prepare
+    steps:
+      - name: Download CUDA stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.windows-cuda-prepare.outputs.stage_artifact }}
+          path: release/${{ needs.windows-cuda-prepare.outputs.stage_name }}
 
       - name: Build Windows portable 7z archive
         shell: pwsh
         run: |
-          $version = '${{ env.PYMSS_VERSION }}'
-          $stageName = "Pymss-Studio-$version-windows-x64-cuda"
+          $version = '${{ needs.windows-cuda-prepare.outputs.version }}'
+          $stageName = '${{ needs.windows-cuda-prepare.outputs.stage_name }}'
           if (Test-Path "release/$stageName.7z") { Remove-Item "release/$stageName.7z" -Force }
           Push-Location "release"
           & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
           Pop-Location
 
-      - name: Build Inno Setup installer with LZMA
-        shell: pwsh
-        run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
-
-      - name: Upload Windows installer artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-setup
-          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-setup.exe
-
       - name: Upload Windows portable archive artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-portable
-          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda.7z
+          name: Pymss-Studio-${{ needs.windows-cuda-prepare.outputs.version }}-windows-x64-cuda-portable
+          path: release/${{ needs.windows-cuda-prepare.outputs.stage_name }}.7z
 
-  windows-cpu:
-    name: Windows x64 CPU portable 7z archive
+  windows-cuda-exe:
+    name: Windows x64 CUDA setup exe
     runs-on: windows-latest
+    needs: windows-cuda-prepare
     env:
-      PYMSS_VERSION: ${{ inputs.version }}
-      TORCH_VERSION: 2.7.1
-      TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
+      PYMSS_VERSION: ${{ needs.windows-cuda-prepare.outputs.version }}
+      PYMSS_PACKAGE_SUFFIX: windows-x64-cuda
     steps:
       - uses: actions/checkout@v4
-
-      - name: Checkout pymss core
-        uses: actions/checkout@v4
-        with:
-          repository: pymss-project/pymss
-          path: pymss-core
-
-      - uses: ./.github/actions/setup-release-env
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -168,13 +159,65 @@ jobs:
             throw "ChineseSimplified.isl was not installed"
           }
 
+      - name: Download CUDA stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.windows-cuda-prepare.outputs.stage_artifact }}
+          path: release/${{ needs.windows-cuda-prepare.outputs.stage_name }}
+
+      - name: Build Inno Setup installer with LZMA2
+        shell: pwsh
+        run: |
+          $stageFull = (Resolve-Path "release/${{ needs.windows-cuda-prepare.outputs.stage_name }}").Path
+          $releaseFull = (Resolve-Path "release").Path
+          $env:PYMSS_PORTABLE_DIR = $stageFull
+          $env:PYMSS_INSTALLER_OUTPUT = $releaseFull
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pymss-Studio-${{ needs.windows-cuda-prepare.outputs.version }}-windows-x64-cuda-setup
+          path: release/Pymss-Studio-${{ needs.windows-cuda-prepare.outputs.version }}-windows-x64-cuda-setup.exe
+
+  windows-cpu-prepare:
+    name: Windows x64 CPU prepare
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      stage_name: ${{ steps.meta.outputs.stage_name }}
+      stage_artifact: ${{ steps.meta.outputs.stage_artifact }}
+    env:
+      PYMSS_VERSION_INPUT: ${{ inputs.version }}
+      TORCH_VERSION: 2.7.1
+      TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout pymss core
+        uses: actions/checkout@v4
+        with:
+          repository: pymss-project/pymss
+          path: pymss-core
+
+      - uses: ./.github/actions/setup-release-env
+
+      - name: Resolve package metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $version = '${{ env.PYMSS_VERSION_INPUT }}'.TrimStart('v')
+          $stageName = "Pymss-Studio-$version-windows-x64-cpu"
+          $artifactName = "$stageName-stage"
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "stage_name=$stageName" >> $env:GITHUB_OUTPUT
+          echo "stage_artifact=$artifactName" >> $env:GITHUB_OUTPUT
+
       - name: Prepare embedded CPU Python runtime
-        working-directory: .
         shell: pwsh
         run: ./scripts/prepare-python-runtime.ps1 -Variant default -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL
 
       - name: Build Tauri production app
-        working-directory: .
         run: pnpm tauri build --no-bundle
 
       - name: Prepare Windows bundled tools
@@ -201,11 +244,11 @@ jobs:
             -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" `
             -OutFile "$bin/VC_redist.x64.exe"
 
-      - name: Stage CPU portable directory
+      - name: Stage portable directory
         shell: pwsh
         run: |
-          $version = '${{ env.PYMSS_VERSION }}'.TrimStart('v')
-          $stage = "release/Pymss-Studio-$version-windows-x64-cpu"
+          $version = '${{ steps.meta.outputs.version }}'
+          $stage = "release/${{ steps.meta.outputs.stage_name }}"
           if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
@@ -227,36 +270,82 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Staged CPU Python worker env_info failed with exit code $LASTEXITCODE" }
           & "$stage\python-runtime\python.exe" "$stage\python\worker.py" list_models --payload "{}"
           if ($LASTEXITCODE -ne 0) { throw "Staged CPU Python worker list_models failed with exit code $LASTEXITCODE" }
-          $stageFull = (Resolve-Path $stage).Path
-          $releaseFull = (Resolve-Path "release").Path
-          echo "PYMSS_PORTABLE_DIR=$stageFull" >> $env:GITHUB_ENV
-          echo "PYMSS_INSTALLER_OUTPUT=$releaseFull" >> $env:GITHUB_ENV
-          echo "PYMSS_PACKAGE_SUFFIX=windows-x64-cpu" >> $env:GITHUB_ENV
-          echo "PYMSS_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Upload CPU stage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.stage_artifact }}
+          path: release/${{ steps.meta.outputs.stage_name }}
+          compression-level: 0
+
+  windows-cpu-7z:
+    name: Windows x64 CPU portable 7z
+    runs-on: windows-latest
+    needs: windows-cpu-prepare
+    steps:
+      - name: Download CPU stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.windows-cpu-prepare.outputs.stage_artifact }}
+          path: release/${{ needs.windows-cpu-prepare.outputs.stage_name }}
 
       - name: Build Windows CPU portable 7z archive
         shell: pwsh
         run: |
-          $version = '${{ env.PYMSS_VERSION }}'
-          $stageName = "Pymss-Studio-$version-windows-x64-cpu"
+          $stageName = '${{ needs.windows-cpu-prepare.outputs.stage_name }}'
           if (Test-Path "release/$stageName.7z") { Remove-Item "release/$stageName.7z" -Force }
           Push-Location "release"
           & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
           Pop-Location
 
-      - name: Build Windows CPU Inno Setup installer with LZMA
+      - name: Upload Windows CPU portable archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pymss-Studio-${{ needs.windows-cpu-prepare.outputs.version }}-windows-x64-cpu-portable
+          path: release/${{ needs.windows-cpu-prepare.outputs.stage_name }}.7z
+
+  windows-cpu-exe:
+    name: Windows x64 CPU setup exe
+    runs-on: windows-latest
+    needs: windows-cpu-prepare
+    env:
+      PYMSS_VERSION: ${{ needs.windows-cpu-prepare.outputs.version }}
+      PYMSS_PACKAGE_SUFFIX: windows-x64-cpu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Install Inno Setup Chinese language file
         shell: pwsh
         run: |
+          $languages = "C:\Program Files (x86)\Inno Setup 6\Languages"
+          New-Item -ItemType Directory -Force -Path $languages | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/master/ChineseSimplified.isl" `
+            -OutFile (Join-Path $languages "ChineseSimplified.isl")
+          if (!(Test-Path (Join-Path $languages "ChineseSimplified.isl"))) {
+            throw "ChineseSimplified.isl was not installed"
+          }
+
+      - name: Download CPU stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.windows-cpu-prepare.outputs.stage_artifact }}
+          path: release/${{ needs.windows-cpu-prepare.outputs.stage_name }}
+
+      - name: Build Windows CPU Inno Setup installer with LZMA2
+        shell: pwsh
+        run: |
+          $stageFull = (Resolve-Path "release/${{ needs.windows-cpu-prepare.outputs.stage_name }}").Path
+          $releaseFull = (Resolve-Path "release").Path
+          $env:PYMSS_PORTABLE_DIR = $stageFull
+          $env:PYMSS_INSTALLER_OUTPUT = $releaseFull
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
 
       - name: Upload Windows CPU installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cpu-setup
-          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cpu-setup.exe
-
-      - name: Upload Windows CPU portable archive artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cpu-portable
-          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cpu.7z
+          name: Pymss-Studio-${{ needs.windows-cpu-prepare.outputs.version }}-windows-x64-cpu-setup
+          path: release/Pymss-Studio-${{ needs.windows-cpu-prepare.outputs.version }}-windows-x64-cpu-setup.exe
