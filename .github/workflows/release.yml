@@ -40,7 +40,7 @@ jobs:
 
   github-release:
     name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    if: always() && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     needs: [windows, macos]
     runs-on: ubuntu-latest
     steps:
