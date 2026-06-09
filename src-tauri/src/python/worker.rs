@@ -15,6 +15,16 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+fn pymss_sys_path_candidate(path: &std::path::Path) -> Option<PathBuf> {
+    if path.join("pymss").join("__init__.py").is_file() {
+        return Some(path.to_path_buf());
+    }
+    if path.join("__init__.py").is_file() && path.join("separator.py").is_file() {
+        return path.parent().map(PathBuf::from);
+    }
+    None
+}
+
 fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
     if cfg!(debug_assertions) {
         // CARGO_MANIFEST_DIR is set at compile time to src-tauri/
@@ -58,46 +68,45 @@ fn dev_workspace_root() -> PathBuf {
 
 fn dev_pymss_source_path() -> AppResult<Option<PathBuf>> {
     let desktop_root = dev_workspace_root();
-    let sibling = desktop_root
-        .parent()
-        .map(|root| root.join("pymss"))
-        .filter(|path| path.join("pymss").join("__init__.py").is_file());
+    let sibling = desktop_root.parent().and_then(pymss_sys_path_candidate);
     if sibling.is_some() {
         return Ok(sibling);
     }
 
     let cwd = std::env::current_dir()?;
     let candidates = [
+        cwd.join(".."),
+        cwd.clone(),
+        cwd.join("..").join(".."),
         cwd.join("..").join("pymss"),
         cwd.join("pymss"),
         cwd.join("..").join("..").join("pymss"),
     ];
-    Ok(candidates
-        .into_iter()
-        .find(|path| path.join("pymss").join("__init__.py").is_file()))
+    Ok(candidates.into_iter().find_map(|path| pymss_sys_path_candidate(&path)))
 }
 
 fn production_pymss_source_path(app: &AppHandle) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(resource) = app.path().resource_dir() {
+        candidates.push(resource.clone());
         candidates.push(resource.join("pymss"));
+        candidates.push(resource.join("resources"));
         candidates.push(resource.join("resources").join("pymss"));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.to_path_buf());
             candidates.push(exe_dir.join("pymss"));
         }
     }
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.join("pymss").join("__init__.py").is_file())
+    candidates.into_iter().find_map(|candidate| pymss_sys_path_candidate(&candidate))
 }
 
 fn pymss_source_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
     if let Ok(path) = std::env::var("PYMSS_STUDIO_PYMSS_PATH") {
         let path = PathBuf::from(path);
-        if path.join("pymss").join("__init__.py").is_file() {
-            return Ok(Some(path));
+        if let Some(resolved) = pymss_sys_path_candidate(&path) {
+            return Ok(Some(resolved));
         }
         return Err(AppError::Worker(format!(
             "PYMSS_STUDIO_PYMSS_PATH does not point to a pymss source tree: {}",

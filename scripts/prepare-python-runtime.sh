@@ -24,12 +24,17 @@ else
   "$PY" -m pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url "$TORCH_INDEX_URL"
 fi
 "$PY" -m pip install --no-cache-dir av librosa numpy pyyaml tqdm
+if [[ "$VARIANT" == "mlx" || "$VARIANT" == "mps" ]]; then
+  "$PY" -m pip install --no-cache-dir mlx
+fi
 
 bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR"
 PYTHONDONTWRITEBYTECODE=1 "$PY" - <<'PY'
+import importlib.util
 import torch, librosa, av, yaml, tqdm
 print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available())
 print('librosa', librosa.__version__)
 print('av', av.__version__)
+print('mlx', importlib.util.find_spec('mlx') is not None)
 PY
 bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR"

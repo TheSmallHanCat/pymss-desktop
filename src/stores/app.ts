@@ -76,10 +76,10 @@ export const useAppStore = defineStore('app', () => {
         label: 'Accelerator',
         value: env.cudaAvailable
           ? `CUDA (${env.cudaDeviceCount || 0})`
-          : env.mpsAvailable
-            ? 'MPS'
-            : env.mlxAvailable
+          : env.mlxAvailable
               ? 'MLX'
+              : env.mpsAvailable
+                ? 'MPS'
               : 'CPU only',
         detail: env.cudaAvailable || env.mpsAvailable || env.mlxAvailable
           ? undefined

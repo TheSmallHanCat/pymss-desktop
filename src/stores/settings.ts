@@ -300,18 +300,21 @@ export const useSettingsStore = defineStore('settings', () => {
         options.push({ label: `CUDA ${id}`, value: `cuda:${id}`, type: 'cuda', deviceIds: [id] })
       }
     }
-    if (env?.mpsAvailable) options.push({ label: 'Apple MPS', value: 'mps', type: 'mps', deviceIds: [0] })
     if (env?.mlxAvailable || env?.mpsAvailable) options.push({ label: 'Apple MLX', value: 'mlx', type: 'mlx', deviceIds: [0] })
+    if (env?.mpsAvailable) options.push({ label: 'Apple MPS', value: 'mps', type: 'mps', deviceIds: [0] })
     return options
   }
 
-  function getRuntimeDeviceConfig(): RuntimeDeviceConfig {
+  function getRuntimeDeviceConfig(env?: EnvInfo | null): RuntimeDeviceConfig {
     const selected = defaultDevice.value
     if (selected.startsWith('cuda:')) {
       const id = parseInt(selected.slice('cuda:'.length), 10)
       return { device: 'cuda', deviceIds: Number.isFinite(id) ? [id] : [0] }
     }
     if (selected === 'cuda') return { device: 'cuda', deviceIds: [0] }
+    if (selected === 'auto' && env?.mlxAvailable) {
+      return { device: 'mlx', deviceIds: [0] }
+    }
     if (selected === 'cpu' || selected === 'mps' || selected === 'mlx' || selected === 'auto') {
       return { device: selected, deviceIds: [0] }
     }

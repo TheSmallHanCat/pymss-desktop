@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("cuda", "default")]
+    [ValidateSet("cuda", "default", "mps", "mlx")]
     [string]$Variant = "cuda",
     [string]$Python = "python",
     [string]$RuntimeDir = "python-runtime",
@@ -35,11 +35,14 @@ if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) {
     & $runtimePython -m pip install --no-cache-dir $torchRequirement --index-url $TorchIndexUrl
 }
 & $runtimePython -m pip install --no-cache-dir av librosa numpy pyyaml tqdm
+if ($Variant -in @("mps", "mlx")) {
+    & $runtimePython -m pip install --no-cache-dir mlx
+}
 
 & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $runtime
 $previousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
 $env:PYTHONDONTWRITEBYTECODE = "1"
-& $runtimePython -c "import torch, librosa, av, yaml, tqdm; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__)"
+& $runtimePython -c "import importlib.util, torch, librosa, av, yaml, tqdm; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') -ne \$null)"
 if ($null -eq $previousDontWriteBytecode) {
     Remove-Item Env:\PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
 } else {

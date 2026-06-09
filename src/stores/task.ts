@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
 import { useSettingsStore } from '@/stores/settings'
 import { useModelStore } from '@/stores/model'
+import { useAppStore } from '@/stores/app'
 
 export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
 
@@ -262,7 +263,8 @@ export const useTaskStore = defineStore('task', () => {
 
   function buildRunConfig(inferenceParams: Record<string, unknown>): SeparationRunConfig {
     const settings = useSettingsStore()
-    const runtimeDevice = settings.getRuntimeDeviceConfig()
+    const app = useAppStore()
+    const runtimeDevice = settings.getRuntimeDeviceConfig(app.envInfo)
     return {
       modelDir: settings.modelDir || null,
       downloadSource: settings.downloadSource,

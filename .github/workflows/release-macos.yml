@@ -1,0 +1,109 @@
+name: Release macOS Packages
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version
+        required: true
+        type: string
+
+jobs:
+  macos-gpu-dmg:
+    name: macOS DMG bundled runtime / MLX default
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      PYMSS_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout pymss core
+        uses: actions/checkout@v4
+        with:
+          repository: pymss-project/pymss
+          path: pymss-core
+
+      - uses: ./.github/actions/setup-release-env
+
+      - name: Prepare embedded Python runtime with PyTorch + MLX support
+        working-directory: .
+        env:
+          TORCH_VERSION: "2.7.1"
+          TORCH_INDEX_URL: ""
+        run: bash scripts/prepare-python-runtime.sh mlx
+
+      - name: Copy clean resources for Tauri bundling
+        run: |
+          mkdir -p src-tauri/resources
+          rm -rf src-tauri/resources/python src-tauri/resources/python-runtime src-tauri/resources/pymss
+          mkdir -p src-tauri/resources/python
+          rsync -a --exclude '__pycache__' --exclude '*.pyc' python/ src-tauri/resources/python/
+          cp -R python-runtime src-tauri/resources/python-runtime
+          mkdir -p src-tauri/resources/pymss
+          rsync -a --exclude '.git' --exclude '.github' --exclude '.claude' --exclude '.omc' --exclude '.spec-workflow' --exclude '__pycache__' --exclude '*.pyc' pymss-core/ src-tauri/resources/pymss/
+
+      - name: Build Tauri app bundle
+        working-directory: .
+        run: |
+          python3 - <<'PY' > src-tauri/tauri.bundle.resources.json
+          import json
+          from pathlib import Path
+
+          root = Path.cwd()
+          print(json.dumps({
+              "bundle": {
+                  "resources": {
+                      str((root / "src-tauri" / "resources" / "python").resolve()): "python",
+                      str((root / "src-tauri" / "resources" / "python-runtime").resolve()): "python-runtime",
+                      str((root / "src-tauri" / "resources" / "pymss").resolve()): "pymss",
+                  }
+              }
+          }))
+          PY
+          pnpm tauri build --bundles app --config src-tauri/tauri.bundle.resources.json
+
+      - name: Verify bundled macOS resources
+        run: |
+          APP=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name 'Pymss Studio.app' | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "Pymss Studio.app not found"
+            exit 1
+          fi
+
+          RES="$APP/Contents/Resources"
+          test -f "$RES/python/worker.py" || test -f "$RES/resources/python/worker.py"
+          test -d "$RES/python-runtime" || test -d "$RES/resources/python-runtime"
+          test -f "$RES/pymss/__init__.py" || test -f "$RES/pymss/pymss/__init__.py" || test -f "$RES/resources/pymss/__init__.py" || test -f "$RES/resources/pymss/pymss/__init__.py"
+
+      - name: Build DMG with hdiutil
+        run: |
+          VERSION="${PYMSS_VERSION#v}"
+          mkdir -p release
+          APP=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name 'Pymss Studio.app' | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "Pymss Studio.app not found"
+            exit 1
+          fi
+          STAGE="$(mktemp -d)"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create \
+            -volname "Pymss Studio" \
+            -srcfolder "$STAGE" \
+            -ov \
+            -format UDZO \
+            "release/Pymss-Studio-${VERSION}-macos-${{ matrix.arch }}-mlx.dmg"
+          rm -rf "$STAGE"
+          echo "PYMSS_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pymss-Studio-${{ env.PYMSS_VERSION }}-macos-${{ matrix.arch }}-mlx
+          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-macos-${{ matrix.arch }}-mlx.dmg

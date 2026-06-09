@@ -1,0 +1,90 @@
+name: Release Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version"
+        required: true
+        default: "0.0.1"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    uses: ./.github/workflows/release-windows.yml
+    with:
+      version: ${{ github.event.inputs.version || github.ref_name }}
+    secrets: inherit
+
+  macos:
+    uses: ./.github/workflows/release-macos.yml
+    with:
+      version: ${{ github.event.inputs.version || github.ref_name }}
+    secrets: inherit
+
+  github-release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Split oversized release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          max_size=$((2040 * 1024 * 1024))
+          has_split=0
+
+          shopt -s nullglob
+          for file in artifacts/*; do
+            [ -f "$file" ] || continue
+            size=$(stat -c%s "$file")
+            if [ "$size" -gt "$max_size" ]; then
+              echo "Splitting $(basename "$file") (${size} bytes)"
+              sha256sum "$file" > "$file.sha256"
+              split -b "$max_size" -d -a 3 "$file" "$file.part-"
+              rm "$file"
+              has_split=1
+            fi
+          done
+
+          if [ "$has_split" = "1" ]; then
+            cat > artifacts/SPLIT-ASSETS-README.txt <<'EOF'
+          Some release assets are split because GitHub Releases require each file to be under 2 GiB.
+
+          Linux/macOS:
+            cat Pymss-Studio-xxx.part-* > Pymss-Studio-xxx
+            sha256sum -c Pymss-Studio-xxx.sha256
+
+          Windows CMD:
+            copy /b Pymss-Studio-xxx.part-000+Pymss-Studio-xxx.part-001 Pymss-Studio-xxx
+
+          Download all parts for the same filename before merging.
+          EOF
+          fi
+      - name: Resolve release tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="${{ github.ref_name }}"
+          fi
+          version="${version#v}"
+          echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=Pymss Studio v${version}" >> "$GITHUB_ENV"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_NAME }}
+          generate_release_notes: true
+          files: artifacts/*

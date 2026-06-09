@@ -22,6 +22,13 @@ except Exception:
     pass
 
 def bootstrap_pymss_path() -> None:
+    def resolve_sys_path(candidate: Path) -> Path | None:
+        if (candidate / "pymss" / "__init__.py").is_file():
+            return candidate
+        if (candidate / "__init__.py").is_file() and (candidate / "separator.py").is_file():
+            return candidate.parent
+        return None
+
     worker_path = Path(__file__).resolve()
     worker_dir = worker_path.parent
     candidates: list[Path] = []
@@ -45,9 +52,9 @@ def bootstrap_pymss_path() -> None:
     candidates.append(worker_dir.parent.parent / "resources" / "pymss")
 
     for candidate in candidates:
-        package_init = candidate / "pymss" / "__init__.py"
-        if package_init.is_file():
-            sys.path.insert(0, str(candidate))
+        resolved = resolve_sys_path(candidate)
+        if resolved is not None:
+            sys.path.insert(0, str(resolved))
             return
 
 

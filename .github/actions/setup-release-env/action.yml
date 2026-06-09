@@ -1,0 +1,39 @@
+name: Setup release environment
+description: Prepare shared toolchains and frontend dependencies for release builds
+
+inputs:
+  pnpm-version:
+    description: pnpm version
+    required: false
+    default: "10.33.2"
+  node-version:
+    description: Node.js version
+    required: false
+    default: "22"
+  python-version:
+    description: Python version
+    required: false
+    default: "3.12"
+
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm-version }}
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+        cache-dependency-path: pnpm-lock.yaml
+
+    - uses: dtolnay/rust-toolchain@stable
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install frontend dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile

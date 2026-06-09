@@ -1,0 +1,262 @@
+name: Release Windows Packages
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version
+        required: true
+        type: string
+
+jobs:
+  windows-cuda:
+    name: Windows x64 CUDA Inno Setup
+    runs-on: windows-latest
+    env:
+      PYMSS_VERSION: ${{ inputs.version }}
+      TORCH_VERSION: 2.7.1
+      TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout pymss core
+        uses: actions/checkout@v4
+        with:
+          repository: pymss-project/pymss
+          path: pymss-core
+
+      - uses: ./.github/actions/setup-release-env
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Install Inno Setup Chinese language file
+        shell: pwsh
+        run: |
+          $languages = "C:\Program Files (x86)\Inno Setup 6\Languages"
+          New-Item -ItemType Directory -Force -Path $languages | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/master/ChineseSimplified.isl" `
+            -OutFile (Join-Path $languages "ChineseSimplified.isl")
+          if (!(Test-Path (Join-Path $languages "ChineseSimplified.isl"))) {
+            throw "ChineseSimplified.isl was not installed"
+          }
+
+      - name: Prepare embedded CUDA Python runtime
+        working-directory: .
+        shell: pwsh
+        run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL
+
+      - name: Build Tauri production app
+        working-directory: .
+        run: pnpm tauri build --no-bundle
+
+      - name: Prepare Windows bundled tools
+        shell: pwsh
+        run: |
+          $bin = "release/bin"
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+
+          $ffmpegZip = "release/ffmpeg-release-essentials.zip"
+          $ffmpegExtract = "release/ffmpeg"
+          Invoke-WebRequest `
+            -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" `
+            -OutFile $ffmpegZip
+          if (Test-Path $ffmpegExtract) { Remove-Item $ffmpegExtract -Recurse -Force }
+          Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegExtract -Force
+          $ffmpegBin = Get-ChildItem -Path $ffmpegExtract -Recurse -Directory -Filter "bin" |
+            Where-Object { Test-Path (Join-Path $_.FullName "ffmpeg.exe") } |
+            Select-Object -First 1
+          if (-not $ffmpegBin) { throw "ffmpeg bin directory not found" }
+          Copy-Item (Join-Path $ffmpegBin.FullName "ffmpeg.exe") "$bin/ffmpeg.exe" -Force
+          Copy-Item (Join-Path $ffmpegBin.FullName "ffprobe.exe") "$bin/ffprobe.exe" -Force
+
+          Invoke-WebRequest `
+            -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" `
+            -OutFile "$bin/VC_redist.x64.exe"
+
+      - name: Stage portable directory
+        shell: pwsh
+        run: |
+          $version = '${{ env.PYMSS_VERSION }}'.TrimStart('v')
+          $stage = "release/Pymss-Studio-$version-windows-x64-cuda"
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
+          Copy-Item "python" "$stage/python" -Recurse
+          Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
+          Copy-Item "release/bin" "$stage/bin" -Recurse
+          $pymssSource = (Resolve-Path "pymss-core").Path
+          robocopy $pymssSource "$stage\pymss" /E /XD .git .github .claude .omc .spec-workflow __pycache__ /XF *.pyc | Out-Host
+          if ($LASTEXITCODE -gt 7) { throw "robocopy pymss-core failed with exit code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+          @"
+          Pymss Studio $version Windows x64 CUDA
+          Author: TheSmallHanCat
+
+          This installer includes Python runtime, CUDA PyTorch, worker.py, and pymss source code.
+          NVIDIA driver is required for GPU acceleration.
+          "@ | Set-Content "$stage/README.txt" -Encoding UTF8
+          & "$stage\python-runtime\python.exe" "$stage\python\worker.py" env_info
+          if ($LASTEXITCODE -ne 0) { throw "Staged Python worker env_info failed with exit code $LASTEXITCODE" }
+          & "$stage\python-runtime\python.exe" "$stage\python\worker.py" list_models --payload "{}"
+          if ($LASTEXITCODE -ne 0) { throw "Staged Python worker list_models failed with exit code $LASTEXITCODE" }
+          $stageFull = (Resolve-Path $stage).Path
+          $releaseFull = (Resolve-Path "release").Path
+          echo "PYMSS_PORTABLE_DIR=$stageFull" >> $env:GITHUB_ENV
+          echo "PYMSS_INSTALLER_OUTPUT=$releaseFull" >> $env:GITHUB_ENV
+          echo "PYMSS_PACKAGE_SUFFIX=windows-x64-cuda" >> $env:GITHUB_ENV
+          echo "PYMSS_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Build Windows portable 7z archive
+        shell: pwsh
+        run: |
+          $version = '${{ env.PYMSS_VERSION }}'
+          $stageName = "Pymss-Studio-$version-windows-x64-cuda"
+          if (Test-Path "release/$stageName.7z") { Remove-Item "release/$stageName.7z" -Force }
+          Push-Location "release"
+          & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
+          Pop-Location
+
+      - name: Build Inno Setup installer with LZMA
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-setup
+          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-setup.exe
+
+      - name: Upload Windows portable archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda-portable
+          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cuda.7z
+
+  windows-cpu:
+    name: Windows x64 CPU portable 7z archive
+    runs-on: windows-latest
+    env:
+      PYMSS_VERSION: ${{ inputs.version }}
+      TORCH_VERSION: 2.7.1
+      TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout pymss core
+        uses: actions/checkout@v4
+        with:
+          repository: pymss-project/pymss
+          path: pymss-core
+
+      - uses: ./.github/actions/setup-release-env
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Install Inno Setup Chinese language file
+        shell: pwsh
+        run: |
+          $languages = "C:\Program Files (x86)\Inno Setup 6\Languages"
+          New-Item -ItemType Directory -Force -Path $languages | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/master/ChineseSimplified.isl" `
+            -OutFile (Join-Path $languages "ChineseSimplified.isl")
+          if (!(Test-Path (Join-Path $languages "ChineseSimplified.isl"))) {
+            throw "ChineseSimplified.isl was not installed"
+          }
+
+      - name: Prepare embedded CPU Python runtime
+        working-directory: .
+        shell: pwsh
+        run: ./scripts/prepare-python-runtime.ps1 -Variant default -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL
+
+      - name: Build Tauri production app
+        working-directory: .
+        run: pnpm tauri build --no-bundle
+
+      - name: Prepare Windows bundled tools
+        shell: pwsh
+        run: |
+          $bin = "release/bin"
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+
+          $ffmpegZip = "release/ffmpeg-release-essentials.zip"
+          $ffmpegExtract = "release/ffmpeg"
+          Invoke-WebRequest `
+            -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" `
+            -OutFile $ffmpegZip
+          if (Test-Path $ffmpegExtract) { Remove-Item $ffmpegExtract -Recurse -Force }
+          Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegExtract -Force
+          $ffmpegBin = Get-ChildItem -Path $ffmpegExtract -Recurse -Directory -Filter "bin" |
+            Where-Object { Test-Path (Join-Path $_.FullName "ffmpeg.exe") } |
+            Select-Object -First 1
+          if (-not $ffmpegBin) { throw "ffmpeg bin directory not found" }
+          Copy-Item (Join-Path $ffmpegBin.FullName "ffmpeg.exe") "$bin/ffmpeg.exe" -Force
+          Copy-Item (Join-Path $ffmpegBin.FullName "ffprobe.exe") "$bin/ffprobe.exe" -Force
+
+          Invoke-WebRequest `
+            -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" `
+            -OutFile "$bin/VC_redist.x64.exe"
+
+      - name: Stage CPU portable directory
+        shell: pwsh
+        run: |
+          $version = '${{ env.PYMSS_VERSION }}'.TrimStart('v')
+          $stage = "release/Pymss-Studio-$version-windows-x64-cpu"
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
+          Copy-Item "python" "$stage/python" -Recurse
+          Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
+          Copy-Item "release/bin" "$stage/bin" -Recurse
+          $pymssSource = (Resolve-Path "pymss-core").Path
+          robocopy $pymssSource "$stage\pymss" /E /XD .git .github .claude .omc .spec-workflow __pycache__ /XF *.pyc | Out-Host
+          if ($LASTEXITCODE -gt 7) { throw "robocopy pymss-core failed with exit code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+          @"
+          Pymss Studio $version Windows x64 CPU
+          Author: TheSmallHanCat
+
+          This portable package includes Python runtime, CPU PyTorch, worker.py, and pymss source code.
+          It is intended for users without NVIDIA CUDA GPUs.
+          "@ | Set-Content "$stage/README.txt" -Encoding UTF8
+          & "$stage\python-runtime\python.exe" "$stage\python\worker.py" env_info
+          if ($LASTEXITCODE -ne 0) { throw "Staged CPU Python worker env_info failed with exit code $LASTEXITCODE" }
+          & "$stage\python-runtime\python.exe" "$stage\python\worker.py" list_models --payload "{}"
+          if ($LASTEXITCODE -ne 0) { throw "Staged CPU Python worker list_models failed with exit code $LASTEXITCODE" }
+          $stageFull = (Resolve-Path $stage).Path
+          $releaseFull = (Resolve-Path "release").Path
+          echo "PYMSS_PORTABLE_DIR=$stageFull" >> $env:GITHUB_ENV
+          echo "PYMSS_INSTALLER_OUTPUT=$releaseFull" >> $env:GITHUB_ENV
+          echo "PYMSS_PACKAGE_SUFFIX=windows-x64-cpu" >> $env:GITHUB_ENV
+          echo "PYMSS_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Build Windows CPU portable 7z archive
+        shell: pwsh
+        run: |
+          $version = '${{ env.PYMSS_VERSION }}'
+          $stageName = "Pymss-Studio-$version-windows-x64-cpu"
+          if (Test-Path "release/$stageName.7z") { Remove-Item "release/$stageName.7z" -Force }
+          Push-Location "release"
+          & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
+          Pop-Location
+
+      - name: Build Windows CPU Inno Setup installer with LZMA
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
+
+      - name: Upload Windows CPU installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cpu-setup
+          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cpu-setup.exe
+
+      - name: Upload Windows CPU portable archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cpu-portable
+          path: release/Pymss-Studio-${{ env.PYMSS_VERSION }}-windows-x64-cpu.7z
