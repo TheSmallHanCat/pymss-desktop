@@ -79,6 +79,15 @@ jobs:
           PY
           pnpm tauri build --bundles app --config src-tauri/tauri.bundle.resources.json
 
+      - name: Re-sign bundled macOS app after embedding runtime
+        run: |
+          APP=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name 'Pymss Studio.app' | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "Pymss Studio.app not found"
+            exit 1
+          fi
+          bash scripts/resign-macos-app.sh "$APP"
+
       - name: Verify bundled macOS resources
         run: |
           APP=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name 'Pymss Studio.app' | head -n 1)
@@ -100,7 +109,7 @@ jobs:
             exit 1
           fi
           PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
-          codesign --verify --verbose=4 "$APP"
+          codesign --verify --deep --strict --verbose=4 "$APP"
 
       - name: Build DMG with hdiutil
         run: |
