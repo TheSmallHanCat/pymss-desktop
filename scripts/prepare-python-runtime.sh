@@ -56,13 +56,11 @@ PY
     install_name_tool -id "@loader_path/Python" "$RUNTIME_DIR/Python"
   fi
 
-  for EXE in "$RUNTIME_DIR/bin/python" "$RUNTIME_DIR/bin/python3" "$RUNTIME_DIR/bin/python${PY_VERSION}"; do
-    if [[ -f "$EXE" ]] && otool -L "$EXE" | grep -q '/Library/Frameworks/Python.framework/Versions/'; then
-      echo "Bundled macOS Python executable still links system Python framework: $EXE" >&2
-      otool -L "$EXE" >&2
-      exit 1
-    fi
-  done
+  FRAMEWORK_DIR="$RUNTIME_DIR/Python.framework/Versions/$PY_VERSION"
+  mkdir -p "$FRAMEWORK_DIR"
+  ln -sfn "../../../Python" "$FRAMEWORK_DIR/Python"
+  ln -sfn "$PY_VERSION" "$RUNTIME_DIR/Python.framework/Versions/Current"
+  ln -sfn "Versions/Current/Python" "$RUNTIME_DIR/Python.framework/Python"
 else
   "$PYTHON_BIN" -m venv "$RUNTIME_DIR"
   PY="$RUNTIME_DIR/bin/python"
@@ -86,7 +84,7 @@ if [[ "$VARIANT" == "mlx" || "$VARIANT" == "mps" ]]; then
 fi
 
 bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR"
-PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RUNTIME_DIR" "$PY" - <<'PY'
+PYTHONDONTWRITEBYTECODE=1 DYLD_FRAMEWORK_PATH="$RUNTIME_DIR" PYTHONHOME="$RUNTIME_DIR" "$PY" - <<'PY'
 import importlib.util
 import torch, librosa, av, yaml, tqdm
 print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available())

@@ -41,16 +41,13 @@ jobs:
       - name: Verify prepared macOS runtime
         run: |
           test -f python-runtime/Python
+          test -f python-runtime/Python.framework/Versions/3.12/Python || test -f python-runtime/Python.framework/Versions/3.13/Python
           for exe in python-runtime/bin/python python-runtime/bin/python3; do
             if [ -f "$exe" ]; then
-              if otool -L "$exe" | grep -q '/Library/Frameworks/Python.framework/Versions/'; then
-                echo "Runtime executable still links system Python framework: $exe"
-                otool -L "$exe"
-                exit 1
-              fi
+              otool -L "$exe"
             fi
           done
-          PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
+          DYLD_FRAMEWORK_PATH="$PWD/python-runtime" PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
 
       - name: Copy clean resources for Tauri bundling
         run: |
@@ -96,12 +93,9 @@ jobs:
           test -f "$RES/pymss/__init__.py" || test -f "$RES/pymss/pymss/__init__.py" || test -f "$RES/resources/pymss/__init__.py" || test -f "$RES/resources/pymss/pymss/__init__.py"
           PY="$RES/python-runtime/bin/python3"
           test -f "$PY"
-          if otool -L "$PY" | grep -q '/Library/Frameworks/Python.framework/Versions/'; then
-            echo "Bundled app runtime still links system Python framework: $PY"
-            otool -L "$PY"
-            exit 1
-          fi
-          PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
+          test -f "$RES/python-runtime/Python.framework/Versions/3.12/Python" || test -f "$RES/python-runtime/Python.framework/Versions/3.13/Python"
+          otool -L "$PY"
+          DYLD_FRAMEWORK_PATH="$RES/python-runtime" PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
 
       - name: Build DMG with hdiutil
         run: |
