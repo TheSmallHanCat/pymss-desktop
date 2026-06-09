@@ -7,6 +7,15 @@ on:
         description: "Release version"
         required: true
         default: "0.0.1"
+      target:
+        description: "Build target"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - macos
+          - windows
   push:
     tags:
       - "v*"
@@ -16,12 +25,14 @@ permissions:
 
 jobs:
   windows:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.target == 'all' || github.event.inputs.target == 'windows'
     uses: ./.github/workflows/release-windows.yml
     with:
       version: ${{ github.event.inputs.version || github.ref_name }}
     secrets: inherit
 
   macos:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.target == 'all' || github.event.inputs.target == 'macos'
     uses: ./.github/workflows/release-macos.yml
     with:
       version: ${{ github.event.inputs.version || github.ref_name }}
