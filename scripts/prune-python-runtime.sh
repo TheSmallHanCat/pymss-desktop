@@ -3,7 +3,18 @@ set -euo pipefail
 
 RUNTIME_DIR="${1:?runtime dir required}"
 
-rm -rf "$RUNTIME_DIR/Doc" "$RUNTIME_DIR/docs" "$RUNTIME_DIR/include" "$RUNTIME_DIR/libs" "$RUNTIME_DIR/share" "$RUNTIME_DIR/tcl"
+rm -rf \
+  "$RUNTIME_DIR/Doc" \
+  "$RUNTIME_DIR/docs" \
+  "$RUNTIME_DIR/include" \
+  "$RUNTIME_DIR/libs" \
+  "$RUNTIME_DIR/tcl" \
+  "$RUNTIME_DIR/pkgs" \
+  "$RUNTIME_DIR/envs" \
+  "$RUNTIME_DIR/conda-meta" \
+  "$RUNTIME_DIR/condabin" \
+  "$RUNTIME_DIR/libexec" \
+  "$RUNTIME_DIR/shell"
 find "$RUNTIME_DIR/lib" -maxdepth 2 -type d \( \
   -name 'ensurepip' -o \
   -name 'idlelib' -o \
@@ -18,6 +29,7 @@ find "$RUNTIME_DIR" -type d \( -name '__pycache__' -o -name 'test' -o -name 'tes
   -not -path '*/site-packages/torch/testing' \
   -prune -exec rm -rf {} + || true
 find "$RUNTIME_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' -o -name '*.a' -o -name '*.la' -o -name '*.h' -o -name '*.hpp' \) -delete || true
+find -L "$RUNTIME_DIR" -type l -exec rm -f {} + || true
 find "$RUNTIME_DIR" -path '*/site-packages/torch/*' -type f -name '*.lib' -delete || true
 find "$RUNTIME_DIR" -path '*/site-packages/torch/include' -type d -prune -exec rm -rf {} + || true
 find "$RUNTIME_DIR" -path '*/site-packages/torch/share' -type d -prune -exec rm -rf {} + || true

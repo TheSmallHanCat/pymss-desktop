@@ -23,8 +23,18 @@ PY
   rsync -a \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
-    --exclude 'share' \
     --exclude 'include' \
+    --exclude 'pkgs' \
+    --exclude 'envs' \
+    --exclude 'conda-meta' \
+    --exclude 'condabin' \
+    --exclude 'libexec' \
+    --exclude 'shell' \
+    --exclude 'man' \
+    --exclude 'doc' \
+    --exclude 'docs' \
+    --exclude 'share/doc' \
+    --exclude 'share/man' \
     "$BASE_PREFIX/" "$RUNTIME_DIR/"
 
   PY="$RUNTIME_DIR/bin/python3"
