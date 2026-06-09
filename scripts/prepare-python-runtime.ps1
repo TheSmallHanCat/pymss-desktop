@@ -42,7 +42,7 @@ if ($Variant -in @("mps", "mlx")) {
 & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $runtime
 $previousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
 $env:PYTHONDONTWRITEBYTECODE = "1"
-& $runtimePython -c "import importlib.util, torch, librosa, av, yaml, tqdm; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') -ne \$null)"
+& $runtimePython -c "import importlib.util, torch, librosa, av, yaml, tqdm; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') is not None)"
 if ($null -eq $previousDontWriteBytecode) {
     Remove-Item Env:\PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
 } else {
