@@ -21,10 +21,9 @@ find "$RUNTIME_DIR/lib" -maxdepth 2 -type d \( \
   -name 'lib2to3' -o \
   -name 'tkinter' -o \
   -name 'turtledemo' -o \
-  -name 'xmlrpc' -o \
-  -name 'pydoc_data' \
+  -name 'xmlrpc' \
 \) -prune -exec rm -rf {} + 2>/dev/null || true
-find "$RUNTIME_DIR/lib" -maxdepth 2 -type f \( -name 'turtle.py' -o -name 'pydoc.py' \) -delete 2>/dev/null || true
+find "$RUNTIME_DIR/lib" -maxdepth 2 -type f \( -name 'turtle.py' \) -delete 2>/dev/null || true
 find "$RUNTIME_DIR" -type d \( -name '__pycache__' -o -name 'test' -o -name 'tests' -o -name 'testsuite' -o -name 'examples' -o -name 'example' -o -name 'benchmarks' -o -name 'docs' -o -name 'doc' \) \
   -not -path '*/site-packages/torch/testing' \
   -prune -exec rm -rf {} + || true
@@ -60,4 +59,5 @@ find "$RUNTIME_DIR" -type d \( -name '*.dist-info' -o -name '*.egg-info' \) -pri
 
 du -sh "$RUNTIME_DIR" || true
 
+# Note: keep stdlib pydoc/pydoc_data. SciPy imports pydoc from runtime code paths.
 # Note: do not remove site-packages/torch/testing. PyTorch imports torch.testing during normal startup.
