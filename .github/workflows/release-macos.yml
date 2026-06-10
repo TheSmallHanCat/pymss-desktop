@@ -47,7 +47,7 @@ jobs:
             otool -L python-runtime/bin/python3
             exit 1
           fi
-          PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
+          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
 
       - name: Copy clean resources for Tauri bundling
         run: |
@@ -108,7 +108,7 @@ jobs:
             otool -L "$PY"
             exit 1
           fi
-          PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
+          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
           codesign --verify --deep --strict --verbose=4 "$APP"
 
       - name: Build DMG with hdiutil

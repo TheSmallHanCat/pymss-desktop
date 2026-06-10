@@ -236,6 +236,7 @@ fn build_worker_command(app: &AppHandle, command: &str, payload_file: Option<&Pa
     cmd.arg(worker)
         .arg(command)
         .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONUTF8", "1")
         .env("PYMSS_STUDIO_DEFAULT_OUTPUT_DIR", default_output_dir(app)?.to_string_lossy().to_string());
     if let Some(path) = prepend_path(std::env::var("PATH").ok(), bundled_bin_dirs(app)?) {
