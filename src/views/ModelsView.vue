@@ -18,6 +18,7 @@ import { useModelStore, type ModelEntry } from '@/stores/model'
 import { useSettingsStore } from '@/stores/settings'
 import { useTaskStore } from '@/stores/task'
 import { formatBytes } from '@/utils/format'
+import { buildModelCategoryOptionsFromPairs, getModelCategoryLabel } from '@/utils/modelCategory'
 
 const { t, locale } = useI18n()
 const message = useMessage()
@@ -63,19 +64,7 @@ const storageDownloadedOnly = ref(true)
 const selectedStorageModels = ref<string[]>([])
 
 const categoryOptions = computed(() => {
-  const all = [{ label: t('common.all'), value: '' }]
-  const seen = new Set<string>()
-  const items = categories.value
-    .map((cat, i) => ({
-      label: locale.value === 'zh-CN' && categoriesCn.value[i] ? categoriesCn.value[i] : cat,
-      value: cat,
-    }))
-    .filter((item) => {
-      if (!item.value || seen.has(item.value)) return false
-      seen.add(item.value)
-      return true
-    })
-  return [...all, ...items]
+  return buildModelCategoryOptionsFromPairs(categories.value, categoriesCn.value, locale.value, t('common.all'))
 })
 
 const sortedModels = computed(() => {
@@ -129,7 +118,7 @@ watch(sortedModels, (list) => {
 })
 
 function categoryLabel(model: ModelEntry) {
-  return locale.value === 'zh-CN' ? (model.categoryCn || model.category) : model.category
+  return getModelCategoryLabel(model, locale.value, '—')
 }
 
 function downloadStatusMessage(modelName: string) {

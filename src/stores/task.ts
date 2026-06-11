@@ -176,7 +176,7 @@ export const useTaskStore = defineStore('task', () => {
   const batchSize = ref(1)
   const overlapSize = ref(0)
   const chunkSize = ref(0)
-  const normalize = ref(true)
+  const normalize = ref(false)
   const maskMode = ref('')
   const useAmp = ref(false)
   const cudaAttentionBackend = ref('')

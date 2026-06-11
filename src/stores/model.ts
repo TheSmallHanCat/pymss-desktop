@@ -121,6 +121,7 @@ export const useModelStore = defineStore('model', () => {
     return models.value.filter((model) => {
       const matchesQuery = !q
         || model.name.toLowerCase().includes(q)
+        || model.aliases.some(alias => alias.toLowerCase().includes(q))
         || model.architecture.toLowerCase().includes(q)
         || model.modelType?.toLowerCase().includes(q)
         || model.targetStem.toLowerCase().includes(q)
