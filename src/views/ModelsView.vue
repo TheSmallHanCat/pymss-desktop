@@ -43,15 +43,7 @@ const {
   storageLoading,
 } = storeToRefs(modelStore)
 
-const showDetail = computed({
-  get: () => !!selectedInfo.value,
-  set: (val: boolean) => {
-    if (!val) {
-      selectedModel.value = ''
-      selectedInfo.value = null
-    }
-  },
-})
+const showDetail = ref(false)
 
 const downloadedOnly = ref(false)
 const page = ref(1)
@@ -137,9 +129,17 @@ async function loadModels() {
 }
 
 function selectModel(model: ModelEntry) {
+  showDetail.value = true
   void modelStore.selectModel(model).catch((err) => {
     message.error(err instanceof Error ? err.message : String(err))
   })
+}
+
+function handleDetailDrawerUpdate(value: boolean) {
+  showDetail.value = value
+  if (!value) {
+    selectedInfo.value = null
+  }
 }
 
 async function downloadModel(model: ModelEntry, event: MouseEvent) {
@@ -230,6 +230,7 @@ function confirmCleanupResidual() {
 }
 
 onMounted(() => {
+  showDetail.value = false
   if (!modelStore.models.length) void loadModels()
 })
 </script>
@@ -457,7 +458,7 @@ onMounted(() => {
     </div>
 
     <!-- Detail Drawer -->
-    <n-drawer v-model:show="showDetail" :width="380" placement="right">
+    <n-drawer :show="showDetail" :width="380" placement="right" @update:show="handleDetailDrawerUpdate">
       <n-drawer-content :title="t('models.detail')" closable>
         <template v-if="selectedInfo">
           <div class="detail-content">

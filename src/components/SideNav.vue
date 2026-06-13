@@ -8,6 +8,7 @@ import {
   ListOutline,
   CubeOutline,
   FolderOpenOutline,
+  LibraryOutline,
   SettingsOutline,
 } from '@vicons/ionicons5'
 
@@ -19,6 +20,7 @@ const items = computed(() => [
   { name: 'tasks', path: '/tasks', icon: ListOutline, label: t('nav.tasks') },
   { name: 'models', path: '/models', icon: CubeOutline, label: t('nav.models') },
   { name: 'results', path: '/results', icon: FolderOpenOutline, label: t('nav.results') },
+  { name: 'projects', path: '/projects', icon: LibraryOutline, label: t('nav.projects') },
   { name: 'settings', path: '/settings', icon: SettingsOutline, label: t('nav.settings') },
 ])
 </script>

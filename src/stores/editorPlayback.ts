@@ -16,6 +16,8 @@ export const useEditorPlaybackStore = defineStore('editor-playback', () => {
   const currentTime = ref(0)
   const loop = ref(false)
   const level = ref(0)
+  const masterLevel = ref<[number, number]>([0, 0])
+  const trackLevels = ref<Record<string, [number, number]>>({})
   const error = ref<string | null>(null)
   const requestId = ref(0)
 
@@ -57,6 +59,8 @@ export const useEditorPlaybackStore = defineStore('editor-playback', () => {
     }
     if (nextStatus === 'paused') {
       level.value = 0
+      masterLevel.value = [0, 0]
+      trackLevels.value = {}
     }
     return id
   }
@@ -74,6 +78,8 @@ export const useEditorPlaybackStore = defineStore('editor-playback', () => {
     intent.value = 'pause'
     status.value = 'paused'
     level.value = 0
+    masterLevel.value = [0, 0]
+    trackLevels.value = {}
     return true
   }
 
@@ -82,6 +88,8 @@ export const useEditorPlaybackStore = defineStore('editor-playback', () => {
     intent.value = 'pause'
     status.value = 'error'
     level.value = 0
+    masterLevel.value = [0, 0]
+    trackLevels.value = {}
     error.value = message
     return true
   }
@@ -94,6 +102,43 @@ export const useEditorPlaybackStore = defineStore('editor-playback', () => {
     level.value = Math.max(0, Math.min(1, normalizeNumber(value)))
   }
 
+  function normalizeStereoLevel(value: [number, number] | number[] | null | undefined): [number, number] {
+    const left = Math.max(0, Math.min(1, normalizeNumber(value?.[0] ?? 0)))
+    const right = Math.max(0, Math.min(1, normalizeNumber(value?.[1] ?? left)))
+    return [left, right]
+  }
+
+  function setMasterLevel(value: [number, number] | number[] | null | undefined) {
+    masterLevel.value = normalizeStereoLevel(value)
+  }
+
+  function setTrackLevel(trackId: string, value: [number, number] | number[] | null | undefined) {
+    if (!trackId) return
+    trackLevels.value = {
+      ...trackLevels.value,
+      [trackId]: normalizeStereoLevel(value),
+    }
+  }
+
+  function setTrackLevels(levels: Record<string, [number, number] | number[]>) {
+    const next: Record<string, [number, number]> = {}
+    for (const [trackId, value] of Object.entries(levels)) {
+      if (!trackId) continue
+      next[trackId] = normalizeStereoLevel(value)
+    }
+    trackLevels.value = next
+  }
+
+  function clearTrackLevels(activeTrackIds?: string[]) {
+    if (!activeTrackIds?.length) {
+      trackLevels.value = {}
+      return
+    }
+    const keep = new Set(activeTrackIds)
+    const next = Object.fromEntries(Object.entries(trackLevels.value).filter(([key]) => keep.has(key))) as Record<string, [number, number]>
+    trackLevels.value = next
+  }
+
   function setLoop(value: boolean) {
     loop.value = Boolean(value)
   }
@@ -104,6 +149,8 @@ export const useEditorPlaybackStore = defineStore('editor-playback', () => {
     currentTime.value = 0
     loop.value = false
     level.value = 0
+    masterLevel.value = [0, 0]
+    trackLevels.value = {}
     error.value = null
     requestId.value = 0
   }
@@ -114,6 +161,8 @@ export const useEditorPlaybackStore = defineStore('editor-playback', () => {
     currentTime,
     loop,
     level,
+    masterLevel,
+    trackLevels,
     error,
     requestId,
     transportVisualState,
@@ -131,6 +180,10 @@ export const useEditorPlaybackStore = defineStore('editor-playback', () => {
     fail,
     setCurrentTime,
     setLevel,
+    setMasterLevel,
+    setTrackLevel,
+    setTrackLevels,
+    clearTrackLevels,
     setLoop,
     reset,
   }

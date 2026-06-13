@@ -1,10 +1,12 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+import i18n, { getCurrentLocale } from '@/i18n'
 import type { SeparationTask, StemOutput } from '@/stores/task'
 import type {
   EditorExportFormat,
   EditorExportOptions,
+  EditorProjectSummary,
   EditorSession,
   EditorSource,
   EditorSourceRole,
@@ -15,6 +17,7 @@ import type {
 export type {
   EditorExportFormat,
   EditorExportOptions,
+  EditorProjectSummary,
   EditorSession,
   EditorSource,
   EditorSourceRole,
@@ -25,6 +28,7 @@ export type {
 type HistorySnapshot = {
   tracks: EditorTrack[]
   masterVolume: number
+  masterPan: number
   selectedTrackId: string | null
 }
 
@@ -106,6 +110,20 @@ function projectIdForTaskId(taskId: string) {
   return `edit_${safeProjectToken(taskId)}`
 }
 
+function blankProjectName() {
+  const locale = getCurrentLocale()
+  return String(i18n.global.t('projects.blankProjectDefaultName', {}, { locale }))
+}
+
+export function isDefaultBlankProjectName(name: string) {
+  const normalized = String(name || '').trim()
+  if (!normalized) return true
+  return normalized === '未命名工程'
+    || normalized === '未命名空工程'
+    || normalized === 'Untitled Project'
+    || normalized === 'Untitled Blank Project'
+}
+
 function stemKeyFromOutput(output: StemOutput | { stem?: string; path?: string }) {
   const raw = String(output.stem || stripExt(fileName(output.path || ''))).trim().toLowerCase()
   if (!raw) return 'other'
@@ -158,6 +176,30 @@ function normalizeSource(source: Partial<EditorSource>): EditorSource {
   }
 }
 
+function resolveAssetUrl(path: string) {
+  try {
+    return convertFileSrc(path)
+  } catch {
+    const normalized = path.replace(/\\/g, '/')
+    if (/^[a-zA-Z]:\//.test(normalized)) return `file:///${normalized}`
+    return path
+  }
+}
+
+async function loadPeaksFromCache(path?: string | null) {
+  if (!path) return null
+  try {
+    const response = await fetch(resolveAssetUrl(path))
+    if (!response.ok) return null
+    const data = await response.json() as { peaks?: unknown }
+    return Array.isArray(data.peaks)
+      ? data.peaks.map((value) => Number(value || 0))
+      : null
+  } catch {
+    return null
+  }
+}
+
 function normalizeTrack(track: Partial<EditorTrack>, source?: EditorSource): EditorTrack {
   const role = track.role === 'reference' ? 'reference' : (source?.role || 'stem')
   const stemKey = source?.stemKey || null
@@ -168,6 +210,7 @@ function normalizeTrack(track: Partial<EditorTrack>, source?: EditorSource): Edi
     name: String(track.name || source?.name || 'Track'),
     color: String(track.color || trackColor(role, stemKey)),
     volume: clamp(Number(track.volume ?? 1), 0, 2),
+    pan: clamp(Number(track.pan ?? 0), -1, 1),
     muted: Boolean(track.muted),
     solo: Boolean(track.solo),
     fadeIn: Math.max(0, Number(track.fadeIn || 0)),
@@ -190,6 +233,7 @@ function normalizeSession(session: PersistedSession): EditorSession {
     sourceTaskId: session.sourceTaskId ? String(session.sourceTaskId) : undefined,
     sourceResultDir: session.sourceResultDir ? String(session.sourceResultDir) : undefined,
     masterVolume: clamp(Number(session.masterVolume ?? 1), 0, 2),
+    masterPan: clamp(Number(session.masterPan ?? 0), -1, 1),
     sources,
     tracks,
     createdAt: Number(session.createdAt || Date.now()),
@@ -242,6 +286,7 @@ function trackToExportTrack(track: EditorTrack, source?: EditorSource) {
     name: track.name,
     type: track.role,
     volume: track.volume,
+    pan: track.pan,
     muted: track.muted,
     solo: track.solo,
     clips: [{
@@ -269,6 +314,7 @@ export const useEditorStore = defineStore('editor', () => {
   const selectedTrackId = ref<string | null>(null)
   const pixelsPerSecond = ref(96)
   const exportFormat = ref<EditorExportFormat>('wav')
+  const projectSummaries = ref<EditorProjectSummary[]>([])
 
   const undoStack = ref<HistorySnapshot[]>([])
   const redoStack = ref<HistorySnapshot[]>([])
@@ -278,6 +324,7 @@ export const useEditorStore = defineStore('editor', () => {
   const canUndo = computed(() => undoStack.value.length > 0)
   const canRedo = computed(() => redoStack.value.length > 0)
   const masterVolume = computed(() => session.value?.masterVolume ?? 1)
+  const masterPan = computed(() => session.value?.masterPan ?? 0)
 
   const sourceMap = computed(() => {
     const map = new Map<string, EditorSource>()
@@ -379,6 +426,7 @@ export const useEditorStore = defineStore('editor', () => {
     return {
       tracks: cloneTracks(session.value.tracks),
       masterVolume: session.value.masterVolume,
+      masterPan: session.value.masterPan,
       selectedTrackId: selectedTrackId.value,
     }
   }
@@ -387,6 +435,7 @@ export const useEditorStore = defineStore('editor', () => {
     if (!session.value) return
     session.value.tracks = cloneTracks(next.tracks)
     session.value.masterVolume = next.masterVolume
+    session.value.masterPan = next.masterPan
     selectedTrackId.value = next.selectedTrackId
   }
 
@@ -455,18 +504,22 @@ export const useEditorStore = defineStore('editor', () => {
     selectedTrackId.value = trackId
   }
 
+  async function requestProjectFromTask(task: SeparationTask) {
+    return invoke<PersistedSession>('create_editor_project_from_task', {
+      payload: {
+        taskId: task.id,
+        input: task.input,
+        outputDir: task.output,
+        outputs: task.outputs as StemOutput[],
+      },
+    })
+  }
+
   async function createFromTask(task: SeparationTask) {
     loading.value = true
     lastError.value = null
     try {
-      const result = await invoke<PersistedSession>('create_editor_project_from_task', {
-        payload: {
-          taskId: task.id,
-          input: task.input,
-          outputDir: task.output,
-          outputs: task.outputs as StemOutput[],
-        },
-      })
+      const result = await requestProjectFromTask(task)
       session.value = normalizeSession(result)
       selectedTrackId.value = session.value.tracks[0]?.id || null
       clearHistory()
@@ -489,13 +542,69 @@ export const useEditorStore = defineStore('editor', () => {
     return invoke<boolean>('editor_project_exists', { projectId })
   }
 
-  async function ensureProjectForTask(task: SeparationTask) {
+  async function ensureProjectForTask(task: SeparationTask, options?: { loadIntoSession?: boolean }) {
+    const loadIntoSession = options?.loadIntoSession ?? true
     const projectId = projectIdForTaskId(task.id)
     const exists = await projectExists(projectId)
     if (exists) {
       return { id: projectId }
     }
+    if (!loadIntoSession) {
+      const result = await requestProjectFromTask(task)
+      const normalized = normalizeSession(result)
+      return { id: normalized.id }
+    }
     return createFromTask(task)
+  }
+
+  async function listProjects() {
+    const result = await invoke<EditorProjectSummary[]>('list_editor_projects')
+    projectSummaries.value = [...(result || [])].sort((a, b) => b.updatedAt - a.updatedAt)
+    return projectSummaries.value
+  }
+
+  async function refreshProjects() {
+    return listProjects()
+  }
+
+  async function createBlankProject(name?: string) {
+    const locale = getCurrentLocale()
+    const result = await invoke<PersistedSession>('create_blank_editor_project', {
+      payload: {
+        name: name?.trim() || blankProjectName(),
+        locale,
+      },
+    })
+    const normalized = normalizeSession(result)
+    const summary: EditorProjectSummary = {
+      id: normalized.id,
+      name: normalized.name,
+      sourceTaskId: normalized.sourceTaskId,
+      sourceResultDir: normalized.sourceResultDir,
+      createdAt: normalized.createdAt,
+      updatedAt: normalized.updatedAt,
+      type: normalized.sourceTaskId ? 'task' : 'blank',
+    }
+    projectSummaries.value = [summary, ...projectSummaries.value.filter((item) => item.id !== summary.id)]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+    return normalized
+  }
+
+  async function deleteProject(projectId: string) {
+    const result = await invoke<boolean>('delete_editor_project', { projectId })
+    projectSummaries.value = projectSummaries.value.filter((item) => item.id !== projectId)
+    if (session.value?.id === projectId) {
+      session.value = null
+      selectedTrackId.value = null
+      clearHistory()
+    }
+    return result
+  }
+
+  function clearSession() {
+    session.value = null
+    selectedTrackId.value = null
+    clearHistory()
   }
 
   async function loadProject(projectId: string) {
@@ -504,6 +613,7 @@ export const useEditorStore = defineStore('editor', () => {
     try {
       const result = await invoke<PersistedSession>('load_editor_project', { projectId })
       session.value = normalizeSession(result)
+      await hydratePeaksFromCache(session.value.id)
       selectedTrackId.value = session.value.tracks[0]?.id || null
       clearHistory()
       const currentProjectId = session.value.id
@@ -539,6 +649,13 @@ export const useEditorStore = defineStore('editor', () => {
     if (!session.value) return null
     const source = session.value.sources.find((item) => item.id === sourceId)
     if (!source || hasPeaks(source.peaks)) return source || null
+
+    const cachedPeaks = await loadPeaksFromCache(source.peaksPath)
+    if (cachedPeaks?.length) {
+      source.peaks = cachedPeaks
+      return source
+    }
+
     const pending = pendingPeaks.get(sourceId)
     if (pending) return pending
     const projectId = session.value.id
@@ -605,20 +722,23 @@ export const useEditorStore = defineStore('editor', () => {
     let changed = false
     const sources = [...session.value.sources]
 
-    for (const source of sources) {
-      if (!session.value || session.value.id !== projectId) break
+    await runLimited(sources, 2, async (source) => {
+      if (!session.value || session.value.id !== projectId) return
 
-      const beforeMetadata = {
+      const before = {
         name: source.name,
         duration: source.duration,
         sampleRate: source.sampleRate,
         channels: source.channels,
         peaksPath: source.peaksPath || null,
+        peaksCount: source.peaks?.length || 0,
       }
 
-      if (!source.duration || !source.sampleRate) {
+      if (!hasPeaks(source.peaks)) {
+        await ensurePeaks(source.id)
+      } else if (!source.duration || !source.sampleRate) {
         const metadata = await getMetadata(source.path).catch(() => null)
-        if (!session.value || session.value.id !== projectId) break
+        if (!session.value || session.value.id !== projectId) return
         if (metadata) {
           source.name = metadata.name || source.name
           source.duration = Number(metadata.duration || source.duration)
@@ -628,19 +748,30 @@ export const useEditorStore = defineStore('editor', () => {
       }
 
       if (
-        source.name !== beforeMetadata.name
-        || source.duration !== beforeMetadata.duration
-        || source.sampleRate !== beforeMetadata.sampleRate
-        || source.channels !== beforeMetadata.channels
-        || (source.peaksPath || null) !== beforeMetadata.peaksPath
+        source.name !== before.name
+        || source.duration !== before.duration
+        || source.sampleRate !== before.sampleRate
+        || source.channels !== before.channels
+        || (source.peaksPath || null) !== before.peaksPath
+        || (source.peaks?.length || 0) !== before.peaksCount
       ) {
         changed = true
       }
-    }
-
-    await ensurePeaksForAllSources(projectId)
+    })
 
     return changed
+  }
+
+  async function hydratePeaksFromCache(projectId = session.value?.id || '') {
+    if (!session.value || !projectId || session.value.id !== projectId) return
+    const sources = [...session.value.sources]
+    await Promise.allSettled(sources.map(async (source) => {
+      if (hasPeaks(source.peaks)) return
+      const cachedPeaks = await loadPeaksFromCache(source.peaksPath)
+      if (cachedPeaks?.length && session.value?.id === projectId) {
+        source.peaks = cachedPeaks
+      }
+    }))
   }
 
   async function addReferenceSourceByPath(path: string) {
@@ -693,6 +824,7 @@ export const useEditorStore = defineStore('editor', () => {
       name: stripExt(source.name),
       color: duplicatedTrackColor(source),
       volume: 1,
+      pan: 0,
       muted: false,
       solo: false,
       fadeIn: 0,
@@ -755,6 +887,13 @@ export const useEditorStore = defineStore('editor', () => {
     if (interactionDepth.value === 0) scheduleSave()
   }
 
+  function setTrackPan(trackId: string, value: number) {
+    const track = session.value?.tracks.find((item) => item.id === trackId)
+    if (!track) return
+    track.pan = clamp(Number(value), -1, 1)
+    if (interactionDepth.value === 0) scheduleSave()
+  }
+
   function setTrackFades(trackId: string, patch: { fadeIn?: number; fadeOut?: number }) {
     const track = session.value?.tracks.find((item) => item.id === trackId)
     if (!track) return
@@ -769,6 +908,12 @@ export const useEditorStore = defineStore('editor', () => {
   function setMasterVolume(value: number) {
     if (!session.value) return
     session.value.masterVolume = clamp(Number(value), 0, 2)
+    if (interactionDepth.value === 0) scheduleSave()
+  }
+
+  function setMasterPan(value: number) {
+    if (!session.value) return
+    session.value.masterPan = clamp(Number(value), -1, 1)
     if (interactionDepth.value === 0) scheduleSave()
   }
 
@@ -823,6 +968,7 @@ export const useEditorStore = defineStore('editor', () => {
             id: session.value.id,
             name: session.value.name,
             masterVolume: session.value.masterVolume,
+            masterPan: session.value.masterPan,
             assets: session.value.sources.map(sourceToExportAsset),
             tracks: session.value.tracks.map((track) => trackToExportTrack(track, sourceMap.value.get(track.sourceId))),
           },
@@ -839,7 +985,7 @@ export const useEditorStore = defineStore('editor', () => {
   }
 
   function setZoom(value: number) {
-    pixelsPerSecond.value = clamp(Math.round(value), 4, 240)
+    pixelsPerSecond.value = clamp(Number(value), 4, 240)
   }
 
   function zoomIn() {
@@ -857,6 +1003,7 @@ export const useEditorStore = defineStore('editor', () => {
     exporting,
     lastExport,
     lastError,
+    projectSummaries,
     selectedTrackId,
     selectedTrack,
     selectedSource,
@@ -867,6 +1014,7 @@ export const useEditorStore = defineStore('editor', () => {
     pixelsPerSecond,
     exportFormat,
     masterVolume,
+    masterPan,
     canUndo,
     canRedo,
     duration,
@@ -880,6 +1028,11 @@ export const useEditorStore = defineStore('editor', () => {
     flushSave,
     createFromTask,
     ensureProjectForTask,
+    listProjects,
+    refreshProjects,
+    createBlankProject,
+    deleteProject,
+    clearSession,
     openProjectWindow,
     projectExists,
     loadProject,
@@ -887,6 +1040,7 @@ export const useEditorStore = defineStore('editor', () => {
     getMetadata,
     ensurePeaks,
     ensurePeaksInBackground,
+    hydratePeaksFromCache,
     hydrateSessionSources,
     hydrateSessionSourcesInBackground,
     ensureSourceByPath,
@@ -896,8 +1050,10 @@ export const useEditorStore = defineStore('editor', () => {
     renameTrack,
     toggleTrackFlag,
     setTrackVolume,
+    setTrackPan,
     setTrackFades,
     setMasterVolume,
+    setMasterPan,
     removeTrack,
     removeSource,
     exportMix,

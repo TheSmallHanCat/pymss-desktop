@@ -1,4 +1,4 @@
-import { onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { MessageApiInjection } from 'naive-ui/es/message/src/MessageProvider'
@@ -8,7 +8,7 @@ import type { useEditorStore } from '@/stores/editor'
 type EditorStore = ReturnType<typeof useEditorStore>
 
 type UseEditorProjectBridgeOptions = {
-  routeProjectId: string
+  routeProjectId: Ref<string>
   hasTauriApis: boolean
   editor: EditorStore
   assetPanelEl: Ref<HTMLElement | null>
@@ -62,10 +62,6 @@ export function useEditorProjectBridge(options: UseEditorProjectBridgeOptions) {
   }
 
   onMounted(async () => {
-    if (routeProjectId && hasTauriApis) {
-      await handleProjectLoad(routeProjectId)
-    }
-
     if (!hasTauriApis) return
 
     try {
@@ -95,6 +91,12 @@ export function useEditorProjectBridge(options: UseEditorProjectBridgeOptions) {
       void handleProjectLoad(event.payload.projectId)
     })
   })
+
+  watch(routeProjectId, (projectId, previousProjectId) => {
+    if (!hasTauriApis) return
+    if (!projectId || projectId === previousProjectId) return
+    void handleProjectLoad(projectId)
+  }, { immediate: true })
 
   onBeforeUnmount(() => {
     unlistenDrop?.()

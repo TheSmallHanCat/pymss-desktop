@@ -77,7 +77,7 @@ function openResultDir(item: SeparationTask) {
 
 async function openInEditor(item: SeparationTask) {
   try {
-    const project = await editor.ensureProjectForTask(item)
+    const project = await editor.ensureProjectForTask(item, { loadIntoSession: false })
     await editor.openProjectWindow(project.id)
   } catch (error) {
     message.error(error instanceof Error ? error.message : t('editor.notFound'))
@@ -195,7 +195,7 @@ function formatTime(value: number) {
               <span>{{ item.outputs.length }} stem</span>
               <span class="result-row__time"><n-icon :component="TimeOutline" /> {{ formatTime(item.updatedAt) }}</span>
             </span>
-            <code>{{ shortenPath(item.output) }}</code>
+            <span class="result-row__path">{{ shortenPath(item.output) }}</span>
           </span>
 
           <span class="result-row__toggle" :class="{ 'result-row__toggle--open': isExpanded(item.id) }">
@@ -218,7 +218,7 @@ function formatTime(value: number) {
           <div class="result-row__details">
             <div v-for="output in item.outputs" :key="output.path" class="stem-line">
               <span>{{ output.stem }}</span>
-              <code>{{ output.path }}</code>
+              <span class="stem-line__path">{{ output.path }}</span>
             </div>
           </div>
         </n-collapse-transition>
@@ -318,12 +318,13 @@ function formatTime(value: number) {
   line-height: 1.25;
 }
 
-.result-row__body code {
+.result-row__path {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--on-surface-muted);
   font-size: 12px;
+  font-family: inherit;
 }
 
 .result-row__meta {
@@ -386,13 +387,14 @@ function formatTime(value: number) {
   font-weight: 600;
 }
 
-.stem-line code {
+.stem-line__path {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--on-surface-muted);
   font-size: 12px;
+  font-family: inherit;
 }
 
 .results-empty {

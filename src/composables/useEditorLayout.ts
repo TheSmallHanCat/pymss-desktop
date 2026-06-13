@@ -70,12 +70,12 @@ export function useEditorLayout(options: UseEditorLayoutOptions) {
     return shellEl.value?.clientWidth || window.innerWidth || 0
   }
 
-  function getVisibleHandleWidth() {
-    return inspectorVisible.value ? resizerWidth : 0
-  }
-
   function getVisibleAssetHandleWidth() {
     return assetResizerVisible.value ? resizerWidth : 0
+  }
+
+  function getVisibleHandleWidth() {
+    return inspectorVisible.value ? resizerWidth : 0
   }
 
   function getAvailableSidebarWidth() {

@@ -32,7 +32,14 @@ const runningTasks = computed(() => task.runningTasks)
 const historyTasks = computed(() => task.tasks.filter((item) => terminalStatuses.includes(item.status)))
 
 function formatTime(value: number) {
-  return new Date(value).toLocaleString()
+  const date = new Date(value)
+  const now = new Date()
+  const sameDay =
+    date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate()
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return sameDay ? time : `${date.toLocaleDateString()} ${time}`
 }
 
 function openLogs(item: SeparationTask) {
@@ -235,9 +242,9 @@ onMounted(() => {
     <template v-else>
       <section class="tasks-section">
         <div class="tasks-section__title">
-          <div>
-            <h2>{{ t('tasks.runningTitle', { count: runningTasks.length }) }}</h2>
-            <p>{{ t('tasks.runningDescription') }}</p>
+          <div class="tasks-section__heading">
+            <h2>{{ t('tasks.runningTitle') }}</h2>
+            <span class="tasks-section__count">{{ runningTasks.length }}</span>
           </div>
         </div>
 
@@ -335,9 +342,9 @@ onMounted(() => {
 
       <section class="tasks-section">
         <div class="tasks-section__title">
-          <div>
-            <h2>{{ t('tasks.historyTitle', { count: historyTasks.length }) }}</h2>
-            <p>{{ t('tasks.historyDescription') }}</p>
+          <div class="tasks-section__heading">
+            <h2>{{ t('tasks.historyTitle') }}</h2>
+            <span class="tasks-section__count">{{ historyTasks.length }}</span>
           </div>
           <n-button text type="primary" @click="historyExpanded = !historyExpanded">
             {{ historyExpanded ? t('tasks.collapse') : t('tasks.expand') }}
@@ -429,9 +436,15 @@ onMounted(() => {
 
 .tasks-section__title {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.tasks-section__heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .tasks-section__title h2 {
@@ -439,10 +452,20 @@ onMounted(() => {
   font-size: 18px;
 }
 
-.tasks-section__title p {
-  margin: 6px 0 0;
-  font-size: 13px;
-  color: var(--on-surface-muted);
+.tasks-section__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--primary-strong);
+  background: var(--primary-soft);
+  box-shadow: inset 0 0 0 1px var(--primary-border);
 }
 
 .tasks-list {
@@ -500,9 +523,16 @@ onMounted(() => {
   gap: 16px;
   align-items: center;
   padding: 14px 16px;
-  border-radius: 14px;
+  border-radius: 16px;
   border: 1px solid var(--outline);
-  background: rgba(255,255,255,0.02);
+  background: var(--surface-1);
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.tasks-history-row:hover {
+  border-color: var(--primary-border);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--primary-glow) 26%, transparent);
+  transform: translateY(-1px);
 }
 
 .tasks-history-row__main {
@@ -573,7 +603,14 @@ onMounted(() => {
   min-width: 0;
 }
 
+.task-progress-head__main > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .task-progress-head__detail {
+  flex-shrink: 0;
   color: var(--on-surface-muted);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -636,7 +673,7 @@ onMounted(() => {
   gap: 12px;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1080px) {
   .tasks-history-row {
     grid-template-columns: 1fr;
   }

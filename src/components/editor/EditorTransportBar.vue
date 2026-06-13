@@ -5,6 +5,7 @@ import {
   ArrowRedoOutline,
   ArrowUndoOutline,
   DownloadOutline,
+  StopOutline,
   RefreshOutline,
   RepeatOutline,
   SaveOutline,
@@ -13,11 +14,9 @@ import {
 } from '@vicons/ionicons5'
 import { formatTime } from '@/utils/editorTime'
 import type { TransportPendingAction, TransportVisualState } from '@/stores/editorPlayback'
-import AppBrandMark from '@/components/AppBrandMark.vue'
 
 const props = defineProps<{
   sessionName: string
-  sessionHint: string
   trackCount: number
   currentTime: number
   duration: number
@@ -26,20 +25,25 @@ const props = defineProps<{
   transportCanToggle: boolean
   loop: boolean
   masterVolume: number
-  saving: boolean
-  exporting: boolean
+  masterPan: number
   canUndo: boolean
   canRedo: boolean
+  saving: boolean
+  exporting: boolean
   disabled: boolean
 }>()
 
 const emit = defineEmits<{
   reset: []
   toggleTransport: []
+  stop: []
   'update:loop': [value: boolean]
   'update:masterVolume': [value: number]
   beginMasterVolume: []
   commitMasterVolume: []
+  'update:masterPan': [value: number]
+  beginMasterPan: []
+  commitMasterPan: []
   undo: []
   redo: []
   save: []
@@ -48,7 +52,6 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-const volumeIcon = computed(() => props.masterVolume <= 0.01 ? VolumeMuteOutline : VolumeMediumOutline)
 const optimisticVisualState = ref<TransportVisualState | null>(null)
 const renderedVisualState = computed<TransportVisualState>(() => optimisticVisualState.value || props.transportVisualState)
 const showPauseButton = computed(() => renderedVisualState.value === 'pause')
@@ -56,6 +59,16 @@ const isStarting = computed(() => props.transportPendingAction === 'starting')
 const isPausing = computed(() => props.transportPendingAction === 'pausing')
 const transportLabel = computed(() => (showPauseButton.value ? t('common.pause') : t('common.resume')))
 const transportPressed = ref(false)
+const sessionMeta = computed(() => `${props.trackCount} ${t('editor.tracks')}`)
+const timecode = computed(() => `${formatTime(props.currentTime)} / ${formatTime(props.duration)}`)
+const volumeIcon = computed(() => props.masterVolume <= 0.01 ? VolumeMuteOutline : VolumeMediumOutline)
+
+function formatTrackPan(value: number) {
+  const pan = Number(value || 0)
+  if (Math.abs(pan) < 0.025) return t('editor.panCenter')
+  const amount = Math.round(Math.abs(pan) * 100)
+  return pan < 0 ? `${t('editor.panLeft')} ${amount}` : `${t('editor.panRight')} ${amount}`
+}
 
 watch(() => props.transportVisualState, (value) => {
   if (optimisticVisualState.value === value) {
@@ -75,30 +88,37 @@ function handleTransportPointerDown(event: PointerEvent) {
 function clearTransportPressed() {
   transportPressed.value = false
 }
-
-function handleTransportClick() {
-  if (props.disabled || !props.transportCanToggle) return
-  optimisticVisualState.value = showPauseButton.value ? 'play' : 'pause'
-  emit('toggleTransport')
-}
 </script>
 
 <template>
   <header class="editor-transport">
     <div class="editor-transport__brand">
-      <AppBrandMark :size="34" shadow />
-      <div class="brand-copy">
-        <strong>{{ sessionName }}</strong>
-        <span>{{ sessionHint }}</span>
-      </div>
+      <strong>{{ sessionName }}</strong>
+      <span class="editor-transport__brand-meta">{{ sessionMeta }}</span>
     </div>
 
     <div class="editor-transport__center">
       <div class="transport-controls">
-        <button class="transport-chip" type="button" :disabled="disabled" @click="emit('undo')">
+        <button
+          class="transport-chip"
+          type="button"
+          :title="t('common.undo')"
+          :aria-label="t('common.undo')"
+          :disabled="disabled || !canUndo"
+          @click="emit('undo')"
+        >
+          <span class="sr-only">{{ t('common.undo') }}</span>
           <n-icon :component="ArrowUndoOutline" />
         </button>
-        <button class="transport-chip" type="button" :disabled="disabled" @click="emit('redo')">
+        <button
+          class="transport-chip"
+          type="button"
+          :title="t('common.redo')"
+          :aria-label="t('common.redo')"
+          :disabled="disabled || !canRedo"
+          @click="emit('redo')"
+        >
+          <span class="sr-only">{{ t('common.redo') }}</span>
           <n-icon :component="ArrowRedoOutline" />
         </button>
         <button
@@ -115,7 +135,7 @@ function handleTransportClick() {
           @pointercancel="clearTransportPressed"
           @pointerleave="clearTransportPressed"
           @blur="clearTransportPressed"
-          @click="handleTransportClick"
+          @click="emit('toggleTransport')"
         >
           <svg v-if="showPauseButton" viewBox="0 0 24 24" aria-hidden="true">
             <rect x="6" y="5" width="4" height="14" rx="1.2" />
@@ -124,33 +144,82 @@ function handleTransportClick() {
           <svg v-else viewBox="0 0 24 24" aria-hidden="true">
             <path d="M8 5.5v13l10-6.5z" />
           </svg>
-          <span v-if="isStarting" class="transport-play__ring" aria-hidden="true" />
-          <span v-if="isPausing" class="transport-play__pulse" aria-hidden="true" />
         </button>
-        <button class="transport-chip" type="button" :disabled="disabled" @click="emit('reset')">
+        <button
+          class="transport-chip"
+          type="button"
+          :title="t('common.stop')"
+          :aria-label="t('common.stop')"
+          :disabled="disabled"
+          @click="emit('stop')"
+        >
+          <n-icon :component="StopOutline" />
+        </button>
+        <button
+          class="transport-chip"
+          type="button"
+          :title="t('common.reset')"
+          :aria-label="t('common.reset')"
+          :disabled="disabled"
+          @click="emit('reset')"
+        >
           <n-icon :component="RefreshOutline" />
         </button>
-        <button class="transport-chip" type="button" :class="{ 'transport-chip--active': loop }" :disabled="disabled" @click="emit('update:loop', !loop)">
+        <button
+          class="transport-chip"
+          type="button"
+          :class="{ 'transport-chip--active': loop }"
+          :title="t('common.loop')"
+          :aria-label="t('common.loop')"
+          :aria-pressed="loop"
+          :disabled="disabled"
+          @click="emit('update:loop', !loop)"
+        >
           <n-icon :component="RepeatOutline" />
         </button>
       </div>
 
+      <div class="transport-timecode">
+        <code>{{ timecode }}</code>
+      </div>
     </div>
 
     <div class="editor-transport__actions">
       <div class="master-strip">
-        <n-icon :component="volumeIcon" />
-        <n-slider
-          :value="masterVolume"
-          :min="0"
-          :max="2"
-          :step="0.01"
-          :tooltip="false"
-          :disabled="disabled"
-          @update:value="(value: number) => emit('update:masterVolume', value)"
-          @dragstart="emit('beginMasterVolume')"
-          @dragend="emit('commitMasterVolume')"
-        />
+        <div class="master-strip__row">
+          <span class="master-strip__label">{{ t('editor.masterVolume') }}</span>
+          <div class="master-strip__control">
+            <n-icon :component="volumeIcon" />
+            <n-slider
+              :value="masterVolume"
+              :min="0"
+              :max="2"
+              :step="0.01"
+              :tooltip="false"
+              :disabled="disabled"
+              @update:value="(value: number) => emit('update:masterVolume', value)"
+              @dragstart="emit('beginMasterVolume')"
+              @dragend="emit('commitMasterVolume')"
+            />
+          </div>
+        </div>
+        <div class="master-strip__row">
+          <span class="master-strip__label">{{ t('editor.balanceShort') }}</span>
+          <div class="master-strip__pan">
+            <span class="master-strip__pan-value">{{ formatTrackPan(masterPan) }}</span>
+            <n-slider
+              :value="masterPan"
+              :min="-1"
+              :max="1"
+              :step="0.01"
+              :tooltip="false"
+              :disabled="disabled"
+              @update:value="(value: number) => emit('update:masterPan', value)"
+              @dragstart="emit('beginMasterPan')"
+              @dragend="emit('commitMasterPan')"
+            />
+          </div>
+        </div>
       </div>
       <n-button secondary size="small" :loading="saving" :disabled="disabled" @click="emit('save')">
         <template #icon><n-icon :component="SaveOutline" /></template>
@@ -167,64 +236,66 @@ function handleTransportClick() {
 <style scoped>
 .editor-transport {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto minmax(320px, 1fr);
+  grid-template-columns: 220px minmax(340px, 1fr) 360px;
   align-items: center;
-  gap: 16px;
-  padding: 14px 18px;
+  gap: 14px;
+  height: 46px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--outline);
-  background: linear-gradient(180deg, rgba(255,255,255,0.03), transparent 70%), var(--surface-1);
+  background: var(--surface);
 }
 
 .editor-transport__brand,
-.editor-transport__actions,
-.editor-transport__center {
+.editor-transport__center,
+.editor-transport__actions {
   min-width: 0;
 }
 
 .editor-transport__brand {
   display: flex;
   align-items: center;
-  gap: 12px;
-}
-
-.brand-mark {
-  width: 34px;
-  height: 34px;
-}
-
-.brand-copy {
+  gap: 8px;
   min-width: 0;
-  display: grid;
-  gap: 3px;
 }
 
-.brand-copy strong,
-.brand-copy span {
+.editor-transport__brand strong,
+.editor-transport__brand-meta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.brand-copy strong {
-  font-size: 15px;
+.editor-transport__brand strong {
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.brand-copy span {
+.editor-transport__brand-meta {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--outline) 44%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2) 80%, transparent);
   color: var(--on-surface-muted);
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .editor-transport__center {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 12px;
+  min-width: 0;
 }
 
 .transport-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .transport-chip,
@@ -234,13 +305,36 @@ function handleTransportClick() {
 }
 
 .transport-chip {
-  width: 34px;
-  height: 34px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
-  border-radius: 10px;
+  border-radius: 6px;
   color: var(--on-surface-muted);
+  background: transparent;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.transport-chip:not(:disabled):hover {
+  color: var(--on-surface);
   background: var(--surface-2);
+}
+
+.transport-chip:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .transport-chip--active {
@@ -249,27 +343,26 @@ function handleTransportClick() {
 }
 
 .transport-play {
-  width: 46px;
-  height: 46px;
+  width: 34px;
+  height: 34px;
   display: grid;
   place-items: center;
   position: relative;
-  border-radius: 14px;
+  border-radius: 8px;
   color: #fff;
-  background: linear-gradient(135deg, #ff7b54, #f2b45a);
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.18);
+  background: var(--primary);
+  box-shadow: none;
   padding: 0;
-  transition: transform 140ms ease, box-shadow 160ms ease, opacity 140ms ease;
+  transition: transform 140ms ease, background 140ms ease, opacity 140ms ease;
 }
 
 .transport-play:not(:disabled):hover {
   transform: translateY(-1px);
-  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.22);
+  background: color-mix(in srgb, var(--primary) 88%, white);
 }
 
 .transport-play[data-pressed='true'] {
-  transform: translateY(0) scale(0.96);
-  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+  transform: translateY(0) scale(0.97);
 }
 
 .transport-play:disabled {
@@ -286,96 +379,94 @@ function handleTransportClick() {
 }
 
 .transport-play svg {
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   fill: currentColor;
   transition: transform 160ms ease, opacity 140ms ease;
 }
 
-.transport-play__ring,
-.transport-play__pulse {
-  position: absolute;
-  inset: 6px;
-  border-radius: inherit;
-  pointer-events: none;
+.transport-timecode {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.transport-play__ring {
-  border: 2px solid rgba(255,255,255,0.22);
-  border-top-color: rgba(255,255,255,0.94);
-  animation: transport-spin 0.9s linear infinite, transport-breathe 1.1s ease-in-out infinite;
-}
-
-.transport-play__pulse {
-  border: 2px solid rgba(255,255,255,0.28);
-  animation: transport-fade-pulse 220ms ease-out;
-}
-
-@keyframes transport-spin {
-  to { transform: rotate(360deg); }
-}
-
-@keyframes transport-breathe {
-  0%, 100% { opacity: 0.48; }
-  50% { opacity: 1; }
-}
-
-@keyframes transport-fade-pulse {
-  from {
-    opacity: 0.72;
-    transform: scale(0.84);
-  }
-  to {
-    opacity: 0;
-    transform: scale(1.1);
-  }
-}
-
-.transport-spinner {
-  width: 16px;
-  height: 16px;
-  border: 2px solid rgba(255,255,255,0.34);
-  border-top-color: #fff;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+.transport-timecode code {
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  color: color-mix(in srgb, var(--on-surface) 88%, var(--on-surface-muted));
+  font-family: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .editor-transport__actions {
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  min-width: 0;
 }
 
 .master-strip {
-  width: 144px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 14px;
-  background: var(--surface-2);
+  min-width: 180px;
+  display: grid;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--outline) 44%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
 }
 
-@media (max-width: 1200px) {
+.master-strip__row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.master-strip__label {
+  color: var(--on-surface-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.master-strip__control,
+.master-strip__pan {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.master-strip__pan {
+  gap: 8px;
+}
+
+.master-strip__pan-value {
+  width: 34px;
+  flex-shrink: 0;
+  color: var(--on-surface-muted);
+  font-size: 10px;
+  text-align: right;
+}
+
+@media (max-width: 1280px) {
   .editor-transport {
     grid-template-columns: 1fr;
+    height: auto;
+    padding-block: 8px;
   }
 
-  .editor-transport__center {
+  .editor-transport__center,
+  .editor-transport__actions {
     justify-content: flex-start;
-  }
-
-  .transport-controls {
-    flex-wrap: wrap;
   }
 
   .editor-transport__actions {
-    justify-content: flex-start;
     flex-wrap: wrap;
   }
 }

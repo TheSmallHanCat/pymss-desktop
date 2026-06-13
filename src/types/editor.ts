@@ -33,6 +33,7 @@ export type EditorTrack = {
   name: string
   color?: string | null
   volume: number
+  pan: number
   muted: boolean
   solo: boolean
   fadeIn: number
@@ -47,10 +48,21 @@ export type EditorSession = {
   sourceTaskId?: string
   sourceResultDir?: string
   masterVolume: number
+  masterPan: number
   sources: EditorSource[]
   tracks: EditorTrack[]
   createdAt: number
   updatedAt: number
+}
+
+export type EditorProjectSummary = {
+  id: string
+  name: string
+  sourceTaskId?: string
+  sourceResultDir?: string
+  createdAt: number
+  updatedAt: number
+  type: 'task' | 'blank'
 }
 
 export type EditorAsset = EditorSource

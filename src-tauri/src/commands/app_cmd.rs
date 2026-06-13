@@ -213,6 +213,19 @@ fn editor_project_assets_dir(app: &AppHandle, project_id: &str) -> AppResult<Pat
     Ok(editor_project_dir(app, project_id)?.join("assets"))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorProjectSummary {
+    id: String,
+    name: String,
+    source_task_id: Option<String>,
+    source_result_dir: Option<String>,
+    created_at: u64,
+    updated_at: u64,
+    #[serde(rename = "type")]
+    project_type: String,
+}
+
 fn now_millis() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -374,6 +387,52 @@ fn migrate_editor_project_asset_paths(app: &AppHandle, project: &mut Value) -> A
     Ok(changed)
 }
 
+fn summary_from_project_value(project: &Value, fallback_id: &str) -> EditorProjectSummary {
+    let id = project
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(fallback_id)
+        .to_string();
+    let source_task_id = project
+        .get("sourceTaskId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty());
+    let source_result_dir = project
+        .get("sourceResultDir")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty());
+    let project_type = if source_task_id.is_some() || source_result_dir.is_some() {
+        "task"
+    } else {
+        "blank"
+    }
+    .to_string();
+
+    EditorProjectSummary {
+        id: id.clone(),
+        name: project
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("Untitled Project")
+            .to_string(),
+        source_task_id,
+        source_result_dir,
+        created_at: project
+            .get("createdAt")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        updated_at: project
+            .get("updatedAt")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        project_type,
+    }
+}
+
 fn stem_rank(stem: &str) -> usize {
     let lower = stem.to_ascii_lowercase();
     if lower.contains("vocal") || lower.contains("voice") {
@@ -520,10 +579,19 @@ pub async fn create_editor_project_from_task(app: AppHandle, payload: Value) -> 
 
     let project_id = format!("edit_{}", safe_file_name(task_id));
     let timestamp = now_millis();
-    let mut imported_paths: Vec<(String, String)> = Vec::new();
+    let mut imported_paths: Vec<(String, String)> = Vec::with_capacity(paths.len());
     for (stem, path) in paths {
-        let imported = import_audio_file_to_project(&app, &project_id, Path::new(&path), None)?;
-        imported_paths.push((stem, imported.to_string_lossy().to_string()));
+        let imported_path = {
+            let source_path = PathBuf::from(&path);
+            if source_path.is_file() {
+                import_audio_file_to_project(&app, &project_id, &source_path, None)?
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                path.clone()
+            }
+        };
+        imported_paths.push((stem, imported_path));
     }
 
     let sources: Vec<Value> = imported_paths
@@ -576,6 +644,91 @@ pub async fn create_editor_project_from_task(app: AppHandle, payload: Value) -> 
         "updatedAt": timestamp
     });
     write_editor_project(&app, &project)
+}
+
+#[tauri::command]
+pub async fn list_editor_projects(app: AppHandle) -> AppResult<Vec<EditorProjectSummary>> {
+    let root = editor_projects_root(&app)?;
+    std::fs::create_dir_all(&root)?;
+
+    let mut items = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+
+        let fallback_id = entry.file_name().to_string_lossy().to_string();
+        let project_path = entry.path().join("project.json");
+        if !project_path.is_file() {
+            continue;
+        }
+
+        let content = match std::fs::read_to_string(&project_path) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+        let project: Value = match serde_json::from_str(&content) {
+            Ok(project) => project,
+            Err(_) => continue,
+        };
+        items.push(summary_from_project_value(&project, &fallback_id));
+    }
+
+    items.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| b.created_at.cmp(&a.created_at))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(items)
+}
+
+#[tauri::command]
+pub async fn create_blank_editor_project(app: AppHandle, payload: Value) -> AppResult<Value> {
+    let custom_name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let locale = payload
+        .get("locale")
+        .and_then(Value::as_str)
+        .unwrap_or("zh-CN");
+    let default_name = if locale == "en" {
+        "Untitled Blank Project"
+    } else {
+        "未命名空工程"
+    };
+    let timestamp = now_millis() as u64;
+    let project_id = format!("edit_blank_{}", timestamp);
+    let project = serde_json::json!({
+        "version": 2,
+        "id": project_id,
+        "name": custom_name.unwrap_or(default_name),
+        "masterVolume": 1,
+        "sources": [],
+        "tracks": [],
+        "createdAt": timestamp,
+        "updatedAt": timestamp
+    });
+    write_editor_project(&app, &project)
+}
+
+#[tauri::command]
+pub async fn delete_editor_project(app: AppHandle, project_id: String) -> AppResult<bool> {
+    let label = format!("editor-{}", safe_file_name(&project_id));
+    if app.get_webview_window(&label).is_some() {
+        return Err(AppError::Worker("请先关闭该工程窗口后再删除".into()));
+    }
+
+    let project_dir = editor_project_dir(&app, &project_id)?;
+    if !project_dir.exists() {
+        return Ok(false);
+    }
+
+    std::fs::remove_dir_all(project_dir)?;
+    Ok(true)
 }
 
 #[tauri::command]

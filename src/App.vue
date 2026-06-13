@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { darkTheme } from 'naive-ui'
 import TitleBar from '@/components/TitleBar.vue'
 import SideNav from '@/components/SideNav.vue'
@@ -11,11 +12,12 @@ import { useI18n } from 'vue-i18n'
 
 const settings = useSettingsStore()
 const app = useAppStore()
+const route = useRoute()
 const { t } = useI18n()
 const bootReady = ref(false)
 
 const isDark = computed(() => resolvedIsDark(settings.themeMode))
-const isEditorRoute = computed(() => location.hash.startsWith('#/editor'))
+const isEditorRoute = computed(() => route.path === '/editor')
 const resolvedTheme = computed(() => getResolvedThemeTokens(settings.themeMode, settings.themeAccent))
 
 onMounted(() => {

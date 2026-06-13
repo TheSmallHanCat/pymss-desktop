@@ -29,4 +29,9 @@ export function setLocale(locale: SupportedLocale) {
   document.documentElement.lang = locale
 }
 
+export function getCurrentLocale(): SupportedLocale {
+  const current = (i18n.global.locale as any)?.value ?? i18n.global.locale
+  return current === 'en' ? 'en' : 'zh-CN'
+}
+
 export default i18n

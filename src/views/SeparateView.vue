@@ -7,7 +7,6 @@ import { useMessage } from 'naive-ui'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
-  DocumentTextOutline,
   CubeOutline,
   CheckmarkCircle,
   PlayOutline,
@@ -267,7 +266,7 @@ async function start() {
     <div class="workspace-grid">
       <section class="config-panel config-panel--input">
         <div class="panel-heading">
-          <div class="panel-heading__icon"><n-icon :component="DocumentTextOutline" /></div>
+          <div class="panel-heading__icon"><n-icon :component="MusicalNotesOutline" /></div>
           <div>
             <h2>{{ t('separate.input') }}</h2>
             <p>{{ t('separate.inputPanelHint') }}</p>
@@ -305,7 +304,7 @@ async function start() {
               <n-icon :component="MusicalNotesOutline" class="candidate__item-icon" />
               <div class="candidate__item-main">
                 <strong :title="getFileName(path)">{{ getFileName(path) }}</strong>
-                <code :title="path">{{ path }}</code>
+                <code :title="path">{{ shortenMiddle(path, 56) }}</code>
               </div>
               <n-button quaternary circle size="tiny" :title="t('separate.remove')" @click="task.removeInputFile(path)">
                 <template #icon><n-icon :component="CloseOutline" /></template>
@@ -359,6 +358,8 @@ async function start() {
                 v-for="item in filteredDownloadedModels"
                 :key="item.name"
                 type="button"
+                role="option"
+                :aria-selected="selectedModelName === item.name"
                 class="model-picker__item"
                 :class="{ 'model-picker__item--active': selectedModelName === item.name }"
                 @click="handleSelectModel(item)"
@@ -597,8 +598,7 @@ async function start() {
 
         <template #footer>
           <div class="drawer-footer">
-            <n-button secondary @click="showSettingsDrawer = false">{{ t('common.close') }}</n-button>
-            <n-button type="primary" @click="showSettingsDrawer = false">{{ t('common.confirm') }}</n-button>
+            <n-button type="primary" @click="showSettingsDrawer = false">{{ t('common.close') }}</n-button>
           </div>
         </template>
       </n-drawer-content>
@@ -617,11 +617,21 @@ async function start() {
   margin-bottom: 0;
 }
 
+.separate-header h1 {
+  font-size: 22px;
+}
+
+.separate-header p {
+  margin-top: 2px;
+}
+
 .workspace-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
   gap: 12px;
   align-items: stretch;
+  height: clamp(420px, 62vh, 720px);
+  min-height: 0;
 }
 
 .config-panel {
@@ -632,6 +642,8 @@ async function start() {
   border-radius: 20px;
   background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 94%, transparent), color-mix(in srgb, var(--surface-2) 26%, var(--surface-1)));
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .config-panel--input {
@@ -691,7 +703,8 @@ async function start() {
 }
 
 .candidate {
-  min-height: 320px;
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
@@ -726,12 +739,43 @@ async function start() {
 }
 
 .candidate__list {
-  display: grid;
-  gap: 8px;
   min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
   max-height: 100%;
   overflow-y: auto;
   padding-right: 2px;
+}
+
+.candidate__list,
+.model-picker__list {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--outline) 70%, transparent) transparent;
+}
+
+.candidate__list::-webkit-scrollbar,
+.model-picker__list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.candidate__list::-webkit-scrollbar-thumb,
+.model-picker__list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--outline) 80%, transparent);
+}
+
+.candidate__list::-webkit-scrollbar-thumb:hover,
+.model-picker__list::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--on-surface-muted) 50%, transparent);
+}
+
+.candidate__list::-webkit-scrollbar-track,
+.model-picker__list::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .candidate__item {
@@ -801,6 +845,7 @@ async function start() {
 
 .model-panel__body {
   min-height: 0;
+  height: 100%;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   gap: 6px;
@@ -808,6 +853,7 @@ async function start() {
 
 .model-picker {
   min-height: 0;
+  height: 100%;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 6px;
@@ -907,10 +953,11 @@ async function start() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 1px 7px;
+  padding: 1px 8px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--surface-2) 84%, transparent);
-  color: var(--on-surface-muted);
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, transparent);
+  background: color-mix(in srgb, var(--primary-soft) 60%, var(--surface-1));
+  color: color-mix(in srgb, var(--primary-strong) 86%, var(--on-surface));
   font-size: 10px;
   line-height: 1.6;
 }
@@ -977,10 +1024,6 @@ async function start() {
   padding: 10px 12px;
   border: 1px dashed var(--outline);
   border-radius: 12px;
-}
-
-.model-info-card--warn {
-  color: var(--on-surface-muted);
 }
 
 .model-info-card--warn {
@@ -1202,6 +1245,10 @@ async function start() {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .workspace-grid {
+    height: auto;
+  }
+
   .model-picker__toolbar {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1233,7 +1280,11 @@ async function start() {
 
 @media (max-width: 720px) {
   .candidate {
-    min-height: 260px;
+    height: 300px;
+  }
+
+  .model-picker {
+    height: 300px;
   }
 }
 </style>

@@ -227,8 +227,8 @@ function hasSectionContent(type: 'local' | 'external') {
       </template>
 
       <div v-if="!hasSectionContent('local') && !hasSectionContent('external')" class="editor-assets__empty">
-        <strong>{{ t('editor.importEmpty') }}</strong>
-        <span>{{ t('editor.emptyTimelineHint') }}</span>
+        <strong>{{ search.trim() ? t('editor.assetSearchEmptyTitle') : t('editor.importEmpty') }}</strong>
+        <span>{{ search.trim() ? t('editor.assetSearchEmptyHint') : t('editor.emptyTimelineHint') }}</span>
       </div>
     </div>
 
@@ -250,19 +250,15 @@ function hasSectionContent(type: 'local' | 'external') {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px;
-  border-right: 1px solid color-mix(in srgb, var(--outline) 82%, transparent);
-  background:
-    radial-gradient(circle at 18% 0%, rgba(255, 123, 84, 0.07), transparent 30%),
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 96%, transparent), var(--surface));
+  gap: 6px;
+  padding: 8px 8px 10px;
+  border-right: 1px solid var(--outline);
+  background: color-mix(in srgb, var(--surface) 90%, var(--surface-1));
   transition: background 180ms ease, border-color 180ms ease;
 }
 
 .editor-assets--dragging {
-  background:
-    radial-gradient(circle at 18% 0%, rgba(255, 123, 84, 0.16), transparent 34%),
-    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 14%, var(--surface-1)), var(--surface));
+  background: color-mix(in srgb, var(--primary-soft) 16%, var(--surface));
   border-right-color: color-mix(in srgb, var(--primary) 24%, transparent);
 }
 
@@ -271,6 +267,8 @@ function hasSectionContent(type: 'local' | 'external') {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  padding: 2px 2px 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--outline) 34%, transparent);
 }
 
 .editor-assets__head strong,
@@ -283,17 +281,16 @@ function hasSectionContent(type: 'local' | 'external') {
 }
 
 .editor-assets__head strong {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--on-surface-muted);
 }
 
 .editor-assets__summary {
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--outline) 66%, transparent);
   color: var(--on-surface-muted);
   font-size: 10px;
-  background: color-mix(in srgb, var(--surface-2) 84%, transparent);
+  opacity: 0.8;
 }
 
 .editor-assets__list {
@@ -305,6 +302,7 @@ function hasSectionContent(type: 'local' | 'external') {
   align-content: start;
   gap: 6px;
   transition: opacity 160ms ease, transform 160ms ease;
+  padding-top: 2px;
 }
 
 .editor-assets--dragging .editor-assets__list {
@@ -328,14 +326,14 @@ function hasSectionContent(type: 'local' | 'external') {
   grid-template-columns: 22px minmax(0, 1fr);
   gap: 6px;
   align-items: center;
-  padding: 5px 6px;
+  padding: 4px 6px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: grab;
-  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+  transition: border-color 140ms ease, background 140ms ease;
 }
 
 .asset-row:active {
@@ -343,9 +341,8 @@ function hasSectionContent(type: 'local' | 'external') {
 }
 
 .asset-row:hover {
-  border-color: color-mix(in srgb, var(--primary) 22%, transparent);
-  background: color-mix(in srgb, var(--primary-soft) 45%, var(--surface-2));
-  transform: translateX(1px);
+  border-color: color-mix(in srgb, var(--outline) 54%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 74%, transparent);
 }
 
 .asset-row__icon {
@@ -353,9 +350,9 @@ function hasSectionContent(type: 'local' | 'external') {
   height: 20px;
   display: grid;
   place-items: center;
-  border-radius: 6px;
-  color: #ff7b54;
-  background: rgba(255, 123, 84, 0.08);
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--primary) 78%, var(--on-surface-muted));
+  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
 }
 
 .asset-row__body {
@@ -372,13 +369,13 @@ function hasSectionContent(type: 'local' | 'external') {
 }
 
 .asset-row__body strong {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .asset-row__body small {
   color: var(--on-surface-muted);
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .asset-row__menu-indicator {

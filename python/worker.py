@@ -616,6 +616,27 @@ def _equal_power_fade(length: int, fade_in: bool) -> Any:
     return curve if fade_in else curve[::-1]
 
 
+def _apply_stereo_pan(audio: Any, pan: float) -> Any:
+    import numpy as np  # type: ignore
+
+    normalized = max(-1.0, min(1.0, float(pan or 0.0)))
+    if abs(normalized) <= 1e-6:
+        return audio
+
+    if audio.ndim == 1:
+        audio = audio.reshape(1, -1)
+    if audio.shape[0] == 1:
+        audio = np.repeat(audio, 2, axis=0)
+
+    left_gain = 1.0 if normalized <= 0 else 1.0 - normalized
+    right_gain = 1.0 if normalized >= 0 else 1.0 + normalized
+
+    output = audio.copy()
+    output[0] *= left_gain
+    output[1] *= right_gain
+    return output
+
+
 def cmd_audio_metadata(payload: dict[str, Any]) -> int:
     path = payload.get("path")
     if not path:
@@ -769,6 +790,7 @@ def cmd_export_editor_mix(payload: dict[str, Any]) -> int:
                 continue
 
             track_volume = float(track.get("volume", 1.0) or 0)
+            track_pan = float(track.get("pan", 0.0) or 0.0)
             if track_volume <= 0:
                 continue
 
@@ -801,6 +823,7 @@ def cmd_export_editor_mix(payload: dict[str, Any]) -> int:
                 if volume <= 0:
                     continue
                 segment *= volume
+                segment = _apply_stereo_pan(segment, track_pan)
 
                 fade_in_value = clip.get("fadeIn", track.get("fadeIn", 0))
                 fade_out_value = clip.get("fadeOut", track.get("fadeOut", 0))
@@ -830,6 +853,8 @@ def cmd_export_editor_mix(payload: dict[str, Any]) -> int:
         master_volume = float(project.get("masterVolume", 1.0) or 0)
         if master_volume != 1.0:
             mix *= master_volume
+        master_pan = float(project.get("masterPan", 0.0) or 0.0)
+        mix = _apply_stereo_pan(mix, master_pan)
 
         peak = float(np.max(np.abs(mix))) if mix.size else 0.0
         if peak > 1.0:

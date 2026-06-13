@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
+import { FolderOpenOutline, MusicalNotesOutline } from '@vicons/ionicons5'
 import { useEditorStore } from '@/stores/editor'
 import { useTaskStore } from '@/stores/task'
 import { useSettingsStore } from '@/stores/settings'
@@ -21,6 +22,7 @@ import { useEditorProjectBridge } from '@/composables/useEditorProjectBridge'
 import { useEditorShortcuts } from '@/composables/useEditorShortcuts'
 
 const route = useRoute()
+const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
 const { t } = useI18n()
@@ -28,9 +30,10 @@ const editor = useEditorStore()
 const task = useTaskStore()
 const settings = useSettingsStore()
 
-const MIXER_HEAD_WIDTH = 184
+const MIXER_HEAD_WIDTH = 180
 const ASSET_RAIL_WIDTH = 34
 const ASSET_PANEL_WIDTH = 218
+const RESIZER_WIDTH = 10
 const hasTauriApis = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 const shellEl = ref<HTMLElement | null>(null)
 const mixerScrollEl = ref<HTMLElement | null>(null)
@@ -38,25 +41,27 @@ const assetPanelEl = ref<HTMLElement | null>(null)
 const mixerRef = ref<InstanceType<typeof EditorMixer> | null>(null)
 
 const session = computed(() => editor.session)
+const routeProjectId = computed(() => String(route.query.projectId || ''))
 const sessionName = computed(() => session.value?.name || t('editor.fallbackTitle'))
-const sessionHint = computed(() => session.value?.sourceResultDir || t('editor.brandHint'))
 const {
   activeResize,
   assetPanelVisible,
   assetResizerVisible,
+  inspectorPanelWidth,
   shellStyle,
   startResize,
   toggleAssetPanel,
 } = useEditorLayout({
   shellEl,
   assetRailWidth: ASSET_RAIL_WIDTH,
-  resizerWidth: 10,
+  resizerWidth: RESIZER_WIDTH,
   minAssetWidth: 180,
   maxAssetWidth: 320,
   minCenterWidth: 520,
   minInspectorWidth: 240,
-  maxInspectorWidth: 420,
+  maxInspectorWidth: 340,
   initialAssetWidth: ASSET_PANEL_WIDTH,
+  initialInspectorWidth: 268,
 })
 const {
   draggingSourceName,
@@ -84,7 +89,7 @@ const {
   clearAssetPointerDrag,
 })
 const { isDraggingExternal } = useEditorProjectBridge({
-  routeProjectId: String(route.query.projectId || ''),
+  routeProjectId,
   hasTauriApis,
   editor,
   assetPanelEl,
@@ -116,6 +121,7 @@ const {
   shouldFollowPlayhead,
   currentTime: playbackCurrentTime,
   loop: playbackLoop,
+  trackLevels,
   playbackError,
   stop: playbackStop,
   toggleTransport,
@@ -124,6 +130,8 @@ const {
 const {
   zoomFit,
   zoomAt,
+  zoomIn,
+  zoomOut,
   updatePlaybackLoop,
   handleMixerScrollReady,
 } = useEditorMixerView({
@@ -196,6 +204,18 @@ function setTrackVolume(trackId: string, value: number) {
   editor.setTrackVolume(trackId, value)
 }
 
+function setTrackPan(trackId: string, value: number) {
+  editor.setTrackPan(trackId, value)
+}
+
+function setMasterVolume(value: number) {
+  editor.setMasterVolume(value)
+}
+
+function setMasterPan(value: number) {
+  editor.setMasterPan(value)
+}
+
 function setTrackFades(trackId: string, patch: { fadeIn?: number; fadeOut?: number }) {
   editor.setTrackFades(trackId, patch)
 }
@@ -210,8 +230,8 @@ useEditorShortcuts({
   stop: stopPlayback,
   undo: editor.undo,
   redo: editor.redo,
-  zoomIn: editor.zoomIn,
-  zoomOut: editor.zoomOut,
+  zoomIn,
+  zoomOut,
   save,
   toHome: resetPlayhead,
   seek: seekBy,
@@ -221,6 +241,11 @@ useEditorShortcuts({
 })
 
 watch(() => editor.session?.id, stopPlaybackAndReset)
+watch(routeProjectId, (value) => {
+  if (!value) {
+    editor.clearSession()
+  }
+})
 watch(
   () => [editor.session?.id || '', editor.duration, Boolean(mixerScrollEl.value)] as const,
   ([sessionId]) => scheduleInitialZoomFit(sessionId),
@@ -242,7 +267,6 @@ watch(
     >
       <EditorTransportBar
         :session-name="sessionName"
-        :session-hint="sessionHint"
         :track-count="session?.tracks.length || 0"
         :current-time="playbackCurrentTime"
         :duration="editor.duration"
@@ -251,17 +275,22 @@ watch(
         :transport-can-toggle="transportCanToggle"
         :loop="playbackLoop"
         :master-volume="editor.masterVolume"
+        :master-pan="editor.masterPan"
         :saving="editor.saving"
         :exporting="editor.exporting"
         :can-undo="editor.canUndo"
         :can-redo="editor.canRedo"
         :disabled="!session"
         @reset="resetPlayhead"
+        @stop="stopPlaybackAndReset"
         @toggle-transport="handleTransportToggleRequest"
         @update:loop="updatePlaybackLoop"
-        @update:master-volume="editor.setMasterVolume"
+        @update:master-volume="setMasterVolume"
         @begin-master-volume="editor.beginInteraction"
         @commit-master-volume="editor.commitInteraction"
+        @update:master-pan="setMasterPan"
+        @begin-master-pan="editor.beginInteraction"
+        @commit-master-pan="editor.commitInteraction"
         @undo="editor.undo"
         @redo="editor.redo"
         @save="save"
@@ -269,6 +298,23 @@ watch(
       />
 
       <div v-if="editor.loading" class="editor-state">{{ t('editor.loading') }}</div>
+      <div v-else-if="!routeProjectId" class="editor-empty-state">
+        <span class="editor-empty-state__icon">
+          <n-icon :component="FolderOpenOutline" />
+        </span>
+        <strong>{{ t('editor.noProjectSelected') }}</strong>
+        <p>{{ t('editor.noProjectSelectedHint') }}</p>
+        <div class="editor-empty-state__actions">
+          <n-button type="primary" @click="router.push('/projects')">
+            <template #icon><n-icon :component="FolderOpenOutline" /></template>
+            {{ t('editor.openProjectList') }}
+          </n-button>
+          <n-button secondary @click="router.push('/results')">
+            <template #icon><n-icon :component="MusicalNotesOutline" /></template>
+            {{ t('editor.openResultsList') }}
+          </n-button>
+        </div>
+      </div>
       <div v-else-if="!session" class="editor-state">{{ t('editor.notFound') }}</div>
       <template v-else>
         <aside
@@ -320,6 +366,7 @@ watch(
             :current-time="playbackCurrentTime"
             :duration="editor.duration"
             :pixels-per-second="editor.pixelsPerSecond"
+            :track-levels="trackLevels"
             @scroll-ready="handleMixerScrollReady"
             @select-track="editor.selectTrack"
             @toggle-mute="handleTrackMuteRequest"
@@ -348,11 +395,14 @@ watch(
           :selected-source="editor.selectedSource"
           :duration="editor.duration"
           :last-export-path="editor.lastExport?.path || null"
+          :compact="inspectorPanelWidth <= 248"
           @rename-track="editor.renameTrack"
-          @toggle-track-flag="editor.toggleTrackFlag"
           @set-track-volume="setTrackVolume"
+          @set-track-pan="setTrackPan"
           @begin-track-volume="editor.beginInteraction"
           @commit-track-volume="editor.commitInteraction"
+          @begin-track-pan="editor.beginInteraction"
+          @commit-track-pan="editor.commitInteraction"
           @set-track-fades="setTrackFades"
           @open-location="openExportDir"
         />
@@ -394,7 +444,7 @@ watch(
   --asset-panel-width: 218px;
   --asset-resizer-width: 10px;
   --inspector-resizer-width: 10px;
-  --inspector-width: 320px;
+  --inspector-width: 268px;
   position: relative;
   height: calc(100vh - 40px);
   display: grid;
@@ -405,10 +455,7 @@ watch(
     var(--inspector-resizer-width)
     var(--inspector-width);
   grid-template-rows: auto minmax(0, 1fr);
-  background:
-    radial-gradient(circle at 12% 6%, rgba(255,123,84,0.08), transparent 28%),
-    radial-gradient(circle at 86% 18%, rgba(242,180,90,0.06), transparent 30%),
-    var(--surface);
+  background: var(--surface);
   color: var(--on-surface);
   overflow: hidden;
   user-select: none;
@@ -436,8 +483,8 @@ watch(
   min-height: 0;
   display: grid;
   grid-template-columns: var(--asset-rail-width) minmax(0, var(--asset-panel-width));
-  border-right: 1px solid color-mix(in srgb, var(--outline) 78%, transparent);
-  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  border-right: 1px solid var(--outline);
+  background: color-mix(in srgb, var(--surface) 90%, var(--surface-1));
   transition: grid-template-columns 220ms ease, border-color 180ms ease;
 }
 
@@ -447,10 +494,9 @@ watch(
 
 .editor-shell__asset-rail {
   min-height: 0;
-  padding: 8px 4px;
-  border-right: 1px solid color-mix(in srgb, var(--outline) 68%, transparent);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 88%, transparent), color-mix(in srgb, var(--surface-1) 96%, transparent));
+  padding: 6px 4px;
+  border-right: 1px solid var(--outline);
+  background: color-mix(in srgb, var(--surface) 88%, var(--surface-1));
 }
 
 .editor-shell__asset-toggle {
@@ -458,9 +504,9 @@ watch(
   display: grid;
   justify-items: center;
   gap: 0;
-  padding: 6px 0;
+  padding: 4px 0;
   border: 0;
-  border-radius: 12px;
+  border-radius: 8px;
   color: var(--on-surface-muted);
   background: transparent;
   cursor: pointer;
@@ -469,18 +515,17 @@ watch(
 
 .editor-shell__asset-toggle:hover {
   color: var(--on-surface);
-  background: color-mix(in srgb, var(--primary-soft) 68%, var(--surface-2));
-  transform: translateY(-1px);
+  background: var(--surface-2);
 }
 
 .editor-shell__asset-toggle-icon {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--surface-2) 86%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 68%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 54%, transparent);
 }
 
 .editor-shell__asset-toggle-icon span {
@@ -529,18 +574,25 @@ watch(
 }
 
 .editor-shell__center {
+  /* Center occupies col3. The right resizer mirrors the left one as a real
+     layout column so dragging remains reliable and predictable. */
   grid-column: 3;
   grid-row: 2;
   min-width: 0;
   min-height: 0;
   display: grid;
-  overflow: auto;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface-1) 76%, var(--surface-2));
 }
 
 .editor-shell__inspector {
   grid-column: 5;
   grid-row: 2;
   min-width: 0;
+  min-height: 0;
+  border-left: 0;
+  position: relative;
+  z-index: 5;
 }
 
 .editor-shell__resizer {
@@ -552,6 +604,16 @@ watch(
     linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.02)),
     color-mix(in srgb, var(--surface-2) 86%, transparent);
   user-select: none;
+  z-index: 6;
+}
+
+.editor-shell__resizer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255,123,84,0), rgba(255,123,84,0.08), rgba(255,123,84,0));
+  opacity: 0;
+  transition: opacity 140ms ease;
 }
 
 .editor-shell__resizer--left {
@@ -566,15 +628,6 @@ watch(
   background: transparent;
   border-left: 1px solid transparent;
   border-right: 1px solid transparent;
-}
-
-.editor-shell__resizer--right::before {
-  background: linear-gradient(
-    180deg,
-    rgba(255,123,84,0),
-    rgba(255,123,84,0.05),
-    rgba(255,123,84,0)
-  );
 }
 
 .editor-shell__resizer--right span {
@@ -600,15 +653,6 @@ watch(
   opacity: 1;
   height: 56px;
   background: color-mix(in srgb, #ff7b54 52%, var(--on-surface-muted));
-}
-
-.editor-shell__resizer--left::before {
-  background: linear-gradient(
-    180deg,
-    rgba(255,123,84,0),
-    rgba(255,123,84,0.05),
-    rgba(255,123,84,0)
-  );
 }
 
 .editor-shell__resizer--left span {
@@ -645,15 +689,6 @@ watch(
   opacity: 0;
 }
 
-.editor-shell__resizer::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, rgba(255,123,84,0), rgba(255,123,84,0.08), rgba(255,123,84,0));
-  opacity: 0;
-  transition: opacity 140ms ease;
-}
-
 .editor-shell__resizer span {
   position: absolute;
   top: 50%;
@@ -685,8 +720,54 @@ watch(
   color: var(--on-surface-muted);
 }
 
+.editor-empty-state {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  padding: 24px;
+  color: var(--on-surface-muted);
+  text-align: center;
+}
+
+.editor-empty-state__icon {
+  width: 62px;
+  height: 62px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  font-size: 28px;
+  color: var(--primary-strong);
+  background: var(--primary-soft);
+}
+
+.editor-empty-state strong {
+  color: var(--on-surface);
+  font-size: 18px;
+}
+
+.editor-empty-state p {
+  margin: 0;
+  max-width: 460px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.editor-empty-state__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+}
+
 .editor-shell--resizing {
   cursor: col-resize;
+  /* Disable the column animation while dragging so the divider stays flush with
+     the cursor instead of lerping and momentarily overlapping the mixer. */
+  transition: none;
 }
 
 .editor-shell--playback-following .editor-shell__center {
@@ -700,8 +781,8 @@ watch(
   max-width: 260px;
   padding: 8px 12px;
   border: 1px solid color-mix(in srgb, var(--primary) 28%, transparent);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface-2) 94%, rgba(255, 123, 84, 0.16));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2) 96%, transparent);
   color: var(--on-surface);
   font-size: 12px;
   line-height: 1.2;
