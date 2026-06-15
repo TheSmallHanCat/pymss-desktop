@@ -33,6 +33,17 @@ export type ResolvedThemeTokens = SurfacePalette & ThemePalette & {
   isDark: boolean
 }
 
+type ViewTransitionLike = {
+  ready: Promise<void>
+}
+
+type DocumentWithViewTransition = Document & {
+  startViewTransition?: (callback: () => void | Promise<void>) => ViewTransitionLike
+}
+
+const RIPPLE_TRANSITION_DURATION = 700
+const RIPPLE_TRANSITION_EASING = 'cubic-bezier(0.2, 0, 0, 1)'
+
 const DARK_SURFACE: SurfacePalette = {
   surface: '#111318',
   surface1: '#181b21',
@@ -356,4 +367,45 @@ export function initTheme(
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (currentMode === 'system') applyTheme(currentMode, currentAccent)
   })
+}
+
+export async function runRippleViewTransition(
+  update: () => void | Promise<void>,
+  origin?: { x: number; y: number },
+) {
+  const doc = document as DocumentWithViewTransition
+  if (!origin || !doc.startViewTransition) {
+    await update()
+    return
+  }
+
+  const { x, y } = origin
+  const maxRadius = Math.hypot(
+    Math.max(x, window.innerWidth - x),
+    Math.max(y, window.innerHeight - y),
+  )
+
+  const transition = doc.startViewTransition(async () => {
+    await update()
+  })
+
+  try {
+    await transition.ready
+    document.documentElement.animate(
+      {
+        clipPath: [
+          `circle(0px at ${x}px ${y}px)`,
+          `circle(${maxRadius}px at ${x}px ${y}px)`,
+        ],
+        opacity: [0.7, 1],
+      },
+      {
+        duration: RIPPLE_TRANSITION_DURATION,
+        easing: RIPPLE_TRANSITION_EASING,
+        pseudoElement: '::view-transition-new(root)',
+      },
+    )
+  } catch {
+    // ignore interrupted transitions
+  }
 }

@@ -3,19 +3,29 @@ import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
-import { SUPPORTED_LOCALES } from '@/i18n'
+import { open } from '@tauri-apps/plugin-shell'
+import { SUPPORTED_LOCALES, setLocaleWithTransition } from '@/i18n'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { useModelStore } from '@/stores/model'
 import { useTaskStore } from '@/stores/task'
 import { formatBytes } from '@/utils/format'
-import { getThemeAccentPreview, resolvedIsDark, THEME_ACCENTS, type ThemeAccent } from '@/utils/theme'
+import {
+  applyTheme,
+  getThemeAccentPreview,
+  resolvedIsDark,
+  runRippleViewTransition,
+  THEME_ACCENTS,
+  type ThemeAccent,
+  type ThemeMode,
+} from '@/utils/theme'
 import {
   ColorPaletteOutline,
   FolderOpenOutline,
   SettingsOutline,
   SpeedometerOutline,
   SwapHorizontalOutline,
+  LogoGithub,
 } from '@vicons/ionicons5'
 
 const { t } = useI18n()
@@ -86,6 +96,7 @@ const modelDirMigrationProgress = computed(() => {
 const modelDirMigrationHasConflict = computed(() => modelDirMigrationState.value.status === 'conflict' && !!modelDirMigrationState.value.conflict)
 const modelDirMigrationHasResult = computed(() => ['success', 'failed', 'aborted'].includes(modelDirMigrationState.value.status))
 const isCheckingModelDir = ref(false)
+const repoUrl = 'https://github.com/pymss-project/pymss-desktop'
 
 function dirName(path: string, fallback: string) {
   const normalized = (path || '').trim().replace(/[\\/]+$/, '')
@@ -94,8 +105,41 @@ function dirName(path: string, fallback: string) {
   return segments.at(-1) || fallback
 }
 
-function selectThemeAccent(accent: ThemeAccent) {
-  themeAccent.value = accent
+function getEventOrigin(event: MouseEvent) {
+  const target = event.currentTarget as HTMLElement | null
+  if (!target) return { x: window.innerWidth / 2, y: window.innerHeight / 2 }
+  const rect = target.getBoundingClientRect()
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+  }
+}
+
+async function selectThemeMode(mode: ThemeMode, event: MouseEvent) {
+  if (themeMode.value === mode) return
+  const origin = getEventOrigin(event)
+  await runRippleViewTransition(() => {
+    themeMode.value = mode
+    applyTheme(mode, themeAccent.value)
+  }, origin)
+}
+
+async function selectThemeAccent(accent: ThemeAccent, event: MouseEvent) {
+  if (themeAccent.value === accent) return
+  const origin = getEventOrigin(event)
+  await runRippleViewTransition(() => {
+    themeAccent.value = accent
+    applyTheme(themeMode.value, accent)
+  }, origin)
+}
+
+async function selectLocale(code: typeof SUPPORTED_LOCALES[number]['code'], event: MouseEvent) {
+  if (locale.value === code) return
+  const origin = getEventOrigin(event)
+  await runRippleViewTransition(() => {
+    locale.value = code
+    return setLocaleWithTransition(code)
+  }, origin)
 }
 
 async function revealPath(path: string) {
@@ -127,6 +171,14 @@ async function changeModelDir() {
     message.error(error instanceof Error ? error.message : String(error))
   } finally {
     isCheckingModelDir.value = false
+  }
+}
+
+async function openRepository() {
+  try {
+    await open(repoUrl)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
   }
 }
 
@@ -166,10 +218,14 @@ onMounted(() => {
 <template>
   <div class="page page--settings">
     <div class="page-header-compact">
-      <div>
+      <div class="page-header-compact__main">
         <h1>{{ t('settings.title') }}</h1>
         <p>{{ t('settings.subtitle') }}</p>
       </div>
+      <n-button secondary size="small" class="repo-link-button" @click="openRepository">
+        <template #icon><n-icon :component="LogoGithub" /></template>
+        {{ t('settings.repositoryLink') }}
+      </n-button>
     </div>
 
     <n-grid class="settings-grid" :cols="2" :x-gap="18" :y-gap="18" responsive="screen">
@@ -192,21 +248,21 @@ onMounted(() => {
                 <button
                   type="button"
                   :class="{ active: themeMode === 'system' }"
-                  @click="themeMode = 'system'"
+                  @click="selectThemeMode('system', $event)"
                 >
                   {{ t('settings.themeSystem') }}
                 </button>
                 <button
                   type="button"
                   :class="{ active: themeMode === 'dark' }"
-                  @click="themeMode = 'dark'"
+                  @click="selectThemeMode('dark', $event)"
                 >
                   {{ t('settings.themeDark') }}
                 </button>
                 <button
                   type="button"
                   :class="{ active: themeMode === 'light' }"
-                  @click="themeMode = 'light'"
+                  @click="selectThemeMode('light', $event)"
                 >
                   {{ t('settings.themeLight') }}
                 </button>
@@ -222,7 +278,7 @@ onMounted(() => {
                   type="button"
                   class="theme-accent-card"
                   :class="{ active: themeAccent === accent.value }"
-                  @click="selectThemeAccent(accent.value)"
+                  @click="selectThemeAccent(accent.value, $event)"
                 >
                   <span class="theme-accent-card__swatches">
                     <span
@@ -245,7 +301,7 @@ onMounted(() => {
                   :key="loc.code"
                   type="button"
                   :class="{ active: locale === loc.code }"
-                  @click="locale = loc.code"
+                  @click="selectLocale(loc.code, $event)"
                 >
                   {{ loc.label }}
                 </button>
@@ -542,6 +598,22 @@ onMounted(() => {
   max-width: 1220px;
 }
 
+.page-header-compact {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.page-header-compact__main {
+  min-width: 0;
+}
+
+.repo-link-button {
+  flex: 0 0 auto;
+  margin-top: 4px;
+}
+
 .settings-grid {
   align-items: stretch;
 }
@@ -572,8 +644,8 @@ onMounted(() => {
   inset: 0;
   pointer-events: none;
   border-radius: 18px;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 18%, transparent), transparent 36%);
-  opacity: 0.9;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 8%, transparent), transparent 28%);
+  opacity: 0.78;
 }
 
 .section-title {
@@ -592,8 +664,10 @@ onMounted(() => {
   place-items: center;
   border-radius: 10px;
   color: var(--primary-strong);
-  background: linear-gradient(180deg, var(--primary-soft), var(--primary-softer));
-  box-shadow: inset 0 0 0 1px var(--primary-border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 72%, var(--surface-2)), color-mix(in srgb, var(--primary-softer) 58%, var(--surface-1)));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 72%, transparent),
+    0 4px 14px color-mix(in srgb, var(--primary-glow) 12%, transparent);
 }
 
 .settings-stack {
@@ -621,9 +695,9 @@ onMounted(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
-  border: 1px solid var(--outline);
+  border: 1px solid color-mix(in srgb, var(--outline) 78%, transparent);
   border-radius: 12px;
-  background: var(--surface-2);
+  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
 }
 
 .language-switcher button {
@@ -639,12 +713,13 @@ onMounted(() => {
 
 .language-switcher button:hover {
   color: var(--on-surface);
-  background: var(--surface-3);
+  background: color-mix(in srgb, var(--surface-3) 78%, transparent);
 }
 
 .language-switcher button.active {
-  color: var(--primary-strong);
-  background: var(--primary-soft);
+  color: color-mix(in srgb, var(--primary-strong) 88%, white 12%);
+  background: color-mix(in srgb, var(--primary-soft) 54%, var(--surface-3));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 58%, transparent);
   font-weight: 600;
 }
 
@@ -679,7 +754,8 @@ onMounted(() => {
   padding: 14px;
   border: 1px solid color-mix(in srgb, var(--outline) 64%, transparent);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--surface-2) 42%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 96%, transparent), color-mix(in srgb, var(--surface-2) 38%, transparent));
   align-self: stretch;
   align-content: start;
 }
@@ -763,14 +839,28 @@ onMounted(() => {
   gap: 12px;
   padding: 14px;
   border-radius: 16px;
-  border: 1px solid color-mix(in srgb, var(--outline) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--outline) 72%, transparent);
+  background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 }
 
 .path-item--primary {
-  border-color: color-mix(in srgb, var(--primary-border) 58%, var(--outline));
+  position: relative;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--primary-border) 34%, var(--outline));
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 18%, var(--surface-1)), color-mix(in srgb, var(--surface-1) 98%, transparent));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 28%, transparent);
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 98%, transparent), color-mix(in srgb, var(--surface-1) 90%, var(--surface-2)));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 16%, transparent),
+    0 12px 28px rgba(0, 0, 0, 0.10);
+}
+
+.path-item--primary::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--primary) 64%, white 8%), transparent);
+  opacity: 0.82;
 }
 
 .path-item__head {
@@ -805,8 +895,8 @@ onMounted(() => {
   white-space: nowrap;
   padding: 11px 12px;
   border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--primary-border) 34%, var(--outline));
-  background: color-mix(in srgb, var(--surface-1) 88%, white 12%);
+  border: 1px solid color-mix(in srgb, var(--outline) 62%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 52%, var(--surface-1));
   color: color-mix(in srgb, var(--on-surface) 88%, var(--on-surface-muted));
   font-family: "JetBrains Mono", "Cascadia Code", Consolas, "MiSans", "PingFang SC", "Microsoft YaHei", ui-monospace, monospace;
   font-size: 12px;
@@ -850,9 +940,9 @@ onMounted(() => {
   gap: 4px;
   margin: 0;
   padding: 4px;
-  border: 1px solid var(--outline);
+  border: 1px solid color-mix(in srgb, var(--outline) 78%, transparent);
   border-radius: 12px;
-  background: var(--surface-2);
+  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
 }
 
 .theme-switcher button {
@@ -868,12 +958,13 @@ onMounted(() => {
 
 .theme-switcher button:hover {
   color: var(--on-surface);
-  background: var(--surface-3);
+  background: color-mix(in srgb, var(--surface-3) 76%, transparent);
 }
 
 .theme-switcher button.active {
-  color: var(--primary-strong);
-  background: var(--primary-soft);
+  color: color-mix(in srgb, var(--primary-strong) 88%, white 12%);
+  background: color-mix(in srgb, var(--primary-soft) 54%, var(--surface-3));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 58%, transparent);
   font-weight: 600;
 }
 
@@ -885,34 +976,56 @@ onMounted(() => {
 }
 
 .theme-accent-card {
+  position: relative;
   display: grid;
   gap: 7px;
   justify-items: flex-start;
   padding: 10px 12px;
-  border: 1px solid var(--outline);
+  border: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
   border-radius: 12px;
   color: var(--on-surface);
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 92%, transparent), color-mix(in srgb, var(--surface-2) 90%, transparent));
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 96%, transparent), color-mix(in srgb, var(--surface-2) 74%, transparent));
   cursor: pointer;
-  transition: 180ms ease;
+  transition: border-color 180ms ease, background 180ms ease, transform 160ms ease, box-shadow 180ms ease;
+}
+
+.theme-accent-card::after {
+  content: '';
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 78%, transparent);
+  transition: background 180ms ease, box-shadow 180ms ease, transform 160ms ease;
 }
 
 .theme-accent-card:hover {
-  border-color: var(--primary-border);
+  border-color: color-mix(in srgb, var(--primary-border) 72%, var(--outline));
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--primary-softer) 60%, var(--surface-1)), color-mix(in srgb, var(--primary-soft) 42%, var(--surface-2)));
+    linear-gradient(180deg, color-mix(in srgb, var(--primary-softer) 26%, var(--surface-1)), color-mix(in srgb, var(--surface-2) 84%, transparent));
   transform: translateY(-1px);
-  box-shadow: 0 10px 26px color-mix(in srgb, var(--primary-glow) 42%, transparent);
+  box-shadow: 0 8px 20px color-mix(in srgb, rgba(0, 0, 0, 0.28) 88%, transparent);
 }
 
 .theme-accent-card.active {
   border-color: var(--primary);
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 54%, var(--surface-1)), color-mix(in srgb, var(--primary-softer) 62%, var(--surface-2)));
+    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 20%, var(--surface-1)), color-mix(in srgb, var(--surface-2) 88%, transparent));
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--primary-border) 82%, transparent),
-    0 14px 30px color-mix(in srgb, var(--primary-glow) 46%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--primary-border) 54%, transparent),
+    0 10px 22px color-mix(in srgb, var(--primary-glow) 18%, transparent);
+}
+
+.theme-accent-card.active::after {
+  background: var(--primary);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--primary-soft) 30%, transparent),
+    0 0 10px color-mix(in srgb, var(--primary-glow) 28%, transparent);
+  transform: scale(1.04);
 }
 
 .theme-accent-card__swatches {
@@ -926,7 +1039,9 @@ onMounted(() => {
   height: 22px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--outline) 72%, transparent);
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.3);
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,0.22),
+    0 2px 8px rgba(0,0,0,0.18);
 }
 
 .theme-accent-card__label {
@@ -1106,6 +1221,14 @@ onMounted(() => {
 }
 
 @media (max-width: 640px) {
+  .page-header-compact {
+    flex-direction: column;
+  }
+
+  .repo-link-button {
+    margin-top: 0;
+  }
+
   .theme-accent-grid {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -91,7 +91,7 @@
   "separate": {
     "title": "分离任务配置",
     "subtitle": "配置输入音频、分离模型与输出参数后，即可发起分离任务。",
-    "workspaceHint": "选择输入音频与分离模型即可发起任务；输出与高级参数可在设置面板中进一步配置。",
+    "workspaceHint": "选择输入音频与分离模型即可发起任务",
     "input": "输入来源",
     "model": "分离模型",
     "output": "输出设置",
@@ -356,7 +356,7 @@
   },
   "projects": {
     "title": "工程列表",
-    "subtitle": "查看、打开和删除已创建的编辑器工程，工程与分离结果彼此独立。",
+    "subtitle": "查看、打开和删除已创建的编辑器工程。",
     "searchPlaceholder": "搜索工程名、任务 ID 或结果目录",
     "empty": "还没有编辑器工程",
     "emptyHint": "你可以先从结果创建工程，也可以直接新建一个空工程。",
@@ -571,6 +571,7 @@
     "themeAccentPink": "淡粉色",
     "themeAccentSky": "淡蓝色",
     "themeAccentTeal": "青绿色",
+    "repositoryLink": "GitHub 仓库",
     "modelDirMigrationCopying": "正在复制模型目录",
     "modelDirMigrationSwitching": "复制完成，正在切换模型目录",
     "modelDirMigrationFinalizing": "正在清理旧模型目录"

@@ -80,10 +80,9 @@ a { color: inherit; text-decoration: none; }
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(circle at 14% 8%, color-mix(in srgb, var(--primary-glow) 92%, transparent), transparent 34%),
-    radial-gradient(circle at 84% 12%, color-mix(in srgb, var(--primary-soft) 72%, transparent), transparent 26%),
-    radial-gradient(circle at 48% 0%, color-mix(in srgb, var(--primary-softer) 78%, transparent), transparent 30%),
-    linear-gradient(180deg, rgba(255,255,255,.025), transparent 40%);
+    radial-gradient(circle at 16% 8%, color-mix(in srgb, var(--primary-glow) 40%, transparent), transparent 30%),
+    radial-gradient(circle at 82% 10%, color-mix(in srgb, var(--primary-soft) 26%, transparent), transparent 24%),
+    linear-gradient(180deg, rgba(255,255,255,.018), transparent 34%);
 }
 
 .app-body {
@@ -325,6 +324,20 @@ a { color: inherit; text-decoration: none; }
 .page-enter-active, .page-leave-active { transition: 200ms cubic-bezier(.4,0,.2,1); }
 .page-enter-from, .page-leave-to { opacity: 0; transform: translateY(6px); }
 
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(root) {
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  z-index: 9999;
+}
+
 /* ===== Naive UI Overrides ===== */
 .dark-theme .n-card {
   --n-border: 1px solid var(--outline);
@@ -358,11 +371,17 @@ a { color: inherit; text-decoration: none; }
   --n-font: inherit;
 }
 
+.n-base-selection,
+.n-input,
+.n-input-number {
+  border-radius: 10px;
+}
+
 .n-input.n-input--focus,
 .n-base-selection.n-base-selection--active,
 .n-input-number.n-input-number--focus {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-glow) 78%, transparent);
-  border-radius: 12px;
+  border-radius: 10px;
 }
 
 /* ===== Utility Helpers ===== */

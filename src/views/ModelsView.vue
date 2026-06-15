@@ -933,8 +933,8 @@ onMounted(() => {
   cursor: pointer;
   padding: 16px;
   border-radius: 12px;
-  border: 1px solid var(--outline);
-  background: var(--surface-1);
+  border: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 98%, transparent), color-mix(in srgb, var(--surface-1) 92%, var(--surface-2)));
   transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
   display: flex;
   flex-direction: column;
@@ -943,13 +943,16 @@ onMounted(() => {
 
 .model-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
-  border-color: var(--surface-3);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+  border-color: color-mix(in srgb, var(--outline) 90%, var(--primary-border));
 }
 
 .model-card--selected {
   border-color: var(--primary) !important;
-  background: color-mix(in srgb, var(--primary-soft) 30%, var(--surface-1));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 14%, var(--surface-1)), color-mix(in srgb, var(--surface-1) 90%, var(--surface-2)));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--primary-border) 44%, transparent),
+    0 10px 24px color-mix(in srgb, var(--primary-glow) 12%, transparent);
 }
 
 .model-card--unsupported {

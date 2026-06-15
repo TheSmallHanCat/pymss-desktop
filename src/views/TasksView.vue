@@ -524,14 +524,14 @@ onMounted(() => {
   align-items: center;
   padding: 14px 16px;
   border-radius: 16px;
-  border: 1px solid var(--outline);
-  background: var(--surface-1);
+  border: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 98%, transparent), color-mix(in srgb, var(--surface-1) 92%, var(--surface-2)));
   transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
 }
 
 .tasks-history-row:hover {
-  border-color: var(--primary-border);
-  box-shadow: 0 10px 24px color-mix(in srgb, var(--primary-glow) 26%, transparent);
+  border-color: color-mix(in srgb, var(--primary-border) 74%, var(--outline));
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--primary-glow) 12%, transparent);
   transform: translateY(-1px);
 }
 
@@ -624,11 +624,11 @@ onMounted(() => {
   max-height: min(62vh, 620px);
   overflow: auto;
   padding: 12px 0;
-  border: 1px solid rgba(255, 255, 255, 0.10);
+  border: 1px solid color-mix(in srgb, var(--outline) 86%, transparent);
   border-radius: 12px;
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01)),
-    #10141b;
+    linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0.008)),
+    color-mix(in srgb, var(--surface) 92%, #0e1218);
   color: #d6deeb;
   font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
   font-size: 12px;
@@ -645,7 +645,7 @@ onMounted(() => {
 }
 
 .log-line:hover {
-  background: rgba(255, 255, 255, 0.055);
+  background: color-mix(in srgb, var(--primary-soft) 14%, rgba(255, 255, 255, 0.02));
 }
 
 .log-line-number {

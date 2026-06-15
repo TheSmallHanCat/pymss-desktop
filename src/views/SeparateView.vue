@@ -639,12 +639,13 @@ async function start() {
   display: grid;
   gap: 12px;
   padding: 16px;
-  border: 1px solid var(--outline);
+  border: 1px solid color-mix(in srgb, var(--outline) 78%, transparent);
   border-radius: 20px;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 94%, transparent), color-mix(in srgb, var(--surface-2) 26%, var(--surface-1)));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 98%, transparent), color-mix(in srgb, var(--surface-1) 92%, var(--surface-2)));
   min-height: 0;
   height: 100%;
   overflow: hidden;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.08);
 }
 
 .config-panel--input {
@@ -710,17 +711,19 @@ async function start() {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   padding: 12px;
-  border: 1px solid var(--outline);
+  border: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
   border-radius: 16px;
-  background: color-mix(in srgb, var(--surface-2) 62%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 46%, transparent);
   transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
 }
 
 .candidate--dragging {
   border-color: var(--primary);
   border-style: dashed;
-  background: color-mix(in srgb, var(--primary-soft) 70%, var(--surface-2));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 36%, transparent);
+  background: color-mix(in srgb, var(--primary-soft) 28%, var(--surface-2));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--primary-border) 44%, transparent),
+    0 12px 24px color-mix(in srgb, var(--primary-glow) 10%, transparent);
 }
 
 .candidate__head {
@@ -784,9 +787,9 @@ async function start() {
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  border: 1px solid var(--outline);
+  border: 1px solid color-mix(in srgb, var(--outline) 72%, transparent);
   border-radius: 12px;
-  background: var(--surface-1);
+  background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 }
 
 .candidate__item-icon {
@@ -811,7 +814,8 @@ async function start() {
   font-size: 11px;
   line-height: 1.4;
   color: var(--primary-strong);
-  background: color-mix(in srgb, var(--primary-soft) 82%, transparent);
+  background: color-mix(in srgb, var(--primary-soft) 42%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 28%, transparent);
 }
 
 .candidate__item-main strong,
@@ -853,7 +857,8 @@ async function start() {
   border-radius: 14px;
   font-size: 24px;
   color: var(--primary-strong);
-  background: var(--primary-soft);
+  background: color-mix(in srgb, var(--primary-soft) 42%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 30%, transparent);
 }
 
 .model-panel__body {
@@ -890,9 +895,9 @@ async function start() {
   max-height: min(340px, 42vh);
   padding: 6px;
   padding-right: 4px;
-  border: 1px solid var(--outline);
+  border: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--surface-1) 92%, transparent);
+  background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 }
 
 .model-picker__item {
@@ -912,12 +917,13 @@ async function start() {
 }
 
 .model-picker__item:hover {
-  background: color-mix(in srgb, var(--surface-2) 90%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 66%, transparent);
 }
 
 .model-picker__item--active {
   border-color: color-mix(in srgb, var(--primary) 38%, transparent);
-  background: color-mix(in srgb, var(--primary-soft) 54%, var(--surface-1));
+  background: color-mix(in srgb, var(--primary-soft) 20%, var(--surface-2));
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--primary-glow) 8%, transparent);
 }
 
 .model-picker__item--active::before {
@@ -968,7 +974,7 @@ async function start() {
   padding: 1px 7px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--primary) 24%, transparent);
-  background: color-mix(in srgb, var(--primary-soft) 60%, var(--surface-1));
+  background: color-mix(in srgb, var(--primary-soft) 26%, var(--surface-2));
   color: color-mix(in srgb, var(--primary-strong) 86%, var(--on-surface));
   font-size: 9px;
   line-height: 1.4;
@@ -984,7 +990,7 @@ async function start() {
 }
 
 .model-picker__item--active .model-picker__item-tag {
-  background: color-mix(in srgb, var(--primary-soft) 80%, var(--surface-1));
+  background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface-2));
   color: color-mix(in srgb, var(--primary-strong) 78%, var(--on-surface-muted));
 }
 
@@ -1053,11 +1059,11 @@ async function start() {
   gap: 16px;
   min-height: 270px;
   padding: 28px 24px;
-  border: 1px dashed color-mix(in srgb, var(--outline) 82%, var(--primary-soft));
+  border: 1px dashed color-mix(in srgb, var(--outline) 82%, var(--primary-border));
   border-radius: 22px;
   background:
-    radial-gradient(circle at top, color-mix(in srgb, var(--primary-soft) 18%, transparent), transparent 56%),
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 94%, transparent), color-mix(in srgb, var(--surface-1) 88%, transparent));
+    radial-gradient(circle at top, color-mix(in srgb, var(--primary-soft) 8%, transparent), transparent 52%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 96%, transparent), color-mix(in srgb, var(--surface-1) 90%, transparent));
   text-align: center;
 }
 

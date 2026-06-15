@@ -91,7 +91,7 @@
   "separate": {
     "title": "Separation Task Setup",
     "subtitle": "Configure input audio, the separation model, and output options to start a task.",
-    "workspaceHint": "Select input audio and a separation model to start a task. Output and advanced parameters can be configured in the settings panel.",
+    "workspaceHint": "Select input audio and a separation model to start a task",
     "input": "Input Source",
     "model": "Separation Model",
     "output": "Output Settings",
@@ -356,7 +356,7 @@
   },
   "projects": {
     "title": "Projects",
-    "subtitle": "Browse, open, and delete editor projects. Projects stay independent from separation results.",
+    "subtitle": "Browse, open, and delete editor projects.",
     "searchPlaceholder": "Search by project name, task ID, or result folder",
     "empty": "No editor projects yet",
     "emptyHint": "Create one from a result, or start with an empty project.",
@@ -571,6 +571,7 @@
     "themeAccentPink": "Soft Pink",
     "themeAccentSky": "Soft Blue",
     "themeAccentTeal": "Teal Green",
+    "repositoryLink": "GitHub Repository",
     "modelDirMigrationCopying": "Copying model directory",
     "modelDirMigrationSwitching": "Copy complete, switching model directory",
     "modelDirMigrationFinalizing": "Cleaning up old model directory"
