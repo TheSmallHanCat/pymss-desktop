@@ -13,14 +13,18 @@ export type StemOutput = { stem: string; path: string }
 export type SeparationRunConfig = {
   modelDir: string | null
   downloadSource: string
+  modelType?: string | null
   device: string
   deviceIds: number[]
   outputFormat: string
   useTta: boolean
   debug: boolean
   audioParams: Record<string, string | number>
+  inferenceParamsVersion?: number
   inferenceParams: Record<string, unknown>
 }
+
+export type StandardizeMode = 'default' | 'enabled' | 'disabled'
 
 type ScanAudioPathsResult = {
   files: string[]
@@ -53,6 +57,7 @@ type PersistedTaskState = {
 }
 
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus']
+const CURRENT_INFERENCE_PARAMS_VERSION = 2
 const TERMINAL_STATUSES: TaskStatus[] = ['done', 'failed', 'cancelled']
 const INTERRUPTIBLE_STATUSES: TaskStatus[] = ['queued', 'preparing', 'validating_input', 'downloading_model', 'ensuring_model', 'loading_model', 'separating', 'writing_output']
 
@@ -60,8 +65,8 @@ const STAGE_META: Record<TaskStatus, { progress: number; label: string }> = {
   queued: { progress: 2, label: 'Queued' },
   preparing: { progress: 8, label: 'Preparing' },
   validating_input: { progress: 12, label: 'Validating input' },
-  downloading_model: { progress: 22, label: 'Checking model files' },
-  ensuring_model: { progress: 22, label: 'Checking model files' },
+  downloading_model: { progress: 22, label: 'Preparing model' },
+  ensuring_model: { progress: 22, label: 'Preparing model' },
   loading_model: { progress: 35, label: 'Loading model' },
   separating: { progress: 0, label: 'Separating audio' },
   writing_output: { progress: 92, label: 'Collecting outputs' },
@@ -160,8 +165,48 @@ function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
       ? [...(task.logs || []), `${new Date().toLocaleTimeString()} 应用关闭或重启，任务已标记为中断。`].slice(-300)
       : (task.logs || []),
     error: interrupted ? '应用关闭或重启导致任务中断' : task.error,
-    runConfig: task.runConfig,
+    runConfig: normalizeRunConfig(task.runConfig),
   }
+}
+
+function normalizeRunConfig(runConfig?: SeparationRunConfig): SeparationRunConfig | undefined {
+  if (!runConfig) return undefined
+  const next: SeparationRunConfig = {
+    ...runConfig,
+    audioParams: { ...(runConfig.audioParams || {}) },
+    inferenceParams: { ...(runConfig.inferenceParams || {}) },
+  }
+  if ((next.inferenceParamsVersion || 0) >= CURRENT_INFERENCE_PARAMS_VERSION) {
+    next.inferenceParamsVersion = CURRENT_INFERENCE_PARAMS_VERSION
+    return next
+  }
+
+  const params = { ...(next.inferenceParams || {}) }
+  const hasStandardize = Object.prototype.hasOwnProperty.call(params, 'standardize')
+  const hasNormalize = Object.prototype.hasOwnProperty.call(params, 'normalize')
+
+  if (!hasStandardize && !hasNormalize) {
+    // Legacy desktop only omitted `normalize` when the old input-standardize
+    // checkbox was enabled. Preserve that behavior on retry/history restore.
+    params.standardize = true
+    params.normalize = false
+  } else if (!hasStandardize && hasNormalize) {
+    // Legacy desktop used `normalize` to mean input standardization.
+    params.standardize = Boolean(params.normalize)
+    params.normalize = false
+  } else if (hasStandardize && !hasNormalize) {
+    // First compatibility pass already switched to `standardize`, but output
+    // normalize had not been made explicit yet.
+    params.normalize = false
+  }
+
+  next.inferenceParams = params
+  next.inferenceParamsVersion = CURRENT_INFERENCE_PARAMS_VERSION
+  return next
+}
+
+function isVrModelType(modelType?: string | null) {
+  return String(modelType || '').trim().toLowerCase() === 'vr'
 }
 
 export const useTaskStore = defineStore('task', () => {
@@ -176,15 +221,13 @@ export const useTaskStore = defineStore('task', () => {
   const batchSize = ref(1)
   const overlapSize = ref(0)
   const chunkSize = ref(0)
+  const standardizeMode = ref<StandardizeMode>('default')
   const normalize = ref(false)
-  const maskMode = ref('')
-  const useAmp = ref(false)
-  const cudaAttentionBackend = ref('')
-  const fuseConvBn = ref(false)
-  const useChannelsLast = ref(false)
-  const shifts = ref(0)
-  const split = ref(true)
-  const overlap = ref(0.25)
+  const vrWindowSize = ref(0)
+  const vrAggression = ref(0)
+  const vrEnablePostProcess = ref(false)
+  const vrPostProcessThreshold = ref(0)
+  const vrHighEndProcess = ref(false)
 
   const inputPath = computed(() => inputFiles.value[0] || '')
   const activeTask = computed(() => tasks.value.find((task) => task.id === activeTaskId.value) || null)
@@ -261,24 +304,26 @@ export const useTaskStore = defineStore('task', () => {
     return Math.min(MAX_CONCURRENT_SEPARATIONS, Math.max(1, Math.trunc(value)))
   }
 
-  function buildRunConfig(inferenceParams: Record<string, unknown>): SeparationRunConfig {
+  function buildRunConfig(inferenceParams: Record<string, unknown>, modelType?: string | null): SeparationRunConfig {
     const settings = useSettingsStore()
     const app = useAppStore()
     const runtimeDevice = settings.getRuntimeDeviceConfig(app.envInfo)
     return {
       modelDir: settings.modelDir || null,
       downloadSource: settings.downloadSource,
+      modelType: modelType ?? null,
       device: runtimeDevice.device,
       deviceIds: runtimeDevice.deviceIds,
       outputFormat: settings.defaultFormat,
       useTta: useTta.value,
       debug: debug.value,
       audioParams: settings.getAudioParams(),
+      inferenceParamsVersion: CURRENT_INFERENCE_PARAMS_VERSION,
       inferenceParams,
     }
   }
 
-  function createQueuedTask(input: string, model: string, inferenceParams: Record<string, unknown>) {
+  function createQueuedTask(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null) {
     const settings = useSettingsStore()
     const id = `sep_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
     const task: SeparationTask = {
@@ -295,7 +340,7 @@ export const useTaskStore = defineStore('task', () => {
       files: [],
       outputs: [],
       logs: [`${new Date().toLocaleTimeString()} Queued`],
-      runConfig: buildRunConfig(inferenceParams),
+      runConfig: buildRunConfig(inferenceParams, modelType),
     }
     tasks.value.unshift(task)
     activeTaskId.value = id
@@ -326,6 +371,7 @@ export const useTaskStore = defineStore('task', () => {
           useTta: config.useTta,
           debug: config.debug,
           audioParams: config.audioParams,
+          inferenceParamsVersion: config.inferenceParamsVersion ?? CURRENT_INFERENCE_PARAMS_VERSION,
           inferenceParams: config.inferenceParams || {},
         },
       })
@@ -411,6 +457,7 @@ export const useTaskStore = defineStore('task', () => {
     } else if (event.type === 'task_log') {
       appendTaskLogs(task, `${event.payload?.level || 'info'}: ${event.payload?.message || ''}`)
     } else if (event.type === 'error') {
+      if (task.status === 'cancelled') return
       const code = event.payload?.code ? `[${event.payload.code}] ` : ''
       const message = event.payload?.message || 'Unknown error'
       const detail = event.payload?.detail || ''
@@ -559,25 +606,32 @@ export const useTaskStore = defineStore('task', () => {
     return cancelled
   }
 
-  function buildInferenceParams(): Record<string, unknown> {
+  function buildInferenceParams(modelType?: string | null): Record<string, unknown> {
     const inferenceParams: Record<string, unknown> = {}
+    const vrModel = isVrModelType(modelType)
+
     if (batchSize.value > 1) inferenceParams.batch_size = batchSize.value
+
+    if (vrModel) {
+      if (normalize.value) inferenceParams.normalize = true
+      if (vrWindowSize.value > 0) inferenceParams.window_size = vrWindowSize.value
+      if (vrAggression.value > 0) inferenceParams.aggression = vrAggression.value
+      if (vrEnablePostProcess.value) inferenceParams.enable_post_process = true
+      if (vrPostProcessThreshold.value > 0) inferenceParams.post_process_threshold = vrPostProcessThreshold.value
+      if (vrHighEndProcess.value) inferenceParams.high_end_process = true
+      return inferenceParams
+    }
+
     if (overlapSize.value > 0) inferenceParams.overlap_size = overlapSize.value
     if (chunkSize.value > 0) inferenceParams.chunk_size = chunkSize.value
-    if (!normalize.value) inferenceParams.normalize = false
-    if (maskMode.value) inferenceParams.mask_mode = maskMode.value
-    if (useAmp.value) inferenceParams.use_amp = true
-    if (cudaAttentionBackend.value) inferenceParams.cuda_attention_backend = cudaAttentionBackend.value
-    if (fuseConvBn.value) inferenceParams.fuse_conv_bn = true
-    if (useChannelsLast.value) inferenceParams.use_channels_last = true
-    if (shifts.value > 0) inferenceParams.shifts = shifts.value
-    if (!split.value) inferenceParams.split = false
-    if (overlap.value !== 0.25) inferenceParams.overlap = overlap.value
+    if (normalize.value) inferenceParams.normalize = true
+    if (standardizeMode.value === 'enabled') inferenceParams.standardize = true
+    else if (standardizeMode.value === 'disabled') inferenceParams.standardize = false
     return inferenceParams
   }
 
-  function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>) {
-    return createQueuedTask(input, model, inferenceParams)
+  function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null) {
+    return createQueuedTask(input, model, inferenceParams, modelType)
   }
 
   async function startSeparation() {
@@ -589,9 +643,13 @@ export const useTaskStore = defineStore('task', () => {
       throw new Error('Model is required')
     }
     const model = modelStore.selectedModel
-    const inferenceParams = buildInferenceParams()
+    const selectedEntry = modelStore.selectedInfo?.name === model
+      ? modelStore.selectedInfo
+      : modelStore.models.find((item) => item.name === model) || null
+    const modelType = selectedEntry?.modelType || null
+    const inferenceParams = buildInferenceParams(modelType)
     const targets = [...inputFiles.value]
-    targets.forEach((input) => submitOne(input, model, inferenceParams))
+    targets.forEach((input) => submitOne(input, model, inferenceParams, modelType))
     scheduleQueue()
     return { succeeded: targets.length, failed: 0, total: targets.length }
   }
@@ -602,7 +660,10 @@ export const useTaskStore = defineStore('task', () => {
     const modelStore = useModelStore()
     modelStore.selectedModel = existing.model
     const retryParams = existing.runConfig?.inferenceParams || {}
-    const task = createQueuedTask(existing.input, existing.model, retryParams)
+    const persistedModelType = existing.runConfig?.modelType ?? null
+    const modelEntry = modelStore.models.find((item) => item.name === existing.model) || null
+    const modelType = modelEntry?.modelType || persistedModelType || null
+    const task = createQueuedTask(existing.input, existing.model, retryParams, modelType)
     scheduleQueue()
     return task
   }
@@ -629,15 +690,13 @@ export const useTaskStore = defineStore('task', () => {
     batchSize,
     overlapSize,
     chunkSize,
+    standardizeMode,
     normalize,
-    maskMode,
-    useAmp,
-    cudaAttentionBackend,
-    fuseConvBn,
-    useChannelsLast,
-    shifts,
-    split,
-    overlap,
+    vrWindowSize,
+    vrAggression,
+    vrEnablePostProcess,
+    vrPostProcessThreshold,
+    vrHighEndProcess,
     initialize,
     handleWorkerEvent,
     pickFiles,

@@ -279,17 +279,25 @@ export const useModelStore = defineStore('model', () => {
     } else if (event.type === 'download_stage') {
       next.status = 'downloading'
       next.progress = payload.progress ?? Math.max(next.progress, 5)
-      next.message = payload.stage || 'Downloading'
+      next.message = payload.message || payload.stage || 'Downloading'
     } else if (event.type === 'download_file') {
       next.status = 'downloading'
       next.progress = payload.progress ?? next.progress
       next.completedFiles = payload.completedFiles || next.completedFiles
       next.totalFiles = payload.totalFiles || next.totalFiles
       next.message = payload.status || 'Downloading'
+    } else if (event.type === 'download_progress') {
+      next.status = 'downloading'
+      next.progress = payload.progress ?? next.progress
+      next.completedFiles = payload.completedFiles || next.completedFiles
+      next.totalFiles = payload.totalFiles || next.totalFiles
+      next.message = payload.completedFiles ? 'Downloading' : (next.message || 'Downloading')
     } else if (event.type === 'download_done') {
       next.status = 'done'
       next.progress = 100
       next.message = 'Done'
+      next.completedFiles = payload.downloaded?.length + payload.skipped?.length || next.completedFiles
+      next.totalFiles = Math.max(next.totalFiles, next.completedFiles || 1)
       if (payload.modelInfo) upsertModel(payload.modelInfo)
       if (payload.modelDir) modelDir.value = payload.modelDir
       downloadStates.value = { ...downloadStates.value, [modelName]: 'done' }
@@ -298,6 +306,10 @@ export const useModelStore = defineStore('model', () => {
       next.message = 'Cancelled'
       downloadStates.value = { ...downloadStates.value, [modelName]: 'idle' }
     } else if (event.type === 'error') {
+      if (previous.status === 'cancelled' || previous.status === 'paused') {
+        downloadTasks.value = { ...downloadTasks.value, [modelName]: next }
+        return
+      }
       next.status = 'error'
       next.message = payload.message || 'Failed'
       downloadStates.value = { ...downloadStates.value, [modelName]: 'error' }

@@ -114,8 +114,12 @@ function normalizePrepareModelDirChangePayload(payload: PrepareModelDirChangePay
 const DEFAULT_WAV_BIT_DEPTH = 'FLOAT'
 const DEFAULT_FLAC_BIT_DEPTH = 'PCM_24'
 const DEFAULT_MP3_BIT_RATE = '320k'
-const DEFAULT_M4A_BIT_RATE = '192k'
-const DEFAULT_M4A_CODEC = 'aac_at'
+const DEFAULT_M4A_BIT_RATE = '512k'
+const DEFAULT_M4A_CODEC = 'aac'
+
+function normalizeM4aCodec(value: unknown): string {
+  return String(value || '').trim().toLowerCase() === 'aac' ? 'aac' : DEFAULT_M4A_CODEC
+}
 
 function createEmptyModelDirMigrationState(): ModelDirMigrationState {
   return {
@@ -240,7 +244,7 @@ export const useSettingsStore = defineStore('settings', () => {
     flacBitDepth.value = stored?.flacBitDepth || DEFAULT_FLAC_BIT_DEPTH
     mp3BitRate.value = stored?.mp3BitRate || DEFAULT_MP3_BIT_RATE
     m4aBitRate.value = stored?.m4aBitRate || DEFAULT_M4A_BIT_RATE
-    m4aCodec.value = stored?.m4aCodec || DEFAULT_M4A_CODEC
+    m4aCodec.value = normalizeM4aCodec(stored?.m4aCodec)
 
     applyTheme(themeMode.value, themeAccent.value)
     setLocale(locale.value)

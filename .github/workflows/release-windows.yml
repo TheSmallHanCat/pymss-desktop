@@ -69,6 +69,17 @@ jobs:
           Copy-Item (Join-Path $ffmpegBin.FullName "ffmpeg.exe") "$bin/ffmpeg.exe" -Force
           Copy-Item (Join-Path $ffmpegBin.FullName "ffprobe.exe") "$bin/ffprobe.exe" -Force
 
+          $aria2Zip = "release/aria2-1.37.0-win-64bit-build1.zip"
+          $aria2Extract = "release/aria2"
+          Invoke-WebRequest `
+            -Uri "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" `
+            -OutFile $aria2Zip
+          if (Test-Path $aria2Extract) { Remove-Item $aria2Extract -Recurse -Force }
+          Expand-Archive -Path $aria2Zip -DestinationPath $aria2Extract -Force
+          $aria2Exe = Get-ChildItem -Path $aria2Extract -Recurse -File -Filter "aria2c.exe" | Select-Object -First 1
+          if (-not $aria2Exe) { throw "aria2c.exe not found" }
+          Copy-Item $aria2Exe.FullName "$bin/aria2c.exe" -Force
+
           Invoke-WebRequest `
             -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" `
             -OutFile "$bin/VC_redist.x64.exe"
@@ -239,6 +250,17 @@ jobs:
           if (-not $ffmpegBin) { throw "ffmpeg bin directory not found" }
           Copy-Item (Join-Path $ffmpegBin.FullName "ffmpeg.exe") "$bin/ffmpeg.exe" -Force
           Copy-Item (Join-Path $ffmpegBin.FullName "ffprobe.exe") "$bin/ffprobe.exe" -Force
+
+          $aria2Zip = "release/aria2-1.37.0-win-64bit-build1.zip"
+          $aria2Extract = "release/aria2"
+          Invoke-WebRequest `
+            -Uri "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" `
+            -OutFile $aria2Zip
+          if (Test-Path $aria2Extract) { Remove-Item $aria2Extract -Recurse -Force }
+          Expand-Archive -Path $aria2Zip -DestinationPath $aria2Extract -Force
+          $aria2Exe = Get-ChildItem -Path $aria2Extract -Recurse -File -Filter "aria2c.exe" | Select-Object -First 1
+          if (-not $aria2Exe) { throw "aria2c.exe not found" }
+          Copy-Item $aria2Exe.FullName "$bin/aria2c.exe" -Force
 
           Invoke-WebRequest `
             -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" `

@@ -15,6 +15,24 @@ use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+fn kill_process_tree(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .creation_flags(0x08000000)
+        .status();
+}
+
+#[cfg(not(windows))]
+fn kill_process_tree(pid: u32) {
+    let _ = Command::new("pkill")
+        .args(["-TERM", "-P", &pid.to_string()])
+        .status();
+}
+
 #[tauri::command]
 pub async fn worker_health(app: AppHandle) -> AppResult<Value> {
     run_worker_once(&app, "health")
@@ -862,6 +880,8 @@ pub async fn cancel_task(
         .and_then(|mut tasks| tasks.remove(&task_id));
     if let Some(child) = child {
         if let Ok(mut child) = child.lock() {
+            let pid = child.id();
+            kill_process_tree(pid);
             let _ = child.kill();
         }
         let _ = app.emit(

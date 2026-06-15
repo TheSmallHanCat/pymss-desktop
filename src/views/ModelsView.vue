@@ -113,6 +113,35 @@ function categoryLabel(model: ModelEntry) {
   return getModelCategoryLabel(model, locale.value, '—')
 }
 
+function hasRequiredCompanionFiles(model: ModelEntry) {
+  return Boolean(model.configPath || (model.auxiliaryPaths && model.auxiliaryPaths.length > 0))
+}
+
+function requiredModelFileCount(model: ModelEntry) {
+  return 1 + (model.configPath ? 1 : 0) + (model.auxiliaryPaths?.length || 0)
+}
+
+function isPartiallyAvailable(model: ModelEntry) {
+  if (model.downloaded || !hasRequiredCompanionFiles(model) || !Array.isArray(model.missingPaths)) return false
+  const missingCount = model.missingPaths.length
+  const totalCount = requiredModelFileCount(model)
+  return missingCount > 0 && missingCount < totalCount
+}
+
+function modelStatusLabel(model: ModelEntry) {
+  if (!model.supported) return t('models.unsupported')
+  if (model.downloaded) return t('models.downloaded')
+  if (isPartiallyAvailable(model)) return t('models.partial')
+  return t('models.notDownloaded')
+}
+
+function modelStatusType(model: ModelEntry) {
+  if (!model.supported) return 'warning'
+  if (model.downloaded) return 'success'
+  if (isPartiallyAvailable(model)) return 'info'
+  return 'default'
+}
+
 function downloadStatusMessage(modelName: string) {
   const task = downloadTasks.value[modelName]
   if (!task) return ''
@@ -330,10 +359,10 @@ onMounted(() => {
             <n-tag
               :bordered="false"
               size="tiny"
-              :type="model.downloaded ? 'success' : model.supported ? 'default' : 'warning'"
+              :type="modelStatusType(model)"
               round
             >
-              {{ !model.supported ? t('models.unsupported') : model.downloaded ? t('models.downloaded') : t('models.notDownloaded') }}
+              {{ modelStatusLabel(model) }}
             </n-tag>
           </div>
 
@@ -474,10 +503,10 @@ onMounted(() => {
               <n-tag
                 :bordered="false"
                 size="small"
-                :type="selectedInfo.downloaded ? 'success' : selectedInfo.supported ? 'default' : 'warning'"
+                :type="modelStatusType(selectedInfo)"
                 round
               >
-                {{ !selectedInfo.supported ? t('models.unsupported') : selectedInfo.downloaded ? t('models.downloaded') : t('models.notDownloaded') }}
+                {{ modelStatusLabel(selectedInfo) }}
               </n-tag>
             </div>
 
@@ -511,6 +540,15 @@ onMounted(() => {
             <div class="text-sm">
               <div class="detail-label" style="margin-bottom:6px">{{ t('models.path') }}</div>
               <code class="detail-path">{{ selectedInfo.modelPath }}</code>
+            </div>
+            <div v-if="isPartiallyAvailable(selectedInfo) && selectedInfo.missingPaths?.length" class="text-sm" style="margin-top:12px">
+              <div class="detail-label" style="margin-bottom:6px">{{ t('models.partialHintTitle') }}</div>
+              <div class="text-muted">{{ t('models.partialHint') }}</div>
+              <ul class="detail-missing-list">
+                <li v-for="path in selectedInfo.missingPaths" :key="path">
+                  <code class="detail-path">{{ path }}</code>
+                </li>
+              </ul>
             </div>
           </div>
         </template>

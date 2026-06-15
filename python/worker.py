@@ -7,8 +7,13 @@ import json
 import math
 import os
 import platform
+import re
+import subprocess
 import sys
+import time
 import traceback
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -117,7 +122,6 @@ def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state:
     required_paths.extend(auxiliary_paths)
     missing_paths = [str(path) for path in required_paths if not path.is_file()]
     downloaded = include_local_state and not missing_paths
-
     return {
         "name": entry.name,
         "aliases": list(entry.aliases),
@@ -417,6 +421,374 @@ def cmd_cleanup_model_residual_files(payload: dict[str, Any]) -> int:
         return emit_error("MODEL_RESIDUAL_CLEANUP_FAILED", str(exc), traceback.format_exc())
 
 
+_ARIA2_PROGRESS_PATTERN = re.compile(
+    r"\[#.*?\s+(?P<downloaded>[\d.]+\s*[KMGTPE]?i?B|[\d.]+\s*B)/(?P<total>[\d.]+\s*[KMGTPE]?i?B|[\d.]+\s*B)\((?P<percent>\d+)%\).*?DL:(?P<speed>[\d.]+\s*[KMGTPE]?i?B/s|[\d.]+\s*B/s)",
+    re.IGNORECASE,
+)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_human_bytes(value: str | None) -> int:
+    if not value:
+        return 0
+    text = str(value).strip().replace(" ", "")
+    match = re.fullmatch(r"(?P<number>\d+(?:\.\d+)?)(?P<unit>[KMGTPE]?i?B|B)(?:/s)?", text, re.IGNORECASE)
+    if not match:
+        return 0
+    number = float(match.group("number"))
+    unit = match.group("unit").upper()
+    scale_map = {
+        "B": 1,
+        "KIB": 1024,
+        "MIB": 1024**2,
+        "GIB": 1024**3,
+        "TIB": 1024**4,
+        "PIB": 1024**5,
+        "EIB": 1024**6,
+        "KB": 1000,
+        "MB": 1000**2,
+        "GB": 1000**3,
+        "TB": 1000**4,
+        "PB": 1000**5,
+        "EB": 1000**6,
+    }
+    return int(number * scale_map.get(unit, 1))
+
+
+def _parse_aria2_progress_line(line: str) -> dict[str, int | float] | None:
+    match = _ARIA2_PROGRESS_PATTERN.search(line or "")
+    if not match:
+        return None
+    downloaded_bytes = _parse_human_bytes(match.group("downloaded"))
+    total_bytes = _parse_human_bytes(match.group("total"))
+    speed_bytes = _parse_human_bytes(match.group("speed"))
+    percent = _safe_int(match.group("percent"))
+    if total_bytes <= 0 and downloaded_bytes > 0 and percent > 0:
+        total_bytes = int(downloaded_bytes / max(percent / 100.0, 0.01))
+    return {
+        "downloaded_bytes": downloaded_bytes,
+        "total_bytes": total_bytes,
+        "speed_bytes_per_second": float(speed_bytes),
+        "percent": percent,
+    }
+
+
+def _emit_download_progress_payload(
+    callback: Any,
+    *,
+    event: str,
+    path: Path,
+    file_index: int,
+    total_files: int,
+    completed_files: int,
+    downloaded_bytes: int,
+    total_bytes: int,
+    speed_bytes_per_second: float = 0.0,
+) -> None:
+    callback({
+        "event": event,
+        "path": str(path),
+        "file_index": file_index,
+        "total_files": total_files,
+        "completed_files": completed_files,
+        "downloaded_bytes": max(0, downloaded_bytes),
+        "total_bytes": max(0, total_bytes),
+        "speed_bytes_per_second": max(0.0, float(speed_bytes_per_second or 0.0)),
+    })
+
+
+def _download_file_with_progress_urllib(
+    *,
+    url: str,
+    dest: Path,
+    expected_size: int | None,
+    expected_sha256: str,
+    timeout: int,
+    file_index: int,
+    total_files: int,
+    completed_before: int,
+    progress_callback: Any,
+    cleanup_partial_download: Any,
+    validate_downloaded_file: Any,
+) -> Path:
+    tmp = dest.with_name(dest.name + ".part")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            total_bytes = _safe_int(response.headers.get("content-length")) or (expected_size or 0)
+            downloaded_bytes = 0
+            _emit_download_progress_payload(
+                progress_callback,
+                event="file_start",
+                path=dest,
+                file_index=file_index,
+                total_files=total_files,
+                completed_files=completed_before,
+                downloaded_bytes=0,
+                total_bytes=total_bytes,
+            )
+            with open(tmp, "wb") as file_obj:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    file_obj.write(chunk)
+                    downloaded_bytes += len(chunk)
+                    _emit_download_progress_payload(
+                        progress_callback,
+                        event="file_progress",
+                        path=dest,
+                        file_index=file_index,
+                        total_files=total_files,
+                        completed_files=completed_before,
+                        downloaded_bytes=downloaded_bytes,
+                        total_bytes=total_bytes,
+                    )
+        validate_downloaded_file(tmp, dest, expected_size, expected_sha256)
+        os.replace(tmp, dest)
+        final_total = expected_size or downloaded_bytes or (dest.stat().st_size if dest.is_file() else 0)
+        _emit_download_progress_payload(
+            progress_callback,
+            event="file_done",
+            path=dest,
+            file_index=file_index,
+            total_files=total_files,
+            completed_files=completed_before + 1,
+            downloaded_bytes=final_total,
+            total_bytes=final_total,
+        )
+        return dest
+    except Exception:
+        cleanup_partial_download(tmp)
+        raise
+
+
+def _download_file_with_progress_aria2(
+    *,
+    aria2c_path: str,
+    url: str,
+    dest: Path,
+    expected_size: int | None,
+    expected_sha256: str,
+    timeout: int,
+    file_index: int,
+    total_files: int,
+    completed_before: int,
+    progress_callback: Any,
+    cleanup_partial_download: Any,
+    validate_downloaded_file: Any,
+) -> Path:
+    tmp = dest.with_name(dest.name + ".part")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        aria2c_path,
+        "--allow-overwrite=true",
+        "--auto-file-renaming=false",
+        "--continue=true",
+        "--console-log-level=notice",
+        "--show-console-readout=true",
+        "--summary-interval=1",
+        "--max-connection-per-server=16",
+        "--split=16",
+        "--min-split-size=1M",
+        "--max-tries=3",
+        f"--connect-timeout={timeout}",
+        f"--timeout={timeout}",
+        "--dir",
+        str(tmp.parent),
+        "--out",
+        tmp.name,
+        url,
+    ]
+    process = None
+    last_downloaded = 0
+    last_total = expected_size or 0
+    last_speed = 0.0
+    try:
+        _emit_download_progress_payload(
+            progress_callback,
+            event="file_start",
+            path=dest,
+            file_index=file_index,
+            total_files=total_files,
+            completed_files=completed_before,
+            downloaded_bytes=0,
+            total_bytes=last_total,
+        )
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        if process.stdout is not None:
+            for raw_line in process.stdout:
+                parsed = _parse_aria2_progress_line(raw_line)
+                if parsed is None:
+                    continue
+                last_downloaded = max(last_downloaded, _safe_int(parsed.get("downloaded_bytes")))
+                last_total = max(last_total, _safe_int(parsed.get("total_bytes")))
+                last_speed = float(parsed.get("speed_bytes_per_second") or last_speed or 0.0)
+                _emit_download_progress_payload(
+                    progress_callback,
+                    event="file_progress",
+                    path=dest,
+                    file_index=file_index,
+                    total_files=total_files,
+                    completed_files=completed_before,
+                    downloaded_bytes=last_downloaded,
+                    total_bytes=last_total,
+                    speed_bytes_per_second=last_speed,
+                )
+        return_code = process.wait()
+        if return_code != 0:
+            raise RuntimeError(f"aria2c failed with exit code {return_code}")
+        if not tmp.is_file():
+            raise RuntimeError("aria2c did not create the expected output file")
+
+        validate_downloaded_file(tmp, dest, expected_size, expected_sha256)
+        os.replace(tmp, dest)
+        final_total = expected_size or last_total or int(dest.stat().st_size)
+        final_downloaded = final_total or last_downloaded
+        _emit_download_progress_payload(
+            progress_callback,
+            event="file_done",
+            path=dest,
+            file_index=file_index,
+            total_files=total_files,
+            completed_files=completed_before + 1,
+            downloaded_bytes=final_downloaded,
+            total_bytes=final_total,
+            speed_bytes_per_second=last_speed,
+        )
+        return dest
+    except Exception:
+        cleanup_partial_download(tmp)
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=2)
+            except Exception:
+                pass
+        raise
+
+
+def _download_model_with_observed_progress(
+    *,
+    entry: Any,
+    model_dir: str | None,
+    source: str,
+    endpoint: str | None,
+    force: bool,
+    timeout: int,
+    progress_callback: Any,
+) -> dict[str, Any]:
+    from pymss.model_download import (  # type: ignore
+        ARIA2C_PATH,
+        DownloadError,
+        DownloadValidationError,
+        _already_valid,
+        _cleanup_partial_download,
+        _expected_size_and_hash,
+        _validate_downloaded_file,
+        fetch_modelscope_file_index,
+        files_for_model,
+        remote_url,
+    )
+
+    _, files = files_for_model(entry.name, model_dir)
+    total_files = max(1, len(files))
+    source_index = fetch_modelscope_file_index(timeout=timeout) if endpoint is None else None
+    downloaded: list[str] = []
+    skipped: list[str] = []
+    completed_files = 0
+
+    for file_index, (relpath, dest) in enumerate(files, start=1):
+        expected_size, expected_sha256 = _expected_size_and_hash(relpath, source_index)
+        if not force and _already_valid(dest, expected_size, expected_sha256):
+            completed_files += 1
+            size_bytes = expected_size or (int(dest.stat().st_size) if dest.is_file() else 0)
+            _emit_download_progress_payload(
+                progress_callback,
+                event="file_skipped",
+                path=dest,
+                file_index=file_index,
+                total_files=total_files,
+                completed_files=completed_files,
+                downloaded_bytes=size_bytes,
+                total_bytes=size_bytes,
+            )
+            skipped.append(str(dest))
+            continue
+
+        url = remote_url(relpath, source=source, endpoint=endpoint)
+        tmp = dest.with_name(dest.name + ".part")
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                if ARIA2C_PATH:
+                    _download_file_with_progress_aria2(
+                        aria2c_path=ARIA2C_PATH,
+                        url=url,
+                        dest=dest,
+                        expected_size=expected_size,
+                        expected_sha256=expected_sha256,
+                        timeout=timeout,
+                        file_index=file_index,
+                        total_files=total_files,
+                        completed_before=completed_files,
+                        progress_callback=progress_callback,
+                        cleanup_partial_download=_cleanup_partial_download,
+                        validate_downloaded_file=_validate_downloaded_file,
+                    )
+                else:
+                    _download_file_with_progress_urllib(
+                        url=url,
+                        dest=dest,
+                        expected_size=expected_size,
+                        expected_sha256=expected_sha256,
+                        timeout=timeout,
+                        file_index=file_index,
+                        total_files=total_files,
+                        completed_before=completed_files,
+                        progress_callback=progress_callback,
+                        cleanup_partial_download=_cleanup_partial_download,
+                        validate_downloaded_file=_validate_downloaded_file,
+                    )
+                last_error = None
+                break
+            except (
+                OSError,
+                urllib.error.URLError,
+                urllib.error.HTTPError,
+                RuntimeError,
+                DownloadError,
+            ) as exc:
+                last_error = exc
+                if (not ARIA2C_PATH) or isinstance(exc, DownloadValidationError):
+                    _cleanup_partial_download(tmp)
+                if attempt < 2:
+                    time.sleep(1.0 + attempt)
+        if last_error is not None:
+            raise DownloadError(f"failed to download {url}: {last_error}")
+        completed_files += 1
+        downloaded.append(str(dest))
+
+    return {"entry": entry, "downloaded": downloaded, "skipped": skipped}
+
+
 def cmd_download_model(payload: dict[str, Any]) -> int:
     model_name = payload.get("model")
     if not model_name:
@@ -427,10 +799,10 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
     source = payload.get("source") or "modelscope"
     endpoint = payload.get("endpoint") or None
     force = bool(payload.get("force", False))
+    timeout = _safe_int(payload.get("timeout"), 30)
 
     try:
-        from pymss.model_download import download_model  # type: ignore
-        from pymss.model_registry import get_model_entry  # type: ignore
+        from pymss.model_registry import get_model_entry, model_root  # type: ignore
     except Exception as exc:
         return emit_error("PYMSS_IMPORT_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
 
@@ -439,6 +811,8 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
         local_state = model_to_dict(entry, model_dir, include_local_state=True)
         missing_before = local_state.get("missingPaths", [])
         total_files = max(1, len(missing_before))
+        total_bytes = 0
+        download_progress_state: dict[str, dict[str, Any]] = {}
         emit("download_started", {
             "model": entry.name,
             "source": source,
@@ -448,30 +822,95 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
             "progress": 0,
         }, task_id=task_id)
         emit("download_stage", {"stage": "resolving_files", "progress": 5}, task_id=task_id)
-        result = download_model(
-            entry.name,
+
+        def emit_download_progress(progress_payload: dict[str, Any]) -> None:
+            nonlocal total_files, total_bytes
+            event_name = progress_payload.get("event")
+            file_path = str(progress_payload.get("path") or "")
+            total_files = max(total_files, int(progress_payload.get("total_files") or total_files or 1))
+            file_total = int(progress_payload.get("total_bytes") or 0)
+            file_downloaded = int(progress_payload.get("downloaded_bytes") or 0)
+            completed_files = int(progress_payload.get("completed_files") or 0)
+            speed = float(progress_payload.get("speed_bytes_per_second") or 0.0)
+
+            previous = download_progress_state.get(file_path) or {"downloaded": 0, "total": 0}
+            download_progress_state[file_path] = {
+                "downloaded": file_downloaded,
+                "total": file_total,
+            }
+            known_total = sum(int(item.get("total") or 0) for item in download_progress_state.values())
+            downloaded_sum = sum(int(item.get("downloaded") or 0) for item in download_progress_state.values())
+            total_bytes = max(total_bytes, known_total)
+
+            if total_bytes > 0:
+                progress = min(95, max(8, int(downloaded_sum / total_bytes * 95)))
+            else:
+                progress = min(95, max(8, int((completed_files / max(1, total_files)) * 95)))
+
+            if event_name == "file_skipped":
+                emit("download_file", {
+                    "status": "skipped",
+                    "path": file_path,
+                    "completedFiles": completed_files,
+                    "totalFiles": total_files,
+                    "downloadedBytes": file_total,
+                    "totalBytes": file_total,
+                    "aggregateDownloadedBytes": downloaded_sum,
+                    "aggregateTotalBytes": total_bytes,
+                    "speedBytesPerSecond": 0,
+                    "progress": progress,
+                }, task_id=task_id)
+                return
+
+            if event_name in {"file_start", "file_progress", "file_done"}:
+                emit("download_progress", {
+                    "path": file_path,
+                    "fileIndex": int(progress_payload.get("file_index") or 0),
+                    "completedFiles": completed_files,
+                    "totalFiles": total_files,
+                    "downloadedBytes": file_downloaded,
+                    "totalBytes": file_total,
+                    "aggregateDownloadedBytes": downloaded_sum,
+                    "aggregateTotalBytes": total_bytes,
+                    "speedBytesPerSecond": speed,
+                    "progress": progress,
+                }, task_id=task_id)
+                if event_name == "file_done":
+                    emit("download_file", {
+                        "status": "downloaded",
+                        "path": file_path,
+                        "completedFiles": completed_files,
+                        "totalFiles": total_files,
+                        "downloadedBytes": file_total,
+                        "totalBytes": file_total,
+                        "aggregateDownloadedBytes": downloaded_sum,
+                        "aggregateTotalBytes": total_bytes,
+                        "speedBytesPerSecond": speed,
+                        "progress": progress,
+                    }, task_id=task_id)
+
+        emit("download_stage", {
+            "stage": "downloading_files",
+            "progress": 15,
+            "message": "Downloading model files",
+        }, task_id=task_id)
+        result = _download_model_with_observed_progress(
+            entry=entry,
             model_dir=model_dir,
             source=source,
             endpoint=endpoint,
             force=force,
+            timeout=timeout,
+            progress_callback=emit_download_progress,
         )
         files = [(file_path, "skipped") for file_path in result.get("skipped", [])]
         files.extend((file_path, "downloaded") for file_path in result.get("downloaded", []))
         total_files = max(total_files, len(files) or 1)
-        for index, (file_path, status) in enumerate(files, start=1):
-            progress = min(95, max(8, int(index / total_files * 90)))
-            emit("download_file", {
-                "status": status,
-                "path": file_path,
-                "completedFiles": index,
-                "totalFiles": total_files,
-                "progress": progress,
-            }, task_id=task_id)
         emit("download_done", {
             "model": entry.name,
             "downloaded": result.get("downloaded", []),
             "skipped": result.get("skipped", []),
-            "modelDir": result.get("model_dir"),
+            "modelDir": str(model_root(model_dir)),
             "modelInfo": model_to_dict(entry, model_dir, include_local_state=True),
             "progress": 100,
         }, task_id=task_id)
@@ -510,6 +949,60 @@ def collect_outputs(output_dir: str, success_files: list[str], output_format: st
         stem = path.stem.split("_")[-1] if "_" in path.stem else path.stem
         outputs.append({"stem": stem, "path": str(path)})
     return outputs
+
+
+def normalize_inference_params(payload_params: Any, version: Any = None) -> dict[str, Any]:
+    if not isinstance(payload_params, dict):
+        return {}
+
+    params = dict(payload_params)
+    try:
+        version_value = int(version) if version is not None else None
+    except (TypeError, ValueError):
+        version_value = None
+
+    if version_value is not None and version_value >= 2:
+        if params.get("standardize") in {"", "default"}:
+            params.pop("standardize", None)
+        if params.get("normalize") in {"", "default"}:
+            params.pop("normalize", None)
+        return params
+
+    # Legacy desktop tasks used `normalize` for input standardization and did not
+    # send the new output-normalize flag separately. If `standardize` is absent,
+    # treat the historical `normalize` field as the old input standardization
+    # switch and default the new output normalize to False.
+    if "standardize" not in params and "normalize" in params:
+        legacy_standardize = params.pop("normalize")
+        params["standardize"] = legacy_standardize
+        params["normalize"] = False
+        return params
+
+    if "standardize" in params and "normalize" not in params:
+        params["normalize"] = False
+    elif "standardize" not in params and "normalize" not in params:
+        params["standardize"] = True
+        params["normalize"] = False
+    return params
+
+
+def normalize_audio_params(payload_audio_params: Any) -> dict[str, Any]:
+    defaults = {
+        "wav_bit_depth": "FLOAT",
+        "flac_bit_depth": "PCM_24",
+        "mp3_bit_rate": "320k",
+        "m4a_bit_rate": "512k",
+        "m4a_codec": "aac",
+        "m4a_aac_at_quality": 2,
+    }
+    if not isinstance(payload_audio_params, dict):
+        return defaults
+    normalized = {
+        **defaults,
+        **payload_audio_params,
+    }
+    normalized["m4a_codec"] = "aac" if str(normalized.get("m4a_codec") or "").strip().lower() == "aac" else "aac"
+    return normalized
 
 
 def _audio_metadata(path: Path) -> dict[str, Any]:
@@ -917,15 +1410,11 @@ def cmd_infer(payload: dict[str, Any]) -> int:
     output_format = payload.get("outputFormat") or "wav"
     use_tta = bool(payload.get("useTta", False))
     debug = bool(payload.get("debug", False))
-    inference_params = payload.get("inferenceParams") or {}
-    audio_params = payload.get("audioParams") or {
-        "wav_bit_depth": "FLOAT",
-        "flac_bit_depth": "PCM_24",
-        "mp3_bit_rate": "320k",
-        "m4a_bit_rate": "192k",
-        "m4a_codec": "aac_at",
-        "m4a_aac_at_quality": 2,
-    }
+    inference_params = normalize_inference_params(
+        payload.get("inferenceParams"),
+        payload.get("inferenceParamsVersion"),
+    )
+    audio_params = normalize_audio_params(payload.get("audioParams"))
 
     last_reported_done: float | None = None
     last_reported_total: float | None = None
@@ -955,6 +1444,9 @@ def cmd_infer(payload: dict[str, Any]) -> int:
             "total": total_value,
         }, task_id=task_id)
 
+    separator = None
+    logger = None
+    log_handler = None
     try:
         emit("task_started", {"model": model_name, "input": input_path, "output": output_dir}, task_id=task_id)
         emit("task_stage", {"stage": "validating_input", "message": "Validating input"}, task_id=task_id)
@@ -967,11 +1459,11 @@ def cmd_infer(payload: dict[str, Any]) -> int:
 
         from pymss import MSSeparator  # type: ignore
         emit("task_stage", {"stage": "loading_model", "message": "Loading model"}, task_id=task_id)
-        logger = None
         try:
             from pymss import get_separation_logger  # type: ignore
             logger = get_separation_logger()
-            logger.addHandler(JsonLogHandler(task_id))
+            log_handler = JsonLogHandler(task_id)
+            logger.addHandler(log_handler)
         except Exception:
             logger = None
 
@@ -995,12 +1487,29 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         emit("task_stage", {"stage": "separating", "message": "Separating audio"}, task_id=task_id)
         success_files = separator.process_folder(input_path)
         emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
-        separator.del_cache()
         outputs = collect_outputs(output_dir, success_files, output_format)
         emit("task_done", {"files": success_files, "outputs": outputs, "outputDir": str(Path(output_dir).resolve()), "outputFormat": output_format}, task_id=task_id)
         return 0
     except Exception as exc:
         return emit_error("INFERENCE_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
+    finally:
+        if logger is not None and log_handler is not None:
+            try:
+                logger.removeHandler(log_handler)
+            except Exception:
+                pass
+        if separator is not None:
+            close = getattr(separator, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+            else:
+                try:
+                    separator.del_cache()
+                except Exception:
+                    pass
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

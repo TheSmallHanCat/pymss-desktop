@@ -39,15 +39,13 @@ const {
   batchSize,
   overlapSize,
   chunkSize,
+  standardizeMode,
   normalize,
-  maskMode,
-  useAmp,
-  cudaAttentionBackend,
-  fuseConvBn,
-  useChannelsLast,
-  shifts,
-  split,
-  overlap,
+  vrWindowSize,
+  vrAggression,
+  vrEnablePostProcess,
+  vrPostProcessThreshold,
+  vrHighEndProcess,
 } = storeToRefs(task)
 const { selectedModel, downloadedModels, isLoading } = storeToRefs(model)
 
@@ -79,13 +77,16 @@ const bitRateOptions = computed(() => [
   { label: t('audio.bitrate192'), value: '192k' },
   { label: t('audio.bitrate256'), value: '256k' },
   { label: t('audio.bitrate320'), value: '320k' },
+  { label: t('audio.bitrate512'), value: '512k' },
 ])
 const m4aCodecOptions = computed(() => [
-  { label: t('audio.codecAacAt'), value: 'aac_at' },
   { label: t('audio.codecAac'), value: 'aac' },
-  { label: t('audio.codecAlac'), value: 'alac' },
 ])
-
+const standardizeModeOptions = computed(() => [
+  { label: t('inference.standardizeDefault'), value: 'default' },
+  { label: t('inference.standardizeEnabled'), value: 'enabled' },
+  { label: t('inference.standardizeDisabled'), value: 'disabled' },
+])
 const selectedModelName = computed(() => String(selectedModel.value || ''))
 const listedDownloadedModels = computed(() => {
   return [...downloadedModels.value].sort((a, b) => (
@@ -94,6 +95,13 @@ const listedDownloadedModels = computed(() => {
 })
 const selectedModelListItem = computed(() => listedDownloadedModels.value.find(item => item.name === selectedModelName.value) || null)
 const modelDownloaded = computed(() => Boolean(selectedModelListItem.value))
+const currentModelInfo = computed(() => {
+  if (model.selectedInfo?.name === selectedModelName.value) return model.selectedInfo
+  return selectedModelListItem.value
+})
+const currentModelType = computed(() => String(currentModelInfo.value?.modelType || '').trim().toLowerCase())
+const isVrModel = computed(() => currentModelType.value === 'vr')
+const isMssModel = computed(() => !isVrModel.value)
 const modelCategoryOptions = computed(() => [
   { label: t('common.all'), value: '' },
   ...buildModelCategoryOptionsFromModels(listedDownloadedModels.value, locale.value),
@@ -523,73 +531,58 @@ async function start() {
               <n-collapse-item :title="t('inference.advancedParams')" name="inference">
                 <p class="advanced-hint">{{ t('separate.advancedPanelHint') }}</p>
                 <n-grid :cols="2" :x-gap="16" :y-gap="16" responsive="screen">
-                  <n-grid-item>
+                  <n-grid-item v-if="isMssModel">
                     <div class="field-block">
                       <label>{{ t('inference.batchSize') }}</label>
                       <n-input-number v-model:value="batchSize" :min="1" :max="32" style="width:100%" />
                     </div>
                   </n-grid-item>
-                  <n-grid-item>
+                  <n-grid-item v-if="isMssModel">
                     <div class="field-block">
                       <label>{{ t('inference.overlapSize') }}</label>
                       <n-input-number v-model:value="overlapSize" :min="0" :max="128" style="width:100%" />
                     </div>
                   </n-grid-item>
-                  <n-grid-item>
+                  <n-grid-item v-if="isMssModel">
                     <div class="field-block">
                       <label>{{ t('inference.chunkSize') }}</label>
                       <n-input-number v-model:value="chunkSize" :min="0" :max="1048576" :step="1024" style="width:100%" />
                     </div>
                   </n-grid-item>
-                  <n-grid-item>
+                  <n-grid-item v-if="isMssModel">
                     <div class="field-block">
-                      <label>{{ t('inference.shifts') }}</label>
-                      <n-input-number v-model:value="shifts" :min="0" :max="16" style="width:100%" />
+                      <label>{{ t('inference.standardize') }}</label>
+                      <n-select v-model:value="standardizeMode" :options="standardizeModeOptions" />
                     </div>
                   </n-grid-item>
-                  <n-grid-item>
+                  <n-grid-item v-if="isVrModel">
                     <div class="field-block">
-                      <label>{{ t('inference.overlap') }}</label>
-                      <n-input-number v-model:value="overlap" :min="0" :max="1" :step="0.05" style="width:100%" />
+                      <label>{{ t('inference.batchSize') }}</label>
+                      <n-input-number v-model:value="batchSize" :min="1" :max="32" style="width:100%" />
                     </div>
                   </n-grid-item>
-                  <n-grid-item>
+                  <n-grid-item v-if="isVrModel">
                     <div class="field-block">
-                      <label>{{ t('inference.maskMode') }}</label>
-                      <n-select
-                        v-model:value="maskMode"
-                        :placeholder="t('common.default')"
-                        clearable
-                        :options="[
-                          { label: t('inference.maskNone'), value: 'none' },
-                          { label: t('inference.maskClamp'), value: 'clamp' },
-                          { label: t('inference.maskGauss'), value: 'gauss' },
-                          { label: t('inference.maskSoft'), value: 'soft' },
-                        ]"
-                      />
+                      <label>{{ t('inference.vrWindowSize') }}</label>
+                      <n-input-number v-model:value="vrWindowSize" :min="0" :max="4096" style="width:100%" />
                     </div>
                   </n-grid-item>
-                  <n-grid-item>
+                  <n-grid-item v-if="isVrModel">
                     <div class="field-block">
-                      <label>{{ t('inference.cudaAttention') }}</label>
-                      <n-select
-                        v-model:value="cudaAttentionBackend"
-                        :placeholder="t('common.default')"
-                        clearable
-                        :options="[
-                          { label: 'math', value: 'math' },
-                          { label: 'flash', value: 'flash' },
-                          { label: 'mem_efficient', value: 'mem_efficient' },
-                        ]"
-                      />
+                      <label>{{ t('inference.vrAggression') }}</label>
+                      <n-input-number v-model:value="vrAggression" :min="0" :max="100" style="width:100%" />
+                    </div>
+                  </n-grid-item>
+                  <n-grid-item v-if="isVrModel">
+                    <div class="field-block">
+                      <label>{{ t('inference.vrPostProcessThreshold') }}</label>
+                      <n-input-number v-model:value="vrPostProcessThreshold" :min="0" :max="1" :step="0.05" style="width:100%" />
                     </div>
                   </n-grid-item>
                 </n-grid>
-                <div class="check-list check-list--spaced">
-                  <n-checkbox v-model:checked="split">{{ t('inference.split') }}</n-checkbox>
-                  <n-checkbox v-model:checked="useAmp">{{ t('inference.useAmp') }}</n-checkbox>
-                  <n-checkbox v-model:checked="fuseConvBn">{{ t('inference.fuseConvBn') }}</n-checkbox>
-                  <n-checkbox v-model:checked="useChannelsLast">{{ t('inference.useChannelsLast') }}</n-checkbox>
+                <div v-if="isVrModel" class="check-list check-list--spaced">
+                  <n-checkbox v-model:checked="vrEnablePostProcess">{{ t('inference.vrEnablePostProcess') }}</n-checkbox>
+                  <n-checkbox v-model:checked="vrHighEndProcess">{{ t('inference.vrHighEndProcess') }}</n-checkbox>
                 </div>
               </n-collapse-item>
             </n-collapse>
