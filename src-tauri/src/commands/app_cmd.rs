@@ -967,6 +967,23 @@ pub async fn pick_audio_files(app: AppHandle) -> AppResult<Vec<String>> {
 }
 
 #[tauri::command]
+pub async fn pick_media_files(app: AppHandle) -> AppResult<Vec<String>> {
+    let files = app
+        .dialog()
+        .file()
+        .add_filter(
+            "Media / 媒体",
+            &[
+                "wav", "mp3", "flac", "m4a", "aac", "ogg", "opus", "mp4", "mkv", "mov", "avi",
+                "webm", "flv",
+            ],
+        )
+        .blocking_pick_files()
+        .unwrap_or_default();
+    Ok(files.into_iter().map(|p| p.to_string()).collect())
+}
+
+#[tauri::command]
 pub async fn pick_input_folder(app: AppHandle) -> AppResult<Option<String>> {
     Ok(app
         .dialog()
@@ -1027,6 +1044,7 @@ pub async fn cancel_model_dir_migration(
 }
 
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"];
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "mov", "avi", "webm", "flv"];
 
 #[derive(Debug, Serialize)]
 pub struct ScanAudioPathsResult {
@@ -1038,6 +1056,16 @@ fn is_audio_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| AUDIO_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+fn is_media_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            let ext = ext.to_lowercase();
+            AUDIO_EXTENSIONS.contains(&ext.as_str()) || VIDEO_EXTENSIONS.contains(&ext.as_str())
+        })
         .unwrap_or(false)
 }
 
@@ -1064,6 +1092,29 @@ fn collect_audio_files(dir: &Path, results: &mut Vec<String>, warnings: &mut Vec
     }
 }
 
+fn collect_media_files(dir: &Path, results: &mut Vec<String>, warnings: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            warnings.push(format!("{}: {}", dir.display(), error));
+            return;
+        }
+    };
+    for entry in entries {
+        match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect_media_files(&path, results, warnings);
+                } else if path.is_file() && is_media_file(&path) {
+                    results.push(path.to_string_lossy().to_string());
+                }
+            }
+            Err(error) => warnings.push(format!("{}: {}", dir.display(), error)),
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn scan_audio_paths(paths: Vec<String>) -> AppResult<ScanAudioPathsResult> {
     let mut files = Vec::new();
@@ -1078,6 +1129,29 @@ pub async fn scan_audio_paths(paths: Vec<String>) -> AppResult<ScanAudioPathsRes
             }
         } else if target.is_dir() {
             collect_audio_files(target, &mut files, &mut warnings);
+        } else {
+            warnings.push(format!("path not found: {}", raw));
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok(ScanAudioPathsResult { files, warnings })
+}
+
+#[tauri::command]
+pub async fn scan_media_paths(paths: Vec<String>) -> AppResult<ScanAudioPathsResult> {
+    let mut files = Vec::new();
+    let mut warnings = Vec::new();
+    for raw in paths {
+        let target = Path::new(&raw);
+        if target.is_file() {
+            if is_media_file(target) {
+                files.push(target.to_string_lossy().to_string());
+            } else {
+                warnings.push(format!("unsupported file: {}", target.display()));
+            }
+        } else if target.is_dir() {
+            collect_media_files(target, &mut files, &mut warnings);
         } else {
             warnings.push(format!("path not found: {}", raw));
         }

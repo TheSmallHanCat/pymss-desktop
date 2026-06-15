@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import i18n from '@/i18n'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
 import { useSettingsStore } from '@/stores/settings'
 import { useModelStore } from '@/stores/model'
@@ -26,7 +27,7 @@ export type SeparationRunConfig = {
 
 export type StandardizeMode = 'default' | 'enabled' | 'disabled'
 
-type ScanAudioPathsResult = {
+type ScanMediaPathsResult = {
   files: string[]
   warnings: string[]
 }
@@ -57,6 +58,7 @@ type PersistedTaskState = {
 }
 
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus']
+const VIDEO_EXTENSIONS = ['mp4', 'mkv', 'mov', 'avi', 'webm', 'flv']
 const CURRENT_INFERENCE_PARAMS_VERSION = 2
 const TERMINAL_STATUSES: TaskStatus[] = ['done', 'failed', 'cancelled']
 const INTERRUPTIBLE_STATUSES: TaskStatus[] = ['queued', 'preparing', 'validating_input', 'downloading_model', 'ensuring_model', 'loading_model', 'separating', 'writing_output']
@@ -68,16 +70,16 @@ const STAGE_META: Record<TaskStatus, { progress: number; label: string }> = {
   downloading_model: { progress: 22, label: 'Preparing model' },
   ensuring_model: { progress: 22, label: 'Preparing model' },
   loading_model: { progress: 35, label: 'Loading model' },
-  separating: { progress: 0, label: 'Separating audio' },
+  separating: { progress: 0, label: 'Separating' },
   writing_output: { progress: 92, label: 'Collecting outputs' },
   done: { progress: 100, label: 'Done' },
   failed: { progress: 100, label: 'Failed' },
   cancelled: { progress: 100, label: 'Cancelled' },
 }
 
-function isAudioPath(path: string) {
+function isSupportedInputPath(path: string) {
   const ext = path.split('.').pop()?.toLowerCase() || ''
-  return AUDIO_EXTENSIONS.includes(ext)
+  return AUDIO_EXTENSIONS.includes(ext) || VIDEO_EXTENSIONS.includes(ext)
 }
 
 const MAX_CONCURRENT_SEPARATIONS = 16
@@ -207,6 +209,18 @@ function normalizeRunConfig(runConfig?: SeparationRunConfig): SeparationRunConfi
 
 function isVrModelType(modelType?: string | null) {
   return String(modelType || '').trim().toLowerCase() === 'vr'
+}
+
+function resolveTaskErrorMessage(code: unknown, message: unknown, input?: string) {
+  const detail = typeof message === 'string' ? message : ''
+  const path = typeof input === 'string' ? input : ''
+  if (code === 'INPUT_AUDIO_STREAM_MISSING') {
+    return i18n.global.t('separate.inputAudioStreamMissing', { path })
+  }
+  if (code === 'INPUT_MEDIA_UNSUPPORTED') {
+    return i18n.global.t('separate.inputMediaUnsupported', { path })
+  }
+  return detail || i18n.global.t('toast.taskFailed')
 }
 
 export const useTaskStore = defineStore('task', () => {
@@ -458,8 +472,9 @@ export const useTaskStore = defineStore('task', () => {
       appendTaskLogs(task, `${event.payload?.level || 'info'}: ${event.payload?.message || ''}`)
     } else if (event.type === 'error') {
       if (task.status === 'cancelled') return
-      const code = event.payload?.code ? `[${event.payload.code}] ` : ''
-      const message = event.payload?.message || 'Unknown error'
+      const codeValue = event.payload?.code
+      const code = codeValue ? `[${codeValue}] ` : ''
+      const message = resolveTaskErrorMessage(codeValue, event.payload?.message, task.input)
       const detail = event.payload?.detail || ''
       const recoverable = Boolean(event.payload?.recoverable)
       task.error = message
@@ -507,7 +522,7 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   function addInputFiles(paths: string[]) {
-    const valid = paths.filter((p) => p?.trim() && isAudioPath(p))
+    const valid = paths.filter((p) => p?.trim() && isSupportedInputPath(p))
     if (!valid.length) return 0
     const existing = new Set(inputFiles.value)
     const additions = valid.filter((p) => !existing.has(p))
@@ -524,14 +539,14 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   async function pickFiles() {
-    const files = await invoke<string[]>('pick_audio_files')
+    const files = await invoke<string[]>('pick_media_files')
     addInputFiles(files || [])
     return files?.length || 0
   }
 
   async function scanAndAddPaths(paths: string[]) {
     if (!paths?.length) return { added: 0, warnings: [] as string[] }
-    const result = await invoke<ScanAudioPathsResult>('scan_audio_paths', { paths })
+    const result = await invoke<ScanMediaPathsResult>('scan_media_paths', { paths })
     return { added: addInputFiles(result.files || []), warnings: result.warnings || [] }
   }
 

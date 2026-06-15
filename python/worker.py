@@ -1581,7 +1581,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
             done_value = float(done)
         except (TypeError, ValueError):
             return
-        safe_message = message or "Separating audio"
+        safe_message = message or "Separating"
         if (
             done_value == last_reported_done
             and total_value == last_reported_total
@@ -1638,14 +1638,30 @@ def cmd_infer(payload: dict[str, Any]) -> int:
             progress_callback=emit_separation_progress,
             inference_params=inference_params,
         )
-        emit("task_stage", {"stage": "separating", "message": "Separating audio"}, task_id=task_id)
+        emit("task_stage", {"stage": "separating", "message": "Separating"}, task_id=task_id)
         success_files = separator.process_folder(input_path)
         emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
         outputs = collect_outputs(output_dir, success_files, output_format)
         emit("task_done", {"files": success_files, "outputs": outputs, "outputDir": str(Path(output_dir).resolve()), "outputFormat": output_format}, task_id=task_id)
         return 0
     except Exception as exc:
-        return emit_error("INFERENCE_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
+        message = str(exc)
+        lowered = message.lower()
+        if "no audio stream found" in lowered:
+            return emit_error(
+                "INPUT_AUDIO_STREAM_MISSING",
+                message,
+                traceback.format_exc(),
+                task_id=task_id,
+            )
+        if "invalid data found" in lowered or "could not open input" in lowered:
+            return emit_error(
+                "INPUT_MEDIA_UNSUPPORTED",
+                message,
+                traceback.format_exc(),
+                task_id=task_id,
+            )
+        return emit_error("INFERENCE_FAILED", message, traceback.format_exc(), task_id=task_id)
     finally:
         if logger is not None and log_handler is not None:
             try:

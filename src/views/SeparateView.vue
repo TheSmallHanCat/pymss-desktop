@@ -62,6 +62,12 @@ const formatOptions = [
   { label: 'M4A', value: 'm4a' },
 ]
 
+function getFileKindLabel(path: string) {
+  const ext = path.split('.').pop()?.toLowerCase() || ''
+  if (['mp4', 'mkv', 'mov', 'avi', 'webm', 'flv'].includes(ext)) return t('separate.videoFile')
+  return t('separate.audioFile')
+}
+
 const wavBitDepthOptions = computed(() => [
   { label: t('audio.pcm16'), value: 'PCM_16' },
   { label: t('audio.pcm24'), value: 'PCM_24' },
@@ -307,6 +313,7 @@ async function start() {
               <n-icon :component="MusicalNotesOutline" class="candidate__item-icon" />
               <div class="candidate__item-main">
                 <strong :title="getFileName(path)">{{ getFileName(path) }}</strong>
+                <span class="candidate__item-kind">{{ getFileKindLabel(path) }}</span>
                 <code :title="path">{{ shortenMiddle(path, 56) }}</code>
               </div>
               <n-button quaternary circle size="tiny" :title="t('separate.remove')" @click="task.removeInputFile(path)">
@@ -793,6 +800,18 @@ async function start() {
   flex: 1;
   display: grid;
   gap: 2px;
+}
+
+.candidate__item-kind {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--primary-strong);
+  background: color-mix(in srgb, var(--primary-soft) 82%, transparent);
 }
 
 .candidate__item-main strong,
