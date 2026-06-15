@@ -99,6 +99,35 @@ pub async fn delete_model(app: AppHandle, payload: Value) -> AppResult<Value> {
 }
 
 #[tauri::command]
+pub async fn start_model_delete(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> AppResult<Value> {
+    let model = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Worker("missing model".into()))?;
+    let task_id = payload
+        .get("taskId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "delete_{}_{}",
+                model.replace(|c: char| !c.is_ascii_alphanumeric(), "_"),
+                chrono_like_timestamp()
+            )
+        });
+    let mut payload = payload;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("taskId".to_string(), Value::String(task_id.clone()));
+    }
+    spawn_worker_background(app, state, "delete_model", task_id.clone(), payload)?;
+    Ok(serde_json::json!({ "taskId": task_id, "started": true }))
+}
+
+#[tauri::command]
 pub async fn get_model_storage_summary(app: AppHandle, payload: Value) -> AppResult<Value> {
     run_worker_with_payload(&app, "model_storage_summary", Some(payload))
 }
@@ -106,6 +135,31 @@ pub async fn get_model_storage_summary(app: AppHandle, payload: Value) -> AppRes
 #[tauri::command]
 pub async fn cleanup_model_residual_files(app: AppHandle, payload: Value) -> AppResult<Value> {
     run_worker_with_payload(&app, "cleanup_model_residual_files", Some(payload))
+}
+
+#[tauri::command]
+pub async fn start_cleanup_model_residual_files(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> AppResult<Value> {
+    let task_id = payload
+        .get("taskId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("cleanup_residual_{}", chrono_like_timestamp()));
+    let mut payload = payload;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("taskId".to_string(), Value::String(task_id.clone()));
+    }
+    spawn_worker_background(
+        app,
+        state,
+        "cleanup_model_residual_files",
+        task_id.clone(),
+        payload,
+    )?;
+    Ok(serde_json::json!({ "taskId": task_id, "started": true }))
 }
 
 #[tauri::command]

@@ -39,8 +39,11 @@ const {
   detailLoading,
   modelDir,
   downloadTasks,
+  deleteTasks,
   modelStorageSummary,
   storageLoading,
+  batchDeleteState,
+  residualCleanupState,
 } = storeToRefs(modelStore)
 
 const showDetail = ref(false)
@@ -94,6 +97,17 @@ const selectedStorageBytes = computed(() => selectedStorageModels.value
   .filter((item): item is NonNullable<typeof item> => Boolean(item))
   .reduce((sum, item) => sum + item.sizeBytes, 0))
 
+const hasDeletingSelectedStorageModels = computed(() => selectedStorageModels.value.some((name) => isDeletingModel(name)))
+
+const batchDeleteProgress = computed(() => {
+  if (!batchDeleteState.value.totalModels) return 0
+  const currentTask = batchDeleteState.value.currentModel ? deleteTasks.value[batchDeleteState.value.currentModel] : null
+  const currentFraction = currentTask && currentTask.totalFiles > 0
+    ? currentTask.completedFiles / currentTask.totalFiles
+    : 0
+  return Math.max(0, Math.min(100, Math.round(((batchDeleteState.value.completedModels + currentFraction) / batchDeleteState.value.totalModels) * 100)))
+})
+
 function setStorageSelected(name: string, checked: boolean) {
   selectedStorageModels.value = checked
     ? Array.from(new Set([...selectedStorageModels.value, name]))
@@ -111,6 +125,15 @@ watch(sortedModels, (list) => {
 
 function categoryLabel(model: ModelEntry) {
   return getModelCategoryLabel(model, locale.value, '—')
+}
+
+function normalizedTagValue(value: string | null | undefined) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function showModelTypeTag(model: ModelEntry) {
+  if (!model.modelType) return false
+  return normalizedTagValue(model.modelType) !== normalizedTagValue(model.architecture)
 }
 
 function hasRequiredCompanionFiles(model: ModelEntry) {
@@ -147,6 +170,16 @@ function downloadStatusMessage(modelName: string) {
   if (!task) return ''
   if (task.status === 'interrupted') return t('models.downloadInterrupted')
   return task.message || task.status
+}
+
+function deleteStatusMessage(modelName: string) {
+  const task = deleteTasks.value[modelName]
+  if (!task) return ''
+  return task.message || t('models.deleting')
+}
+
+function isDeletingModel(modelName: string) {
+  return deleteTasks.value[modelName]?.status === 'deleting'
 }
 
 async function loadModels() {
@@ -188,16 +221,14 @@ async function cancelDownloadModel(model: ModelEntry, event: MouseEvent) {
 
 function confirmDeleteModel(model: ModelEntry, event?: MouseEvent) {
   event?.stopPropagation()
+  if (isDeletingModel(model.name)) return
   dialog.warning({
     title: t('models.deleteConfirmTitle'),
     content: t('models.deleteConfirmContent'),
     positiveText: t('common.confirm'),
     negativeText: t('common.cancel'),
     onPositiveClick: () => {
-      // 异步执行删除，不阻塞对话框关闭
-      modelStore.deleteModel(model.name).then(() => {
-        message.success(t('models.deleteSuccess'))
-      }).catch((err) => {
+      modelStore.deleteModel(model.name).catch((err) => {
         message.error(err instanceof Error ? err.message : String(err))
       })
     },
@@ -220,7 +251,7 @@ function openModelDir() {
 }
 
 function confirmBatchDelete() {
-  const names = [...selectedStorageModels.value]
+  const names = selectedStorageModels.value.filter((name) => !isDeletingModel(name))
   if (!names.length) return
   dialog.warning({
     title: t('models.storageBatchDeleteConfirmTitle'),
@@ -232,8 +263,12 @@ function confirmBatchDelete() {
     negativeText: t('common.cancel'),
     onPositiveClick: () => {
       modelStore.deleteModels(names).then(() => {
-        selectedStorageModels.value = []
-        message.success(t('models.deleteSuccess'))
+        selectedStorageModels.value = selectedStorageModels.value.filter((name) => isDeletingModel(name))
+        if (modelStore.batchDeleteState.failedModels.length) {
+          message.warning(t('models.batchDeleteWithFailures', { count: modelStore.batchDeleteState.failedModels.length }))
+        } else {
+          message.success(t('models.batchDeleteSuccess'))
+        }
       }).catch((err) => message.error(err instanceof Error ? err.message : String(err)))
     },
   })
@@ -251,12 +286,36 @@ function confirmCleanupResidual() {
     positiveText: t('models.storageCleanup'),
     negativeText: t('common.cancel'),
     onPositiveClick: () => {
-      modelStore.cleanupModelResidualFiles().then(() => {
-        message.success(t('models.storageCleanupSuccess'))
-      }).catch((err) => message.error(err instanceof Error ? err.message : String(err)))
+      modelStore.cleanupModelResidualFiles().catch((err) => message.error(err instanceof Error ? err.message : String(err)))
     },
   })
 }
+
+watch(deleteTasks, (value) => {
+  Object.values(value).forEach((task) => {
+    if (task.status === 'done') {
+      if (task.source !== 'batch') {
+        message.success(t('models.deleteSuccess'))
+        modelStore.clearDeleteTask(task.model)
+      }
+    } else if (task.status === 'error') {
+      if (task.source !== 'batch') {
+        message.error(`${t('models.deleteFailed')}: ${task.message}`)
+        modelStore.clearDeleteTask(task.model)
+      }
+    }
+  })
+}, { deep: true })
+
+watch(residualCleanupState, (state) => {
+  if (state.status === 'done' && !state.active) {
+    message.success(t('models.storageCleanupSuccess'))
+    modelStore.resetResidualCleanupState()
+  } else if (state.status === 'error' && !state.active && state.message) {
+    message.error(`${t('models.cleanupFailed')}: ${state.message}`)
+    modelStore.resetResidualCleanupState()
+  }
+}, { deep: true })
 
 onMounted(() => {
   showDetail.value = false
@@ -371,7 +430,7 @@ onMounted(() => {
             <n-tag v-if="model.architecture" :bordered="false" size="tiny" type="info" round>
               {{ model.architecture }}
             </n-tag>
-            <n-tag v-if="model.modelType" :bordered="false" size="tiny" round>
+            <n-tag v-if="showModelTypeTag(model)" :bordered="false" size="tiny" round>
               {{ model.modelType }}
             </n-tag>
             <span class="mc-size">{{ formatBytes(model.sizeBytes) }}</span>
@@ -391,9 +450,29 @@ onMounted(() => {
 
           <!-- Footer -->
           <div class="mc-footer">
+            <div v-if="isDeletingModel(model.name)" class="mc-dl">
+              <div class="mc-dl-info">
+                <div class="mc-dl-status">
+                  <span class="mc-dl-dot mc-dl-dot--downloading" />
+                  <span class="mc-dl-msg">{{ deleteStatusMessage(model.name) || t('models.deleting') }}</span>
+                </div>
+                <span class="mc-dl-pct">{{ deleteTasks[model.name]?.progress || 0 }}%</span>
+              </div>
+              <n-progress
+                :percentage="deleteTasks[model.name]?.progress || 0"
+                :show-indicator="false"
+                :height="8"
+                :border-radius="4"
+                type="line"
+                :rail-color="'var(--surface-3)'"
+              />
+              <div class="mc-dl-files">
+                {{ t('models.deleteProgress', { completed: deleteTasks[model.name]?.completedFiles || 0, total: deleteTasks[model.name]?.totalFiles || 0 }) }}
+              </div>
+            </div>
             <!-- Download button -->
             <n-button
-              v-if="model.supported && !model.downloaded && (!downloadTasks[model.name] || downloadTasks[model.name].status === 'done')"
+              v-else-if="model.supported && !model.downloaded && (!downloadTasks[model.name] || downloadTasks[model.name].status === 'done')"
               block
               secondary
               size="small"
@@ -594,7 +673,29 @@ onMounted(() => {
               </n-button>
             </template>
             <!-- Downloaded: show status + delete -->
-            <template v-if="selectedInfo.downloaded && (!downloadTasks[selectedInfo.name] || downloadTasks[selectedInfo.name]?.status === 'done')">
+            <template v-if="isDeletingModel(selectedInfo.name)">
+              <div class="mc-dl">
+                <div class="mc-dl-info">
+                  <div class="mc-dl-status">
+                    <span class="mc-dl-dot mc-dl-dot--downloading" />
+                    <span class="mc-dl-msg">{{ deleteStatusMessage(selectedInfo.name) || t('models.deleting') }}</span>
+                  </div>
+                  <span class="mc-dl-pct">{{ deleteTasks[selectedInfo.name]?.progress || 0 }}%</span>
+                </div>
+                <n-progress
+                  :percentage="deleteTasks[selectedInfo.name]?.progress || 0"
+                  :show-indicator="false"
+                  :height="8"
+                  :border-radius="4"
+                  type="line"
+                  :rail-color="'var(--surface-3)'"
+                />
+                <div class="mc-dl-files">
+                  {{ t('models.deleteProgress', { completed: deleteTasks[selectedInfo.name]?.completedFiles || 0, total: deleteTasks[selectedInfo.name]?.totalFiles || 0 }) }}
+                </div>
+              </div>
+            </template>
+            <template v-else-if="selectedInfo.downloaded && (!downloadTasks[selectedInfo.name] || downloadTasks[selectedInfo.name]?.status === 'done')">
               <n-button
                 block
                 secondary
@@ -672,7 +773,7 @@ onMounted(() => {
               size="small"
               type="error"
               secondary
-              :disabled="!selectedStorageModels.length"
+              :disabled="!selectedStorageModels.length || hasDeletingSelectedStorageModels || batchDeleteState.active || residualCleanupState.active"
               @click="confirmBatchDelete"
             >
               {{ t('models.storageBatchDelete') }}
@@ -682,11 +783,41 @@ onMounted(() => {
               size="small"
               type="warning"
               secondary
-              :disabled="!(modelStorageSummary?.residualFiles.length)"
+              :disabled="!(modelStorageSummary?.residualFiles.length) || batchDeleteState.active || residualCleanupState.active"
               @click="confirmCleanupResidual"
             >
               {{ t('models.storageCleanup') }}
             </n-button>
+          </div>
+
+          <div v-if="batchDeleteState.active" class="storage-progress-card">
+            <strong>{{ t('models.batchDeleting', { count: batchDeleteState.totalModels }) }}</strong>
+            <span class="text-muted">{{ batchDeleteState.completedModels }} / {{ batchDeleteState.totalModels }}</span>
+            <div class="text-sm text-muted">{{ batchDeleteState.currentModel }}</div>
+            <div v-if="batchDeleteState.currentModel && deleteTasks[batchDeleteState.currentModel]" class="mc-dl-files">
+              {{ t('models.deleteProgress', { completed: deleteTasks[batchDeleteState.currentModel]?.completedFiles || 0, total: deleteTasks[batchDeleteState.currentModel]?.totalFiles || 0 }) }}
+            </div>
+            <n-progress
+              :percentage="batchDeleteProgress"
+              :show-indicator="false"
+              :height="8"
+              :border-radius="4"
+              type="line"
+              :rail-color="'var(--surface-3)'"
+            />
+          </div>
+
+          <div v-if="residualCleanupState.active" class="storage-progress-card">
+            <strong>{{ t('models.cleanupInProgress') }}</strong>
+            <span class="text-muted">{{ t('models.deleteProgress', { completed: residualCleanupState.completedFiles, total: residualCleanupState.totalFiles }) }}</span>
+            <n-progress
+              :percentage="residualCleanupState.progress"
+              :show-indicator="false"
+              :height="8"
+              :border-radius="4"
+              type="line"
+              :rail-color="'var(--surface-3)'"
+            />
           </div>
 
           <div class="storage-list">
@@ -697,7 +828,7 @@ onMounted(() => {
             >
               <n-checkbox
                 :checked="selectedStorageModels.includes(item.name)"
-                :disabled="item.sizeBytes <= 0"
+                :disabled="item.sizeBytes <= 0 || isDeletingModel(item.name) || batchDeleteState.active || residualCleanupState.active"
                 @update:checked="(checked: boolean) => setStorageSelected(item.name, checked)"
               />
               <div class="storage-row__main">
@@ -1167,6 +1298,15 @@ onMounted(() => {
 
 .storage-empty {
   padding: 32px 0;
+}
+
+.storage-progress-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--outline);
+  background: var(--surface-1);
 }
 
 /* ===== Responsive ===== */

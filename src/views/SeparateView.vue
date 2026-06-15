@@ -50,7 +50,6 @@ const {
 const { selectedModel, downloadedModels, isLoading } = storeToRefs(model)
 
 const isDragging = ref(false)
-const modelsAutoLoaded = ref(false)
 const showSettingsDrawer = ref(false)
 const modelSearch = ref('')
 const modelCategoryFilter = ref('')
@@ -196,10 +195,6 @@ watch(
 onMounted(async () => {
   if (!app.envInfo && !app.envLoading) {
     app.checkEnvInBackground().catch(() => {})
-  }
-  if (!downloadedModels.value.length && !modelsAutoLoaded.value && !isLoading.value) {
-    modelsAutoLoaded.value = true
-    model.loadModels().catch(() => {})
   }
   try {
     unlistenDragDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
@@ -391,14 +386,20 @@ async function start() {
           <div v-if="selectedModelName && !modelDownloaded" class="model-info-card model-info-card--warn">
             {{ t('separate.startHintModelMissing') }}
           </div>
-          <div v-else-if="!downloadedModels.length && !isLoading" class="model-empty-hint">
-            {{ t('separate.modelEmptyHint') }}
-          </div>
-
-          <div v-if="!downloadedModels.length" class="button-row model-panel__actions">
-            <n-button secondary :loading="isLoading" @click="model.loadModels()">
-              {{ t('separate.modelEmptyAction') }}
-            </n-button>
+          <div v-else-if="!downloadedModels.length" class="model-panel__empty-state" :class="{ 'model-panel__empty-state--loading': isLoading }">
+            <div class="model-panel__empty-visual">
+              <n-spin v-if="isLoading" size="large" />
+              <n-icon v-else :component="CubeOutline" />
+            </div>
+            <div class="model-panel__empty-main">
+              <strong>{{ isLoading ? t('separate.modelPanelLoadingTitle') : t('separate.modelPanelEmptyTitle') }}</strong>
+              <p>{{ isLoading ? t('separate.modelPanelLoadingDesc') : t('separate.modelPanelEmptyDesc') }}</p>
+            </div>
+            <div class="model-panel__empty-actions">
+              <n-button secondary :loading="isLoading" @click="model.loadModels()">
+                {{ t('separate.modelPanelPrimaryAction') }}
+              </n-button>
+            </div>
           </div>
         </div>
       </section>
@@ -838,17 +839,16 @@ async function start() {
 
 .model-panel__body {
   min-height: 0;
-  height: 100%;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 6px;
 }
 
 .model-picker {
   min-height: 0;
-  height: 100%;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 6px;
 }
 
@@ -865,10 +865,10 @@ async function start() {
 
 .model-picker__list {
   min-height: 0;
-  height: 100%;
   display: grid;
   gap: 4px;
   overflow-y: auto;
+  max-height: min(340px, 42vh);
   padding: 6px;
   padding-right: 4px;
   border: 1px solid var(--outline);
@@ -882,7 +882,7 @@ async function start() {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px 8px 12px;
+  padding: 6px 10px 6px 12px;
   border: 1px solid transparent;
   border-radius: 12px;
   background: transparent;
@@ -916,7 +916,7 @@ async function start() {
   min-width: 0;
   flex: 1;
   display: grid;
-  gap: 3px;
+  gap: 2px;
 }
 
 .model-picker__item-title {
@@ -932,7 +932,7 @@ async function start() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -946,13 +946,13 @@ async function start() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 1px 8px;
+  padding: 1px 7px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--primary) 24%, transparent);
   background: color-mix(in srgb, var(--primary-soft) 60%, var(--surface-1));
   color: color-mix(in srgb, var(--primary-strong) 86%, var(--on-surface));
-  font-size: 10px;
-  line-height: 1.6;
+  font-size: 9px;
+  line-height: 1.4;
 }
 
 .model-picker__item-sub {
@@ -961,7 +961,7 @@ async function start() {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--on-surface-muted);
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .model-picker__item--active .model-picker__item-tag {
@@ -975,7 +975,7 @@ async function start() {
 
 .model-picker__item-check {
   flex: 0 0 auto;
-  font-size: 16px;
+  font-size: 14px;
   color: var(--primary);
 }
 
@@ -1009,10 +1009,6 @@ async function start() {
   overflow: hidden;
 }
 
-.model-panel__actions {
-  margin-top: 2px;
-}
-
 .model-info-card {
   padding: 10px 12px;
   border: 1px dashed var(--outline);
@@ -1027,11 +1023,94 @@ async function start() {
   line-height: 1.6;
 }
 
-.model-empty-hint {
-  margin: 0;
+.model-panel__empty-state {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: 270px;
+  padding: 28px 24px;
+  border: 1px dashed color-mix(in srgb, var(--outline) 82%, var(--primary-soft));
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top, color-mix(in srgb, var(--primary-soft) 18%, transparent), transparent 56%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 94%, transparent), color-mix(in srgb, var(--surface-1) 88%, transparent));
+  text-align: center;
+}
+
+.model-panel__empty-state::before {
+  content: '';
+  position: absolute;
+  inset: -30% -20%;
+  background:
+    radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--primary-soft) 16%, transparent), transparent 32%),
+    radial-gradient(circle at 80% 30%, color-mix(in srgb, var(--info) 12%, transparent), transparent 30%),
+    radial-gradient(circle at 50% 75%, color-mix(in srgb, var(--primary) 10%, transparent), transparent 34%);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.model-panel__empty-state--loading::before {
+  opacity: 0.7;
+}
+
+.model-panel__empty-visual {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 68px;
+  height: 68px;
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--outline));
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--surface-1) 78%, var(--primary-soft));
+  color: var(--primary);
+  box-shadow: 0 14px 30px color-mix(in srgb, var(--primary) 10%, transparent);
+}
+
+.model-panel__empty-visual :deep(.n-spin-body) {
+  color: var(--primary);
+}
+
+.model-panel__empty-visual .n-icon {
+  font-size: 30px;
+}
+
+.model-panel__empty-main {
+  position: relative;
+  z-index: 1;
+  max-width: 340px;
+}
+
+.model-panel__empty-main strong {
+  display: block;
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.model-panel__empty-main p {
+  margin-top: 8px;
   color: var(--on-surface-muted);
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1.75;
+}
+
+.model-panel__empty-actions {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.model-panel__empty-actions .n-button {
+  min-width: 130px;
 }
 
 .summary-bar {

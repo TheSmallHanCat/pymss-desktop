@@ -70,6 +70,43 @@ export type ModelStorageSummary = {
   residualBytes: number
 }
 
+export type DeleteTaskStatus = 'deleting' | 'done' | 'error' | 'cancelled'
+
+export type DeleteTask = {
+  taskId: string
+  model: string
+  status: DeleteTaskStatus
+  progress: number
+  message: string
+  completedFiles: number
+  totalFiles: number
+  updatedAt: number
+  source?: 'single' | 'batch'
+  resultModelInfo?: ModelEntry | null
+}
+
+export type BatchDeleteState = {
+  active: boolean
+  totalModels: number
+  completedModels: number
+  currentModel: string
+  failedModels: string[]
+}
+
+export type ResidualCleanupState = {
+  taskId: string
+  active: boolean
+  status: DeleteTaskStatus | 'idle'
+  progress: number
+  message: string
+  completedFiles: number
+  totalFiles: number
+  updatedAt: number
+  notified?: boolean
+}
+
+const DELETE_TASK_TIMEOUT_MS = 5 * 60 * 1000
+
 type StoredModelState = {
   models?: ModelEntry[]
   categories?: string[]
@@ -111,8 +148,28 @@ export const useModelStore = defineStore('model', () => {
   const downloadErrors = ref<Record<string, string>>({})
   const downloadTasks = ref<Record<string, DownloadTask>>({})
   const downloadTaskIndex = ref<Record<string, string>>({})
+  const deleteTasks = ref<Record<string, DeleteTask>>({})
+  const deleteTaskIndex = ref<Record<string, string>>({})
   const modelStorageSummary = ref<ModelStorageSummary | null>(null)
   const storageLoading = ref(false)
+  const batchDeleteState = ref<BatchDeleteState>({
+    active: false,
+    totalModels: 0,
+    completedModels: 0,
+    currentModel: '',
+    failedModels: [],
+  })
+  const residualCleanupState = ref<ResidualCleanupState>({
+    taskId: '',
+    active: false,
+    status: 'idle',
+    progress: 0,
+    message: '',
+    completedFiles: 0,
+    totalFiles: 0,
+    updatedAt: 0,
+    notified: false,
+  })
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -188,6 +245,16 @@ export const useModelStore = defineStore('model', () => {
     queuePersist()
   }
 
+  function isDeleteTaskTerminal(task?: DeleteTask | null) {
+    return task?.status === 'done' || task?.status === 'error' || task?.status === 'cancelled'
+  }
+
+  function clearDeleteTaskIndex(taskId?: string | null) {
+    if (!taskId || !deleteTaskIndex.value[taskId]) return
+    const { [taskId]: _, ...rest } = deleteTaskIndex.value
+    deleteTaskIndex.value = rest
+  }
+
   function upsertModel(modelInfo: ModelEntry) {
     const index = models.value.findIndex((item) => item.name === modelInfo.name)
     if (index >= 0) models.value[index] = modelInfo
@@ -255,67 +322,181 @@ export const useModelStore = defineStore('model', () => {
 
   function handleWorkerEvent(event: any) {
     const taskId = event?.taskId as string | undefined
-    if (!taskId?.startsWith('download_')) return
     const payload = event.payload || {}
-    const modelName = payload.model || downloadTaskIndex.value[taskId] || Object.values(downloadTasks.value).find((task) => task.taskId === taskId)?.model
-    if (!modelName) return
-    const previous = downloadTasks.value[modelName] || {
-      taskId,
-      model: modelName,
-      status: 'downloading',
-      progress: 0,
-      message: '',
-      completedFiles: 0,
-      totalFiles: 1,
-      updatedAt: Date.now(),
-    }
-    const next: DownloadTask = { ...previous, taskId, updatedAt: Date.now() }
-    if (event.type === 'download_started') {
-      next.status = 'downloading'
-      next.progress = payload.progress ?? 0
-      next.message = 'Started'
-      next.totalFiles = payload.totalFiles || next.totalFiles
-      downloadStates.value = { ...downloadStates.value, [modelName]: 'downloading' }
-    } else if (event.type === 'download_stage') {
-      next.status = 'downloading'
-      next.progress = payload.progress ?? Math.max(next.progress, 5)
-      next.message = payload.message || payload.stage || 'Downloading'
-    } else if (event.type === 'download_file') {
-      next.status = 'downloading'
-      next.progress = payload.progress ?? next.progress
-      next.completedFiles = payload.completedFiles || next.completedFiles
-      next.totalFiles = payload.totalFiles || next.totalFiles
-      next.message = payload.status || 'Downloading'
-    } else if (event.type === 'download_progress') {
-      next.status = 'downloading'
-      next.progress = payload.progress ?? next.progress
-      next.completedFiles = payload.completedFiles || next.completedFiles
-      next.totalFiles = payload.totalFiles || next.totalFiles
-      next.message = payload.completedFiles ? 'Downloading' : (next.message || 'Downloading')
-    } else if (event.type === 'download_done') {
-      next.status = 'done'
-      next.progress = 100
-      next.message = 'Done'
-      next.completedFiles = payload.downloaded?.length + payload.skipped?.length || next.completedFiles
-      next.totalFiles = Math.max(next.totalFiles, next.completedFiles || 1)
-      if (payload.modelInfo) upsertModel(payload.modelInfo)
-      if (payload.modelDir) modelDir.value = payload.modelDir
-      downloadStates.value = { ...downloadStates.value, [modelName]: 'done' }
-    } else if (event.type === 'task_cancelled') {
-      next.status = 'cancelled'
-      next.message = 'Cancelled'
-      downloadStates.value = { ...downloadStates.value, [modelName]: 'idle' }
-    } else if (event.type === 'error') {
-      if (previous.status === 'cancelled' || previous.status === 'paused') {
-        downloadTasks.value = { ...downloadTasks.value, [modelName]: next }
-        return
+
+    if (taskId?.startsWith('download_')) {
+      const modelName = payload.model || downloadTaskIndex.value[taskId] || Object.values(downloadTasks.value).find((task) => task.taskId === taskId)?.model
+      if (!modelName) return
+      const previous = downloadTasks.value[modelName] || {
+        taskId,
+        model: modelName,
+        status: 'downloading',
+        progress: 0,
+        message: '',
+        completedFiles: 0,
+        totalFiles: 1,
+        updatedAt: Date.now(),
       }
-      next.status = 'error'
-      next.message = payload.message || 'Failed'
-      downloadStates.value = { ...downloadStates.value, [modelName]: 'error' }
-      downloadErrors.value = { ...downloadErrors.value, [modelName]: next.message }
+      const next: DownloadTask = { ...previous, taskId, updatedAt: Date.now() }
+      if (event.type === 'download_started') {
+        next.status = 'downloading'
+        next.progress = payload.progress ?? 0
+        next.message = 'Started'
+        next.totalFiles = payload.totalFiles || next.totalFiles
+        downloadStates.value = { ...downloadStates.value, [modelName]: 'downloading' }
+      } else if (event.type === 'download_stage') {
+        next.status = 'downloading'
+        next.progress = payload.progress ?? Math.max(next.progress, 5)
+        next.message = payload.message || payload.stage || 'Downloading'
+      } else if (event.type === 'download_file') {
+        next.status = 'downloading'
+        next.progress = payload.progress ?? next.progress
+        next.completedFiles = payload.completedFiles || next.completedFiles
+        next.totalFiles = payload.totalFiles || next.totalFiles
+        next.message = payload.status || 'Downloading'
+      } else if (event.type === 'download_progress') {
+        next.status = 'downloading'
+        next.progress = payload.progress ?? next.progress
+        next.completedFiles = payload.completedFiles || next.completedFiles
+        next.totalFiles = payload.totalFiles || next.totalFiles
+        next.message = payload.completedFiles ? 'Downloading' : (next.message || 'Downloading')
+      } else if (event.type === 'download_done') {
+        next.status = 'done'
+        next.progress = 100
+        next.message = 'Done'
+        next.completedFiles = payload.downloaded?.length + payload.skipped?.length || next.completedFiles
+        next.totalFiles = Math.max(next.totalFiles, next.completedFiles || 1)
+        if (payload.modelInfo) upsertModel(payload.modelInfo)
+        if (payload.modelDir) modelDir.value = payload.modelDir
+        downloadStates.value = { ...downloadStates.value, [modelName]: 'done' }
+      } else if (event.type === 'task_cancelled') {
+        next.status = 'cancelled'
+        next.message = 'Cancelled'
+        downloadStates.value = { ...downloadStates.value, [modelName]: 'idle' }
+      } else if (event.type === 'error') {
+        if (previous.status === 'cancelled' || previous.status === 'paused') {
+          downloadTasks.value = { ...downloadTasks.value, [modelName]: next }
+          return
+        }
+        next.status = 'error'
+        next.message = payload.message || 'Failed'
+        downloadStates.value = { ...downloadStates.value, [modelName]: 'error' }
+        downloadErrors.value = { ...downloadErrors.value, [modelName]: next.message }
+      }
+      downloadTasks.value = { ...downloadTasks.value, [modelName]: next }
+      return
     }
-    downloadTasks.value = { ...downloadTasks.value, [modelName]: next }
+
+    if (taskId?.startsWith('delete_')) {
+      const modelName = payload.model || deleteTaskIndex.value[taskId] || Object.values(deleteTasks.value).find((task) => task.taskId === taskId)?.model
+      if (!modelName) return
+      const previous = deleteTasks.value[modelName] || {
+        taskId,
+        model: modelName,
+        status: 'deleting' as const,
+        progress: 0,
+        message: '',
+        completedFiles: 0,
+        totalFiles: 1,
+        updatedAt: Date.now(),
+      }
+      const next: DeleteTask = { ...previous, taskId, updatedAt: Date.now() }
+      if (event.type === 'model_delete_started') {
+        next.status = 'deleting'
+        next.progress = payload.progress ?? 0
+        next.message = payload.message || 'Deleting model files'
+        next.completedFiles = payload.completedFiles ?? 0
+        next.totalFiles = payload.totalFiles || next.totalFiles
+      } else if (event.type === 'model_delete_progress') {
+        next.status = 'deleting'
+        next.progress = payload.progress ?? next.progress
+        next.message = payload.message || 'Deleting model files'
+        next.completedFiles = payload.completedFiles ?? next.completedFiles
+        next.totalFiles = payload.totalFiles || next.totalFiles
+      } else if (event.type === 'model_delete_done') {
+        next.status = 'done'
+        next.progress = 100
+        next.message = payload.message || 'Deleting model files'
+        next.completedFiles = payload.completedFiles ?? next.completedFiles
+        next.totalFiles = payload.totalFiles || next.totalFiles
+        next.resultModelInfo = payload.modelInfo || null
+        if (payload.modelInfo) upsertModel(payload.modelInfo)
+      } else if (event.type === 'model_delete_failed') {
+        next.status = 'error'
+        next.message = payload.message || 'Delete failed'
+        next.resultModelInfo = payload.modelInfo || null
+        if (payload.modelInfo) upsertModel(payload.modelInfo)
+      } else if (event.type === 'error') {
+        next.status = 'error'
+        next.message = payload.message || 'Delete failed'
+      }
+      deleteTasks.value = { ...deleteTasks.value, [modelName]: next }
+      return
+    }
+
+    if (taskId?.startsWith('cleanup_residual_')) {
+      if (event.type === 'model_residual_cleanup_started') {
+        residualCleanupState.value = {
+          taskId,
+          active: true,
+          status: 'deleting',
+          progress: payload.progress ?? 0,
+          message: payload.message || 'Cleaning residual files',
+          completedFiles: payload.completedFiles ?? 0,
+          totalFiles: payload.totalFiles ?? 0,
+          updatedAt: Date.now(),
+        }
+      } else if (event.type === 'model_residual_cleanup_progress') {
+        residualCleanupState.value = {
+          ...residualCleanupState.value,
+          taskId,
+          active: true,
+          status: 'deleting',
+          progress: payload.progress ?? residualCleanupState.value.progress,
+          message: payload.message || residualCleanupState.value.message,
+          completedFiles: payload.completedFiles ?? residualCleanupState.value.completedFiles,
+          totalFiles: payload.totalFiles ?? residualCleanupState.value.totalFiles,
+          updatedAt: Date.now(),
+        }
+      } else if (event.type === 'model_residual_cleanup_done') {
+        residualCleanupState.value = {
+          ...residualCleanupState.value,
+          taskId,
+          active: false,
+          status: 'done',
+          progress: 100,
+          message: payload.message || residualCleanupState.value.message,
+          completedFiles: payload.completedFiles ?? residualCleanupState.value.completedFiles,
+          totalFiles: payload.totalFiles ?? residualCleanupState.value.totalFiles,
+          updatedAt: Date.now(),
+          notified: false,
+        }
+        const summary = payload.modelStorageSummary
+        if (summary?.models) modelStorageSummary.value = summary
+      } else if (event.type === 'model_residual_cleanup_failed') {
+        residualCleanupState.value = {
+          ...residualCleanupState.value,
+          taskId,
+          active: false,
+          status: 'error',
+          message: payload.message || 'Cleanup failed',
+          updatedAt: Date.now(),
+          notified: false,
+        }
+        const summary = payload.modelStorageSummary
+        if (summary?.models) modelStorageSummary.value = summary
+      } else if (event.type === 'error') {
+        residualCleanupState.value = {
+          ...residualCleanupState.value,
+          taskId,
+          active: false,
+          status: 'error',
+          message: payload.message || 'Cleanup failed',
+          updatedAt: Date.now(),
+          notified: false,
+        }
+      }
+    }
   }
 
   async function downloadModel(name: string, force = false) {
@@ -374,15 +555,50 @@ export const useModelStore = defineStore('model', () => {
     return cancelled
   }
 
-  async function deleteModel(name: string) {
+  async function deleteModel(name: string, source: 'single' | 'batch' = 'single') {
+    const existingTask = deleteTasks.value[name]
+    if (existingTask && !isDeleteTaskTerminal(existingTask)) {
+      throw new Error('Model deletion already in progress')
+    }
     const settings = useSettingsStore()
-    const result = await invoke<{ payload: { model: string; deleted: string[]; errors: string[]; modelInfo: ModelEntry } }>('delete_model', {
-      payload: {
+    const taskId = `delete_${Date.now()}`
+    deleteTasks.value = {
+      ...deleteTasks.value,
+      [name]: {
+        taskId,
         model: name,
-        modelDir: settings.modelDir || null,
+        status: 'deleting',
+        progress: 0,
+        message: 'Deleting model files',
+        completedFiles: 0,
+        totalFiles: 1,
+        updatedAt: Date.now(),
+        source,
+        resultModelInfo: null,
       },
-    })
-    const modelInfo = (result as any)?.modelInfo || (result as any)?.payload?.modelInfo
+    }
+    deleteTaskIndex.value = { ...deleteTaskIndex.value, [taskId]: name }
+    try {
+      await invoke<{ taskId: string; started: boolean }>('start_model_delete', {
+        payload: {
+          taskId,
+          model: name,
+          modelDir: settings.modelDir || null,
+        },
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const previous = deleteTasks.value[name]
+      if (previous) {
+        deleteTasks.value = {
+          ...deleteTasks.value,
+          [name]: { ...previous, status: 'error', message, updatedAt: Date.now(), resultModelInfo: null },
+        }
+      }
+    }
+  }
+
+  function finalizeDeletedModel(name: string, modelInfo?: ModelEntry | null) {
     if (modelInfo) {
       upsertModel(modelInfo)
     } else {
@@ -399,11 +615,74 @@ export const useModelStore = defineStore('model', () => {
       const { [name]: _, ...rest } = downloadTasks.value
       downloadTasks.value = rest
     }
+    const idxTask = deleteTasks.value[name]
+    if (idxTask) clearDeleteTaskIndex(idxTask.taskId)
+  }
+
+  async function waitForDeleteTask(name: string, taskId: string) {
+    return new Promise<DeleteTask>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const stop = watch(
+        () => deleteTasks.value[name],
+        (task) => {
+          if (!task) return
+          if (task.taskId !== taskId) return
+          if (task.status === 'done') {
+            if (timer) clearTimeout(timer)
+            stop()
+            resolve(task)
+          } else if (task.status === 'error') {
+            if (timer) clearTimeout(timer)
+            stop()
+            reject(new Error(task.message || 'Delete failed'))
+          }
+        },
+        { deep: true, immediate: true },
+      )
+      timer = setTimeout(() => {
+        stop()
+        reject(new Error('Delete task timed out'))
+      }, DELETE_TASK_TIMEOUT_MS)
+    })
   }
 
   async function deleteModels(names: string[]) {
+    batchDeleteState.value = {
+      active: true,
+      totalModels: names.length,
+      completedModels: 0,
+      currentModel: '',
+      failedModels: [],
+    }
     for (const name of names) {
-      await deleteModel(name)
+      batchDeleteState.value = {
+        ...batchDeleteState.value,
+        currentModel: name,
+      }
+      try {
+        await deleteModel(name, 'batch')
+        const taskId = deleteTasks.value[name]?.taskId
+        if (!taskId) throw new Error('Delete task was not created')
+        const task = await waitForDeleteTask(name, taskId)
+        finalizeDeletedModel(name, task.resultModelInfo ?? null)
+        clearDeleteTask(name)
+      } catch {
+        batchDeleteState.value = {
+          ...batchDeleteState.value,
+          failedModels: [...batchDeleteState.value.failedModels, name],
+        }
+        clearDeleteTask(name)
+      } finally {
+        batchDeleteState.value = {
+          ...batchDeleteState.value,
+          completedModels: batchDeleteState.value.completedModels + 1,
+        }
+      }
+    }
+    batchDeleteState.value = {
+      ...batchDeleteState.value,
+      active: false,
+      currentModel: '',
     }
     await loadModelStorageSummary()
   }
@@ -424,16 +703,54 @@ export const useModelStore = defineStore('model', () => {
 
   async function cleanupModelResidualFiles() {
     const settings = useSettingsStore()
-    storageLoading.value = true
+    const taskId = `cleanup_residual_${Date.now()}`
+    residualCleanupState.value = {
+      taskId,
+      active: true,
+      status: 'deleting',
+      progress: 0,
+      message: 'Cleaning residual files',
+      completedFiles: 0,
+      totalFiles: 0,
+      updatedAt: Date.now(),
+      notified: false,
+    }
     try {
-      const result = await invoke<any>('cleanup_model_residual_files', {
-        payload: { modelDir: settings.modelDir || null },
+      await invoke<any>('start_cleanup_model_residual_files', {
+        payload: { taskId, modelDir: settings.modelDir || null },
       })
-      const summary = result?.modelStorageSummary || result?.payload?.modelStorageSummary || result
-      if (summary?.models) modelStorageSummary.value = summary
-      return result
-    } finally {
-      storageLoading.value = false
+    } catch (err) {
+      residualCleanupState.value = {
+        ...residualCleanupState.value,
+        active: false,
+        status: 'error',
+        message: err instanceof Error ? err.message : String(err),
+        updatedAt: Date.now(),
+        notified: false,
+      }
+    }
+  }
+
+  function clearDeleteTask(name: string) {
+    const task = deleteTasks.value[name]
+    if (task) {
+      clearDeleteTaskIndex(task.taskId)
+      const { [name]: _, ...rest } = deleteTasks.value
+      deleteTasks.value = rest
+    }
+  }
+
+  function resetResidualCleanupState() {
+    residualCleanupState.value = {
+      taskId: '',
+      active: false,
+      status: 'idle',
+      progress: 0,
+      message: '',
+      completedFiles: 0,
+      totalFiles: 0,
+      updatedAt: 0,
+      notified: false,
     }
   }
 
@@ -454,8 +771,11 @@ export const useModelStore = defineStore('model', () => {
     downloadStates,
     downloadErrors,
     downloadTasks,
+    deleteTasks,
     modelStorageSummary,
     storageLoading,
+    batchDeleteState,
+    residualCleanupState,
     filteredModels,
     downloadedModels,
     initialize,
@@ -467,6 +787,8 @@ export const useModelStore = defineStore('model', () => {
     deleteModels,
     loadModelStorageSummary,
     cleanupModelResidualFiles,
+    clearDeleteTask,
+    resetResidualCleanupState,
     handleWorkerEvent,
   }
 })

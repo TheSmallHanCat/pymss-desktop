@@ -282,6 +282,24 @@ fn emit_task_log(app: &AppHandle, task_id: &str, level: &str, message: String) {
     }));
 }
 
+fn emit_task_error(app: &AppHandle, task_id: &str, message: String) {
+    let _ = app.emit("pymss://worker-event", serde_json::json!({
+        "type": "error",
+        "taskId": task_id,
+        "payload": { "message": message }
+    }));
+}
+
+fn is_background_terminal_event(command: &str, event_type: &str) -> bool {
+    match command {
+        "delete_model" => matches!(event_type, "error" | "model_delete_done" | "model_delete_failed"),
+        "cleanup_model_residual_files" => matches!(event_type, "error" | "model_residual_cleanup_done" | "model_residual_cleanup_failed"),
+        "download_model" => matches!(event_type, "error" | "download_done" | "task_cancelled"),
+        "infer" => matches!(event_type, "task_done" | "task_cancelled"),
+        _ => matches!(event_type, "error"),
+    }
+}
+
 fn read_lossy_lines<R: Read>(reader: R, mut on_line: impl FnMut(String)) {
     let mut reader = BufReader::new(reader);
     let mut buf = Vec::new();
@@ -382,6 +400,17 @@ pub fn spawn_worker_background(
     task_id: String,
     payload: Value,
 ) -> AppResult<()> {
+    {
+        let tasks = state
+            .tasks
+            .lock()
+            .map_err(|_| AppError::Worker("task registry lock poisoned".into()))?;
+        if tasks.contains_key(&task_id) {
+            return Err(AppError::Worker(format!("task already exists: {}", task_id)));
+        }
+    }
+
+    let command_name = command.to_string();
     let payload_file = make_payload_file(command, Some(&task_id), payload)?;
     let mut cmd = build_worker_command(&app, command, Some(&payload_file))?;
     let mut child: Child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
@@ -403,25 +432,45 @@ pub fn spawn_worker_background(
         tasks.insert(task_id.clone(), shared_child.clone());
     }
     std::thread::spawn(move || {
+        let saw_terminal_event = Arc::new(Mutex::new(false));
+        let saw_terminal_event_for_stdout = Arc::clone(&saw_terminal_event);
         read_lossy_lines(stdout, |line| {
             if line.trim().is_empty() {
                 return;
             }
             match serde_json::from_str::<WorkerEnvelope>(&line) {
                 Ok(envelope) => {
+                    if is_background_terminal_event(&command_name, envelope.event_type.as_str()) {
+                        if let Ok(mut seen) = saw_terminal_event_for_stdout.lock() {
+                            *seen = true;
+                        }
+                    }
                     let _ = app.emit("pymss://worker-event", &envelope);
                 }
                 Err(err) => {
-                    let _ = app.emit("pymss://worker-event", serde_json::json!({
-                        "type": "error",
-                        "taskId": &task_id,
-                        "payload": { "message": format!("Invalid worker event: {err}") }
-                    }));
+                    if let Ok(mut seen) = saw_terminal_event_for_stdout.lock() {
+                        *seen = true;
+                    }
+                    emit_task_error(&app, &task_id, format!("Invalid worker event: {err}"));
                 }
             }
         });
-        if let Ok(mut child) = shared_child.lock() {
-            let _ = child.wait();
+        let exit_status = if let Ok(mut child) = shared_child.lock() {
+            child.wait().ok()
+        } else {
+            None
+        };
+        let saw_terminal_event = saw_terminal_event.lock().map(|seen| *seen).unwrap_or(false);
+        if !saw_terminal_event {
+            match exit_status {
+                Some(status) if !status.success() => {
+                    emit_task_error(&app, &task_id, format!("worker exited with {status}"));
+                }
+                None => {
+                    emit_task_error(&app, &task_id, "worker exited unexpectedly".to_string());
+                }
+                _ => {}
+            }
         }
         if let Some(handle) = stderr_handle {
             let _ = handle.join();
@@ -429,7 +478,13 @@ pub fn spawn_worker_background(
         let _ = std::fs::remove_file(payload_file);
         let cleanup_state = app.state::<AppState>();
         if let Ok(mut tasks) = cleanup_state.tasks.lock() {
-            tasks.remove(&task_id);
+            if tasks
+                .get(&task_id)
+                .map(|registered| Arc::ptr_eq(registered, &shared_child))
+                .unwrap_or(false)
+            {
+                tasks.remove(&task_id);
+            }
         };
     });
 

@@ -62,6 +62,7 @@ const transportPressed = ref(false)
 const sessionMeta = computed(() => `${props.trackCount} ${t('editor.tracks')}`)
 const timecode = computed(() => `${formatTime(props.currentTime)} / ${formatTime(props.duration)}`)
 const volumeIcon = computed(() => props.masterVolume <= 0.01 ? VolumeMuteOutline : VolumeMediumOutline)
+const masterVolumePercent = computed(() => `${Math.round(props.masterVolume * 100)}%`)
 
 function formatTrackPan(value: number) {
   const pan = Number(value || 0)
@@ -201,12 +202,13 @@ function clearTransportPressed() {
               @dragstart="emit('beginMasterVolume')"
               @dragend="emit('commitMasterVolume')"
             />
+            <span class="master-strip__value">{{ masterVolumePercent }}</span>
           </div>
         </div>
         <div class="master-strip__row">
           <span class="master-strip__label">{{ t('editor.balanceShort') }}</span>
           <div class="master-strip__pan">
-            <span class="master-strip__pan-value">{{ formatTrackPan(masterPan) }}</span>
+            <span class="master-strip__spacer" aria-hidden="true" />
             <n-slider
               :value="masterPan"
               :min="-1"
@@ -218,6 +220,7 @@ function clearTransportPressed() {
               @dragstart="emit('beginMasterPan')"
               @dragend="emit('commitMasterPan')"
             />
+            <span class="master-strip__pan-value">{{ formatTrackPan(masterPan) }}</span>
           </div>
         </div>
       </div>
@@ -236,11 +239,11 @@ function clearTransportPressed() {
 <style scoped>
 .editor-transport {
   display: grid;
-  grid-template-columns: 220px minmax(340px, 1fr) 360px;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(240px, 1fr);
   align-items: center;
   gap: 14px;
-  height: 46px;
-  padding: 0 14px;
+  min-height: 58px;
+  padding: 6px 14px;
   border-bottom: 1px solid var(--outline);
   background: var(--surface);
 }
@@ -289,6 +292,7 @@ function clearTransportPressed() {
   justify-content: center;
   gap: 12px;
   min-width: 0;
+  justify-self: center;
 }
 
 .transport-controls {
@@ -409,13 +413,14 @@ function clearTransportPressed() {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  justify-self: end;
 }
 
 .master-strip {
-  min-width: 180px;
+  min-width: 220px;
   display: grid;
-  gap: 4px;
-  padding: 6px 8px;
+  gap: 2px;
+  padding: 5px 8px;
   border: 1px solid color-mix(in srgb, var(--outline) 44%, transparent);
   border-radius: 8px;
   background: color-mix(in srgb, var(--surface-2) 72%, transparent);
@@ -423,9 +428,9 @@ function clearTransportPressed() {
 
 .master-strip__row {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
+  grid-template-columns: 54px minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .master-strip__label {
@@ -437,21 +442,32 @@ function clearTransportPressed() {
 .master-strip__control,
 .master-strip__pan {
   min-width: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 40px;
   align-items: center;
   gap: 6px;
 }
 
-.master-strip__pan {
-  gap: 8px;
-}
-
 .master-strip__pan-value {
-  width: 34px;
-  flex-shrink: 0;
   color: var(--on-surface-muted);
   font-size: 10px;
   text-align: right;
+}
+
+.master-strip__spacer {
+  width: 14px;
+  height: 14px;
+}
+
+.master-strip__value {
+  color: var(--on-surface-muted);
+  font-size: 10px;
+  text-align: right;
+}
+
+.master-strip :deep(.n-slider) {
+  min-width: 0;
+  flex: 1;
 }
 
 @media (max-width: 1280px) {

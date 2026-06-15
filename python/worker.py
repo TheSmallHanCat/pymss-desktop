@@ -254,9 +254,19 @@ def cmd_model_info(payload: dict[str, Any]) -> int:
 
 
 def cmd_delete_model(payload: dict[str, Any]) -> int:
+    task_id = payload.get("taskId") or None
     model_name = payload.get("model")
     if not model_name:
-        return emit_error("MODEL_NOT_FOUND", "Missing model name")
+        emit("model_delete_failed", {
+            "model": "",
+            "deleted": [],
+            "errors": ["Missing model name"],
+            "completedFiles": 0,
+            "totalFiles": 0,
+            "progress": 0,
+            "message": "Missing model name",
+        }, task_id=task_id)
+        return 1
 
     model_dir = payload.get("modelDir") or None
 
@@ -268,40 +278,126 @@ def cmd_delete_model(payload: dict[str, Any]) -> int:
             model_path_for,
         )
     except Exception as exc:
-        return emit_error("PYMSS_IMPORT_FAILED", str(exc), traceback.format_exc())
+        emit("model_delete_failed", {
+            "model": model_name,
+            "deleted": [],
+            "errors": [str(exc)],
+            "completedFiles": 0,
+            "totalFiles": 0,
+            "progress": 0,
+            "message": str(exc),
+        }, task_id=task_id)
+        return 1
 
     try:
         entry = get_model_entry(model_name)
     except KeyError as exc:
-        return emit_error("MODEL_NOT_FOUND", str(exc))
+        emit("model_delete_failed", {
+            "model": model_name,
+            "deleted": [],
+            "errors": [str(exc)],
+            "completedFiles": 0,
+            "totalFiles": 0,
+            "progress": 0,
+            "message": str(exc),
+        }, task_id=task_id)
+        return 1
 
     model_path = model_path_for(entry, model_dir)
     config_path = config_path_for(entry, model_dir)
     auxiliary_paths = auxiliary_paths_for(entry, model_dir)
-
-    deleted: list[str] = []
-    errors: list[str] = []
 
     all_paths = [model_path]
     if config_path is not None:
         all_paths.append(config_path)
     all_paths.extend(auxiliary_paths)
 
-    for path in all_paths:
-        if path.is_file():
+    if task_id is None:
+        deleted: list[str] = []
+        errors: list[str] = []
+        for path in all_paths:
+            if not path.is_file():
+                continue
             try:
                 path.unlink()
                 deleted.append(str(path))
             except Exception as exc:
                 errors.append(f"{path}: {exc}")
+        emit("model_deleted", {
+            "model": entry.name,
+            "deleted": deleted,
+            "errors": errors,
+            "modelInfo": model_to_dict(entry, model_dir, include_local_state=True),
+        })
+        return 0
 
-    emit("model_deleted", {
+    existing_paths = [path for path in all_paths if path.is_file()]
+    total_files = len(existing_paths)
+    deleted: list[str] = []
+    errors: list[str] = []
+
+    emit("model_delete_started", {
         "model": entry.name,
-        "deleted": deleted,
-        "errors": errors,
-        "modelInfo": model_to_dict(entry, model_dir, include_local_state=True),
-    })
-    return 0
+        "totalFiles": total_files,
+        "completedFiles": 0,
+        "progress": 0,
+        "message": "Deleting model files",
+    }, task_id=task_id)
+
+    try:
+        for index, path in enumerate(existing_paths, start=1):
+            try:
+                path.unlink()
+                deleted.append(str(path))
+            except Exception as exc:
+                detail = f"{path}: {exc}"
+                errors.append(detail)
+                emit("model_delete_failed", {
+                    "model": entry.name,
+                    "deleted": deleted,
+                    "errors": errors,
+                    "path": str(path),
+                    "completedFiles": len(deleted),
+                    "totalFiles": total_files,
+                    "progress": int((len(deleted) / total_files) * 100) if total_files > 0 else 0,
+                    "message": str(exc),
+                    "modelInfo": model_to_dict(entry, model_dir, include_local_state=True),
+                }, task_id=task_id)
+                return 1
+
+            emit("model_delete_progress", {
+                "model": entry.name,
+                "path": str(path),
+                "completedFiles": index,
+                "totalFiles": total_files,
+                "progress": int((index / total_files) * 100) if total_files > 0 else 100,
+                "message": "Deleting model files",
+            }, task_id=task_id)
+
+        emit("model_delete_done", {
+            "model": entry.name,
+            "deleted": deleted,
+            "errors": errors,
+            "completedFiles": total_files,
+            "totalFiles": total_files,
+            "progress": 100,
+            "message": "Deleting model files",
+            "modelInfo": model_to_dict(entry, model_dir, include_local_state=True),
+        }, task_id=task_id)
+        return 0
+    except Exception as exc:
+        errors.append(str(exc))
+        emit("model_delete_failed", {
+            "model": entry.name,
+            "deleted": deleted,
+            "errors": errors,
+            "completedFiles": len(deleted),
+            "totalFiles": total_files,
+            "progress": int((len(deleted) / total_files) * 100) if total_files > 0 else 0,
+            "message": str(exc),
+            "modelInfo": model_to_dict(entry, model_dir, include_local_state=True),
+        }, task_id=task_id)
+        return 1
 
 
 def _path_size(path: Path) -> int:
@@ -397,28 +493,86 @@ def cmd_model_storage_summary(payload: dict[str, Any]) -> int:
 
 def cmd_cleanup_model_residual_files(payload: dict[str, Any]) -> int:
     model_dir = payload.get("modelDir") or None
+    task_id = payload.get("taskId") or None
     try:
         summary = _storage_summary_payload(model_dir)
+        if task_id is None:
+            deleted: list[str] = []
+            errors: list[str] = []
+            for item in summary.get("residualFiles", []):
+                path = Path(item.get("path", ""))
+                if not path.is_file():
+                    continue
+                try:
+                    path.unlink()
+                    deleted.append(str(path))
+                except Exception as exc:
+                    errors.append(f"{path}: {exc}")
+            emit("model_residual_cleaned", {
+                "deleted": deleted,
+                "errors": errors,
+                "modelStorageSummary": _storage_summary_payload(model_dir),
+            })
+            return 0
+        residual_items = [item for item in summary.get("residualFiles", []) if Path(item.get("path", "")).is_file()]
+        total_files = len(residual_items)
         deleted: list[str] = []
         errors: list[str] = []
-        for item in summary.get("residualFiles", []):
+
+        emit("model_residual_cleanup_started", {
+            "totalFiles": total_files,
+            "completedFiles": 0,
+            "progress": 0,
+            "message": "Cleaning residual files",
+        }, task_id=task_id)
+
+        for index, item in enumerate(residual_items, start=1):
             path = Path(item.get("path", ""))
-            if not path.is_file():
-                continue
             try:
                 path.unlink()
                 deleted.append(str(path))
             except Exception as exc:
-                errors.append(f"{path}: {exc}")
+                detail = f"{path}: {exc}"
+                errors.append(detail)
+                emit("model_residual_cleanup_failed", {
+                    "deleted": deleted,
+                    "errors": errors,
+                    "path": str(path),
+                    "completedFiles": len(deleted),
+                    "totalFiles": total_files,
+                    "progress": int((len(deleted) / total_files) * 100) if total_files > 0 else 0,
+                    "message": str(exc),
+                    "modelStorageSummary": _storage_summary_payload(model_dir),
+                }, task_id=task_id)
+                return 1
+            emit("model_residual_cleanup_progress", {
+                "path": str(path),
+                "completedFiles": index,
+                "totalFiles": total_files,
+                "progress": int((index / total_files) * 100) if total_files > 0 else 100,
+                "message": "Cleaning residual files",
+            }, task_id=task_id)
         next_summary = _storage_summary_payload(model_dir)
-        emit("model_residual_cleaned", {
+        emit("model_residual_cleanup_done", {
             "deleted": deleted,
             "errors": errors,
+            "completedFiles": total_files,
+            "totalFiles": total_files,
+            "progress": 100,
+            "message": "Cleaning residual files",
             "modelStorageSummary": next_summary,
-        })
+        }, task_id=task_id)
         return 0
     except Exception as exc:
-        return emit_error("MODEL_RESIDUAL_CLEANUP_FAILED", str(exc), traceback.format_exc())
+        emit("model_residual_cleanup_failed", {
+            "deleted": [],
+            "errors": [str(exc)],
+            "completedFiles": 0,
+            "totalFiles": 0,
+            "progress": 0,
+            "message": str(exc),
+        }, task_id=task_id)
+        return 1
 
 
 _ARIA2_PROGRESS_PATTERN = re.compile(

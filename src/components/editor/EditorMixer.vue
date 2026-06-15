@@ -83,14 +83,6 @@ const trackMenuOptions = computed<DropdownOption[]>(() => {
   if (!track) return []
   return [
     {
-      key: 'mute',
-      label: track.muted ? t('editor.unmuteTrack') : t('editor.muteTrack'),
-    },
-    {
-      key: 'solo',
-      label: track.solo ? t('editor.unsoloTrack') : t('editor.soloTrack'),
-    },
-    {
       key: 'reveal',
       label: t('editor.menuRevealAsset'),
     },
@@ -254,8 +246,6 @@ function handleTrackMenuSelect(key: string | number) {
   showTrackMenu.value = false
   if (!track) return
 
-  if (key === 'mute') emit('contextMute', track.id)
-  if (key === 'solo') emit('contextSolo', track.id)
   if (key === 'reveal') emit('revealTrack', track.id)
   if (key === 'remove') emit('removeTrack', track.id)
 }
