@@ -211,7 +211,7 @@ export const useSettingsStore = defineStore('settings', () => {
     mp3BitRate: mp3BitRate.value,
     m4aBitRate: m4aBitRate.value,
     m4aCodec: m4aCodec.value,
-    startupOnboardingSeen: startupOnboardingSeen.value || undefined,
+    startupOnboardingSeen: startupOnboardingSeen.value,
   }))
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -252,10 +252,15 @@ export const useSettingsStore = defineStore('settings', () => {
     m4aCodec.value = normalizeM4aCodec(stored?.m4aCodec)
     startupOnboardingSeen.value = stored?.startupOnboardingSeen === true
       || String(stored?.startupOnboardingSeenVersion || '').trim().length > 0
+    const shouldPersistNormalizedOnboarding =
+      !stored
+      || typeof stored.startupOnboardingSeen !== 'boolean'
+      || String(stored.startupOnboardingSeenVersion || '').trim().length > 0
 
     applyTheme(themeMode.value, themeAccent.value)
     setLocale(locale.value)
     initialized.value = true
+    if (shouldPersistNormalizedOnboarding) queuePersist()
   }
 
   watch(themeMode, (value) => {

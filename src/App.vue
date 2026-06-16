@@ -23,11 +23,9 @@ const resolvedTheme = computed(() => getResolvedThemeTokens(settings.themeMode, 
 const showStartupOnboarding = computed(() => bootReady.value && !isEditorRoute.value && settings.shouldShowStartupOnboarding)
 
 onMounted(() => {
-  requestAnimationFrame(() => {
-    window.setTimeout(() => {
-      bootReady.value = true
-    }, 120)
-  })
+  window.setTimeout(() => {
+    bootReady.value = true
+  }, 120)
   if (!app.envInfo && !app.envLoading) {
     setTimeout(() => {
       app.checkEnvInBackground().catch(() => {})

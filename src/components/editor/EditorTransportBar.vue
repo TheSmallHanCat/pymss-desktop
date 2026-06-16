@@ -265,6 +265,9 @@ function clearTransportPressed() {
 .editor-transport-wrap {
   display: grid;
   gap: 0;
+  grid-column: 1 / -1;
+  min-width: 0;
+  width: 100%;
 }
 
 .editor-transport {

@@ -624,15 +624,18 @@ onMounted(() => {
   max-height: min(62vh, 620px);
   overflow: auto;
   padding: 12px 0;
-  border: 1px solid color-mix(in srgb, var(--outline) 86%, transparent);
+  border: 1px solid #202938;
   border-radius: 12px;
   background:
     linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0.008)),
-    color-mix(in srgb, var(--surface) 92%, #0e1218);
+    #0e1218;
   color: #d6deeb;
   font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
   font-size: 12px;
   line-height: 1.65;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 10px 28px rgba(7, 10, 16, 0.16);
 }
 
 .log-line {
@@ -645,7 +648,7 @@ onMounted(() => {
 }
 
 .log-line:hover {
-  background: color-mix(in srgb, var(--primary-soft) 14%, rgba(255, 255, 255, 0.02));
+  background: rgba(130, 170, 255, 0.08);
 }
 
 .log-line-number {

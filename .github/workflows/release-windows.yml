@@ -46,6 +46,12 @@ jobs:
         shell: pwsh
         run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL
 
+      - name: Sync build version metadata
+        shell: pwsh
+        env:
+          PYMSS_VERSION: ${{ steps.meta.outputs.version }}
+        run: ./scripts/sync-build-version.ps1
+
       - name: Build Tauri production app
         run: pnpm tauri build --no-bundle
 
@@ -227,6 +233,12 @@ jobs:
       - name: Prepare embedded CPU Python runtime
         shell: pwsh
         run: ./scripts/prepare-python-runtime.ps1 -Variant default -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL
+
+      - name: Sync build version metadata
+        shell: pwsh
+        env:
+          PYMSS_VERSION: ${{ steps.meta.outputs.version }}
+        run: ./scripts/sync-build-version.ps1
 
       - name: Build Tauri production app
         run: pnpm tauri build --no-bundle
