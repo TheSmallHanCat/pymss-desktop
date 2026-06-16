@@ -37,6 +37,28 @@ type ScanAudioPathsResult = {
   warnings: string[]
 }
 
+type LinkedEditorAsset = {
+  path: string
+  name: string
+  originKind: string
+  originRoot?: string | null
+  relativePath?: string | null
+  missing?: boolean
+}
+
+type ImportEditorAssetsResult = {
+  files: LinkedEditorAsset[]
+  warnings: string[]
+}
+
+type RelinkEditorSourcesResult = {
+  project: PersistedSession
+  relinked: number
+  unresolved: string[]
+}
+
+type PickFileResult = string | null
+
 type AudioMetadata = {
   path: string
   name: string
@@ -173,7 +195,20 @@ function normalizeSource(source: Partial<EditorSource>): EditorSource {
     channels: Number(source.channels || 0),
     peaksPath: source.peaksPath ? String(source.peaksPath) : null,
     peaks: Array.isArray(source.peaks) ? source.peaks.map((value) => Number(value || 0)) : [],
+    originKind: source.originKind ? String(source.originKind) : undefined,
+    originRoot: source.originRoot ? String(source.originRoot) : null,
+    relativePath: source.relativePath ? String(source.relativePath) : null,
+    missing: Boolean(source.missing),
   }
+}
+
+function normalizePathKey(value: string) {
+  return value.replace(/\\/g, '/').toLowerCase()
+}
+
+function sourceDisplayGroup(source: EditorSource) {
+  if (source.originKind === 'task-result' || source.role === 'stem') return '分离结果'
+  return '外部资产'
 }
 
 function resolveAssetUrl(path: string) {
@@ -381,25 +416,10 @@ export const useEditorStore = defineStore('editor', () => {
       return current
     }
 
-    const sourceResultDir = session.value.sourceResultDir?.replace(/[/\\]+$/, '')
-    const projectAssetsMarker = `${session.value.id}`
-
     for (const source of session.value.sources) {
-      const normalizedPath = source.path.replace(/\\/g, '/')
-      const groupName = source.role === 'stem' ? '分离结果' : '外部资产'
-      let parts: string[] = []
-      if (sourceResultDir && source.path.toLowerCase().startsWith(sourceResultDir.toLowerCase())) {
-        const relative = source.path.slice(sourceResultDir.length).replace(/^[\\/]+/, '').replace(/\\/g, '/')
-        parts = [groupName, ...relative.split('/').slice(0, -1)]
-      } else {
-        const assetsIndex = normalizedPath.toLowerCase().indexOf(`/editor-projects/${projectAssetsMarker.toLowerCase()}/assets/`)
-        if (assetsIndex >= 0) {
-          const relative = normalizedPath.slice(assetsIndex).split('/assets/')[1] || ''
-          parts = [groupName, ...relative.split('/').slice(0, -1)]
-        } else {
-          parts = [groupName]
-        }
-      }
+      const groupName = sourceDisplayGroup(source)
+      const relative = String(source.relativePath || '').replace(/\\/g, '/')
+      const parts = [groupName, ...relative.split('/').slice(0, -1).filter(Boolean)]
       ensureFolder(parts).assets.push(source)
     }
 
@@ -522,6 +542,7 @@ export const useEditorStore = defineStore('editor', () => {
       const result = await requestProjectFromTask(task)
       session.value = normalizeSession(result)
       selectedTrackId.value = session.value.tracks[0]?.id || null
+      await hydratePeaksFromCache(session.value.id)
       clearHistory()
       const currentProjectId = session.value.id
       hydrateSessionSourcesInBackground(currentProjectId)
@@ -614,9 +635,11 @@ export const useEditorStore = defineStore('editor', () => {
       const result = await invoke<PersistedSession>('load_editor_project', { projectId })
       session.value = normalizeSession(result)
       await hydratePeaksFromCache(session.value.id)
+      const missingChanged = await hydrateSourceMissingState(session.value.id)
       selectedTrackId.value = session.value.tracks[0]?.id || null
       clearHistory()
       const currentProjectId = session.value.id
+      if (missingChanged) await saveProject()
       hydrateSessionSourcesInBackground(currentProjectId)
       return session.value
     } catch (error) {
@@ -648,7 +671,7 @@ export const useEditorStore = defineStore('editor', () => {
   async function ensurePeaks(sourceId: string) {
     if (!session.value) return null
     const source = session.value.sources.find((item) => item.id === sourceId)
-    if (!source || hasPeaks(source.peaks)) return source || null
+    if (!source || source.missing || hasPeaks(source.peaks)) return source || null
 
     const cachedPeaks = await loadPeaksFromCache(source.peaksPath)
     if (cachedPeaks?.length) {
@@ -716,6 +739,29 @@ export const useEditorStore = defineStore('editor', () => {
       .catch(() => {})
   }
 
+  async function hydrateSourceMissingState(projectId = session.value?.id || '') {
+    if (!session.value || !projectId || session.value.id !== projectId) return false
+
+    let changed = false
+    const sources = [...session.value.sources]
+
+    await runLimited(sources, 4, async (source) => {
+      if (!session.value || session.value.id !== projectId) return
+      const beforeMissing = Boolean(source.missing)
+      const exists = await getMetadata(source.path)
+        .then(() => true)
+        .catch(() => false)
+      if (!session.value || session.value.id !== projectId) return
+      const nextMissing = !exists
+      if (beforeMissing !== nextMissing) {
+        source.missing = nextMissing
+        changed = true
+      }
+    })
+
+    return changed
+  }
+
   async function hydrateSessionSources(projectId = session.value?.id || '') {
     if (!session.value || !projectId || session.value.id !== projectId) return false
 
@@ -732,19 +778,27 @@ export const useEditorStore = defineStore('editor', () => {
         channels: source.channels,
         peaksPath: source.peaksPath || null,
         peaksCount: source.peaks?.length || 0,
+        missing: Boolean(source.missing),
       }
 
-      if (!hasPeaks(source.peaks)) {
+      const metadata = await getMetadata(source.path).catch(() => null)
+      if (!session.value || session.value.id !== projectId) return
+
+      source.missing = !metadata
+      if (source.missing) {
+        source.duration = Number(source.duration || 0)
+        source.sampleRate = Number(source.sampleRate || 0)
+        source.channels = Number(source.channels || 0)
+        source.peaks = Array.isArray(source.peaks) ? source.peaks : []
+      } else if (!hasPeaks(source.peaks)) {
         await ensurePeaks(source.id)
-      } else if (!source.duration || !source.sampleRate) {
-        const metadata = await getMetadata(source.path).catch(() => null)
-        if (!session.value || session.value.id !== projectId) return
-        if (metadata) {
-          source.name = metadata.name || source.name
-          source.duration = Number(metadata.duration || source.duration)
-          source.sampleRate = Number(metadata.sampleRate || source.sampleRate)
-          source.channels = Number(metadata.channels || source.channels)
-        }
+      }
+
+      if (metadata) {
+        source.name = metadata.name || source.name
+        source.duration = Number(metadata.duration || source.duration)
+        source.sampleRate = Number(metadata.sampleRate || source.sampleRate)
+        source.channels = Number(metadata.channels || source.channels)
       }
 
       if (
@@ -754,6 +808,7 @@ export const useEditorStore = defineStore('editor', () => {
         || source.channels !== before.channels
         || (source.peaksPath || null) !== before.peaksPath
         || (source.peaks?.length || 0) !== before.peaksCount
+        || Boolean(source.missing) !== before.missing
       ) {
         changed = true
       }
@@ -776,14 +831,19 @@ export const useEditorStore = defineStore('editor', () => {
 
   async function addReferenceSourceByPath(path: string) {
     if (!session.value) throw new Error('Editor session is not loaded')
-    const source = await ensureSourceByPath(path)
+    const source = await ensureSourceByPath(path, {
+      originKind: 'external',
+      originRoot: path.replace(/[/\\][^/\\]+$/, '') || null,
+      relativePath: fileName(path),
+    })
     addTrackFromSourceId(source.id)
     return source
   }
 
-  async function ensureSourceByPath(path: string) {
+  async function ensureSourceByPath(path: string, options?: Partial<EditorSource>) {
     if (!session.value) throw new Error('Editor session is not loaded')
-    const existing = session.value.sources.find((source) => source.path === path)
+    const normalized = normalizePathKey(path)
+    const existing = session.value.sources.find((source) => normalizePathKey(source.path) === normalized)
     if (existing) return existing
 
     const metadata = await getMetadata(path).catch(() => ({
@@ -804,9 +864,13 @@ export const useEditorStore = defineStore('editor', () => {
       channels: Number(metadata.channels || 0),
       peaksPath: null,
       peaks: [],
+      originKind: options?.originKind || 'external',
+      originRoot: options?.originRoot ? String(options.originRoot) : null,
+      relativePath: options?.relativePath ? String(options.relativePath) : fileName(path),
+      missing: !metadata || Boolean(options?.missing),
     }
     session.value.sources.push(source)
-    ensurePeaksInBackground(source.id)
+    if (!source.missing) ensurePeaksInBackground(source.id)
     scheduleSave()
     return source
   }
@@ -838,15 +902,72 @@ export const useEditorStore = defineStore('editor', () => {
 
   async function scanAssets(paths: string[]) {
     if (!session.value) throw new Error('Editor session is not loaded')
-    const imported = await invoke<string[]>('import_editor_assets', {
+    const imported = await invoke<ImportEditorAssetsResult>('import_editor_assets', {
       projectId: session.value.id,
       paths,
     })
-    for (const path of imported || []) {
-      await ensureSourceByPath(path)
+    for (const asset of imported.files || []) {
+      await ensureSourceByPath(asset.path, {
+        originKind: asset.originKind,
+        originRoot: asset.originRoot || null,
+        relativePath: asset.relativePath || fileName(asset.path),
+        missing: asset.missing,
+      })
     }
     await saveProject()
-    return { files: imported || [], warnings: [] } satisfies ScanAudioPathsResult
+    return {
+      files: (imported.files || []).map((asset) => asset.path),
+      warnings: imported.warnings || [],
+    } satisfies ScanAudioPathsResult
+  }
+
+  function sourcesInUse() {
+    if (!session.value) return []
+    const sourceIds = new Set(session.value.tracks.map((track) => track.sourceId))
+    return session.value.sources.filter((source) => sourceIds.has(source.id))
+  }
+
+  function missingSources() {
+    return session.value?.sources.filter((source) => source.missing) || []
+  }
+
+  function missingSourcesInUse() {
+    return sourcesInUse().filter((source) => source.missing)
+  }
+
+  function assertNoMissingSourcesInUse(message: string) {
+    const missing = missingSourcesInUse()
+    if (!missing.length) return
+    throw new Error(message)
+  }
+
+  async function pickRelinkFile() {
+    return invoke<PickFileResult>('pick_single_audio_file')
+  }
+
+  async function relinkSource(sourceId: string, pickedPath?: string | null) {
+    if (!session.value) throw new Error('Editor session is not loaded')
+    const source = session.value.sources.find((item) => item.id === sourceId)
+    if (!source) throw new Error('Source asset not found')
+    const resolvedPath = pickedPath ?? await pickRelinkFile()
+    if (!resolvedPath) return null
+    const result = await invoke<RelinkEditorSourcesResult>('relink_editor_sources', {
+      payload: {
+        projectId: session.value.id,
+        sourceId,
+        pickedPath: resolvedPath,
+      },
+    })
+    session.value = normalizeSession(result.project)
+    await hydratePeaksFromCache(session.value.id)
+    hydrateSessionSourcesInBackground(session.value.id)
+    return result
+  }
+
+  async function relinkMissingSources(pickedPath?: string | null) {
+    const firstMissing = missingSources()[0]
+    if (!firstMissing) return null
+    return relinkSource(firstMissing.id, pickedPath)
   }
 
   function renameTrack(trackId: string, name: string, commit = true) {
@@ -953,6 +1074,7 @@ export const useEditorStore = defineStore('editor', () => {
 
   async function exportMix(options?: EditorExportFormat | EditorExportOptions) {
     if (!session.value) throw new Error('Editor session is not loaded')
+    assertNoMissingSourcesInUse(String(i18n.global.t('editor.assetOfflineBlocked')))
     const normalized = typeof options === 'string'
       ? { format: options, audioParams: undefined }
       : (options || {})
@@ -1047,6 +1169,12 @@ export const useEditorStore = defineStore('editor', () => {
     addReferenceSourceByPath,
     addTrackFromSourceId,
     scanAssets,
+    relinkSource,
+    relinkMissingSources,
+    pickRelinkFile,
+    missingSources,
+    missingSourcesInUse,
+    assertNoMissingSourcesInUse,
     renameTrack,
     toggleTrackFlag,
     setTrackVolume,

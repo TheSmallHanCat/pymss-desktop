@@ -256,33 +256,12 @@ fn safe_file_name(value: &str) -> String {
     }
 }
 
-fn safe_asset_file_name(value: &str) -> String {
-    let sanitized: String = value
-        .chars()
-        .map(|ch| match ch {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            c if c.is_control() => '_',
-            c => c,
-        })
-        .collect();
-    let trimmed = sanitized.trim().trim_matches('.').trim_matches('_');
-    if trimmed.is_empty() {
-        "audio".to_string()
-    } else {
-        trimmed.chars().take(180).collect()
-    }
-}
-
 fn editor_project_dir(app: &AppHandle, project_id: &str) -> AppResult<PathBuf> {
     Ok(editor_projects_root(app)?.join(safe_file_name(project_id)))
 }
 
 fn editor_project_path(app: &AppHandle, project_id: &str) -> AppResult<PathBuf> {
     Ok(editor_project_dir(app, project_id)?.join("project.json"))
-}
-
-fn editor_project_assets_dir(app: &AppHandle, project_id: &str) -> AppResult<PathBuf> {
-    Ok(editor_project_dir(app, project_id)?.join("assets"))
 }
 
 #[derive(Serialize)]
@@ -296,6 +275,32 @@ pub struct EditorProjectSummary {
     updated_at: u64,
     #[serde(rename = "type")]
     project_type: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedEditorAsset {
+    path: String,
+    name: String,
+    origin_kind: String,
+    origin_root: Option<String>,
+    relative_path: Option<String>,
+    missing: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportEditorAssetsResult {
+    pub files: Vec<LinkedEditorAsset>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkEditorSourcesResult {
+    pub project: Value,
+    pub relinked: usize,
+    pub unresolved: Vec<String>,
 }
 
 fn now_millis() -> u128 {
@@ -319,144 +324,6 @@ fn stem_from_path(path: &str) -> String {
     } else {
         file_name_from_path(path)
     }
-}
-
-fn unique_path_for_file(dir: &Path, file_name: &str) -> PathBuf {
-    let fallback_name = safe_asset_file_name(file_name);
-    let fallback = if fallback_name.is_empty() {
-        "audio".to_string()
-    } else {
-        fallback_name
-    };
-    let original = Path::new(&fallback);
-    let stem = original
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| "audio".to_string());
-    let extension = original
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(str::to_string);
-
-    let mut candidate = dir.join(&fallback);
-    let mut index = 1usize;
-    while candidate.exists() {
-        let name = match &extension {
-            Some(ext) if !ext.is_empty() => format!("{stem}_{index}.{ext}"),
-            _ => format!("{stem}_{index}"),
-        };
-        candidate = dir.join(name);
-        index += 1;
-    }
-    candidate
-}
-
-fn import_audio_file_to_project(
-    app: &AppHandle,
-    project_id: &str,
-    source_path: &Path,
-    relative_path: Option<&Path>,
-) -> AppResult<PathBuf> {
-    if !source_path.is_file() {
-        return Err(AppError::Worker(format!(
-            "asset is not a file: {}",
-            source_path.display()
-        )));
-    }
-
-    let assets_dir = editor_project_assets_dir(app, project_id)?;
-    std::fs::create_dir_all(&assets_dir)?;
-
-    if let (Ok(source_canon), Ok(assets_canon)) =
-        (source_path.canonicalize(), assets_dir.canonicalize())
-    {
-        if source_canon.starts_with(&assets_canon) {
-            return Ok(source_path.to_path_buf());
-        }
-    }
-
-    let destination = if let Some(relative) = relative_path {
-        let safe_parts: Vec<String> = relative
-            .components()
-            .filter_map(|component| match component {
-                std::path::Component::Normal(value) => value.to_str().map(safe_asset_file_name),
-                _ => None,
-            })
-            .filter(|part| !part.is_empty())
-            .collect();
-        if safe_parts.is_empty() {
-            unique_path_for_file(
-                &assets_dir,
-                &file_name_from_path(&source_path.to_string_lossy()),
-            )
-        } else {
-            let mut target_dir = assets_dir.clone();
-            for part in safe_parts.iter().take(safe_parts.len().saturating_sub(1)) {
-                target_dir = target_dir.join(part);
-            }
-            std::fs::create_dir_all(&target_dir)?;
-            unique_path_for_file(&target_dir, safe_parts.last().unwrap())
-        }
-    } else {
-        unique_path_for_file(
-            &assets_dir,
-            &file_name_from_path(&source_path.to_string_lossy()),
-        )
-    };
-
-    if let Some(parent) = destination.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::copy(source_path, &destination)?;
-    Ok(destination)
-}
-
-fn migrate_editor_project_asset_paths(app: &AppHandle, project: &mut Value) -> AppResult<bool> {
-    let Some(project_id) = project
-        .get("id")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-    else {
-        return Ok(false);
-    };
-
-    let assets_dir = editor_project_assets_dir(app, &project_id)?;
-    std::fs::create_dir_all(&assets_dir)?;
-    let assets_canon = assets_dir.canonicalize().ok();
-
-    let mut changed = false;
-    let Some(sources) = project.get_mut("sources").and_then(Value::as_array_mut) else {
-        return Ok(false);
-    };
-
-    for source in sources.iter_mut() {
-        let Some(path_value) = source.get_mut("path") else {
-            continue;
-        };
-        let Some(raw_path) = path_value.as_str() else {
-            continue;
-        };
-
-        let source_path = PathBuf::from(raw_path);
-        if !source_path.is_file() {
-            continue;
-        }
-
-        let already_in_assets = match (&assets_canon, source_path.canonicalize().ok()) {
-            (Some(assets), Some(source_canon)) => source_canon.starts_with(assets),
-            _ => false,
-        };
-        if already_in_assets {
-            continue;
-        }
-
-        let imported = import_audio_file_to_project(app, &project_id, &source_path, None)?;
-        *path_value = Value::String(imported.to_string_lossy().to_string());
-        changed = true;
-    }
-
-    Ok(changed)
 }
 
 fn summary_from_project_value(project: &Value, fallback_id: &str) -> EditorProjectSummary {
@@ -651,40 +518,54 @@ pub async fn create_editor_project_from_task(app: AppHandle, payload: Value) -> 
 
     let project_id = format!("edit_{}", safe_file_name(task_id));
     let timestamp = now_millis();
-    let mut imported_paths: Vec<(String, String)> = Vec::with_capacity(paths.len());
-    for (stem, path) in paths {
-        let imported_path = {
-            let source_path = PathBuf::from(&path);
-            if source_path.is_file() {
-                import_audio_file_to_project(&app, &project_id, &source_path, None)?
-                    .to_string_lossy()
-                    .to_string()
-            } else {
-                path.clone()
-            }
-        };
-        imported_paths.push((stem, imported_path));
-    }
+    let output_root = if output_dir.trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(output_dir))
+    };
 
-    let sources: Vec<Value> = imported_paths
+    let linked_paths: Vec<(String, LinkedEditorAsset)> = paths
+        .into_iter()
+        .map(|(stem, path)| {
+            let source_path = PathBuf::from(&path);
+            let relative = output_root
+                .as_ref()
+                .and_then(|root| source_path.strip_prefix(root).ok());
+            (
+                stem,
+                linked_asset_from_path(
+                    &source_path,
+                    "task-result",
+                    output_root.as_deref(),
+                    relative,
+                ),
+            )
+        })
+        .collect();
+
+    let sources: Vec<Value> = linked_paths
         .iter()
         .enumerate()
-        .map(|(index, (stem, path))| {
+        .map(|(index, (stem, asset))| {
             serde_json::json!({
                 "id": format!("source_{}_{}", index, safe_file_name(stem)),
                 "role": "stem",
                 "stemKey": stem,
-                "path": path,
-                "name": file_name_from_path(path),
+                "path": asset.path,
+                "name": asset.name,
                 "duration": 0,
                 "sampleRate": 0,
                 "channels": 0,
                 "peaksPath": Value::Null,
                 "peaks": [],
+                "originKind": asset.origin_kind,
+                "originRoot": asset.origin_root,
+                "relativePath": asset.relative_path,
+                "missing": asset.missing,
             })
         })
         .collect();
-    let tracks: Vec<Value> = imported_paths
+    let tracks: Vec<Value> = linked_paths
         .iter()
         .enumerate()
         .map(|(index, (stem, _))| {
@@ -810,43 +691,50 @@ pub async fn scan_editor_assets(paths: Vec<String>) -> AppResult<ScanAudioPathsR
 
 #[tauri::command]
 pub async fn import_editor_assets(
-    app: AppHandle,
-    project_id: String,
+    _app: AppHandle,
+    _project_id: String,
     paths: Vec<String>,
-) -> AppResult<Vec<String>> {
-    let assets_dir = editor_project_assets_dir(&app, &project_id)?;
-    std::fs::create_dir_all(&assets_dir)?;
-
+) -> AppResult<ImportEditorAssetsResult> {
     let mut imported = Vec::new();
+    let mut warnings = Vec::new();
     for raw in paths {
         let target = PathBuf::from(&raw);
         if target.is_file() {
             if is_audio_file(&target) {
-                imported.push(
-                    import_audio_file_to_project(&app, &project_id, &target, None)?
-                        .to_string_lossy()
-                        .to_string(),
-                );
+                let origin_root = target.parent().map(PathBuf::from);
+                imported.push(linked_asset_from_path(
+                    &target,
+                    "external",
+                    origin_root.as_deref(),
+                    target.file_name().map(Path::new),
+                ));
+            } else {
+                warnings.push(format!("unsupported file: {}", target.display()));
             }
             continue;
         }
 
         if target.is_dir() {
             let scanned = scan_audio_paths(vec![raw.clone()]).await?;
+            warnings.extend(scanned.warnings);
             for file in scanned.files {
                 let file_path = PathBuf::from(&file);
                 let relative = file_path.strip_prefix(&target).ok();
-                imported.push(
-                    import_audio_file_to_project(&app, &project_id, &file_path, relative)?
-                        .to_string_lossy()
-                        .to_string(),
-                );
+                imported.push(linked_asset_from_path(
+                    &file_path,
+                    "external",
+                    Some(target.as_path()),
+                    relative,
+                ));
             }
+            continue;
         }
+
+        warnings.push(format!("path not found: {}", raw));
     }
-    imported.sort();
-    imported.dedup();
-    Ok(imported)
+    imported.sort_by(|a, b| normalize_path_key(&a.path).cmp(&normalize_path_key(&b.path)));
+    imported.dedup_by(|a, b| normalize_path_key(&a.path) == normalize_path_key(&b.path));
+    Ok(ImportEditorAssetsResult { files: imported, warnings })
 }
 
 #[tauri::command]
@@ -888,10 +776,142 @@ pub async fn load_editor_project(app: AppHandle, project_id: String) -> AppResul
     let path = editor_project_path(&app, &project_id)?;
     let content = std::fs::read_to_string(path)?;
     let mut project: Value = serde_json::from_str(&content)?;
-    if migrate_editor_project_asset_paths(&app, &mut project)? {
+    if enrich_editor_project_sources(&mut project) {
         write_editor_project(&app, &project)?;
     }
     Ok(project)
+}
+
+#[tauri::command]
+pub async fn relink_editor_sources(
+    app: AppHandle,
+    payload: Value,
+) -> AppResult<RelinkEditorSourcesResult> {
+    let project_id = payload
+        .get("projectId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Worker("missing projectId".into()))?;
+    let source_id = payload
+        .get("sourceId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Worker("missing sourceId".into()))?;
+    let picked_path = payload
+        .get("pickedPath")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Worker("missing pickedPath".into()))?;
+
+    let path = editor_project_path(&app, project_id)?;
+    let content = std::fs::read_to_string(&path)?;
+    let mut project: Value = serde_json::from_str(&content)?;
+    enrich_editor_project_sources(&mut project);
+
+    let sources = project
+        .get_mut("sources")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| AppError::Worker("editor project has no sources".into()))?;
+    let anchor_source = sources
+        .iter()
+        .find(|source| source.get("id").and_then(Value::as_str) == Some(source_id))
+        .cloned()
+        .ok_or_else(|| AppError::Worker("source not found".into()))?;
+
+    let anchor_relative = anchor_source.get("relativePath").and_then(Value::as_str);
+    let picked_path_buf = PathBuf::from(picked_path);
+    if !picked_path_buf.is_file() {
+        return Err(AppError::Worker("picked relink file does not exist".into()));
+    }
+
+    let relink_root = derive_relink_root(&picked_path_buf, anchor_relative)
+        .or_else(|| picked_path_buf.parent().map(PathBuf::from))
+        .ok_or_else(|| AppError::Worker("failed to resolve relink root".into()))?;
+    let file_name_index = build_file_name_index(&relink_root);
+
+    let mut relinked = 0usize;
+    let mut unresolved = Vec::new();
+
+    for source in sources.iter_mut() {
+        let Some(source_object) = source.as_object_mut() else {
+            continue;
+        };
+        // Only attempt to repoint sources that are actually missing.
+        // Healthy sources must keep their existing path/originRoot untouched,
+        // otherwise a bulk relink could silently steal them into the relink root.
+        if !source_object
+            .get("missing")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let relative_path = source_object.get("relativePath").and_then(Value::as_str);
+        let fallback_name = source_object
+            .get("path")
+            .and_then(Value::as_str)
+            .and_then(|value| Path::new(value).file_name().and_then(|name| name.to_str()));
+        let candidate = build_relink_candidate(&relink_root, relative_path, &file_name_index)
+            .or_else(|| {
+                let file_name = fallback_name?.to_ascii_lowercase();
+                let candidates = file_name_index.get(&file_name)?;
+                if candidates.len() == 1 {
+                    candidates.first().cloned()
+                } else {
+                    preferred_match_by_relative_path(candidates, relative_path).cloned()
+                }
+            });
+
+        let Some(next_path) = candidate else {
+            if source_object.get("missing").and_then(Value::as_bool).unwrap_or(false) {
+                unresolved.push(
+                    source_object
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+            }
+            continue;
+        };
+
+        let next_path_string = path_to_string(&next_path);
+        let current_path = source_object
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let current_missing = source_object
+            .get("missing")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        if current_path != next_path_string || current_missing {
+            source_object.insert("path".into(), Value::String(next_path_string));
+            source_object.insert("missing".into(), Value::Bool(false));
+            relinked += 1;
+        }
+
+        source_object.insert(
+            "originRoot".into(),
+            Value::String(path_to_string(&relink_root)),
+        );
+
+        if source_object
+            .get("originKind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            == "legacy"
+        {
+            source_object.insert("originKind".into(), Value::String("external".into()));
+        }
+
+    }
+
+    enrich_editor_project_sources(&mut project);
+    let saved = write_editor_project(&app, &project)?;
+    Ok(RelinkEditorSourcesResult {
+        project: saved,
+        relinked,
+        unresolved,
+    })
 }
 
 #[tauri::command]
@@ -964,6 +984,274 @@ pub async fn pick_audio_files(app: AppHandle) -> AppResult<Vec<String>> {
         .blocking_pick_files()
         .unwrap_or_default();
     Ok(files.into_iter().map(|p| p.to_string()).collect())
+}
+
+#[tauri::command]
+pub async fn pick_single_audio_file(app: AppHandle) -> AppResult<Option<String>> {
+    Ok(app
+        .dialog()
+        .file()
+        .add_filter(
+            "Audio",
+            &["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"],
+        )
+        .blocking_pick_file()
+        .map(|p| p.to_string()))
+}
+
+fn path_to_string(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+fn normalize_path_key(value: &str) -> String {
+    value.replace('\\', "/").to_ascii_lowercase()
+}
+
+fn normalized_relative_path(path: &Path) -> Option<String> {
+    let parts: Vec<String> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str().map(str::to_string),
+            _ => None,
+        })
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
+    }
+}
+
+fn relative_path_from_root(root: &Path, target: &Path) -> Option<String> {
+    target
+        .strip_prefix(root)
+        .ok()
+        .and_then(normalized_relative_path)
+}
+
+fn linked_asset_from_path(
+    path: &Path,
+    origin_kind: &str,
+    origin_root: Option<&Path>,
+    relative_path: Option<&Path>,
+) -> LinkedEditorAsset {
+    let relative = relative_path
+        .and_then(normalized_relative_path)
+        .or_else(|| origin_root.and_then(|root| relative_path_from_root(root, path)))
+        .or_else(|| path.file_name().and_then(|value| value.to_str()).map(str::to_string));
+    LinkedEditorAsset {
+        path: path_to_string(path),
+        name: file_name_from_path(&path_to_string(path)),
+        origin_kind: origin_kind.to_string(),
+        origin_root: origin_root.map(path_to_string),
+        relative_path: relative,
+        missing: !path.is_file(),
+    }
+}
+
+fn detect_editor_source_origin(project: &Value, source: &Value) -> (String, Option<String>, Option<String>) {
+    let role = source.get("role").and_then(Value::as_str).unwrap_or("reference");
+    let path = source.get("path").and_then(Value::as_str).unwrap_or_default();
+    let source_path = PathBuf::from(path);
+
+    let stored_kind = source
+        .get("originKind")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty());
+    let stored_root = source
+        .get("originRoot")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty());
+    let stored_relative = source
+        .get("relativePath")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty());
+
+    if stored_kind.is_some() || stored_root.is_some() || stored_relative.is_some() {
+        return (
+            stored_kind.unwrap_or_else(|| if role == "stem" { "task-result" } else { "external" }.to_string()),
+            stored_root,
+            stored_relative.or_else(|| source_path.file_name().and_then(|value| value.to_str()).map(str::to_string)),
+        );
+    }
+
+    if role == "stem" {
+        if let Some(result_dir) = project
+            .get("sourceResultDir")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+        {
+            let relative = relative_path_from_root(&result_dir, &source_path)
+                .or_else(|| source_path.file_name().and_then(|value| value.to_str()).map(str::to_string));
+            return ("task-result".to_string(), Some(path_to_string(&result_dir)), relative);
+        }
+    }
+
+    let parent = source_path.parent().map(path_to_string);
+    let relative = source_path.file_name().and_then(|value| value.to_str()).map(str::to_string);
+    ("legacy".to_string(), parent, relative)
+}
+
+fn enrich_editor_project_sources(project: &mut Value) -> bool {
+    let project_snapshot = project.clone();
+    let Some(sources) = project.get_mut("sources").and_then(Value::as_array_mut) else {
+        return false;
+    };
+
+    let mut changed = false;
+    for source in sources.iter_mut() {
+        let Some(source_object) = source.as_object_mut() else {
+            continue;
+        };
+        let path = source_object
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let source_path = PathBuf::from(&path);
+        let missing = !source_path.is_file();
+        if source_object.get("missing").and_then(Value::as_bool) != Some(missing) {
+            source_object.insert("missing".into(), Value::Bool(missing));
+            changed = true;
+        }
+
+        let source_value = Value::Object(source_object.clone());
+        let (origin_kind, origin_root, relative_path) =
+            detect_editor_source_origin(&project_snapshot, &source_value);
+
+        if source_object
+            .get("originKind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            source_object.insert("originKind".into(), Value::String(origin_kind));
+            changed = true;
+        }
+
+        if !source_object.contains_key("originRoot") {
+            source_object.insert(
+                "originRoot".into(),
+                origin_root.map(Value::String).unwrap_or(Value::Null),
+            );
+            changed = true;
+        }
+
+        if !source_object.contains_key("relativePath") {
+            source_object.insert(
+                "relativePath".into(),
+                relative_path.map(Value::String).unwrap_or(Value::Null),
+            );
+            changed = true;
+        }
+    }
+
+    changed
+}
+
+fn source_relative_parts(relative_path: &str) -> Vec<String> {
+    relative_path
+        .split(['/', '\\'])
+        .filter(|part| !part.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn path_tail_matches(path: &Path, relative_path: &str) -> bool {
+    let rel_parts = source_relative_parts(relative_path);
+    if rel_parts.is_empty() {
+        return false;
+    }
+    let path_parts: Vec<String> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str().map(str::to_string),
+            _ => None,
+        })
+        .collect();
+    if path_parts.len() < rel_parts.len() {
+        return false;
+    }
+    let tail = &path_parts[path_parts.len() - rel_parts.len()..];
+    tail.iter()
+        .map(|part| part.to_ascii_lowercase())
+        .eq(rel_parts.iter().map(|part| part.to_ascii_lowercase()))
+}
+
+fn derive_relink_root(picked_path: &Path, relative_path: Option<&str>) -> Option<PathBuf> {
+    let relative_path = relative_path?;
+    if !path_tail_matches(picked_path, relative_path) {
+        return None;
+    }
+    let component_count = source_relative_parts(relative_path).len();
+    if component_count == 0 {
+        return None;
+    }
+    let mut cursor = picked_path.to_path_buf();
+    for _ in 0..component_count {
+        cursor = cursor.parent()?.to_path_buf();
+    }
+    Some(cursor)
+}
+
+fn build_file_name_index(root: &Path) -> std::collections::HashMap<String, Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut warnings = Vec::new();
+    collect_audio_files(root, &mut files, &mut warnings);
+    let mut index = std::collections::HashMap::<String, Vec<PathBuf>>::new();
+    for file in files {
+        let path = PathBuf::from(&file);
+        if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
+            index.entry(name.to_ascii_lowercase()).or_default().push(path);
+        }
+    }
+    index
+}
+
+fn preferred_match_by_relative_path<'a>(candidates: &'a [PathBuf], relative_path: Option<&str>) -> Option<&'a PathBuf> {
+    let relative_path = relative_path?;
+    let mut filtered = candidates.iter().filter(|path| path_tail_matches(path, relative_path));
+    let first = filtered.next()?;
+    if filtered.next().is_some() {
+        None
+    } else {
+        Some(first)
+    }
+}
+
+fn build_relink_candidate(
+    relink_root: &Path,
+    relative_path: Option<&str>,
+    file_name_index: &std::collections::HashMap<String, Vec<PathBuf>>,
+) -> Option<PathBuf> {
+    if let Some(relative) = relative_path {
+        // Join segment-by-segment so PathBuf inserts the platform separator,
+        // instead of hardcoding a Windows backslash.
+        let mut direct = relink_root.to_path_buf();
+        for part in source_relative_parts(relative) {
+            direct.push(part);
+        }
+        if direct.is_file() {
+            return Some(direct);
+        }
+    }
+
+    let file_name = relative_path
+        .and_then(|value| source_relative_parts(value).last().cloned())
+        .map(|value| value.to_ascii_lowercase())?;
+    let candidates = file_name_index.get(&file_name)?;
+    if let Some(preferred) = preferred_match_by_relative_path(candidates, relative_path) {
+        return Some(preferred.clone());
+    }
+    if candidates.len() == 1 {
+        return candidates.first().cloned();
+    }
+    None
 }
 
 #[tauri::command]

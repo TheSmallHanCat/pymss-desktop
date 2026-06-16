@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
+  AlertCircleOutline,
   ChevronDownOutline,
   ChevronForwardOutline,
   FolderOutline,
@@ -28,6 +30,8 @@ const emit = defineEmits<{
   sourcePointerGrab: [payload: { source: EditorSource; x: number; y: number }]
 }>()
 
+const { t } = useI18n()
+
 const expandedSet = computed(() => new Set(props.expandedKeys))
 
 function countNodeAssets(node: EditorAssetTreeNode): number {
@@ -44,6 +48,7 @@ function handleAssetPointerDown(event: MouseEvent, source: EditorSource) {
 }
 
 function formatAssetMeta(source: EditorSource) {
+  if (source.missing) return t('editor.assetMissing')
   const duration = formatTime(source.duration)
   const channels = source.channels ? `${source.channels}ch` : '-'
   const sampleRate = source.sampleRate ? `${Math.round(source.sampleRate / 100) / 10}kHz` : '-'
@@ -78,12 +83,13 @@ function formatAssetMeta(source: EditorSource) {
             v-for="source in node.assets"
             :key="source.id"
             class="asset-row asset-row--nested"
+            :class="{ 'asset-row--missing': source.missing }"
             :title="source.path"
             @mousedown="handleAssetPointerDown($event, source)"
             @dblclick="emit('sourceAdd', source)"
             @contextmenu.stop.prevent="emit('sourceContext', { event: $event, source })"
           >
-            <span class="asset-row__icon"><n-icon :component="MusicalNoteOutline" /></span>
+            <span class="asset-row__icon"><n-icon :component="source.missing ? AlertCircleOutline : MusicalNoteOutline" /></span>
             <span class="asset-row__body">
               <strong>{{ source.name }}</strong>
               <small>{{ formatAssetMeta(source) }}</small>
@@ -188,6 +194,11 @@ function formatAssetMeta(source: EditorSource) {
   border-color: color-mix(in srgb, var(--primary) 34%, transparent);
   background: color-mix(in srgb, var(--primary-soft) 45%, var(--surface-2));
   transform: translateX(1px);
+}
+
+.asset-row--missing {
+  border-color: color-mix(in srgb, var(--warning) 34%, transparent);
+  background: color-mix(in srgb, var(--warning) 9%, transparent);
 }
 
 .asset-row__icon {

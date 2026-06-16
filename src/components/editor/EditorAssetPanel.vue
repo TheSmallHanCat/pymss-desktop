@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  AlertCircleOutline,
   LockClosedOutline,
   MusicalNoteOutline,
   SearchOutline,
@@ -20,6 +21,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   sourceAdd: [source: EditorSource]
   sourceReveal: [source: EditorSource]
+  sourceRelink: [source: EditorSource]
   sourceRemove: [source: EditorSource]
   sourcePointerGrab: [payload: { source: EditorSource; x: number; y: number }]
 }>()
@@ -42,6 +44,12 @@ const menuOptions = computed<DropdownOption[]>(() => {
     key: 'reveal',
     label: t('editor.menuRevealAsset'),
   }]
+  if (source.missing) {
+    options.unshift({
+      key: 'relink',
+      label: t('editor.assetRelink'),
+    })
+  }
   if (source.role === 'reference') {
     options.push({
       key: 'remove',
@@ -123,6 +131,7 @@ function handleMenuSelect(key: string | number) {
   showMenu.value = false
   if (!source) return
 
+  if (key === 'relink') emit('sourceRelink', source)
   if (key === 'reveal') emit('sourceReveal', source)
   if (key === 'remove' && source.role === 'reference') emit('sourceRemove', source)
 }
@@ -137,10 +146,17 @@ function handleAssetPointerDown(event: MouseEvent, source: EditorSource) {
 }
 
 function formatAssetMeta(source: EditorSource) {
+  if (source.missing) return t('editor.assetMissing')
   const duration = formatTime(source.duration)
   const channels = source.channels ? `${source.channels}ch` : '-'
   const sampleRate = source.sampleRate ? `${Math.round(source.sampleRate / 100) / 10}kHz` : '-'
   return `${duration} · ${channels} · ${sampleRate}`
+}
+
+function rowClass(source: EditorSource) {
+  return {
+    'asset-row--missing': Boolean(source.missing),
+  }
 }
 
 function hasSectionContent(type: 'local' | 'external') {
@@ -173,12 +189,13 @@ function hasSectionContent(type: 'local' | 'external') {
           v-for="source in filteredLocalSources"
           :key="source.id"
           class="asset-row"
+          :class="rowClass(source)"
           :title="source.path"
           @mousedown="handleAssetPointerDown($event, source)"
           @dblclick="emit('sourceAdd', source)"
           @contextmenu.stop.prevent="openContextMenu($event, source)"
         >
-          <span class="asset-row__icon"><n-icon :component="MusicalNoteOutline" /></span>
+          <span class="asset-row__icon"><n-icon :component="source.missing ? AlertCircleOutline : MusicalNoteOutline" /></span>
           <span class="asset-row__body">
             <strong>{{ source.name }}</strong>
             <small>{{ formatAssetMeta(source) }}</small>
@@ -192,12 +209,13 @@ function hasSectionContent(type: 'local' | 'external') {
           v-for="source in filteredExternalSources"
           :key="source.id"
           class="asset-row"
+          :class="rowClass(source)"
           :title="source.path"
           @mousedown="handleAssetPointerDown($event, source)"
           @dblclick="emit('sourceAdd', source)"
           @contextmenu.stop.prevent="openContextMenu($event, source)"
         >
-          <span class="asset-row__icon"><n-icon :component="MusicalNoteOutline" /></span>
+          <span class="asset-row__icon"><n-icon :component="source.missing ? AlertCircleOutline : MusicalNoteOutline" /></span>
           <span class="asset-row__body">
             <strong>{{ source.name }}</strong>
             <small>{{ formatAssetMeta(source) }}</small>
@@ -343,6 +361,20 @@ function hasSectionContent(type: 'local' | 'external') {
 .asset-row:hover {
   border-color: color-mix(in srgb, var(--outline) 54%, transparent);
   background: color-mix(in srgb, var(--surface-2) 74%, transparent);
+}
+
+.asset-row--missing {
+  border-color: color-mix(in srgb, var(--warning) 36%, transparent);
+  background: color-mix(in srgb, var(--warning) 9%, transparent);
+}
+
+.asset-row--missing .asset-row__icon {
+  color: color-mix(in srgb, var(--warning) 78%, var(--primary));
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+
+.asset-row--missing .asset-row__body small {
+  color: color-mix(in srgb, var(--warning) 68%, var(--on-surface-muted));
 }
 
 .asset-row__icon {

@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  AlertCircleOutline,
   ArrowRedoOutline,
   ArrowUndoOutline,
   DownloadOutline,
@@ -31,6 +32,9 @@ const props = defineProps<{
   saving: boolean
   exporting: boolean
   disabled: boolean
+  missingAssetCount?: number
+  missingAssetPreview?: string[]
+  relinkingMissingAssets?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -48,6 +52,7 @@ const emit = defineEmits<{
   redo: []
   save: []
   export: []
+  relinkMissingAssets: []
 }>()
 
 const { t } = useI18n()
@@ -63,6 +68,7 @@ const sessionMeta = computed(() => `${props.trackCount} ${t('editor.tracks')}`)
 const timecode = computed(() => `${formatTime(props.currentTime)} / ${formatTime(props.duration)}`)
 const volumeIcon = computed(() => props.masterVolume <= 0.01 ? VolumeMuteOutline : VolumeMediumOutline)
 const masterVolumePercent = computed(() => `${Math.round(props.masterVolume * 100)}%`)
+const missingPreviewText = computed(() => (props.missingAssetPreview || []).filter(Boolean).join(' · '))
 
 function formatTrackPan(value: number) {
   const pan = Number(value || 0)
@@ -92,151 +98,175 @@ function clearTransportPressed() {
 </script>
 
 <template>
-  <header class="editor-transport">
-    <div class="editor-transport__brand">
-      <strong>{{ sessionName }}</strong>
-      <span class="editor-transport__brand-meta">{{ sessionMeta }}</span>
-    </div>
-
-    <div class="editor-transport__center">
-      <div class="transport-controls">
-        <button
-          class="transport-chip"
-          type="button"
-          :title="t('common.undo')"
-          :aria-label="t('common.undo')"
-          :disabled="disabled || !canUndo"
-          @click="emit('undo')"
-        >
-          <span class="sr-only">{{ t('common.undo') }}</span>
-          <n-icon :component="ArrowUndoOutline" />
-        </button>
-        <button
-          class="transport-chip"
-          type="button"
-          :title="t('common.redo')"
-          :aria-label="t('common.redo')"
-          :disabled="disabled || !canRedo"
-          @click="emit('redo')"
-        >
-          <span class="sr-only">{{ t('common.redo') }}</span>
-          <n-icon :component="ArrowRedoOutline" />
-        </button>
-        <button
-          class="transport-play"
-          type="button"
-          :disabled="disabled || !transportCanToggle"
-          :data-state="showPauseButton ? 'pause' : 'play'"
-          :data-pending="transportPendingAction || undefined"
-          :data-pressed="transportPressed ? 'true' : undefined"
-          :aria-label="transportLabel"
-          :title="transportLabel"
-          @pointerdown="handleTransportPointerDown"
-          @pointerup="clearTransportPressed"
-          @pointercancel="clearTransportPressed"
-          @pointerleave="clearTransportPressed"
-          @blur="clearTransportPressed"
-          @click="emit('toggleTransport')"
-        >
-          <svg v-if="showPauseButton" viewBox="0 0 24 24" aria-hidden="true">
-            <rect x="6" y="5" width="4" height="14" rx="1.2" />
-            <rect x="14" y="5" width="4" height="14" rx="1.2" />
-          </svg>
-          <svg v-else viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M8 5.5v13l10-6.5z" />
-          </svg>
-        </button>
-        <button
-          class="transport-chip"
-          type="button"
-          :title="t('common.stop')"
-          :aria-label="t('common.stop')"
-          :disabled="disabled"
-          @click="emit('stop')"
-        >
-          <n-icon :component="StopOutline" />
-        </button>
-        <button
-          class="transport-chip"
-          type="button"
-          :title="t('common.reset')"
-          :aria-label="t('common.reset')"
-          :disabled="disabled"
-          @click="emit('reset')"
-        >
-          <n-icon :component="RefreshOutline" />
-        </button>
-        <button
-          class="transport-chip"
-          type="button"
-          :class="{ 'transport-chip--active': loop }"
-          :title="t('common.loop')"
-          :aria-label="t('common.loop')"
-          :aria-pressed="loop"
-          :disabled="disabled"
-          @click="emit('update:loop', !loop)"
-        >
-          <n-icon :component="RepeatOutline" />
-        </button>
+  <div class="editor-transport-wrap">
+    <header class="editor-transport">
+      <div class="editor-transport__brand">
+        <strong>{{ sessionName }}</strong>
+        <span class="editor-transport__brand-meta">{{ sessionMeta }}</span>
       </div>
 
-      <div class="transport-timecode">
-        <code>{{ timecode }}</code>
-      </div>
-    </div>
-
-    <div class="editor-transport__actions">
-      <div class="master-strip">
-        <div class="master-strip__row">
-          <span class="master-strip__label">{{ t('editor.masterVolume') }}</span>
-          <div class="master-strip__control">
-            <n-icon :component="volumeIcon" />
-            <n-slider
-              :value="masterVolume"
-              :min="0"
-              :max="2"
-              :step="0.01"
-              :tooltip="false"
-              :disabled="disabled"
-              @update:value="(value: number) => emit('update:masterVolume', value)"
-              @dragstart="emit('beginMasterVolume')"
-              @dragend="emit('commitMasterVolume')"
-            />
-            <span class="master-strip__value">{{ masterVolumePercent }}</span>
-          </div>
+      <div class="editor-transport__center">
+        <div class="transport-controls">
+          <button
+            class="transport-chip"
+            type="button"
+            :title="t('common.undo')"
+            :aria-label="t('common.undo')"
+            :disabled="disabled || !canUndo"
+            @click="emit('undo')"
+          >
+            <span class="sr-only">{{ t('common.undo') }}</span>
+            <n-icon :component="ArrowUndoOutline" />
+          </button>
+          <button
+            class="transport-chip"
+            type="button"
+            :title="t('common.redo')"
+            :aria-label="t('common.redo')"
+            :disabled="disabled || !canRedo"
+            @click="emit('redo')"
+          >
+            <span class="sr-only">{{ t('common.redo') }}</span>
+            <n-icon :component="ArrowRedoOutline" />
+          </button>
+          <button
+            class="transport-play"
+            type="button"
+            :disabled="disabled || !transportCanToggle"
+            :data-state="showPauseButton ? 'pause' : 'play'"
+            :data-pending="transportPendingAction || undefined"
+            :data-pressed="transportPressed ? 'true' : undefined"
+            :aria-label="transportLabel"
+            :title="transportLabel"
+            @pointerdown="handleTransportPointerDown"
+            @pointerup="clearTransportPressed"
+            @pointercancel="clearTransportPressed"
+            @pointerleave="clearTransportPressed"
+            @blur="clearTransportPressed"
+            @click="emit('toggleTransport')"
+          >
+            <svg v-if="showPauseButton" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="6" y="5" width="4" height="14" rx="1.2" />
+              <rect x="14" y="5" width="4" height="14" rx="1.2" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 5.5v13l10-6.5z" />
+            </svg>
+          </button>
+          <button
+            class="transport-chip"
+            type="button"
+            :title="t('common.stop')"
+            :aria-label="t('common.stop')"
+            :disabled="disabled"
+            @click="emit('stop')"
+          >
+            <n-icon :component="StopOutline" />
+          </button>
+          <button
+            class="transport-chip"
+            type="button"
+            :title="t('common.reset')"
+            :aria-label="t('common.reset')"
+            :disabled="disabled"
+            @click="emit('reset')"
+          >
+            <n-icon :component="RefreshOutline" />
+          </button>
+          <button
+            class="transport-chip"
+            type="button"
+            :class="{ 'transport-chip--active': loop }"
+            :title="t('common.loop')"
+            :aria-label="t('common.loop')"
+            :aria-pressed="loop"
+            :disabled="disabled"
+            @click="emit('update:loop', !loop)"
+          >
+            <n-icon :component="RepeatOutline" />
+          </button>
         </div>
-        <div class="master-strip__row">
-          <span class="master-strip__label">{{ t('editor.balanceShort') }}</span>
-          <div class="master-strip__pan">
-            <span class="master-strip__spacer" aria-hidden="true" />
-            <n-slider
-              :value="masterPan"
-              :min="-1"
-              :max="1"
-              :step="0.01"
-              :tooltip="false"
-              :disabled="disabled"
-              @update:value="(value: number) => emit('update:masterPan', value)"
-              @dragstart="emit('beginMasterPan')"
-              @dragend="emit('commitMasterPan')"
-            />
-            <span class="master-strip__pan-value">{{ formatTrackPan(masterPan) }}</span>
-          </div>
+
+        <div class="transport-timecode">
+          <code>{{ timecode }}</code>
         </div>
       </div>
-      <n-button secondary size="small" :loading="saving" :disabled="disabled" @click="emit('save')">
-        <template #icon><n-icon :component="SaveOutline" /></template>
-        {{ t('editor.save') }}
-      </n-button>
-      <n-button type="primary" size="small" :loading="exporting" :disabled="disabled" @click="emit('export')">
-        <template #icon><n-icon :component="DownloadOutline" /></template>
-        {{ t('editor.export') }}
-      </n-button>
-    </div>
-  </header>
+
+      <div class="editor-transport__actions">
+        <div class="master-strip">
+          <div class="master-strip__row">
+            <span class="master-strip__label">{{ t('editor.masterVolume') }}</span>
+            <div class="master-strip__control">
+              <n-icon :component="volumeIcon" />
+              <n-slider
+                :value="masterVolume"
+                :min="0"
+                :max="2"
+                :step="0.01"
+                :tooltip="false"
+                :disabled="disabled"
+                @update:value="(value: number) => emit('update:masterVolume', value)"
+                @dragstart="emit('beginMasterVolume')"
+                @dragend="emit('commitMasterVolume')"
+              />
+              <span class="master-strip__value">{{ masterVolumePercent }}</span>
+            </div>
+          </div>
+          <div class="master-strip__row">
+            <span class="master-strip__label">{{ t('editor.balanceShort') }}</span>
+            <div class="master-strip__pan">
+              <span class="master-strip__spacer" aria-hidden="true" />
+              <n-slider
+                :value="masterPan"
+                :min="-1"
+                :max="1"
+                :step="0.01"
+                :tooltip="false"
+                :disabled="disabled"
+                @update:value="(value: number) => emit('update:masterPan', value)"
+                @dragstart="emit('beginMasterPan')"
+                @dragend="emit('commitMasterPan')"
+              />
+              <span class="master-strip__pan-value">{{ formatTrackPan(masterPan) }}</span>
+            </div>
+          </div>
+        </div>
+        <n-button secondary size="small" :loading="saving" :disabled="disabled" @click="emit('save')">
+          <template #icon><n-icon :component="SaveOutline" /></template>
+          {{ t('editor.save') }}
+        </n-button>
+        <n-button type="primary" size="small" :loading="exporting" :disabled="disabled" @click="emit('export')">
+          <template #icon><n-icon :component="DownloadOutline" /></template>
+          {{ t('editor.export') }}
+        </n-button>
+      </div>
+
+      <div v-if="(missingAssetCount || 0) > 0" class="editor-offline-banner">
+        <span class="editor-offline-banner__icon"><n-icon :component="AlertCircleOutline" /></span>
+        <div class="editor-offline-banner__body">
+          <strong>{{ t('editor.offlineBannerTitle', { count: missingAssetCount }) }}</strong>
+          <span>{{ missingPreviewText || t('editor.assetMissingHint') }}</span>
+        </div>
+        <n-button
+          size="small"
+          type="warning"
+          ghost
+          :loading="relinkingMissingAssets"
+          @click="emit('relinkMissingAssets')"
+        >
+          {{ t('editor.assetRelink') }}
+        </n-button>
+      </div>
+    </header>
+  </div>
 </template>
 
 <style scoped>
+.editor-transport-wrap {
+  display: grid;
+  gap: 0;
+}
+
 .editor-transport {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) auto minmax(240px, 1fr);
@@ -246,6 +276,47 @@ function clearTransportPressed() {
   padding: 6px 14px;
   border-bottom: 1px solid var(--outline);
   background: var(--surface);
+}
+
+.editor-offline-banner {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--warning) 26%, transparent);
+  background: color-mix(in srgb, var(--warning) 8%, var(--surface));
+}
+
+.editor-offline-banner__icon {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  color: color-mix(in srgb, var(--warning) 78%, var(--primary));
+}
+
+.editor-offline-banner__body {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.editor-offline-banner__body strong,
+.editor-offline-banner__body span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-offline-banner__body strong {
+  font-size: 12px;
+  color: color-mix(in srgb, var(--warning) 84%, var(--on-surface));
+}
+
+.editor-offline-banner__body span {
+  font-size: 11px;
+  color: var(--on-surface-muted);
 }
 
 .editor-transport__brand,
@@ -484,6 +555,10 @@ function clearTransportPressed() {
 
   .editor-transport__actions {
     flex-wrap: wrap;
+  }
+
+  .editor-offline-banner {
+    grid-template-columns: 20px minmax(0, 1fr);
   }
 }
 </style>

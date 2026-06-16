@@ -5,6 +5,7 @@ import { darkTheme } from 'naive-ui'
 import TitleBar from '@/components/TitleBar.vue'
 import SideNav from '@/components/SideNav.vue'
 import AppBrandMark from '@/components/AppBrandMark.vue'
+import StartupOnboarding from '@/components/StartupOnboarding.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { getResolvedThemeTokens, getThemeOverrides, resolvedIsDark } from '@/utils/theme'
@@ -19,6 +20,7 @@ const bootReady = ref(false)
 const isDark = computed(() => resolvedIsDark(settings.themeMode))
 const isEditorRoute = computed(() => route.path === '/editor')
 const resolvedTheme = computed(() => getResolvedThemeTokens(settings.themeMode, settings.themeAccent))
+const showStartupOnboarding = computed(() => bootReady.value && !isEditorRoute.value && settings.shouldShowStartupOnboarding)
 
 onMounted(() => {
   requestAnimationFrame(() => {
@@ -63,6 +65,7 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
               </div>
             </div>
           </transition>
+          <StartupOnboarding v-if="showStartupOnboarding" />
         </div>
         </n-dialog-provider>
       </n-message-provider>

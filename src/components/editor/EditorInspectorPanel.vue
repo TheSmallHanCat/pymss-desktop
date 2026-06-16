@@ -23,6 +23,7 @@ const emit = defineEmits<{
   commitTrackPan: []
   setTrackFades: [trackId: string, patch: { fadeIn?: number; fadeOut?: number }]
   openLocation: []
+  relinkSource: []
 }>()
 
 const { t } = useI18n()
@@ -184,6 +185,14 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
             <span class="panel-field__label">{{ t('editor.trackSourcePath') }}</span>
             <n-input :value="selectedSource?.path || '-'" size="small" readonly />
           </label>
+
+          <div v-if="selectedSource?.missing" class="source-missing-card">
+            <strong>{{ t('editor.assetMissing') }}</strong>
+            <span>{{ t('editor.assetMissingHint') }}</span>
+            <n-button size="small" type="warning" ghost @click="emit('relinkSource')">
+              {{ t('editor.assetRelink') }}
+            </n-button>
+          </div>
 
           <dl class="stats-grid" :class="{ 'stats-grid--compact': compact }">
             <div class="meta-cell"><dt>{{ t('editor.trackSourceDuration') }}</dt><dd>{{ formatTime(selectedSource?.duration || 0) }}</dd></div>
@@ -396,6 +405,26 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
   white-space: nowrap;
   color: var(--on-surface-muted);
   font-size: 10px;
+}
+
+.source-missing-card {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+}
+
+.source-missing-card strong {
+  font-size: 12px;
+  color: color-mix(in srgb, var(--warning) 84%, var(--on-surface));
+}
+
+.source-missing-card span {
+  font-size: 11px;
+  color: var(--on-surface-muted);
+  line-height: 1.5;
 }
 
 .editor-inspector :deep(.n-input),

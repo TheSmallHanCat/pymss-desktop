@@ -9,7 +9,7 @@ import {
   type ThemeAccent,
   type ThemeMode,
 } from '@/utils/theme'
-import { setLocale, type SupportedLocale } from '@/i18n'
+import { normalizeLocaleSetting, setLocale, type LocaleSetting } from '@/i18n'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
 import type { EnvInfo } from '@/stores/app'
 
@@ -71,7 +71,7 @@ export type ModelDirMigrationState = {
 type StoredSettings = {
   themeMode?: ThemeMode
   themeAccent?: ThemeAccent
-  locale?: SupportedLocale
+  locale?: LocaleSetting
   modelDir?: string
   outputDir?: string
   separateTaskOutputDir?: boolean
@@ -84,9 +84,11 @@ type StoredSettings = {
   mp3BitRate?: string
   m4aBitRate?: string
   m4aCodec?: string
+  startupOnboardingSeen?: boolean
+  startupOnboardingSeenVersion?: string
 }
 
-const DEFAULT_LOCALE: SupportedLocale = 'zh-CN'
+const DEFAULT_LOCALE: LocaleSetting = 'system'
 const DEFAULT_DOWNLOAD_SOURCE = 'modelscope'
 const DEFAULT_DEFAULT_DEVICE = 'auto'
 const DEFAULT_DEFAULT_FORMAT = 'wav'
@@ -169,7 +171,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const appPaths = ref<AppPathsPayload | null>(null)
   const themeMode = ref<ThemeMode>(DEFAULT_THEME_MODE)
   const themeAccent = ref<ThemeAccent>(DEFAULT_THEME_ACCENT)
-  const locale = ref<SupportedLocale>(DEFAULT_LOCALE)
+  const locale = ref<LocaleSetting>(DEFAULT_LOCALE)
   const modelDir = ref('')
   const outputDir = ref('')
   const separateTaskOutputDir = ref(true)
@@ -182,6 +184,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const mp3BitRate = ref(DEFAULT_MP3_BIT_RATE)
   const m4aBitRate = ref(DEFAULT_M4A_BIT_RATE)
   const m4aCodec = ref(DEFAULT_M4A_CODEC)
+  const startupOnboardingSeen = ref(false)
   const modelDirMigrationState = ref<ModelDirMigrationState>(createEmptyModelDirMigrationState())
 
   const dataRoot = computed(() => appPaths.value?.dataRoot || '')
@@ -190,6 +193,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const logsDir = computed(() => appPaths.value?.logsDir || '')
   const tempDir = computed(() => appPaths.value?.tempDir || '')
   const isModelDirMigrating = computed(() => ['running', 'conflict', 'ready_to_switch', 'finalizing_cleanup'].includes(modelDirMigrationState.value.status))
+  const shouldShowStartupOnboarding = computed(() => initialized.value && !startupOnboardingSeen.value)
 
   const persistable = computed<StoredSettings>(() => ({
     themeMode: themeMode.value,
@@ -207,6 +211,7 @@ export const useSettingsStore = defineStore('settings', () => {
     mp3BitRate: mp3BitRate.value,
     m4aBitRate: m4aBitRate.value,
     m4aCodec: m4aCodec.value,
+    startupOnboardingSeen: startupOnboardingSeen.value || undefined,
   }))
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -230,7 +235,7 @@ export const useSettingsStore = defineStore('settings', () => {
     appPaths.value = paths
     themeMode.value = stored?.themeMode || DEFAULT_THEME_MODE
     themeAccent.value = normalizeThemeAccent(stored?.themeAccent, DEFAULT_THEME_ACCENT)
-    locale.value = stored?.locale || DEFAULT_LOCALE
+    locale.value = normalizeLocaleSetting(stored?.locale, DEFAULT_LOCALE)
     modelDir.value = (stored?.modelDir || paths.modelsDir).trim() || paths.modelsDir
     outputDir.value = (stored?.outputDir || paths.outputsDir).trim() || paths.outputsDir
     separateTaskOutputDir.value = stored?.separateTaskOutputDir ?? true
@@ -245,6 +250,8 @@ export const useSettingsStore = defineStore('settings', () => {
     mp3BitRate.value = stored?.mp3BitRate || DEFAULT_MP3_BIT_RATE
     m4aBitRate.value = stored?.m4aBitRate || DEFAULT_M4A_BIT_RATE
     m4aCodec.value = normalizeM4aCodec(stored?.m4aCodec)
+    startupOnboardingSeen.value = stored?.startupOnboardingSeen === true
+      || String(stored?.startupOnboardingSeenVersion || '').trim().length > 0
 
     applyTheme(themeMode.value, themeAccent.value)
     setLocale(locale.value)
@@ -659,6 +666,11 @@ export const useSettingsStore = defineStore('settings', () => {
     modelDirMigrationState.value = createEmptyModelDirMigrationState()
   }
 
+  async function markStartupOnboardingCompleted() {
+    startupOnboardingSeen.value = true
+    await saveAppStore('app-settings', persistable.value)
+  }
+
   return {
     initialized,
     appPaths,
@@ -668,6 +680,7 @@ export const useSettingsStore = defineStore('settings', () => {
     logsDir,
     tempDir,
     isModelDirMigrating,
+    shouldShowStartupOnboarding,
     themeMode,
     themeAccent,
     locale,
@@ -684,8 +697,10 @@ export const useSettingsStore = defineStore('settings', () => {
     mp3BitRate,
     m4aBitRate,
     m4aCodec,
+    startupOnboardingSeen,
     modelDirMigrationState,
     initialize,
+    markStartupOnboardingCompleted,
     pickModelDir,
     pickOutputDir,
     prepareModelDirChange,

@@ -76,6 +76,7 @@ const {
   addSourceAsReference,
   addTrackFromAsset,
   revealSource,
+  relinkSource,
   revealTrackSource,
   openExportDir,
   removeSource,
@@ -127,6 +128,9 @@ const {
   toggleTransport,
   seek: playbackSeek,
 } = playback
+const relinkingMissingAssets = ref(false)
+const missingSources = computed(() => editor.missingSources())
+const missingAssetPreview = computed(() => missingSources.value.slice(0, 3).map((source) => source.name))
 const {
   zoomFit,
   zoomAt,
@@ -140,6 +144,23 @@ const {
   scrollEl: mixerScrollEl,
   playbackLoop,
 })
+
+async function relinkMissingAssets() {
+  try {
+    relinkingMissingAssets.value = true
+    const result = await editor.relinkMissingSources()
+    if (!result) return
+    if (result.unresolved.length) {
+      message.warning(t('editor.assetRelinkPartial', { resolved: result.relinked, unresolved: result.unresolved.length }))
+      return
+    }
+    message.success(t('editor.assetRelinkSuccess', { count: result.relinked }))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('editor.assetRelinkFailed'))
+  } finally {
+    relinkingMissingAssets.value = false
+  }
+}
 
 let pendingInitialZoomFitSessionId = ''
 let appliedInitialZoomFitSessionId = ''
@@ -281,6 +302,9 @@ watch(
         :can-undo="editor.canUndo"
         :can-redo="editor.canRedo"
         :disabled="!session"
+        :missing-asset-count="missingSources.length"
+        :missing-asset-preview="missingAssetPreview"
+        :relinking-missing-assets="relinkingMissingAssets"
         @reset="resetPlayhead"
         @stop="stopPlaybackAndReset"
         @toggle-transport="handleTransportToggleRequest"
@@ -295,6 +319,7 @@ watch(
         @redo="editor.redo"
         @save="save"
         @export="openExportDialog"
+        @relink-missing-assets="relinkMissingAssets"
       />
 
       <div v-if="editor.loading" class="editor-state">{{ t('editor.loading') }}</div>
@@ -344,6 +369,7 @@ watch(
               @source-add="addSourceAsReference"
               @source-pointer-grab="handleAssetPointerGrab"
               @source-reveal="revealSource"
+              @source-relink="relinkSource"
               @source-remove="removeSource"
             />
           </div>
@@ -405,6 +431,7 @@ watch(
           @commit-track-pan="editor.commitInteraction"
           @set-track-fades="setTrackFades"
           @open-location="openExportDir"
+          @relink-source="() => editor.selectedSource && relinkSource(editor.selectedSource)"
         />
       </template>
     </div>

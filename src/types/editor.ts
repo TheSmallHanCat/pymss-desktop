@@ -11,6 +11,10 @@ export type EditorSource = {
   channels: number
   peaksPath?: string | null
   peaks?: number[]
+  originKind?: 'task-result' | 'external' | 'legacy' | string
+  originRoot?: string | null
+  relativePath?: string | null
+  missing?: boolean
 }
 
 export type EditorClip = {

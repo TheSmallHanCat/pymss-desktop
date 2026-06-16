@@ -4,7 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import { open } from '@tauri-apps/plugin-shell'
-import { SUPPORTED_LOCALES, setLocaleWithTransition } from '@/i18n'
+import { SYSTEM_LOCALE, setLocale, type LocaleSetting } from '@/i18n'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { useModelStore } from '@/stores/model'
@@ -28,7 +28,7 @@ import {
   LogoGithub,
 } from '@vicons/ionicons5'
 
-const { t } = useI18n()
+const { t, locale: currentLocale } = useI18n()
 const message = useMessage()
 const settings = useSettingsStore()
 const app = useAppStore()
@@ -61,6 +61,11 @@ const themeAccentOptions = computed(() =>
     preview: getThemeAccentPreview(accent, resolvedIsDark(themeMode.value)),
   })),
 )
+const languageOptions = computed(() => [
+  { label: t('settings.languageSystem'), value: SYSTEM_LOCALE },
+  { label: t('settings.languageSimplifiedChinese'), value: 'zh-CN' },
+  { label: t('settings.languageEnglish'), value: 'en' },
+])
 const maxConcurrentSeparationsInput = computed({
   get: () => {
     const value = Number(maxConcurrentSeparations.value || 1)
@@ -96,6 +101,7 @@ const modelDirMigrationProgress = computed(() => {
 const modelDirMigrationHasConflict = computed(() => modelDirMigrationState.value.status === 'conflict' && !!modelDirMigrationState.value.conflict)
 const modelDirMigrationHasResult = computed(() => ['success', 'failed', 'aborted'].includes(modelDirMigrationState.value.status))
 const isCheckingModelDir = ref(false)
+const languageSelectWrap = ref<HTMLElement | null>(null)
 const repoUrl = 'https://github.com/pymss-project/pymss-desktop'
 
 function dirName(path: string, fallback: string) {
@@ -109,6 +115,15 @@ function getEventOrigin(event: MouseEvent) {
   const target = event.currentTarget as HTMLElement | null
   if (!target) return { x: window.innerWidth / 2, y: window.innerHeight / 2 }
   const rect = target.getBoundingClientRect()
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+  }
+}
+
+function getElementOrigin(element: HTMLElement | null) {
+  if (!element) return null
+  const rect = element.getBoundingClientRect()
   return {
     x: rect.left + rect.width / 2,
     y: rect.top + rect.height / 2,
@@ -133,12 +148,15 @@ async function selectThemeAccent(accent: ThemeAccent, event: MouseEvent) {
   }, origin)
 }
 
-async function selectLocale(code: typeof SUPPORTED_LOCALES[number]['code'], event: MouseEvent) {
+async function selectLocale(code: LocaleSetting) {
   if (locale.value === code) return
-  const origin = getEventOrigin(event)
+  const origin = getElementOrigin(languageSelectWrap.value) || {
+    x: window.innerWidth / 2,
+    y: window.innerHeight / 2,
+  }
   await runRippleViewTransition(() => {
     locale.value = code
-    return setLocaleWithTransition(code)
+    setLocale(code)
   }, origin)
 }
 
@@ -295,17 +313,16 @@ onMounted(() => {
 
             <section class="setting-block">
               <label class="text-muted text-sm">{{ t('settings.language') }}</label>
-              <div class="language-switcher">
-                <button
-                  v-for="loc in SUPPORTED_LOCALES"
-                  :key="loc.code"
-                  type="button"
-                  :class="{ active: locale === loc.code }"
-                  @click="selectLocale(loc.code, $event)"
-                >
-                  {{ loc.label }}
-                </button>
+              <div ref="languageSelectWrap">
+                <n-select
+                  :value="locale"
+                  :options="languageOptions"
+                  @update:value="selectLocale"
+                />
               </div>
+              <p v-if="locale === SYSTEM_LOCALE" class="text-muted text-sm setting-field__hint">
+                {{ t('settings.languageFollowSystemHint', { locale: currentLocale === 'en' ? t('settings.languageEnglish') : t('settings.languageSimplifiedChinese') }) }}
+              </p>
             </section>
           </div>
         </n-card>
@@ -688,39 +705,6 @@ onMounted(() => {
 .setting-field__hint {
   margin: 0;
   line-height: 1.6;
-}
-
-.language-switcher {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid color-mix(in srgb, var(--outline) 78%, transparent);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
-}
-
-.language-switcher button {
-  min-width: 0;
-  border: 0;
-  border-radius: 9px;
-  padding: 8px 10px;
-  color: var(--on-surface-muted);
-  background: transparent;
-  cursor: pointer;
-  transition: 150ms ease;
-}
-
-.language-switcher button:hover {
-  color: var(--on-surface);
-  background: color-mix(in srgb, var(--surface-3) 78%, transparent);
-}
-
-.language-switcher button.active {
-  color: color-mix(in srgb, var(--primary-strong) 88%, white 12%);
-  background: color-mix(in srgb, var(--primary-soft) 54%, var(--surface-3));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 58%, transparent);
-  font-weight: 600;
 }
 
 .settings-merged-layout {

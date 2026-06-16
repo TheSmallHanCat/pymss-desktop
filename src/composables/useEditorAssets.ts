@@ -45,6 +45,20 @@ export function useEditorAssets(options: UseEditorAssetsOptions) {
     void task.revealPath(source.path)
   }
 
+  async function relinkSource(source: EditorSource) {
+    try {
+      const result = await editor.relinkSource(source.id)
+      if (!result) return
+      if (result.unresolved.length) {
+        message.warning(t('editor.assetRelinkPartial', { resolved: result.relinked, unresolved: result.unresolved.length }))
+        return
+      }
+      message.success(t('editor.assetRelinkSuccess', { count: result.relinked }))
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('editor.assetRelinkFailed'))
+    }
+  }
+
   function revealTrackSource(trackId: string) {
     const track = session.value?.tracks.find((item) => item.id === trackId)
     const source = track ? editor.sourceMap.get(track.sourceId) : null
@@ -94,6 +108,7 @@ export function useEditorAssets(options: UseEditorAssetsOptions) {
     addSourceAsReference,
     addTrackFromAsset,
     revealSource,
+    relinkSource,
     revealTrackSource,
     openExportDir,
     removeSource,

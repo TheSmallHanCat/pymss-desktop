@@ -1,6 +1,7 @@
 import { onBeforeUnmount, type Ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { convertFileSrc } from '@tauri-apps/api/core'
+import i18n from '@/i18n'
 import type { EditorSource, EditorTrack } from '@/types/editor'
 import type { useEditorStore } from '@/stores/editor'
 import { useEditorPlaybackStore } from '@/stores/editorPlayback'
@@ -42,6 +43,7 @@ type FollowPlayheadMode = 'playback' | 'seek'
 const ERROR_SESSION_NOT_LOADED = '请先加载编辑工程'
 const ERROR_NO_PLAYABLE_TRACKS = '当前没有可播放的音轨'
 const ERROR_NO_LOADED_AUDIO = '没有成功加载任何音频'
+const ERROR_MISSING_ASSETS = () => String(i18n.global.t('editor.assetOfflineBlocked'))
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
@@ -308,9 +310,20 @@ export function useEditorPlayback(options: PlaybackOptions) {
       .filter((track) => !track.muted && (!hasSolo || track.solo))
       .map((track) => {
         const source = editor.sourceMap.get(track.sourceId)
-        return source ? { track, source } : null
+        return source && !source.missing ? { track, source } : null
       })
       .filter((entry): entry is ActiveTrackEntry => Boolean(entry))
+  }
+
+  function hasMissingSourcesInUse() {
+    const session = editor.session
+    if (!session) return false
+    const hasSolo = session.tracks.some((track) => track.solo)
+    // Only block playback for tracks that would actually be audible.
+    // A muted (or solo-excluded) offline track must not prevent previewing the rest.
+    return session.tracks
+      .filter((track) => !track.muted && (!hasSolo || track.solo))
+      .some((track) => Boolean(editor.sourceMap.get(track.sourceId)?.missing))
   }
 
   function trackSignature() {
@@ -647,6 +660,13 @@ export function useEditorPlayback(options: PlaybackOptions) {
       const id = playback.beginRequest('pause', 'paused')
       activeRequestId = id
       playback.fail(id, ERROR_SESSION_NOT_LOADED)
+      return false
+    }
+
+    if (hasMissingSourcesInUse()) {
+      const id = playback.beginRequest('pause', 'paused')
+      activeRequestId = id
+      playback.fail(id, ERROR_MISSING_ASSETS())
       return false
     }
 

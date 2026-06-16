@@ -120,6 +120,10 @@ function sourceFor(track: EditorTrack) {
   return props.sourceMap.get(track.sourceId) || null
 }
 
+function sourceMissing(track: EditorTrack) {
+  return Boolean(sourceFor(track)?.missing)
+}
+
 function trackWaveWidth(track: EditorTrack) {
   const source = sourceFor(track)
   return Math.max(1, Math.ceil((source?.duration || 0) * props.pixelsPerSecond))
@@ -155,7 +159,13 @@ function rowClass(track: EditorTrack) {
   return {
     'track-row--selected': track.id === props.selectedTrackId,
     'track-row--dimmed': track.muted || (hasSolo.value && !track.solo),
+    'track-row--offline': sourceMissing(track),
   }
+}
+
+function trackMetaLabel(track: EditorTrack) {
+  if (sourceMissing(track)) return t('editor.laneAudioOffline')
+  return `${sourceFor(track)?.channels || 0}ch`
 }
 
 function seekFromEvent(event: MouseEvent) {
@@ -323,7 +333,9 @@ defineExpose({
                     @click.stop="openTrackContextMenu($event, track)"
                   ><n-icon :component="EllipsisHorizontal" /></button>
                 </div>
-                <span class="track-row__meta">{{ sourceFor(track)?.channels || 0 }}ch</span>
+                <span class="track-row__meta" :class="{ 'track-row__meta--offline': sourceMissing(track) }">
+                  {{ trackMetaLabel(track) }}
+                </span>
               </div>
             </div>
             <div
@@ -338,9 +350,9 @@ defineExpose({
 
           <div class="track-row__lane" @click="seekFromEvent">
             <div class="track-wave" :style="{ width: `${laneWidth}px`, '--track-color': track.color || '#7aa2ff' }">
-              <div class="track-wave__clip" :style="{ width: `${trackClipWidth(track)}px` }">
+              <div class="track-wave__clip" :class="{ 'track-wave__clip--offline': sourceMissing(track) }" :style="{ width: `${trackClipWidth(track)}px` }">
                 <EditorWaveform
-                  v-if="sourceFor(track)"
+                  v-if="sourceFor(track) && !sourceMissing(track)"
                   :peaks="sourceFor(track)?.peaks || []"
                   :asset-duration="sourceFor(track)?.duration || 0"
                   :duration="sourceFor(track)?.duration || 0"
@@ -350,6 +362,10 @@ defineExpose({
                   :fade-out="track.fadeOut"
                   :color="track.color || '#7aa2ff'"
                 />
+                <div v-else-if="sourceMissing(track)" class="track-wave__offline">
+                  <strong>{{ t('editor.laneAudioOffline') }}</strong>
+                  <span>{{ t('editor.assetMissingHint') }}</span>
+                </div>
                 <div v-else class="track-wave__empty">{{ t('editor.laneNoAudio') }}</div>
               </div>
             </div>
@@ -521,6 +537,12 @@ defineExpose({
   background: color-mix(in srgb, var(--primary-soft) 28%, transparent);
 }
 
+.track-row--offline {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--warning) 8%, transparent), transparent 32%),
+    transparent;
+}
+
 .track-row--dimmed .track-row__lane {
   opacity: 0.46;
 }
@@ -552,6 +574,22 @@ defineExpose({
   bottom: 0;
   width: 2px;
   background: #ff7b54;
+}
+
+.track-row--offline .track-row__head {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--warning) 10%, var(--surface)), color-mix(in srgb, var(--warning) 5%, var(--surface-2)));
+}
+
+.track-row--offline .track-row__head::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 76%, transparent);
 }
 
 .track-row__body {
@@ -604,6 +642,11 @@ defineExpose({
   font-size: 10px;
   white-space: nowrap;
   opacity: 0.82;
+}
+
+.track-row__meta--offline {
+  color: color-mix(in srgb, var(--warning) 82%, var(--on-surface-muted));
+  font-weight: 600;
 }
 
 .chip {
@@ -686,6 +729,12 @@ defineExpose({
   box-shadow: inset 1px 0 0 color-mix(in srgb, var(--outline) 44%, transparent);
 }
 
+.track-row--offline .track-row__lane {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--warning) 6%, transparent), color-mix(in srgb, var(--warning) 2%, transparent)),
+    color-mix(in srgb, var(--surface) 76%, var(--surface-1));
+}
+
 .track-row--selected .track-row__lane {
   background: color-mix(in srgb, var(--primary-soft) 16%, transparent);
 }
@@ -717,6 +766,23 @@ defineExpose({
       color-mix(in srgb, var(--track-color, #7aa2ff) 13%, color-mix(in srgb, var(--surface-1) 52%, var(--surface-2)))
     );
   box-shadow: none;
+}
+
+.track-wave__clip--offline {
+  border-top-color: color-mix(in srgb, var(--warning) 28%, transparent);
+  border-right-color: color-mix(in srgb, var(--warning) 28%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--warning) 28%, transparent);
+  background:
+    repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--warning) 12%, transparent) 0 10px,
+      color-mix(in srgb, var(--warning) 4%, transparent) 10px 20px
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--warning) 10%, color-mix(in srgb, var(--surface-1) 52%, var(--surface-2))),
+      color-mix(in srgb, var(--warning) 4%, color-mix(in srgb, var(--surface-1) 52%, var(--surface-2)))
+    );
 }
 
 /* Explicit end-cap so the clip terminus is clearly pinned to the right edge. */
@@ -760,6 +826,31 @@ defineExpose({
   place-items: center;
   color: var(--on-surface-muted);
   font-size: 12px;
+}
+
+.track-wave__offline {
+  height: 100%;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 3px;
+  padding: 0 14px;
+  text-align: center;
+}
+
+.track-wave__offline strong {
+  font-size: 12px;
+  color: color-mix(in srgb, var(--warning) 84%, var(--on-surface));
+}
+
+.track-wave__offline span {
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--on-surface-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .empty-state {
