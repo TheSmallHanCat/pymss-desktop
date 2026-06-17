@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, h, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ChevronDownOutline,
@@ -10,10 +10,12 @@ import {
   SearchOutline,
   SwapVerticalOutline,
   TimeOutline,
+  TrashOutline,
 } from '@vicons/ionicons5'
 import { useTaskStore, type SeparationTask } from '@/stores/task'
 import { useEditorStore } from '@/stores/editor'
-import { useMessage } from 'naive-ui'
+import { usePagedSelection } from '@/composables/usePagedSelection'
+import { NCheckbox, useDialog, useMessage } from 'naive-ui'
 
 type ResultSort = 'time_desc' | 'time_asc' | 'name_asc' | 'name_desc'
 
@@ -21,6 +23,7 @@ const { t } = useI18n()
 const task = useTaskStore()
 const editor = useEditorStore()
 const message = useMessage()
+const dialog = useDialog()
 
 const search = ref('')
 const sortBy = ref<ResultSort>('time_desc')
@@ -62,6 +65,29 @@ const filteredResults = computed(() => {
     }
   })
 })
+const pagedSelection = usePagedSelection(filteredResults, {
+  initialPageSize: 24,
+  pageSizeOptions: [12, 24, 48, 96],
+})
+const {
+  selecting,
+  selectedIds: selectedResultIds,
+  selectedSet: selectedResultSet,
+  page,
+  pageSize,
+  pageSizeOptions,
+  allSelected: allResultsSelected,
+  someSelected: someResultsSelected,
+  toggleSelecting,
+  toggleSelection: toggleResultSelection,
+  toggleSelectPage: toggleSelectAllResults,
+  ensureItemPage,
+} = pagedSelection
+const pagedResults = computed(() => pagedSelection.pagedItems.value)
+
+watch([search, sortBy, pageSize], () => {
+  page.value = 1
+})
 
 function getFileName(path: string) {
   return path.split(/[/\\]/).pop() || path
@@ -82,6 +108,186 @@ async function openInEditor(item: SeparationTask) {
   } catch (error) {
     message.error(error instanceof Error ? error.message : t('editor.notFound'))
   }
+}
+
+// 删除结果时仅删除当前结果对应的输出文件，避免误删共享输出目录
+function trashTargets(item: SeparationTask) {
+  const seen = new Set<string>()
+  return item.outputs
+    .map((output) => output.path?.trim())
+    .filter((path): path is string => Boolean(path))
+    .filter((path) => {
+      if (seen.has(path)) return false
+      seen.add(path)
+      return true
+    })
+}
+
+function trashTargetsForItems(items: SeparationTask[]) {
+  const seen = new Set<string>()
+  return items.flatMap((item) => trashTargets(item)).filter((path) => {
+    if (seen.has(path)) return false
+    seen.add(path)
+    return true
+  })
+}
+
+type RemoveMessageMode = 'single' | 'multiple'
+
+function confirmRemoveListOnly(failedCount: number, totalCount: number, mode: RemoveMessageMode) {
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const finish = (value: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    dialog.warning({
+      title: t('results.removeFilesConfirmTitle'),
+      content: t(mode === 'single' ? 'results.removeFilesConfirmContentSingle' : 'results.removeFilesConfirmContentMultiple', {
+        failed: failedCount,
+        total: totalCount,
+      }),
+      positiveText: t('results.removeListOnlyAction'),
+      negativeText: t('results.keepResultAction'),
+      positiveButtonProps: { type: 'error' },
+      negativeButtonProps: { secondary: true },
+      onPositiveClick: () => finish(true),
+      onNegativeClick: () => finish(false),
+      onClose: () => finish(false),
+    })
+  })
+}
+
+function handleRemoveResult(item: SeparationTask) {
+  const deleteFiles = ref(false)
+  dialog.warning({
+    title: t('results.removeTitle'),
+    content: () => h('div', { style: 'display:grid;gap:12px;' }, [
+      h('span', t('results.removeContent')),
+      h(NCheckbox, {
+        checked: deleteFiles.value,
+        'onUpdate:checked': (value: boolean) => { deleteFiles.value = value },
+      }, { default: () => t('results.removeDeleteFiles') }),
+    ]),
+    positiveText: t('results.removeAction'),
+    negativeText: t('common.cancel'),
+    positiveButtonProps: { type: 'error' },
+    onPositiveClick: async () => {
+      if (!deleteFiles.value) {
+        task.removeResult(item.id)
+        message.success(t('results.removeSuccess'))
+        return
+      }
+
+      const targets = trashTargets(item)
+      if (!targets.length) {
+        task.removeResult(item.id)
+        message.warning(t('results.removeNoFilesSingle'))
+        return
+      }
+
+      try {
+        const result = await task.trashPaths(targets)
+        if (!result.failed.length) {
+          task.removeResult(item.id)
+          message.success(t('results.removeFilesSuccessSingle'))
+          return
+        }
+
+        const removeListOnly = await confirmRemoveListOnly(result.failed.length, targets.length, 'single')
+        if (!removeListOnly) {
+          message.warning(t('results.removeFilesKeptSingle'))
+          return
+        }
+        task.removeResult(item.id)
+        if (result.failed.length === targets.length) {
+          message.warning(t('results.removeFilesAllFailedListOnly'))
+        } else {
+          message.warning(t('results.removeFilesPartialListOnly', { count: result.failed.length }))
+        }
+      } catch (error) {
+        const removeListOnly = await confirmRemoveListOnly(targets.length, targets.length, 'single')
+        if (!removeListOnly) {
+          message.error(error instanceof Error ? error.message : t('results.removeFilesFailed'))
+          return
+        }
+        task.removeResult(item.id)
+        message.warning(t('results.removeFilesAllFailedListOnly'))
+      }
+    },
+  })
+}
+
+function handleRemoveSelected() {
+  const ids = [...selectedResultIds.value]
+  if (!ids.length) return
+  const items = task.resultTasks.filter((item) => ids.includes(item.id))
+  const deleteFiles = ref(false)
+  dialog.warning({
+    title: t('results.removeSelectedTitle'),
+    content: () => h('div', { style: 'display:grid;gap:12px;' }, [
+      h('span', t('results.removeSelectedContent', { count: ids.length })),
+      h(NCheckbox, {
+        checked: deleteFiles.value,
+        'onUpdate:checked': (value: boolean) => { deleteFiles.value = value },
+      }, { default: () => t('results.removeDeleteFiles') }),
+    ]),
+    positiveText: t('results.removeSelectedPositive'),
+    negativeText: t('common.cancel'),
+    positiveButtonProps: { type: 'error' },
+    onPositiveClick: async () => {
+      const finishRemove = (silent = false) => {
+        const removed = task.removeResults(ids)
+        if (!silent && removed > 0) {
+          message.success(t('results.removeSelectedSuccess', { count: removed }))
+        }
+        selectedResultIds.value = []
+        selecting.value = false
+      }
+
+      if (!deleteFiles.value) {
+        finishRemove()
+        return
+      }
+
+      const targets = trashTargetsForItems(items)
+      if (!targets.length) {
+        finishRemove(true)
+        message.warning(t('results.removeNoFilesMultiple'))
+        return
+      }
+
+      try {
+        const result = await task.trashPaths(targets)
+        if (!result.failed.length) {
+          finishRemove(true)
+          message.success(t('results.removeFilesSuccessMultiple'))
+          return
+        }
+
+        const removeListOnly = await confirmRemoveListOnly(result.failed.length, targets.length, 'multiple')
+        if (!removeListOnly) {
+          message.warning(t('results.removeFilesKeptMultiple'))
+          return
+        }
+        finishRemove(true)
+        if (result.failed.length === targets.length) {
+          message.warning(t('results.removeFilesAllFailedListOnly'))
+        } else {
+          message.warning(t('results.removeFilesPartialListOnly', { count: result.failed.length }))
+        }
+      } catch (error) {
+        const removeListOnly = await confirmRemoveListOnly(targets.length, targets.length, 'multiple')
+        if (!removeListOnly) {
+          message.error(error instanceof Error ? error.message : t('results.removeFilesFailed'))
+          return
+        }
+        finishRemove(true)
+        message.warning(t('results.removeFilesAllFailedListOnly'))
+      }
+    },
+  })
 }
 
 function isExpanded(id: string) {
@@ -108,6 +314,7 @@ function shortenPath(value: string) {
 function scrollToFocusedResult(id: string | null) {
   if (!id) return
   ensureExpanded(id)
+  ensureItemPage(id)
   nextTick(() => {
     const target = document.getElementById(resultCardId({ id }))
     target?.scrollIntoView({ block: 'center', behavior: 'smooth' })
@@ -140,6 +347,9 @@ function formatTime(value: number) {
         <h1>{{ t('results.title') }}</h1>
         <p>{{ t('results.subtitle') }}</p>
       </div>
+      <n-button v-if="task.resultTasks.length" secondary @click="toggleSelecting">
+        {{ selecting ? t('results.batchExit') : t('results.batchSelect') }}
+      </n-button>
     </div>
 
     <div v-if="task.resultTasks.length" class="results-toolbar">
@@ -164,6 +374,26 @@ function formatTime(value: number) {
       <span class="results-toolbar__count">{{ filteredResults.length }} / {{ task.resultTasks.length }}</span>
     </div>
 
+    <div v-if="selecting && filteredResults.length" class="results-batchbar">
+      <n-checkbox
+        :checked="allResultsSelected"
+        :indeterminate="someResultsSelected"
+        @update:checked="toggleSelectAllResults"
+      >
+        {{ t('results.selectPage') }}
+      </n-checkbox>
+      <span class="results-batchbar__count">{{ t('results.selectedCount', { count: selectedResultIds.length }) }}</span>
+      <n-button
+        size="small"
+        type="error"
+        :disabled="!selectedResultIds.length"
+        @click="handleRemoveSelected"
+      >
+        <template #icon><n-icon :component="TrashOutline" /></template>
+        {{ t('results.removeSelected') }}
+      </n-button>
+    </div>
+
     <div v-if="!task.resultTasks.length" class="results-empty">
       <n-icon :component="FolderOutline" size="46" />
       <strong>{{ t('results.empty') }}</strong>
@@ -178,12 +408,20 @@ function formatTime(value: number) {
 
     <div v-else class="results-list">
       <section
-        v-for="item in filteredResults"
+        v-for="item in pagedResults"
         :id="resultCardId(item)"
         :key="item.id"
         class="result-row"
+        :class="{ 'result-row--selectable': selecting, 'result-row--selected': selectedResultSet.has(item.id) }"
       >
-        <button class="result-row__main" type="button" @click="toggleExpanded(item.id)">
+        <n-checkbox
+          v-if="selecting"
+          class="result-row__check"
+          :checked="selectedResultSet.has(item.id)"
+          @update:checked="toggleResultSelection(item.id)"
+          @click.stop
+        />
+        <button class="result-row__main" type="button" @click="selecting ? toggleResultSelection(item.id) : toggleExpanded(item.id)">
           <span class="result-row__icon">
             <n-icon :component="DocumentTextOutline" size="18" />
           </span>
@@ -203,7 +441,7 @@ function formatTime(value: number) {
           </span>
         </button>
 
-        <div class="result-row__actions">
+        <div v-if="!selecting" class="result-row__actions">
           <n-button size="small" type="primary" @click="openInEditor(item)">
             <template #icon><n-icon :component="ColorWandOutline" /></template>
             {{ t('results.openInEditor') }}
@@ -211,6 +449,10 @@ function formatTime(value: number) {
           <n-button size="small" type="primary" secondary @click="openResultDir(item)">
             <template #icon><n-icon :component="FolderOpenOutline" /></template>
             {{ t('results.openDirectory') }}
+          </n-button>
+          <n-button size="small" quaternary type="error" @click="handleRemoveResult(item)">
+            <template #icon><n-icon :component="TrashOutline" /></template>
+            {{ t('results.removeAction') }}
           </n-button>
         </div>
 
@@ -223,6 +465,16 @@ function formatTime(value: number) {
           </div>
         </n-collapse-transition>
       </section>
+    </div>
+
+    <div v-if="filteredResults.length" class="results-pagination">
+      <n-pagination
+        v-model:page="page"
+        v-model:page-size="pageSize"
+        :item-count="filteredResults.length"
+        :page-sizes="pageSizeOptions"
+        show-size-picker
+      />
     </div>
   </div>
 </template>
@@ -262,6 +514,27 @@ function formatTime(value: number) {
   gap: 10px;
 }
 
+.results-pagination {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.results-batchbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--primary-border) 60%, var(--outline));
+  background: var(--primary-softer);
+}
+
+.results-batchbar__count {
+  margin-right: auto;
+  font-size: 13px;
+  color: var(--on-surface-muted);
+}
+
 .result-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -272,6 +545,19 @@ function formatTime(value: number) {
   border-radius: 18px;
   background: color-mix(in srgb, var(--surface-1) 92%, transparent);
   transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.result-row--selectable {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.result-row--selected {
+  border-color: color-mix(in srgb, var(--primary-border) 90%, transparent);
+  background: var(--primary-softer);
+}
+
+.result-row__check {
+  flex-shrink: 0;
 }
 
 .result-row:hover {
@@ -425,6 +711,10 @@ function formatTime(value: number) {
 
   .results-toolbar__count {
     text-align: left;
+  }
+
+  .results-pagination {
+    justify-content: flex-start;
   }
 
   .result-row {

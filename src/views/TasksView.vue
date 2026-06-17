@@ -8,14 +8,15 @@ import {
   AlertCircleOutline,
   CloseCircleOutline,
   HourglassOutline,
-  RefreshOutline,
   TrashOutline,
   TerminalOutline,
-  FolderOpenOutline,
   LayersOutline,
   ArchiveOutline,
+  ListOutline,
+  GridOutline,
 } from '@vicons/ionicons5'
 import { useTaskStore, type SeparationTask } from '@/stores/task'
+import { usePagedSelection } from '@/composables/usePagedSelection'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -26,10 +27,73 @@ const task = useTaskStore()
 const terminalStatuses = ['done', 'failed', 'cancelled']
 const showLogModal = ref(false)
 const selectedLogTask = ref<SeparationTask | null>(null)
-const historyExpanded = ref(true)
+const cancellingTaskIds = ref<string[]>([])
+const cancellingAllTasks = ref(false)
 
-const runningTasks = computed(() => task.runningTasks)
-const historyTasks = computed(() => task.tasks.filter((item) => terminalStatuses.includes(item.status)))
+const COMPACT_THRESHOLD = 4
+const runningDensity = ref<'comfortable' | 'compact'>('comfortable')
+const densityManuallySet = ref(false)
+
+const runningTasks = computed(() => {
+  // 处理中（已开始执行）置顶，排队中排在下方；同组内按创建时间倒序
+  return [...task.runningTasks].filter((item) => !item.taskHidden).sort((a, b) => {
+    const aQueued = a.status === 'queued' ? 1 : 0
+    const bQueued = b.status === 'queued' ? 1 : 0
+    if (aQueued !== bQueued) return aQueued - bQueued
+    return b.createdAt - a.createdAt
+  })
+})
+const historyTasks = computed(() => task.taskBoardTasks.filter((item) => terminalStatuses.includes(item.status)))
+const runningTaskCount = computed(() => runningTasks.value.length)
+const isCompact = computed(() => runningDensity.value === 'compact')
+const pagedSelection = usePagedSelection(historyTasks, {
+  initialPageSize: 20,
+  pageSizeOptions: [10, 20, 50, 100],
+})
+const {
+  selecting: historySelecting,
+  selectedIds: selectedHistoryIds,
+  selectedSet: selectedHistorySet,
+  page: historyPage,
+  pageSize: historyPageSize,
+  pageSizeOptions: historyPageSizeOptions,
+  pagedItems: pagedHistoryTasks,
+  allSelected: allHistorySelected,
+  someSelected: someHistorySelected,
+  toggleSelecting: toggleHistorySelecting,
+  toggleSelection: toggleHistorySelection,
+  toggleSelectPage: toggleSelectAllHistory,
+  ensureItemPage,
+} = pagedSelection
+
+// 进行中任务过多时自动切换到紧凑视图（用户未手动指定时）
+watch(runningTaskCount, (count) => {
+  if (densityManuallySet.value) return
+  runningDensity.value = count > COMPACT_THRESHOLD ? 'compact' : 'comfortable'
+}, { immediate: true })
+
+function toggleDensity() {
+  densityManuallySet.value = true
+  runningDensity.value = isCompact.value ? 'comfortable' : 'compact'
+}
+
+function handleRemoveSelected() {
+  const ids = [...selectedHistoryIds.value]
+  if (!ids.length) return
+  dialog.warning({
+    title: t('tasks.removeSelectedTitle'),
+    content: t('tasks.removeSelectedContent', { count: ids.length }),
+    positiveText: t('tasks.removeSelectedPositive'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      const removed = task.removeTasks(ids)
+      selectedHistoryIds.value = []
+      historySelecting.value = false
+      if (removed > 0) message.success(t('tasks.removeSelectedSuccess', { count: removed }))
+    },
+  })
+}
+
 
 function formatTime(value: number) {
   const date = new Date(value)
@@ -57,8 +121,55 @@ function logClass(line: string) {
 }
 
 async function handleCancel(id: string) {
-  const ok = await task.cancelTask(id)
-  if (ok) message.success(t('tasks.cancelSuccess'))
+  dialog.warning({
+    title: t('tasks.cancelConfirmTitle'),
+    content: t('tasks.cancelConfirmContent'),
+    positiveText: t('tasks.cancelAction'),
+    negativeText: t('common.cancel'),
+    positiveButtonProps: { type: 'error' },
+    negativeButtonProps: { secondary: true },
+    onPositiveClick: async () => {
+      if (cancellingTaskIds.value.includes(id)) return
+      cancellingTaskIds.value = [...cancellingTaskIds.value, id]
+      try {
+        const ok = await task.cancelTask(id)
+        if (ok) message.success(t('tasks.cancelSuccess'))
+      } catch (err) {
+        message.error(err instanceof Error ? err.message : String(err))
+      } finally {
+        cancellingTaskIds.value = cancellingTaskIds.value.filter((item) => item !== id)
+      }
+    },
+  })
+}
+
+async function handleCancelAll() {
+  dialog.warning({
+    title: t('tasks.cancelAllConfirmTitle'),
+    content: t('tasks.cancelAllConfirmContent'),
+    positiveText: t('tasks.cancelAllAction'),
+    negativeText: t('common.cancel'),
+    positiveButtonProps: { type: 'error' },
+    negativeButtonProps: { secondary: true },
+    onPositiveClick: async () => {
+      if (cancellingAllTasks.value) return
+      cancellingAllTasks.value = true
+      const loading = message.loading(t('tasks.cancelAllPending'), { duration: 0 })
+      try {
+        const result = await task.cancelAllTasks()
+        if (result.cancelled > 0) {
+          message.success(t('tasks.cancelAllSuccess', { cancelled: result.cancelled, total: result.total }))
+        } else {
+          message.warning(t('tasks.cancelAllNoneCancelled'))
+        }
+      } catch (err) {
+        message.error(err instanceof Error ? err.message : t('tasks.cancelAllFailed'))
+      } finally {
+        loading.destroy()
+        cancellingAllTasks.value = false
+      }
+    },
+  })
 }
 
 async function handleRetry(id: string) {
@@ -198,6 +309,7 @@ function taskCardId(item: Pick<SeparationTask, 'id'>) {
 
 function scrollToFocusedTask(id: string | null) {
   if (!id) return
+  ensureItemPage(id)
   nextTick(() => {
     const target = document.getElementById(taskCardId({ id }))
     target?.scrollIntoView({ block: 'center', behavior: 'smooth' })
@@ -232,7 +344,7 @@ onMounted(() => {
       </n-button>
     </div>
 
-    <n-card v-if="!task.tasks.length" :bordered="true">
+    <n-card v-if="!task.taskBoardTasks.length" :bordered="true">
       <div class="tasks-empty">
         <n-icon :component="HourglassOutline" size="48" color="var(--on-surface-muted)" />
         <p class="text-muted mt-md">{{ t('tasks.emptyHint') }}</p>
@@ -244,11 +356,95 @@ onMounted(() => {
         <div class="tasks-section__title">
           <div class="tasks-section__heading">
             <h2>{{ t('tasks.runningTitle') }}</h2>
-            <span class="tasks-section__count">{{ runningTasks.length }}</span>
+            <span class="tasks-section__count">{{ runningTaskCount }}</span>
+          </div>
+          <div class="tasks-section__tools">
+            <n-button-group v-if="runningTaskCount" size="small">
+              <n-button
+                :type="!isCompact ? 'primary' : 'default'"
+                :secondary="isCompact"
+                @click="!isCompact || toggleDensity()"
+              >
+                <template #icon><n-icon :component="GridOutline" /></template>
+                {{ t('tasks.densityComfortable') }}
+              </n-button>
+              <n-button
+                :type="isCompact ? 'primary' : 'default'"
+                :secondary="!isCompact"
+                @click="isCompact || toggleDensity()"
+              >
+                <template #icon><n-icon :component="ListOutline" /></template>
+                {{ t('tasks.densityCompact') }}
+              </n-button>
+            </n-button-group>
+            <n-button
+              v-if="runningTaskCount"
+              size="small"
+              tertiary
+              type="error"
+              :loading="cancellingAllTasks"
+              :disabled="cancellingAllTasks"
+              @click="handleCancelAll"
+            >
+              {{ t('tasks.cancelAllAction') }}
+            </n-button>
           </div>
         </div>
 
-        <div v-if="runningTasks.length" class="tasks-list">
+        <div v-if="runningTasks.length && isCompact" class="tasks-running-compact">
+          <div
+            v-for="item in runningTasks"
+            :id="taskCardId(item)"
+            :key="item.id"
+            class="running-compact-row"
+          >
+            <div class="running-compact-row__info">
+              <n-icon class="running-compact-row__status" :component="statusIcon(item.status)" :class="`running-compact-row__status--${statusType(item.status)}`" />
+              <div class="running-compact-row__text">
+                <strong>{{ item.input.split(/[/\\]/).pop() || item.input }}</strong>
+                <span>{{ progressTitle(item) }}<template v-if="progressDetail(item)"> · {{ progressDetail(item) }}</template></span>
+              </div>
+            </div>
+            <div class="running-compact-row__progress">
+              <n-progress
+                type="line"
+                :percentage="Math.round(item.progress || 0)"
+                :status="progressStatus(item.status)"
+                :processing="isRunning(item.status)"
+                :height="6"
+                :show-indicator="false"
+              />
+              <span class="running-compact-row__percent">{{ Math.round(item.progress || 0) }}%</span>
+            </div>
+            <div class="running-compact-row__actions">
+              <n-button
+                size="tiny"
+                quaternary
+                :disabled="!item.logs.length"
+                :title="t('tasks.logs')"
+                :aria-label="t('tasks.logs')"
+                @click="openLogs(item)"
+              >
+                <template #icon><n-icon :component="TerminalOutline" /></template>
+              </n-button>
+              <n-button
+                v-if="isRunning(item.status)"
+                size="tiny"
+                quaternary
+                type="error"
+                :loading="cancellingTaskIds.includes(item.id)"
+                :disabled="cancellingTaskIds.includes(item.id)"
+                :title="t('tasks.cancelAction')"
+                :aria-label="t('tasks.cancelAction')"
+                @click="handleCancel(item.id)"
+              >
+                <template #icon><n-icon :component="CloseCircleOutline" /></template>
+              </n-button>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="runningTasks.length" class="tasks-list">
           <n-card
             v-for="item in runningTasks"
             :id="taskCardId(item)"
@@ -289,46 +485,29 @@ onMounted(() => {
               <p v-if="taskSubMessage(item)" class="text-muted text-sm task-message">{{ taskSubMessage(item) }}</p>
             </div>
 
-            <div class="task-workbench-card__meta">
-              <span>{{ t('tasks.createdAt') }}：{{ formatTime(item.createdAt) }}</span>
-              <span>{{ t('tasks.updatedAt') }}：{{ formatTime(item.updatedAt) }}</span>
-              <span>{{ t('tasks.duration') }}：{{ taskDuration(item) }}</span>
-            </div>
+            <div class="task-workbench-card__footer">
+              <div class="task-workbench-card__meta">
+                <span>{{ t('tasks.createdAt') }}：{{ formatTime(item.createdAt) }}</span>
+                <span>{{ t('tasks.updatedAt') }}：{{ formatTime(item.updatedAt) }}</span>
+                <span>{{ t('tasks.duration') }}：{{ taskDuration(item) }}</span>
+              </div>
 
-            <div class="task-workbench-card__actions">
-              <n-button
-                v-if="isRunning(item.status)"
-                size="tiny"
-                secondary
-                @click="handleCancel(item.id)"
-              >
-                {{ t('common.cancel') }}
-              </n-button>
-              <n-button
-                v-if="['failed','cancelled'].includes(item.status)"
-                size="tiny"
-                secondary
-                @click="handleRetry(item.id)"
-              >
-                <template #icon><n-icon :component="RefreshOutline" /></template>
-                {{ t('tasks.retry') }}
-              </n-button>
-              <n-button size="tiny" secondary :disabled="!item.logs.length" @click="openLogs(item)">
-                <template #icon><n-icon :component="TerminalOutline" /></template>
-                {{ t('tasks.logs') }}
-              </n-button>
-              <n-button
-                v-if="item.status === 'done'"
-                size="tiny"
-                secondary
-                @click="jumpToResult(item)"
-              >
-                <template #icon><n-icon :component="FolderOpenOutline" /></template>
-                {{ t('tasks.viewResult') }}
-              </n-button>
-              <n-button v-if="!isRunning(item.status)" size="tiny" quaternary @click="handleRemoveTask(item)">
-                {{ t('tasks.remove') }}
-              </n-button>
+              <div class="task-workbench-card__actions">
+                <n-button size="tiny" secondary :disabled="!item.logs.length" @click="openLogs(item)">
+                  <template #icon><n-icon :component="TerminalOutline" /></template>
+                  {{ t('tasks.logs') }}
+                </n-button>
+                <n-button
+                  v-if="isRunning(item.status)"
+                  size="tiny"
+                  secondary
+                  :loading="cancellingTaskIds.includes(item.id)"
+                  :disabled="cancellingTaskIds.includes(item.id)"
+                  @click="handleCancel(item.id)"
+                >
+                  {{ t('tasks.cancelAction') }}
+                </n-button>
+              </div>
             </div>
           </n-card>
         </div>
@@ -346,42 +525,80 @@ onMounted(() => {
             <h2>{{ t('tasks.historyTitle') }}</h2>
             <span class="tasks-section__count">{{ historyTasks.length }}</span>
           </div>
-          <n-button text type="primary" @click="historyExpanded = !historyExpanded">
-            {{ historyExpanded ? t('tasks.collapse') : t('tasks.expand') }}
+          <template v-if="historyTasks.length">
+            <n-button size="small" :type="historySelecting ? 'primary' : 'default'" :secondary="!historySelecting" @click="toggleHistorySelecting">
+              {{ historySelecting ? t('tasks.batchExit') : t('tasks.batchSelect') }}
+            </n-button>
+          </template>
+        </div>
+
+        <div v-if="historySelecting && historyTasks.length" class="tasks-history-batchbar">
+          <n-checkbox
+            :checked="allHistorySelected"
+            :indeterminate="someHistorySelected"
+            @update:checked="toggleSelectAllHistory"
+          >
+            {{ t('tasks.selectPage') }}
+          </n-checkbox>
+          <span class="tasks-history-batchbar__count">{{ t('tasks.selectedCount', { count: selectedHistoryIds.length }) }}</span>
+          <n-button
+            size="small"
+            type="error"
+            :disabled="!selectedHistoryIds.length"
+            @click="handleRemoveSelected"
+          >
+            <template #icon><n-icon :component="TrashOutline" /></template>
+            {{ t('tasks.removeSelected') }}
           </n-button>
         </div>
 
-        <n-collapse-transition :show="historyExpanded">
-          <div v-if="historyTasks.length" class="tasks-history-list">
-            <div
-              v-for="item in historyTasks"
-              :id="taskCardId(item)"
-              :key="item.id"
-              class="tasks-history-row"
-            >
-              <div class="tasks-history-row__main">
-                <strong>{{ item.input.split(/[/\\]/).pop() || item.input }}</strong>
-                <span>{{ item.model }}</span>
-              </div>
-              <div class="tasks-history-row__meta">
-                <n-tag size="small" :type="statusType(item.status)" :bordered="false">{{ statusLabel(item.status) }}</n-tag>
-                <span>{{ taskDuration(item) }}</span>
-                <span>{{ formatTime(item.updatedAt) }}</span>
-              </div>
-              <div class="tasks-history-row__actions">
-                <n-button size="tiny" tertiary :disabled="!item.logs.length" @click="openLogs(item)">{{ t('tasks.logs') }}</n-button>
-                <n-button v-if="item.status === 'done'" size="tiny" tertiary @click="jumpToResult(item)">{{ t('tasks.viewResult') }}</n-button>
-                <n-button size="tiny" quaternary @click="handleRemoveTask(item)">{{ t('tasks.remove') }}</n-button>
-              </div>
+        <div v-if="historyTasks.length" class="tasks-history-list">
+          <div
+            v-for="item in pagedHistoryTasks"
+            :id="taskCardId(item)"
+            :key="item.id"
+            class="tasks-history-row"
+            :class="{ 'tasks-history-row--selectable': historySelecting, 'tasks-history-row--selected': selectedHistorySet.has(item.id) }"
+            @click="historySelecting && toggleHistorySelection(item.id)"
+          >
+            <n-checkbox
+              v-if="historySelecting"
+              class="tasks-history-row__check"
+              :checked="selectedHistorySet.has(item.id)"
+              @update:checked="toggleHistorySelection(item.id)"
+              @click.stop
+            />
+            <div class="tasks-history-row__main">
+              <strong>{{ item.input.split(/[/\\]/).pop() || item.input }}</strong>
+              <span>{{ item.model }}</span>
+            </div>
+            <div class="tasks-history-row__meta">
+              <n-tag size="small" :type="statusType(item.status)" :bordered="false">{{ statusLabel(item.status) }}</n-tag>
+              <span>{{ taskDuration(item) }}</span>
+              <span>{{ formatTime(item.updatedAt) }}</span>
+            </div>
+            <div v-if="!historySelecting" class="tasks-history-row__actions">
+              <n-button size="tiny" tertiary :disabled="!item.logs.length" @click="openLogs(item)">{{ t('tasks.logs') }}</n-button>
+              <n-button v-if="item.status === 'done'" size="tiny" tertiary @click="jumpToResult(item)">{{ t('tasks.viewResult') }}</n-button>
+              <n-button size="tiny" quaternary @click="handleRemoveTask(item)">{{ t('tasks.remove') }}</n-button>
             </div>
           </div>
-          <n-card v-else :bordered="true" size="small">
-            <div class="tasks-empty-inline">
-              <n-icon :component="ArchiveOutline" size="28" color="var(--on-surface-muted)" />
-              <span class="text-muted">{{ t('tasks.noHistoryTasks') }}</span>
-            </div>
-          </n-card>
-        </n-collapse-transition>
+        </div>
+        <div v-if="historyTasks.length" class="tasks-pagination">
+          <n-pagination
+            v-model:page="historyPage"
+            v-model:page-size="historyPageSize"
+            :item-count="historyTasks.length"
+            :page-sizes="historyPageSizeOptions"
+            show-size-picker
+          />
+        </div>
+        <n-card v-else :bordered="true" size="small">
+          <div class="tasks-empty-inline">
+            <n-icon :component="ArchiveOutline" size="28" color="var(--on-surface-muted)" />
+            <span class="text-muted">{{ t('tasks.noHistoryTasks') }}</span>
+          </div>
+        </n-card>
       </section>
     </template>
 
@@ -447,6 +664,12 @@ onMounted(() => {
   gap: 10px;
 }
 
+.tasks-section__tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .tasks-section__title h2 {
   margin: 0;
   font-size: 18px;
@@ -470,14 +693,120 @@ onMounted(() => {
 
 .tasks-list {
   display: grid;
-  gap: 12px;
+  gap: 10px;
+}
+
+.tasks-running-compact {
+  display: grid;
+  gap: 6px;
+}
+
+.running-compact-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(140px, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--outline) 70%, transparent);
+  background: color-mix(in srgb, var(--surface-1) 94%, var(--surface-2));
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.running-compact-row:hover {
+  border-color: color-mix(in srgb, var(--primary-border) 70%, var(--outline));
+}
+
+.running-compact-row__info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.running-compact-row__status {
+  flex-shrink: 0;
+  font-size: 18px;
+}
+
+.running-compact-row__status--info { color: var(--primary); }
+.running-compact-row__status--success { color: var(--success); }
+.running-compact-row__status--error { color: var(--danger); }
+.running-compact-row__status--warning { color: var(--warning); }
+
+.running-compact-row__text {
+  min-width: 0;
+}
+
+.running-compact-row__text strong {
+  display: block;
+  font-size: 13px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.running-compact-row__text span {
+  display: block;
+  font-size: 11px;
+  color: var(--on-surface-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.running-compact-row__progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.running-compact-row__percent {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--on-surface-muted);
+  min-width: 34px;
+  text-align: right;
+}
+
+.running-compact-row__actions {
+  display: flex;
+  gap: 2px;
+  justify-content: flex-end;
+}
+
+.tasks-history-batchbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--primary-border) 60%, var(--outline));
+  background: var(--primary-softer);
+}
+
+.tasks-history-batchbar__count {
+  font-size: 13px;
+  color: var(--on-surface-muted);
+  margin-right: auto;
+}
+
+.task-workbench-card {
+  border-radius: 18px;
+}
+
+.task-workbench-card :deep(.n-card__content) {
+  padding: 14px 16px 12px;
 }
 
 .task-workbench-card__top {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .task-workbench-card__title {
@@ -487,13 +816,13 @@ onMounted(() => {
 }
 
 .task-workbench-card__subtitle {
-  margin: 6px 0 0;
+  margin: 4px 0 0;
   font-size: 12px;
   color: var(--on-surface-muted);
 }
 
 .task-workbench-card__progress {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .task-workbench-card__meta {
@@ -502,19 +831,33 @@ onMounted(() => {
   flex-wrap: wrap;
   font-size: 12px;
   color: var(--on-surface-muted);
-  margin-top: 12px;
+  margin-top: 8px;
+}
+
+.task-workbench-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
 }
 
 .task-workbench-card__actions {
   display: flex;
+  justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
-  margin-top: 14px;
+  margin-left: auto;
 }
 
 .tasks-history-list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
+}
+
+.tasks-pagination {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .tasks-history-row {
@@ -522,11 +865,25 @@ onMounted(() => {
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
   gap: 16px;
   align-items: center;
-  padding: 14px 16px;
-  border-radius: 16px;
+  padding: 12px 14px;
+  border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
   background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 98%, transparent), color-mix(in srgb, var(--surface-1) 92%, var(--surface-2)));
   transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.tasks-history-row--selectable {
+  grid-template-columns: auto minmax(0, 1.2fr) minmax(0, 1fr);
+  cursor: pointer;
+}
+
+.tasks-history-row--selected {
+  border-color: color-mix(in srgb, var(--primary-border) 90%, transparent);
+  background: var(--primary-softer);
+}
+
+.tasks-history-row__check {
+  flex-shrink: 0;
 }
 
 .tasks-history-row:hover {
@@ -681,7 +1038,33 @@ onMounted(() => {
     grid-template-columns: 1fr;
   }
 
+  .tasks-history-row--selectable {
+    grid-template-columns: auto 1fr;
+  }
+
+  .tasks-pagination {
+    justify-content: flex-start;
+  }
+
+  .running-compact-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .running-compact-row__progress {
+    grid-column: 1 / -1;
+  }
+
   .tasks-history-row__actions {
+    justify-content: flex-start;
+  }
+
+  .task-workbench-card__footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .task-workbench-card__actions {
+    margin-left: 0;
     justify-content: flex-start;
   }
 }

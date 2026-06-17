@@ -51,6 +51,8 @@ export type SeparationTask = {
   logs: string[]
   error?: string
   runConfig?: SeparationRunConfig
+  taskHidden?: boolean
+  resultHidden?: boolean
 }
 
 type PersistedTaskState = {
@@ -143,6 +145,12 @@ function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
     status = 'failed'
     interrupted = true
   }
+  const normalizedRunConfig = normalizeRunConfig(task.runConfig)
+  const normalizedOutput = normalizeOutputPath(task.output)
+  const normalizedFiles = task.files || []
+  const normalizedOutputs = task.outputs?.length
+    ? task.outputs
+    : outputsFromFiles(normalizedOutput, normalizedFiles, normalizedRunConfig?.outputFormat || 'wav')
   const meta = STAGE_META[status]
   const progress = typeof task.progress === 'number'
     ? Math.max(meta.progress, Math.min(100, task.progress))
@@ -151,7 +159,7 @@ function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
     id: task.id || `task_${Date.now()}`,
     model: task.model || '',
     input: task.input || '',
-    output: normalizeOutputPath(task.output),
+    output: normalizedOutput,
     status,
     message: interrupted ? '上次运行未完成' : (task.message || meta.label),
     createdAt: task.createdAt || Date.now(),
@@ -161,13 +169,15 @@ function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
     progressCurrent: typeof task.progressCurrent === 'number' ? task.progressCurrent : undefined,
     progressTotal: typeof task.progressTotal === 'number' ? task.progressTotal : undefined,
     progressDetail: task.progressDetail || undefined,
-    files: task.files || [],
-    outputs: task.outputs || [],
+    files: normalizedFiles,
+    outputs: normalizedOutputs,
     logs: interrupted
       ? [...(task.logs || []), `${new Date().toLocaleTimeString()} 应用关闭或重启，任务已标记为中断。`].slice(-300)
       : (task.logs || []),
     error: interrupted ? '应用关闭或重启导致任务中断' : task.error,
-    runConfig: normalizeRunConfig(task.runConfig),
+    runConfig: normalizedRunConfig,
+    taskHidden: task.taskHidden === true,
+    resultHidden: task.resultHidden === true,
   }
 }
 
@@ -248,11 +258,12 @@ export const useTaskStore = defineStore('task', () => {
   const completedTasks = computed(() => tasks.value.filter((task) => task.status === 'done'))
   const runningTasks = computed(() => tasks.value.filter((task) => !TERMINAL_STATUSES.includes(task.status)))
   const activeWorkerTasks = computed(() => tasks.value.filter((task) => !TERMINAL_STATUSES.includes(task.status) && task.status !== 'queued'))
-  const resultTasks = computed(() => completedTasks.value.filter((task) => task.outputs.length || task.files.length))
+  // 任务页可见任务：排除已在任务页隐藏的记录（结果页隐藏不影响任务页）
+  const taskBoardTasks = computed(() => tasks.value.filter((task) => !task.taskHidden))
+  // 结果页可见结果：仅含有输出且未在结果页隐藏的任务（任务页隐藏不影响结果页）
+  const resultTasks = computed(() => completedTasks.value.filter((task) => !task.resultHidden && (task.outputs.length || task.files.length)))
   const queuedTasks = computed(() => tasks.value.filter((task) => task.status === 'queued'))
   const failedTasks = computed(() => tasks.value.filter((task) => task.status === 'failed'))
-  const spotlightTasks = computed(() => tasks.value.filter((task) => !TERMINAL_STATUSES.includes(task.status) || task.status === 'failed'))
-  const historyTasks = computed(() => tasks.value.filter((task) => !spotlightTasks.value.some((candidate) => candidate.id === task.id)))
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null
   let progressPersistTimer: ReturnType<typeof setTimeout> | null = null
@@ -566,6 +577,12 @@ export const useTaskStore = defineStore('task', () => {
     await invoke('reveal_path', { path })
   }
 
+  async function trashPaths(paths: string[]) {
+    const valid = paths.filter((p) => p?.trim())
+    if (!valid.length) return { trashed: [] as string[], failed: [] as string[] }
+    return invoke<{ trashed: string[]; failed: string[] }>('move_paths_to_trash', { paths: valid })
+  }
+
   function primaryRevealPath(task: SeparationTask) {
     return task.output
   }
@@ -582,17 +599,101 @@ export const useTaskStore = defineStore('task', () => {
     focusedTaskId.value = id
   }
 
+  // 任务是否还会出现在结果页（done + 有输出 + 未被结果页隐藏）。
+  // 不会出现在结果页的任务，其“结果维度”视为已不存在。
+  function hasResultPresence(task: SeparationTask) {
+    return task.status === 'done'
+      && !task.resultHidden
+      && (task.outputs.length > 0 || task.files.length > 0)
+  }
+
+  // 当一个任务在任务页与结果页都不再可见时，从底层数组彻底回收，避免无限堆积。
+  function reclaimHiddenTasks() {
+    tasks.value = tasks.value.filter((task) => !task.taskHidden || hasResultPresence(task))
+  }
+
   function removeTask(id: string) {
-    tasks.value = tasks.value.filter((task) => task.id !== id)
-    if (activeTaskId.value === id) activeTaskId.value = tasks.value[0]?.id || null
-    if (focusedResultTaskId.value === id) focusedResultTaskId.value = null
+    const target = tasks.value.find((task) => task.id === id)
+    if (!target) return
+    // 任务页删除仅隐藏日志记录，不影响结果页与磁盘文件
+    target.taskHidden = true
+    if (activeTaskId.value === id) activeTaskId.value = taskBoardTasks.value[0]?.id || null
     if (focusedTaskId.value === id) focusedTaskId.value = null
+    reclaimHiddenTasks()
     queuePersist()
   }
 
-  function clearHistory() {
-    tasks.value = tasks.value.filter((task) => runningTasks.value.includes(task))
+  function removeTasks(ids: string[]) {
+    const removeSet = new Set(ids)
+    if (!removeSet.size) return 0
+    let removed = 0
+    tasks.value.forEach((task) => {
+      if (removeSet.has(task.id) && !task.taskHidden) {
+        task.taskHidden = true
+        removed += 1
+      }
+    })
+    if (!removed) return 0
+    if (activeTaskId.value && removeSet.has(activeTaskId.value)) {
+      activeTaskId.value = taskBoardTasks.value[0]?.id || null
+    }
+    if (focusedTaskId.value && removeSet.has(focusedTaskId.value)) {
+      focusedTaskId.value = null
+    }
+    reclaimHiddenTasks()
     queuePersist()
+    return removed
+  }
+
+  // 结果页删除：仅隐藏结果项，不影响任务页日志记录
+  function removeResult(id: string) {
+    const target = tasks.value.find((task) => task.id === id)
+    if (!target) return
+    target.resultHidden = true
+    if (focusedResultTaskId.value === id) focusedResultTaskId.value = null
+    reclaimHiddenTasks()
+    queuePersist()
+  }
+
+  function removeResults(ids: string[]) {
+    const removeSet = new Set(ids)
+    if (!removeSet.size) return 0
+    let removed = 0
+    tasks.value.forEach((task) => {
+      if (removeSet.has(task.id) && !task.resultHidden) {
+        task.resultHidden = true
+        removed += 1
+      }
+    })
+    if (!removed) return 0
+    if (focusedResultTaskId.value && removeSet.has(focusedResultTaskId.value)) {
+      focusedResultTaskId.value = null
+    }
+    reclaimHiddenTasks()
+    queuePersist()
+    return removed
+  }
+
+  function clearHistory() {
+    // 仅清空任务页的历史记录（标记 taskHidden），保留结果页数据
+    tasks.value.forEach((task) => {
+      if (TERMINAL_STATUSES.includes(task.status)) task.taskHidden = true
+    })
+    reclaimHiddenTasks()
+    queuePersist()
+  }
+
+  async function cancelAllTasks() {
+    const currentRunning = [...runningTasks.value]
+    if (!currentRunning.length) return { total: 0, cancelled: 0 }
+    let cancelled = 0
+    for (const item of currentRunning) {
+      // 串行取消，避免同时调用底层取消造成竞态
+      // eslint-disable-next-line no-await-in-loop
+      const ok = await cancelTask(item.id)
+      if (ok) cancelled += 1
+    }
+    return { total: currentRunning.length, cancelled }
   }
 
   async function cancelTask(id: string) {
@@ -691,11 +792,10 @@ export const useTaskStore = defineStore('task', () => {
     completedTasks,
     runningTasks,
     activeWorkerTasks,
+    taskBoardTasks,
     resultTasks,
     queuedTasks,
     failedTasks,
-    spotlightTasks,
-    historyTasks,
     focusedResultTaskId,
     focusedTaskId,
     inputFiles,
@@ -721,13 +821,18 @@ export const useTaskStore = defineStore('task', () => {
     removeInputFile,
     clearInputFiles,
     revealPath,
+    trashPaths,
     primaryRevealPath,
     getTaskById,
     focusResultTask,
     focusTask,
     removeTask,
+    removeTasks,
+    removeResult,
+    removeResults,
     clearHistory,
     cancelTask,
+    cancelAllTasks,
     startSeparation,
     retryTask,
     scheduleQueue,

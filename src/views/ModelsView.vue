@@ -371,12 +371,6 @@ onMounted(() => {
           </n-tag>
         </div>
       </div>
-      <div class="toolbar-row">
-        <div class="dir-info">
-          <span class="text-muted">{{ t('models.modelDir') }}:</span>
-          <code class="dir-path">{{ modelDir || settings.modelDir || '—' }}</code>
-        </div>
-      </div>
     </div>
 
     <!-- Body: Model Grid + Detail Drawer -->
@@ -878,16 +872,6 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   white-space: nowrap;
-}
-
-.dir-info {
-  font-size: 12px;
-}
-
-.dir-path {
-  font-size: 11px;
-  margin-left: 4px;
-  color: var(--on-surface-muted);
 }
 
 /* ===== Category Select ===== */

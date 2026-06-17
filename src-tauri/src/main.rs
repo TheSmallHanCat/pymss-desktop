@@ -51,6 +51,7 @@ fn main() {
             commands::app_cmd::pick_output_folder,
             commands::app_cmd::prepare_model_dir_change,
             commands::app_cmd::reveal_path,
+            commands::app_cmd::move_paths_to_trash,
             commands::app_cmd::respond_model_dir_migration_conflict,
             commands::app_cmd::confirm_model_dir_migration_switch,
             commands::app_cmd::cancel_model_dir_migration,

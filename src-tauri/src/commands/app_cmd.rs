@@ -1476,3 +1476,28 @@ pub async fn reveal_path(path: String) -> AppResult<()> {
     }
     Ok(())
 }
+
+#[derive(Serialize)]
+pub struct TrashResult {
+    pub trashed: Vec<String>,
+    pub failed: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn move_paths_to_trash(paths: Vec<String>) -> AppResult<TrashResult> {
+    let mut trashed = Vec::new();
+    let mut failed = Vec::new();
+    for path in paths {
+        let target = Path::new(&path);
+        // 已不存在的路径视为已删除，无需报错
+        if !target.exists() {
+            trashed.push(path);
+            continue;
+        }
+        match trash::delete(target) {
+            Ok(()) => trashed.push(path),
+            Err(_) => failed.push(path),
+        }
+    }
+    Ok(TrashResult { trashed, failed })
+}
