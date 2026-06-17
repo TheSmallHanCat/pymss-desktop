@@ -1,7 +1,7 @@
 use crate::error::{AppError, AppResult};
 use crate::python::protocol::WorkerEnvelope;
-use crate::storage;
 use crate::state::AppState;
+use crate::storage;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
@@ -82,7 +82,9 @@ fn dev_pymss_source_path() -> AppResult<Option<PathBuf>> {
         cwd.join("pymss"),
         cwd.join("..").join("..").join("pymss"),
     ];
-    Ok(candidates.into_iter().find_map(|path| pymss_sys_path_candidate(&path)))
+    Ok(candidates
+        .into_iter()
+        .find_map(|path| pymss_sys_path_candidate(&path)))
 }
 
 fn production_pymss_source_path(app: &AppHandle) -> Option<PathBuf> {
@@ -99,7 +101,9 @@ fn production_pymss_source_path(app: &AppHandle) -> Option<PathBuf> {
             candidates.push(exe_dir.join("pymss"));
         }
     }
-    candidates.into_iter().find_map(|candidate| pymss_sys_path_candidate(&candidate))
+    candidates
+        .into_iter()
+        .find_map(|candidate| pymss_sys_path_candidate(&candidate))
 }
 
 fn pymss_source_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
@@ -194,7 +198,6 @@ fn prepend_path(existing: Option<String>, dirs: Vec<PathBuf>) -> Option<String> 
     Some(parts.join(path_separator()))
 }
 
-
 fn default_output_dir(app: &AppHandle) -> AppResult<PathBuf> {
     storage::outputs_dir(app)
 }
@@ -217,7 +220,11 @@ fn make_payload_file(command: &str, task_id: Option<&str>, payload: Value) -> Ap
     Ok(path)
 }
 
-fn build_worker_command(app: &AppHandle, command: &str, payload_file: Option<&PathBuf>) -> AppResult<Command> {
+fn build_worker_command(
+    app: &AppHandle,
+    command: &str,
+    payload_file: Option<&PathBuf>,
+) -> AppResult<Command> {
     let worker = worker_path(app)?;
     let python = if let Ok(value) = std::env::var("PYMSS_STUDIO_PYTHON") {
         value
@@ -238,7 +245,10 @@ fn build_worker_command(app: &AppHandle, command: &str, payload_file: Option<&Pa
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONUTF8", "1")
-        .env("PYMSS_STUDIO_DEFAULT_OUTPUT_DIR", default_output_dir(app)?.to_string_lossy().to_string());
+        .env(
+            "PYMSS_STUDIO_DEFAULT_OUTPUT_DIR",
+            default_output_dir(app)?.to_string_lossy().to_string(),
+        );
     if let Some(path) = prepend_path(std::env::var("PATH").ok(), bundled_bin_dirs(app)?) {
         cmd.env("PATH", path);
     }
@@ -268,32 +278,97 @@ fn build_worker_command(app: &AppHandle, command: &str, payload_file: Option<&Pa
 }
 
 fn emit_worker_stderr(app: &AppHandle, line: String) {
-    let _ = app.emit("pymss://worker-event", serde_json::json!({
-        "type": "worker_stderr",
-        "payload": { "message": line }
-    }));
+    let _ = app.emit(
+        "pymss://worker-event",
+        serde_json::json!({
+            "type": "worker_stderr",
+            "payload": { "message": line }
+        }),
+    );
 }
 
 fn emit_task_log(app: &AppHandle, task_id: &str, level: &str, message: String) {
-    let _ = app.emit("pymss://worker-event", serde_json::json!({
-        "type": "task_log",
-        "taskId": task_id,
-        "payload": { "level": level, "message": message }
-    }));
+    let _ = app.emit(
+        "pymss://worker-event",
+        serde_json::json!({
+            "type": "task_log",
+            "taskId": task_id,
+            "payload": { "level": level, "message": message }
+        }),
+    );
 }
 
 fn emit_task_error(app: &AppHandle, task_id: &str, message: String) {
-    let _ = app.emit("pymss://worker-event", serde_json::json!({
-        "type": "error",
-        "taskId": task_id,
-        "payload": { "message": message }
-    }));
+    let _ = app.emit(
+        "pymss://worker-event",
+        serde_json::json!({
+            "type": "error",
+            "taskId": task_id,
+            "payload": { "message": message }
+        }),
+    );
+}
+
+#[cfg(debug_assertions)]
+fn debug_log_worker_stderr(command: &str, task_id: Option<&str>, line: &str) {
+    if line.trim().is_empty() {
+        return;
+    }
+    if let Some(task_id) = task_id {
+        eprintln!("[pymss-worker:{command}:{task_id}:stderr] {line}");
+    } else {
+        eprintln!("[pymss-worker:{command}:stderr] {line}");
+    }
+}
+
+#[cfg(debug_assertions)]
+fn debug_log_worker_event(command: &str, envelope: &WorkerEnvelope) {
+    let mut parts = vec![format!("[pymss-worker:{command}:{}]", envelope.event_type)];
+    if let Some(task_id) = envelope.task_id.as_deref() {
+        parts.push(format!("task={task_id}"));
+    }
+    if let Some(request_id) = envelope.request_id.as_deref() {
+        parts.push(format!("request={request_id}"));
+    }
+    if let Some(message) = envelope.payload.get("message").and_then(Value::as_str) {
+        parts.push(message.to_string());
+    } else if let Some(stage) = envelope.payload.get("stage").and_then(Value::as_str) {
+        parts.push(format!("stage={stage}"));
+        if let Some(message) = envelope.payload.get("message").and_then(Value::as_str) {
+            parts.push(message.to_string());
+        }
+    } else if matches!(envelope.event_type.as_str(), "error") {
+        parts.push(envelope.payload.to_string());
+    }
+    eprintln!("{}", parts.join(" "));
+}
+
+#[cfg(debug_assertions)]
+fn debug_log_worker_parse_error(
+    command: &str,
+    task_id: Option<&str>,
+    err: &serde_json::Error,
+    line: &str,
+) {
+    if let Some(task_id) = task_id {
+        eprintln!(
+            "[pymss-worker:{command}:{task_id}:stdout] invalid worker event: {err}; raw={line}"
+        );
+    } else {
+        eprintln!("[pymss-worker:{command}:stdout] invalid worker event: {err}; raw={line}");
+    }
 }
 
 fn is_background_terminal_event(command: &str, event_type: &str) -> bool {
     match command {
-        "delete_model" => matches!(event_type, "error" | "model_delete_done" | "model_delete_failed"),
-        "cleanup_model_residual_files" => matches!(event_type, "error" | "model_residual_cleanup_done" | "model_residual_cleanup_failed"),
+        "delete_model" => matches!(
+            event_type,
+            "error" | "model_delete_done" | "model_delete_failed"
+        ),
+        "cleanup_model_residual_files" => matches!(
+            event_type,
+            "error" | "model_residual_cleanup_done" | "model_residual_cleanup_failed"
+        ),
         "download_model" => matches!(event_type, "error" | "download_done" | "task_cancelled"),
         "infer" => matches!(event_type, "task_done" | "task_cancelled"),
         _ => matches!(event_type, "error"),
@@ -322,7 +397,11 @@ pub fn run_worker_once(app: &AppHandle, command: &str) -> AppResult<Value> {
     run_worker_with_payload(app, command, None)
 }
 
-pub fn run_worker_with_payload(app: &AppHandle, command: &str, payload: Option<Value>) -> AppResult<Value> {
+pub fn run_worker_with_payload(
+    app: &AppHandle,
+    command: &str,
+    payload: Option<Value>,
+) -> AppResult<Value> {
     let payload_file = match payload {
         Some(value) => Some(make_payload_file(command, None, value)?),
         None => None,
@@ -330,9 +409,14 @@ pub fn run_worker_with_payload(app: &AppHandle, command: &str, payload: Option<V
     let mut cmd = build_worker_command(app, command, payload_file.as_ref())?;
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
 
-    let stdout = child.stdout.take().ok_or_else(|| AppError::Worker("missing worker stdout".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::Worker("missing worker stdout".into()))?;
     let stderr = child.stderr.take();
     let stderr_app = app.clone();
+    #[cfg(debug_assertions)]
+    let stderr_command = command.to_string();
     let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let stderr_lines_for_thread = Arc::clone(&stderr_lines);
     let stderr_handle = stderr.map(|stderr| {
@@ -344,6 +428,8 @@ pub fn run_worker_with_payload(app: &AppHandle, command: &str, payload: Option<V
                         lines.remove(0);
                     }
                 }
+                #[cfg(debug_assertions)]
+                debug_log_worker_stderr(&stderr_command, None, &line);
                 emit_worker_stderr(&stderr_app, line);
             });
         })
@@ -357,13 +443,26 @@ pub fn run_worker_with_payload(app: &AppHandle, command: &str, payload: Option<V
         match serde_json::from_str::<WorkerEnvelope>(&line) {
             Ok(envelope) => {
                 last_payload = envelope.payload.clone();
+                #[cfg(debug_assertions)]
+                debug_log_worker_event(command, &envelope);
                 let _ = app.emit("pymss://worker-event", &envelope);
                 if envelope.event_type == "error" {
-                    worker_error = Some(AppError::Worker(envelope.payload.get("message").and_then(Value::as_str).unwrap_or("worker error").to_string()));
+                    worker_error = Some(AppError::Worker(
+                        envelope
+                            .payload
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("worker error")
+                            .to_string(),
+                    ));
                 }
             }
             Err(err) => {
-                worker_error = Some(AppError::Worker(format!("Invalid worker event: {err}; raw={line}")));
+                #[cfg(debug_assertions)]
+                debug_log_worker_parse_error(command, None, &err, &line);
+                worker_error = Some(AppError::Worker(format!(
+                    "Invalid worker event: {err}; raw={line}"
+                )));
             }
         }
     });
@@ -406,7 +505,10 @@ pub fn spawn_worker_background(
             .lock()
             .map_err(|_| AppError::Worker("task registry lock poisoned".into()))?;
         if tasks.contains_key(&task_id) {
-            return Err(AppError::Worker(format!("task already exists: {}", task_id)));
+            return Err(AppError::Worker(format!(
+                "task already exists: {}",
+                task_id
+            )));
         }
     }
 
@@ -414,13 +516,22 @@ pub fn spawn_worker_background(
     let payload_file = make_payload_file(command, Some(&task_id), payload)?;
     let mut cmd = build_worker_command(&app, command, Some(&payload_file))?;
     let mut child: Child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-    let stdout = child.stdout.take().ok_or_else(|| AppError::Worker("missing worker stdout".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::Worker("missing worker stdout".into()))?;
     let stderr = child.stderr.take();
     let stderr_app = app.clone();
     let stderr_task_id = task_id.clone();
+    #[cfg(debug_assertions)]
+    let stderr_command = command_name.clone();
     let stderr_handle = stderr.map(|stderr| {
         std::thread::spawn(move || {
-            read_lossy_lines(stderr, |line| emit_task_log(&stderr_app, &stderr_task_id, "warning", line));
+            read_lossy_lines(stderr, |line| {
+                #[cfg(debug_assertions)]
+                debug_log_worker_stderr(&stderr_command, Some(&stderr_task_id), &line);
+                emit_task_log(&stderr_app, &stderr_task_id, "warning", line);
+            });
         })
     });
     let shared_child = Arc::new(Mutex::new(child));
@@ -445,12 +556,16 @@ pub fn spawn_worker_background(
                             *seen = true;
                         }
                     }
+                    #[cfg(debug_assertions)]
+                    debug_log_worker_event(&command_name, &envelope);
                     let _ = app.emit("pymss://worker-event", &envelope);
                 }
                 Err(err) => {
                     if let Ok(mut seen) = saw_terminal_event_for_stdout.lock() {
                         *seen = true;
                     }
+                    #[cfg(debug_assertions)]
+                    debug_log_worker_parse_error(&command_name, Some(&task_id), &err, &line);
                     emit_task_error(&app, &task_id, format!("Invalid worker event: {err}"));
                 }
             }
