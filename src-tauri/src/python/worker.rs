@@ -26,11 +26,30 @@ fn pymss_sys_path_candidate(path: &std::path::Path) -> Option<PathBuf> {
 }
 
 fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
+    if let Ok(resource) = app.path().resource_dir() {
+        let candidates = [
+            resource.join("python").join("worker.py"),
+            resource.join("resources").join("python").join("worker.py"),
+            resource.join("worker.py"),
+        ];
+        for path in candidates {
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+    }
+
+    let exe_dir = std::env::current_exe()?
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let portable_worker = exe_dir.join("python").join("worker.py");
+    if portable_worker.exists() {
+        return Ok(portable_worker);
+    }
+
     if cfg!(debug_assertions) {
-        // CARGO_MANIFEST_DIR is set at compile time to src-tauri/
-        let src_tauri = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        // src-tauri/../python/worker.py
-        let path = src_tauri.parent().unwrap().join("python").join("worker.py");
+        let path = dev_worker_path();
         if path.exists() {
             return Ok(path);
         }
@@ -38,23 +57,7 @@ fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
         let cwd = std::env::current_dir()?;
         Ok(cwd.join("python").join("worker.py"))
     } else {
-        if let Ok(resource) = app.path().resource_dir() {
-            let candidates = [
-                resource.join("python").join("worker.py"),
-                resource.join("resources").join("python").join("worker.py"),
-                resource.join("worker.py"),
-            ];
-            for path in candidates {
-                if path.exists() {
-                    return Ok(path);
-                }
-            }
-        }
-        let exe_dir = std::env::current_exe()?
-            .parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        Ok(exe_dir.join("python").join("worker.py"))
+        Ok(portable_worker)
     }
 }
 
@@ -64,6 +67,10 @@ fn dev_workspace_root() -> PathBuf {
         .parent()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn dev_worker_path() -> PathBuf {
+    dev_workspace_root().join("python").join("worker.py")
 }
 
 fn dev_pymss_source_path() -> AppResult<Option<PathBuf>> {
@@ -118,11 +125,15 @@ fn pymss_source_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
         )));
     }
 
-    if cfg!(debug_assertions) {
-        dev_pymss_source_path()
-    } else {
-        Ok(production_pymss_source_path(app))
+    if let Some(path) = production_pymss_source_path(app) {
+        return Ok(Some(path));
     }
+
+    if cfg!(debug_assertions) {
+        return dev_pymss_source_path();
+    }
+
+    Ok(None)
 }
 
 fn embedded_python_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
@@ -228,14 +239,12 @@ fn build_worker_command(
     let worker = worker_path(app)?;
     let python = if let Ok(value) = std::env::var("PYMSS_STUDIO_PYTHON") {
         value
-    } else if !cfg!(debug_assertions) {
-        if let Some(embedded) = embedded_python_path(app)? {
-            embedded.to_string_lossy().to_string()
-        } else {
-            "python3".to_string()
-        }
-    } else {
+    } else if let Some(embedded) = embedded_python_path(app)? {
+        embedded.to_string_lossy().to_string()
+    } else if cfg!(debug_assertions) {
         "python".to_string()
+    } else {
+        "python3".to_string()
     };
     let mut cmd = Command::new(python);
     #[cfg(windows)]
