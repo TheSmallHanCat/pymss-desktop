@@ -577,6 +577,8 @@
     "languageSimplifiedChinese": "简体中文",
     "languageEnglish": "English",
     "languageFollowSystemHint": "Currently following: {locale}",
+    "scaleFactor": "Scale Factor",
+    "scaleFactorHint": "Adjust the UI scale from 75% to 150%.",
     "runtime": "Runtime Environment",
     "runtimeDesc": "Review runtime dependencies and available acceleration backends.",
     "paths": "Paths",

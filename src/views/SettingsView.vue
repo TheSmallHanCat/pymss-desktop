@@ -37,6 +37,7 @@ const task = useTaskStore()
 const {
   themeMode,
   themeAccent,
+  scaleFactor,
   locale,
   dataRoot,
   modelDir,
@@ -66,6 +67,7 @@ const languageOptions = computed(() => [
   { label: t('settings.languageSimplifiedChinese'), value: 'zh-CN' },
   { label: t('settings.languageEnglish'), value: 'en' },
 ])
+const scaleFactorPercent = computed(() => `${Math.round(scaleFactor.value * 100)}%`)
 const maxConcurrentSeparationsInput = computed({
   get: () => {
     const value = Number(maxConcurrentSeparations.value || 1)
@@ -128,6 +130,10 @@ function getElementOrigin(element: HTMLElement | null) {
     x: rect.left + rect.width / 2,
     y: rect.top + rect.height / 2,
   }
+}
+
+function formatScaleFactorTooltip(value: number) {
+  return `${Math.round(value * 100)}%`
 }
 
 async function selectThemeMode(mode: ThemeMode, event: MouseEvent) {
@@ -322,6 +328,23 @@ onMounted(() => {
               </div>
               <p v-if="locale === SYSTEM_LOCALE" class="text-muted text-sm setting-field__hint">
                 {{ t('settings.languageFollowSystemHint', { locale: currentLocale === 'en' ? t('settings.languageEnglish') : t('settings.languageSimplifiedChinese') }) }}
+              </p>
+            </section>
+
+            <section class="setting-block">
+              <div class="setting-label-row">
+                <label class="text-muted text-sm">{{ t('settings.scaleFactor') }}</label>
+                <span class="scale-factor-value">{{ scaleFactorPercent }}</span>
+              </div>
+              <n-slider
+                v-model:value="scaleFactor"
+                :min="settings.SCALE_FACTOR_MIN"
+                :max="settings.SCALE_FACTOR_MAX"
+                :step="settings.SCALE_FACTOR_STEP"
+                :format-tooltip="formatScaleFactorTooltip"
+              />
+              <p class="text-muted text-sm setting-field__hint">
+                {{ t('settings.scaleFactorHint') }}
               </p>
             </section>
           </div>
@@ -705,6 +728,21 @@ onMounted(() => {
 .setting-field__hint {
   margin: 0;
   line-height: 1.6;
+}
+
+.setting-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.scale-factor-value {
+  flex: 0 0 auto;
+  color: var(--primary-strong);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .settings-merged-layout {

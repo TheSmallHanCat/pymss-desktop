@@ -577,6 +577,8 @@
     "languageSimplifiedChinese": "简体中文",
     "languageEnglish": "English",
     "languageFollowSystemHint": "当前跟随：{locale}",
+    "scaleFactor": "缩放因子",
+    "scaleFactorHint": "调整界面缩放比例，范围为 75% 至 150%。",
     "runtime": "运行环境",
     "runtimeDesc": "查看当前运行依赖与可用加速能力。",
     "paths": "路径",
