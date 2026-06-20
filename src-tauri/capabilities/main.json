@@ -13,6 +13,7 @@
     "core:window:allow-close",
     "core:window:allow-destroy",
     "core:window:allow-show",
+    "core:webview:allow-set-webview-zoom",
     "dialog:default",
     "shell:default",
     "store:default"

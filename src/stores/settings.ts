@@ -9,6 +9,14 @@ import {
   type ThemeAccent,
   type ThemeMode,
 } from '@/utils/theme'
+import {
+  applyScaleFactor,
+  DEFAULT_SCALE_FACTOR,
+  normalizeScaleFactor,
+  SCALE_FACTOR_MAX,
+  SCALE_FACTOR_MIN,
+  SCALE_FACTOR_STEP,
+} from '@/utils/appZoom'
 import { normalizeLocaleSetting, setLocale, type LocaleSetting } from '@/i18n'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
 import type { EnvInfo } from '@/stores/app'
@@ -71,6 +79,7 @@ export type ModelDirMigrationState = {
 type StoredSettings = {
   themeMode?: ThemeMode
   themeAccent?: ThemeAccent
+  scaleFactor?: number
   locale?: LocaleSetting
   modelDir?: string
   outputDir?: string
@@ -171,6 +180,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const appPaths = ref<AppPathsPayload | null>(null)
   const themeMode = ref<ThemeMode>(DEFAULT_THEME_MODE)
   const themeAccent = ref<ThemeAccent>(DEFAULT_THEME_ACCENT)
+  const scaleFactor = ref(DEFAULT_SCALE_FACTOR)
   const locale = ref<LocaleSetting>(DEFAULT_LOCALE)
   const modelDir = ref('')
   const outputDir = ref('')
@@ -198,6 +208,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const persistable = computed<StoredSettings>(() => ({
     themeMode: themeMode.value,
     themeAccent: themeAccent.value,
+    scaleFactor: scaleFactor.value,
     locale: locale.value,
     modelDir: modelDir.value,
     outputDir: outputDir.value,
@@ -235,6 +246,7 @@ export const useSettingsStore = defineStore('settings', () => {
     appPaths.value = paths
     themeMode.value = stored?.themeMode || DEFAULT_THEME_MODE
     themeAccent.value = normalizeThemeAccent(stored?.themeAccent, DEFAULT_THEME_ACCENT)
+    scaleFactor.value = normalizeScaleFactor(stored?.scaleFactor)
     locale.value = normalizeLocaleSetting(stored?.locale, DEFAULT_LOCALE)
     modelDir.value = (stored?.modelDir || paths.modelsDir).trim() || paths.modelsDir
     outputDir.value = (stored?.outputDir || paths.outputsDir).trim() || paths.outputsDir
@@ -258,6 +270,7 @@ export const useSettingsStore = defineStore('settings', () => {
       || String(stored.startupOnboardingSeenVersion || '').trim().length > 0
 
     applyTheme(themeMode.value, themeAccent.value)
+    await applyScaleFactor(scaleFactor.value).catch((error) => console.warn('Failed to apply scale factor', error))
     setLocale(locale.value)
     initialized.value = true
     if (shouldPersistNormalizedOnboarding) queuePersist()
@@ -269,6 +282,11 @@ export const useSettingsStore = defineStore('settings', () => {
   })
   watch(themeAccent, (value) => {
     applyTheme(themeMode.value, value)
+    queuePersist()
+  })
+  watch(scaleFactor, (value) => {
+    scaleFactor.value = normalizeScaleFactor(value)
+    void applyScaleFactor(scaleFactor.value).catch((error) => console.warn('Failed to apply scale factor', error))
     queuePersist()
   })
   watch(locale, (value) => {
@@ -688,6 +706,7 @@ export const useSettingsStore = defineStore('settings', () => {
     shouldShowStartupOnboarding,
     themeMode,
     themeAccent,
+    scaleFactor,
     locale,
     modelDir,
     outputDir,
@@ -697,6 +716,9 @@ export const useSettingsStore = defineStore('settings', () => {
     downloadSource,
     maxConcurrentSeparations,
     MAX_CONCURRENT_SEPARATIONS,
+    SCALE_FACTOR_MIN,
+    SCALE_FACTOR_MAX,
+    SCALE_FACTOR_STEP,
     wavBitDepth,
     flacBitDepth,
     mp3BitRate,
