@@ -29,6 +29,22 @@ export type ModelEntry = {
   modelPath: string
   configPath: string | null
   auxiliaryPaths: string[]
+  defaultInferenceParams?: ModelDefaultInferenceParams
+  defaultInferenceParamsResolved?: boolean
+}
+
+export type ModelDefaultInferenceParams = {
+  batch_size?: number
+  overlap_size?: number
+  num_overlap?: number
+  chunk_size?: number
+  standardize?: boolean
+  normalize?: boolean
+  window_size?: number
+  aggression?: number
+  enable_post_process?: boolean
+  post_process_threshold?: number
+  high_end_process?: boolean
 }
 
 type ModelsPayload = {
@@ -106,6 +122,7 @@ export type ResidualCleanupState = {
 }
 
 const DELETE_TASK_TIMEOUT_MS = 5 * 60 * 1000
+const STORAGE_SUMMARY_CACHE_TTL_MS = 30 * 1000
 
 type StoredModelState = {
   models?: ModelEntry[]
@@ -130,6 +147,56 @@ function normalizeDownloadTasks(input?: Record<string, DownloadTask>) {
   return next
 }
 
+function normalizeDefaultInferenceParams(input?: Record<string, unknown> | null): ModelDefaultInferenceParams | undefined {
+  if (!input || typeof input !== 'object') return undefined
+
+  const next: Partial<ModelDefaultInferenceParams> = {}
+  const source = input as Record<string, unknown>
+
+  const assignNumber = (targetKey: keyof ModelDefaultInferenceParams, ...candidateKeys: string[]) => {
+    for (const candidateKey of candidateKeys) {
+      const value = source[candidateKey]
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        ;(next as Record<string, number | boolean | undefined>)[targetKey] = value
+        return
+      }
+    }
+  }
+
+  const assignBoolean = (targetKey: keyof ModelDefaultInferenceParams, ...candidateKeys: string[]) => {
+    for (const candidateKey of candidateKeys) {
+      const value = source[candidateKey]
+      if (typeof value === 'boolean') {
+        ;(next as Record<string, number | boolean | undefined>)[targetKey] = value
+        return
+      }
+    }
+  }
+
+  assignNumber('batch_size', 'batch_size', 'batchSize')
+  assignNumber('overlap_size', 'overlap_size', 'overlapSize')
+  assignNumber('num_overlap', 'num_overlap', 'numOverlap')
+  assignNumber('chunk_size', 'chunk_size', 'chunkSize')
+  assignBoolean('standardize', 'standardize')
+  assignBoolean('normalize', 'normalize')
+  assignNumber('window_size', 'window_size', 'windowSize')
+  assignNumber('aggression', 'aggression')
+  assignBoolean('enable_post_process', 'enable_post_process', 'enablePostProcess')
+  assignNumber('post_process_threshold', 'post_process_threshold', 'postProcessThreshold')
+  assignBoolean('high_end_process', 'high_end_process', 'highEndProcess')
+
+  return Object.keys(next).length ? next : undefined
+}
+
+function normalizeModelEntry(model: ModelEntry): ModelEntry {
+  const rawDefaults = model.defaultInferenceParams as Record<string, unknown> | undefined
+  return {
+    ...model,
+    defaultInferenceParams: normalizeDefaultInferenceParams(rawDefaults),
+    defaultInferenceParamsResolved: rawDefaults !== undefined,
+  }
+}
+
 export const useModelStore = defineStore('model', () => {
   const initialized = ref(false)
   const models = ref<ModelEntry[]>([])
@@ -151,6 +218,7 @@ export const useModelStore = defineStore('model', () => {
   const deleteTasks = ref<Record<string, DeleteTask>>({})
   const deleteTaskIndex = ref<Record<string, string>>({})
   const modelStorageSummary = ref<ModelStorageSummary | null>(null)
+  const modelStorageSummaryLoadedAt = ref(0)
   const storageLoading = ref(false)
   const batchDeleteState = ref<BatchDeleteState>({
     active: false,
@@ -220,7 +288,7 @@ export const useModelStore = defineStore('model', () => {
     if (initialized.value) return
     const stored = await loadAppStore<StoredModelState>('model-state')
     if (stored?.models?.length) {
-      models.value = stored.models
+      models.value = stored.models.map(normalizeModelEntry)
       categories.value = stored.categories || []
       categoriesCn.value = stored.categoriesCn || []
       modelDir.value = stored.modelDir || ''
@@ -256,10 +324,11 @@ export const useModelStore = defineStore('model', () => {
   }
 
   function upsertModel(modelInfo: ModelEntry) {
+    const normalizedModel = normalizeModelEntry(modelInfo)
     const index = models.value.findIndex((item) => item.name === modelInfo.name)
-    if (index >= 0) models.value[index] = modelInfo
-    else models.value.push(modelInfo)
-    if (selectedModel.value === modelInfo.name) selectedInfo.value = modelInfo
+    if (index >= 0) models.value[index] = normalizedModel
+    else models.value.push(normalizedModel)
+    if (selectedModel.value === modelInfo.name) selectedInfo.value = normalizedModel
     persistModelCache()
   }
 
@@ -276,10 +345,13 @@ export const useModelStore = defineStore('model', () => {
           modelDir: settings.modelDir || null,
         },
       })
-      models.value = result.models
+      models.value = result.models.map(normalizeModelEntry)
       categories.value = result.categories
       categoriesCn.value = result.categoriesCn
       modelDir.value = result.modelDir
+      const nextSelected = models.value.find((model) => model.name === selectedModel.value) || null
+      if (nextSelected) selectedInfo.value = nextSelected
+      else if (selectedInfo.value?.name === selectedModel.value) selectedInfo.value = null
       persistModelCache()
       const firstDownloaded = models.value.find((model) => model.supported && model.downloaded)
       if (!models.value.some((model) => model.name === selectedModel.value && model.downloaded)) {
@@ -303,6 +375,11 @@ export const useModelStore = defineStore('model', () => {
       : modelOrName
     if (listEntry) selectedInfo.value = listEntry
 
+    if (listEntry?.defaultInferenceParamsResolved) {
+      detailLoading.value = false
+      return Promise.resolve(listEntry)
+    }
+
     detailLoading.value = true
     return invoke<ModelEntry>('get_model_info', {
       payload: {
@@ -310,8 +387,9 @@ export const useModelStore = defineStore('model', () => {
         modelDir: settings.modelDir || null,
       },
     }).then((info) => {
-      if (selectedModel.value === name) selectedInfo.value = info
-      return info
+      const normalizedInfo = normalizeModelEntry(info)
+      if (selectedModel.value === name) selectedInfo.value = normalizedInfo
+      return normalizedInfo
     }).catch((err) => {
       error.value = err instanceof Error ? err.message : String(err)
       throw err
@@ -472,7 +550,10 @@ export const useModelStore = defineStore('model', () => {
           notified: false,
         }
         const summary = payload.modelStorageSummary
-        if (summary?.models) modelStorageSummary.value = summary
+        if (summary?.models) {
+          modelStorageSummary.value = summary
+          modelStorageSummaryLoadedAt.value = Date.now()
+        }
       } else if (event.type === 'model_residual_cleanup_failed') {
         residualCleanupState.value = {
           ...residualCleanupState.value,
@@ -484,7 +565,10 @@ export const useModelStore = defineStore('model', () => {
           notified: false,
         }
         const summary = payload.modelStorageSummary
-        if (summary?.models) modelStorageSummary.value = summary
+        if (summary?.models) {
+          modelStorageSummary.value = summary
+          modelStorageSummaryLoadedAt.value = Date.now()
+        }
       } else if (event.type === 'error') {
         residualCleanupState.value = {
           ...residualCleanupState.value,
@@ -684,17 +768,27 @@ export const useModelStore = defineStore('model', () => {
       active: false,
       currentModel: '',
     }
-    await loadModelStorageSummary()
+    await loadModelStorageSummary({ force: true })
   }
 
-  async function loadModelStorageSummary() {
+  async function loadModelStorageSummary(options?: { force?: boolean }) {
     const settings = useSettingsStore()
+    const requestedModelDir = String(settings.modelDir || '').trim()
+    const cachedModelDir = String(modelStorageSummary.value?.modelDir || '').trim()
+    const hasFreshCache = Boolean(
+      modelStorageSummary.value
+      && cachedModelDir
+      && cachedModelDir === requestedModelDir
+      && Date.now() - modelStorageSummaryLoadedAt.value < STORAGE_SUMMARY_CACHE_TTL_MS,
+    )
+    if (!options?.force && hasFreshCache) return modelStorageSummary.value
     storageLoading.value = true
     try {
       const result = await invoke<ModelStorageSummary>('get_model_storage_summary', {
         payload: { modelDir: settings.modelDir || null },
       })
       modelStorageSummary.value = result
+      modelStorageSummaryLoadedAt.value = Date.now()
       return result
     } finally {
       storageLoading.value = false

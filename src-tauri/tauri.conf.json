@@ -28,7 +28,8 @@
         "enable": true,
         "scope": [
           "$APPDATA/**",
-          "$HOME/.pymss-studio/**"
+          "$HOME/.pymss-studio/**",
+          "**"
         ]
       }
     }

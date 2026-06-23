@@ -81,6 +81,7 @@ type StoredSettings = {
   themeAccent?: ThemeAccent
   scaleFactor?: number
   locale?: LocaleSetting
+  animationsEnabled?: boolean
   modelDir?: string
   outputDir?: string
   separateTaskOutputDir?: boolean
@@ -182,6 +183,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const themeAccent = ref<ThemeAccent>(DEFAULT_THEME_ACCENT)
   const scaleFactor = ref(DEFAULT_SCALE_FACTOR)
   const locale = ref<LocaleSetting>(DEFAULT_LOCALE)
+  const animationsEnabled = ref(true)
   const modelDir = ref('')
   const outputDir = ref('')
   const separateTaskOutputDir = ref(true)
@@ -210,6 +212,7 @@ export const useSettingsStore = defineStore('settings', () => {
     themeAccent: themeAccent.value,
     scaleFactor: scaleFactor.value,
     locale: locale.value,
+    animationsEnabled: animationsEnabled.value,
     modelDir: modelDir.value,
     outputDir: outputDir.value,
     separateTaskOutputDir: separateTaskOutputDir.value,
@@ -226,6 +229,17 @@ export const useSettingsStore = defineStore('settings', () => {
   }))
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null
+  let scaleApplyTimer: ReturnType<typeof setTimeout> | null = null
+
+  // 防抖应用缩放：滑块位于它自身控制的 WebView 内，立即 setZoom 会在交互过程中
+  // 改变滑块几何，导致指针位置重新映射、数值连跳两格。延迟到交互稳定后再缩放即可避免。
+  function queueApplyScaleFactor(value: number) {
+    if (scaleApplyTimer) clearTimeout(scaleApplyTimer)
+    scaleApplyTimer = setTimeout(() => {
+      scaleApplyTimer = null
+      void applyScaleFactor(value).catch((error) => console.warn('Failed to apply scale factor', error))
+    }, 140)
+  }
 
   function queuePersist() {
     if (!initialized.value) return
@@ -248,6 +262,7 @@ export const useSettingsStore = defineStore('settings', () => {
     themeAccent.value = normalizeThemeAccent(stored?.themeAccent, DEFAULT_THEME_ACCENT)
     scaleFactor.value = normalizeScaleFactor(stored?.scaleFactor)
     locale.value = normalizeLocaleSetting(stored?.locale, DEFAULT_LOCALE)
+    animationsEnabled.value = stored?.animationsEnabled ?? true
     modelDir.value = (stored?.modelDir || paths.modelsDir).trim() || paths.modelsDir
     outputDir.value = (stored?.outputDir || paths.outputsDir).trim() || paths.outputsDir
     separateTaskOutputDir.value = stored?.separateTaskOutputDir ?? true
@@ -285,12 +300,16 @@ export const useSettingsStore = defineStore('settings', () => {
     queuePersist()
   })
   watch(scaleFactor, (value) => {
-    scaleFactor.value = normalizeScaleFactor(value)
-    void applyScaleFactor(scaleFactor.value).catch((error) => console.warn('Failed to apply scale factor', error))
+    const normalized = normalizeScaleFactor(value)
+    if (normalized !== value) scaleFactor.value = normalized
+    queueApplyScaleFactor(normalized)
     queuePersist()
   })
   watch(locale, (value) => {
     setLocale(value)
+    queuePersist()
+  })
+  watch(animationsEnabled, () => {
     queuePersist()
   })
   watch(
@@ -378,7 +397,7 @@ export const useSettingsStore = defineStore('settings', () => {
     const { useModelStore } = await import('@/stores/model')
     const modelStore = useModelStore()
     await modelStore.loadModels()
-    await modelStore.loadModelStorageSummary()
+    await modelStore.loadModelStorageSummary({ force: true })
     const selectedModelName = modelStore.selectedModel
     if (selectedModelName) {
       const nextSelected = modelStore.models.find((item) => item.name === selectedModelName) || null
@@ -708,6 +727,7 @@ export const useSettingsStore = defineStore('settings', () => {
     themeAccent,
     scaleFactor,
     locale,
+    animationsEnabled,
     modelDir,
     outputDir,
     separateTaskOutputDir,

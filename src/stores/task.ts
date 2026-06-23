@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import i18n from '@/i18n'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
 import { useSettingsStore } from '@/stores/settings'
-import { useModelStore } from '@/stores/model'
+import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
 import { useAppStore } from '@/stores/app'
 
 export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
@@ -25,7 +25,6 @@ export type SeparationRunConfig = {
   inferenceParams: Record<string, unknown>
 }
 
-export type StandardizeMode = 'default' | 'enabled' | 'disabled'
 
 type ScanMediaPathsResult = {
   files: string[]
@@ -61,7 +60,7 @@ type PersistedTaskState = {
 
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus']
 const VIDEO_EXTENSIONS = ['mp4', 'mkv', 'mov', 'avi', 'webm', 'flv']
-const CURRENT_INFERENCE_PARAMS_VERSION = 2
+const CURRENT_INFERENCE_PARAMS_VERSION = 3
 const TERMINAL_STATUSES: TaskStatus[] = ['done', 'failed', 'cancelled']
 const INTERRUPTIBLE_STATUSES: TaskStatus[] = ['queued', 'preparing', 'validating_input', 'downloading_model', 'ensuring_model', 'loading_model', 'separating', 'writing_output']
 
@@ -188,7 +187,8 @@ function normalizeRunConfig(runConfig?: SeparationRunConfig): SeparationRunConfi
     audioParams: { ...(runConfig.audioParams || {}) },
     inferenceParams: { ...(runConfig.inferenceParams || {}) },
   }
-  if ((next.inferenceParamsVersion || 0) >= CURRENT_INFERENCE_PARAMS_VERSION) {
+  const version = next.inferenceParamsVersion || 0
+  if (version >= CURRENT_INFERENCE_PARAMS_VERSION) {
     next.inferenceParamsVersion = CURRENT_INFERENCE_PARAMS_VERSION
     return next
   }
@@ -221,6 +221,78 @@ function isVrModelType(modelType?: string | null) {
   return String(modelType || '').trim().toLowerCase() === 'vr'
 }
 
+function isApolloModelType(modelType?: string | null) {
+  return String(modelType || '').trim().toLowerCase() === 'apollo'
+}
+
+type InferenceNumberField =
+  | 'batch_size'
+  | 'overlap_size'
+  | 'num_overlap'
+  | 'chunk_size'
+  | 'window_size'
+  | 'aggression'
+  | 'post_process_threshold'
+
+const ZERO_AS_UNSET_FIELDS = new Set<InferenceNumberField>([
+  'batch_size',
+  'overlap_size',
+  'num_overlap',
+  'chunk_size',
+  'window_size',
+])
+
+function normalizeEditableNumberValue(
+  current: number | null | undefined,
+  options: { zeroMeansUnset: boolean },
+) {
+  const { zeroMeansUnset } = options
+  if (typeof current !== 'number' || !Number.isFinite(current)) return null
+  if (zeroMeansUnset && current <= 0) return null
+  return current
+}
+
+function resolveNumberOverride(
+  defaults: ModelDefaultInferenceParams | undefined,
+  key: keyof ModelDefaultInferenceParams,
+  current: number | null | undefined,
+  options?: { zeroMeansUnset?: boolean },
+) {
+  const zeroMeansUnset = options?.zeroMeansUnset ?? false
+  const normalizedCurrent = normalizeEditableNumberValue(current, { zeroMeansUnset })
+  if (normalizedCurrent === null) return null
+  const defaultValue = defaults?.[key]
+  if (typeof defaultValue === 'number') return normalizedCurrent === defaultValue ? null : normalizedCurrent
+  return normalizedCurrent
+}
+
+function resolveBooleanOverride(defaults: ModelDefaultInferenceParams | undefined, key: keyof ModelDefaultInferenceParams, current: boolean) {
+  const defaultValue = defaults?.[key]
+  if (typeof defaultValue === 'boolean') return current === defaultValue ? null : current
+  return current ? true : null
+}
+
+function applyModelDefaultsToUi(
+  defaults: ModelDefaultInferenceParams | undefined,
+  modelType?: string | null,
+) {
+  const vrModel = isVrModelType(modelType)
+  const apolloModel = isApolloModelType(modelType)
+  return {
+    batch_size: defaults?.batch_size ?? (vrModel ? 2 : 1),
+    overlap_size: vrModel ? 0 : (defaults?.overlap_size ?? 0),
+    num_overlap: (vrModel || apolloModel) ? 0 : (defaults?.num_overlap ?? 0),
+    chunk_size: vrModel ? 0 : (defaults?.chunk_size ?? 0),
+    standardize: vrModel ? false : (defaults?.standardize ?? true),
+    normalize: defaults?.normalize ?? false,
+    window_size: vrModel ? (defaults?.window_size ?? 512) : 0,
+    aggression: vrModel ? (defaults?.aggression ?? 5) : 0,
+    enable_post_process: vrModel ? (defaults?.enable_post_process ?? false) : false,
+    post_process_threshold: vrModel ? (defaults?.post_process_threshold ?? 0.2) : 0,
+    high_end_process: vrModel ? (defaults?.high_end_process ?? false) : false,
+  }
+}
+
 function resolveTaskErrorMessage(code: unknown, message: unknown, input?: string) {
   const detail = typeof message === 'string' ? message : ''
   const path = typeof input === 'string' ? input : ''
@@ -242,16 +314,19 @@ export const useTaskStore = defineStore('task', () => {
   const inputFiles = ref<string[]>([])
   const useTta = ref(false)
   const debug = ref(false)
-  const batchSize = ref(1)
-  const overlapSize = ref(0)
-  const chunkSize = ref(0)
-  const standardizeMode = ref<StandardizeMode>('default')
+  const batch_size = ref<number | null>(1)
+  const overlap_size = ref<number | null>(0)
+  const num_overlap = ref<number | null>(0)
+  const chunk_size = ref<number | null>(0)
+  const standardize = ref(true)
   const normalize = ref(false)
-  const vrWindowSize = ref(0)
-  const vrAggression = ref(0)
-  const vrEnablePostProcess = ref(false)
-  const vrPostProcessThreshold = ref(0)
-  const vrHighEndProcess = ref(false)
+  const window_size = ref<number | null>(0)
+  const aggression = ref<number | null>(0)
+  const enable_post_process = ref(false)
+  const post_process_threshold = ref<number | null>(0)
+  const high_end_process = ref(false)
+  const selectedModelDefaults = ref<ModelDefaultInferenceParams>({})
+  const selectedModelType = ref<string | null>(null)
 
   const inputPath = computed(() => inputFiles.value[0] || '')
   const activeTask = computed(() => tasks.value.find((task) => task.id === activeTaskId.value) || null)
@@ -307,6 +382,62 @@ export const useTaskStore = defineStore('task', () => {
 
   function touch(task: SeparationTask) {
     task.updatedAt = Date.now()
+  }
+
+  function applySelectedModelDefaults(defaults: ModelDefaultInferenceParams | undefined, modelType?: string | null) {
+    selectedModelDefaults.value = defaults ? { ...defaults } : {}
+    selectedModelType.value = modelType ?? null
+    const next = applyModelDefaultsToUi(defaults, modelType)
+    batch_size.value = next.batch_size ?? 1
+    overlap_size.value = next.overlap_size ?? 0
+    num_overlap.value = next.num_overlap ?? 0
+    chunk_size.value = next.chunk_size ?? 0
+    standardize.value = next.standardize ?? !isVrModelType(modelType)
+    normalize.value = next.normalize ?? false
+    window_size.value = next.window_size ?? 0
+    aggression.value = next.aggression ?? 0
+    enable_post_process.value = next.enable_post_process ?? false
+    post_process_threshold.value = next.post_process_threshold ?? 0
+    high_end_process.value = next.high_end_process ?? false
+  }
+
+  function getCurrentUiInferenceDefaults() {
+    return applyModelDefaultsToUi(selectedModelDefaults.value, selectedModelType.value)
+  }
+
+  function restoreInferenceNumberFallback(field: InferenceNumberField) {
+    if (!ZERO_AS_UNSET_FIELDS.has(field)) return
+    const defaults = getCurrentUiInferenceDefaults()
+    const nextValue = defaults[field]
+    if (typeof nextValue !== 'number' || !Number.isFinite(nextValue)) return
+    switch (field) {
+      case 'batch_size':
+        if (normalizeEditableNumberValue(batch_size.value, { zeroMeansUnset: true }) === null) batch_size.value = nextValue
+        break
+      case 'overlap_size':
+        if (normalizeEditableNumberValue(overlap_size.value, { zeroMeansUnset: true }) === null) overlap_size.value = nextValue
+        break
+      case 'num_overlap':
+        if (normalizeEditableNumberValue(num_overlap.value, { zeroMeansUnset: true }) === null) num_overlap.value = nextValue
+        break
+      case 'chunk_size':
+        if (normalizeEditableNumberValue(chunk_size.value, { zeroMeansUnset: true }) === null) chunk_size.value = nextValue
+        break
+      case 'window_size':
+        if (normalizeEditableNumberValue(window_size.value, { zeroMeansUnset: true }) === null) window_size.value = nextValue
+        break
+      case 'aggression':
+      case 'post_process_threshold':
+        break
+    }
+  }
+
+  function normalizeInferenceInputsBeforeSubmit() {
+    restoreInferenceNumberFallback('batch_size')
+    restoreInferenceNumberFallback('overlap_size')
+    restoreInferenceNumberFallback('num_overlap')
+    restoreInferenceNumberFallback('chunk_size')
+    restoreInferenceNumberFallback('window_size')
   }
 
   function appendTaskLogs(task: SeparationTask, lines: string | string[]) {
@@ -583,6 +714,20 @@ export const useTaskStore = defineStore('task', () => {
     return invoke<{ trashed: string[]; failed: string[] }>('move_paths_to_trash', { paths: valid })
   }
 
+  // 删除结果时始终仅回收当前结果对应的输出文件，避免误删共享目录、
+  // 任务目录中的附加文件或后续派生产物。
+  function resultTrashTargets(task: SeparationTask): string[] {
+    const seen = new Set<string>()
+    return task.outputs
+      .map((output) => output.path?.trim())
+      .filter((path): path is string => Boolean(path))
+      .filter((path) => {
+        if (seen.has(path)) return false
+        seen.add(path)
+        return true
+      })
+  }
+
   function primaryRevealPath(task: SeparationTask) {
     return task.output
   }
@@ -683,6 +828,26 @@ export const useTaskStore = defineStore('task', () => {
     queuePersist()
   }
 
+  // 结果页清空：将指定结果（或全部当前可见结果）标记为 resultHidden，不影响任务页与磁盘文件
+  function clearResults(ids?: string[]) {
+    const removeSet = ids?.length ? new Set(ids) : null
+    let removed = 0
+    tasks.value.forEach((task) => {
+      if (task.resultHidden) return
+      if (task.status !== 'done' || (!task.outputs.length && !task.files.length)) return
+      if (removeSet && !removeSet.has(task.id)) return
+      if (!task.resultHidden) {
+        task.resultHidden = true
+        removed += 1
+      }
+    })
+    if (!removed) return 0
+    focusedResultTaskId.value = null
+    reclaimHiddenTasks()
+    queuePersist()
+    return removed
+  }
+
   async function cancelAllTasks() {
     const currentRunning = [...runningTasks.value]
     if (!currentRunning.length) return { total: 0, cancelled: 0 }
@@ -724,25 +889,43 @@ export const useTaskStore = defineStore('task', () => {
 
   function buildInferenceParams(modelType?: string | null): Record<string, unknown> {
     const inferenceParams: Record<string, unknown> = {}
+    const defaults = selectedModelDefaults.value
     const vrModel = isVrModelType(modelType)
+    const apolloModel = isApolloModelType(modelType)
 
-    if (batchSize.value > 1) inferenceParams.batch_size = batchSize.value
+    const batchSizeOverride = resolveNumberOverride(defaults, 'batch_size', batch_size.value, { zeroMeansUnset: true })
+    if (batchSizeOverride !== null) inferenceParams.batch_size = batchSizeOverride
 
     if (vrModel) {
-      if (normalize.value) inferenceParams.normalize = true
-      if (vrWindowSize.value > 0) inferenceParams.window_size = vrWindowSize.value
-      if (vrAggression.value > 0) inferenceParams.aggression = vrAggression.value
-      if (vrEnablePostProcess.value) inferenceParams.enable_post_process = true
-      if (vrPostProcessThreshold.value > 0) inferenceParams.post_process_threshold = vrPostProcessThreshold.value
-      if (vrHighEndProcess.value) inferenceParams.high_end_process = true
+      const windowSizeOverride = resolveNumberOverride(defaults, 'window_size', window_size.value, { zeroMeansUnset: true })
+      const aggressionOverride = resolveNumberOverride(defaults, 'aggression', aggression.value)
+      const enablePostProcessOverride = resolveBooleanOverride(defaults, 'enable_post_process', enable_post_process.value)
+      const postProcessThresholdOverride = resolveNumberOverride(defaults, 'post_process_threshold', post_process_threshold.value)
+      const highEndProcessOverride = resolveBooleanOverride(defaults, 'high_end_process', high_end_process.value)
+      const normalizeOverride = resolveBooleanOverride(defaults, 'normalize', normalize.value)
+
+      if (windowSizeOverride !== null) inferenceParams.window_size = windowSizeOverride
+      if (aggressionOverride !== null) inferenceParams.aggression = aggressionOverride
+      if (enablePostProcessOverride !== null) inferenceParams.enable_post_process = enablePostProcessOverride
+      if (postProcessThresholdOverride !== null) inferenceParams.post_process_threshold = postProcessThresholdOverride
+      if (highEndProcessOverride !== null) inferenceParams.high_end_process = highEndProcessOverride
+      if (normalizeOverride !== null) inferenceParams.normalize = normalizeOverride
       return inferenceParams
     }
 
-    if (overlapSize.value > 0) inferenceParams.overlap_size = overlapSize.value
-    if (chunkSize.value > 0) inferenceParams.chunk_size = chunkSize.value
-    if (normalize.value) inferenceParams.normalize = true
-    if (standardizeMode.value === 'enabled') inferenceParams.standardize = true
-    else if (standardizeMode.value === 'disabled') inferenceParams.standardize = false
+    const overlapSizeOverride = resolveNumberOverride(defaults, 'overlap_size', overlap_size.value, { zeroMeansUnset: true })
+    const numOverlapOverride = apolloModel
+      ? null
+      : resolveNumberOverride(defaults, 'num_overlap', num_overlap.value, { zeroMeansUnset: true })
+    const chunkSizeOverride = resolveNumberOverride(defaults, 'chunk_size', chunk_size.value, { zeroMeansUnset: true })
+    const standardizeOverride = resolveBooleanOverride(defaults, 'standardize', standardize.value)
+    const normalizeOverride = resolveBooleanOverride(defaults, 'normalize', normalize.value)
+
+    if (overlapSizeOverride !== null) inferenceParams.overlap_size = overlapSizeOverride
+    if (numOverlapOverride !== null) inferenceParams.num_overlap = numOverlapOverride
+    if (chunkSizeOverride !== null) inferenceParams.chunk_size = chunkSizeOverride
+    if (standardizeOverride !== null) inferenceParams.standardize = standardizeOverride
+    if (normalizeOverride !== null) inferenceParams.normalize = normalizeOverride
     return inferenceParams
   }
 
@@ -763,6 +946,7 @@ export const useTaskStore = defineStore('task', () => {
       ? modelStore.selectedInfo
       : modelStore.models.find((item) => item.name === model) || null
     const modelType = selectedEntry?.modelType || null
+    normalizeInferenceInputsBeforeSubmit()
     const inferenceParams = buildInferenceParams(modelType)
     const targets = [...inputFiles.value]
     targets.forEach((input) => submitOne(input, model, inferenceParams, modelType))
@@ -802,16 +986,18 @@ export const useTaskStore = defineStore('task', () => {
     inputPath,
     useTta,
     debug,
-    batchSize,
-    overlapSize,
-    chunkSize,
-    standardizeMode,
+    batch_size,
+    overlap_size,
+    num_overlap,
+    chunk_size,
+    standardize,
     normalize,
-    vrWindowSize,
-    vrAggression,
-    vrEnablePostProcess,
-    vrPostProcessThreshold,
-    vrHighEndProcess,
+    window_size,
+    aggression,
+    enable_post_process,
+    post_process_threshold,
+    high_end_process,
+    restoreInferenceNumberFallback,
     initialize,
     handleWorkerEvent,
     pickFiles,
@@ -822,6 +1008,7 @@ export const useTaskStore = defineStore('task', () => {
     clearInputFiles,
     revealPath,
     trashPaths,
+    resultTrashTargets,
     primaryRevealPath,
     getTaskById,
     focusResultTask,
@@ -830,11 +1017,14 @@ export const useTaskStore = defineStore('task', () => {
     removeTasks,
     removeResult,
     removeResults,
+    clearResults,
     clearHistory,
     cancelTask,
     cancelAllTasks,
     startSeparation,
     retryTask,
     scheduleQueue,
+    applySelectedModelDefaults,
+    normalizeInferenceInputsBeforeSubmit,
   }
 })

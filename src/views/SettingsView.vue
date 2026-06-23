@@ -10,6 +10,7 @@ import { useAppStore } from '@/stores/app'
 import { useModelStore } from '@/stores/model'
 import { useTaskStore } from '@/stores/task'
 import { formatBytes } from '@/utils/format'
+import { DEFAULT_SCALE_FACTOR, normalizeScaleFactor } from '@/utils/appZoom'
 import {
   applyTheme,
   getThemeAccentPreview,
@@ -39,6 +40,7 @@ const {
   themeAccent,
   scaleFactor,
   locale,
+  animationsEnabled,
   dataRoot,
   modelDir,
   outputDir,
@@ -67,7 +69,36 @@ const languageOptions = computed(() => [
   { label: t('settings.languageSimplifiedChinese'), value: 'zh-CN' },
   { label: t('settings.languageEnglish'), value: 'en' },
 ])
-const scaleFactorPercent = computed(() => `${Math.round(scaleFactor.value * 100)}%`)
+const SCALE_FACTOR_PRESET_VALUES = [0.75, 0.9, 1, 1.1, 1.25, 1.5] as const
+const scaleFactorPercent = computed(() => formatScaleFactorLabel(scaleFactor.value))
+const scaleSliderIndex = computed({
+  get: () => {
+    const current = normalizeScaleFactor(scaleFactor.value)
+    const exact = SCALE_FACTOR_PRESET_VALUES.findIndex((value) => isSameScaleFactor(value, current))
+    if (exact !== -1) return exact
+    let nearest = 0
+    let minDiff = Number.POSITIVE_INFINITY
+    SCALE_FACTOR_PRESET_VALUES.forEach((value, index) => {
+      const diff = Math.abs(value - current)
+      if (diff < minDiff) {
+        minDiff = diff
+        nearest = index
+      }
+    })
+    return nearest
+  },
+  set: (index: number) => {
+    const value = SCALE_FACTOR_PRESET_VALUES[index]
+    if (value !== undefined) updateScaleFactor(value)
+  },
+})
+const scaleSliderMarks = computed<Record<number, string>>(() =>
+  SCALE_FACTOR_PRESET_VALUES.reduce<Record<number, string>>((marks, value, index) => {
+    marks[index] = formatScaleFactorLabel(value)
+    return marks
+  }, {}),
+)
+const isDefaultScaleFactor = computed(() => isSameScaleFactor(scaleFactor.value, DEFAULT_SCALE_FACTOR))
 const maxConcurrentSeparationsInput = computed({
   get: () => {
     const value = Number(maxConcurrentSeparations.value || 1)
@@ -92,6 +123,14 @@ const hasActiveModelDirUsage = computed(() => {
   const hasDownloadingModel = Object.values(downloadTasks.value).some((item) => item.status === 'downloading')
   return hasRunningWorkerTask || hasDownloadingModel || isModelDirMigrating.value
 })
+const currentResolvedLanguageLabel = computed(() =>
+  currentLocale.value === 'en'
+    ? t('settings.languageEnglish')
+    : t('settings.languageSimplifiedChinese'),
+)
+const appearanceThemeAccentLabel = computed(() =>
+  t(`settings.themeAccent${themeAccent.value[0].toUpperCase()}${themeAccent.value.slice(1)}`),
+)
 const modelDirMigrationVisible = computed(() => modelDirMigrationState.value.status !== 'idle' && modelDirMigrationState.value.status !== 'confirm')
 const modelDirMigrationProgress = computed(() => {
   const state = modelDirMigrationState.value
@@ -132,13 +171,25 @@ function getElementOrigin(element: HTMLElement | null) {
   }
 }
 
-function formatScaleFactorTooltip(value: number) {
-  return `${Math.round(value * 100)}%`
+function formatScaleFactorLabel(value: number) {
+  return `${Math.round(normalizeScaleFactor(value) * 100)}%`
+}
+
+function isSameScaleFactor(left: unknown, right: unknown) {
+  return Math.abs(normalizeScaleFactor(left) - normalizeScaleFactor(right)) < 0.001
+}
+
+function updateScaleFactor(value: number) {
+  scaleFactor.value = normalizeScaleFactor(value)
+}
+
+function resetScaleFactorToDefault() {
+  updateScaleFactor(DEFAULT_SCALE_FACTOR)
 }
 
 async function selectThemeMode(mode: ThemeMode, event: MouseEvent) {
   if (themeMode.value === mode) return
-  const origin = getEventOrigin(event)
+  const origin = animationsEnabled.value ? getEventOrigin(event) : undefined
   await runRippleViewTransition(() => {
     themeMode.value = mode
     applyTheme(mode, themeAccent.value)
@@ -147,7 +198,7 @@ async function selectThemeMode(mode: ThemeMode, event: MouseEvent) {
 
 async function selectThemeAccent(accent: ThemeAccent, event: MouseEvent) {
   if (themeAccent.value === accent) return
-  const origin = getEventOrigin(event)
+  const origin = animationsEnabled.value ? getEventOrigin(event) : undefined
   await runRippleViewTransition(() => {
     themeAccent.value = accent
     applyTheme(themeMode.value, accent)
@@ -156,10 +207,12 @@ async function selectThemeAccent(accent: ThemeAccent, event: MouseEvent) {
 
 async function selectLocale(code: LocaleSetting) {
   if (locale.value === code) return
-  const origin = getElementOrigin(languageSelectWrap.value) || {
-    x: window.innerWidth / 2,
-    y: window.innerHeight / 2,
-  }
+  const origin = animationsEnabled.value
+    ? (getElementOrigin(languageSelectWrap.value) || {
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 2,
+      })
+    : undefined
   await runRippleViewTransition(() => {
     locale.value = code
     setLocale(code)
@@ -237,6 +290,7 @@ onMounted(() => {
     app.checkEnvInBackground().catch(() => {})
   }
 })
+
 </script>
 
 <template>
@@ -265,88 +319,121 @@ onMounted(() => {
             </div>
           </template>
 
-          <div class="settings-stack settings-stack--compact">
-            <section class="setting-block">
-              <label class="text-muted text-sm">{{ t('settings.theme') }}</label>
-              <div class="theme-switcher">
-                <button
-                  type="button"
-                  :class="{ active: themeMode === 'system' }"
-                  @click="selectThemeMode('system', $event)"
-                >
-                  {{ t('settings.themeSystem') }}
-                </button>
-                <button
-                  type="button"
-                  :class="{ active: themeMode === 'dark' }"
-                  @click="selectThemeMode('dark', $event)"
-                >
-                  {{ t('settings.themeDark') }}
-                </button>
-                <button
-                  type="button"
-                  :class="{ active: themeMode === 'light' }"
-                  @click="selectThemeMode('light', $event)"
-                >
-                  {{ t('settings.themeLight') }}
-                </button>
-              </div>
-            </section>
+          <div class="appearance-list">
+            <p class="appearance-hint">{{ t('settings.appearanceHint') }}</p>
 
-            <section class="setting-block">
-              <label class="text-muted text-sm">{{ t('settings.themeColor') }}</label>
-              <div class="theme-accent-grid">
-                <button
-                  v-for="accent in themeAccentOptions"
-                  :key="accent.value"
-                  type="button"
-                  class="theme-accent-card"
-                  :class="{ active: themeAccent === accent.value }"
-                  @click="selectThemeAccent(accent.value, $event)"
-                >
-                  <span class="theme-accent-card__swatches">
+            <div class="setting-row">
+              <div class="setting-row__label">
+                <label class="setting-row__title">{{ t('settings.theme') }}</label>
+              </div>
+              <div class="setting-row__control">
+                <div class="theme-switcher">
+                  <button
+                    type="button"
+                    :class="{ active: themeMode === 'system' }"
+                    @click="selectThemeMode('system', $event)"
+                  >
+                    {{ t('settings.themeSystem') }}
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ active: themeMode === 'dark' }"
+                    @click="selectThemeMode('dark', $event)"
+                  >
+                    {{ t('settings.themeDark') }}
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ active: themeMode === 'light' }"
+                    @click="selectThemeMode('light', $event)"
+                  >
+                    {{ t('settings.themeLight') }}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-row__label">
+                <label class="setting-row__title">{{ t('settings.themeColor') }}</label>
+              </div>
+              <div class="setting-row__control">
+                <div class="accent-dots">
+                  <button
+                    v-for="accent in themeAccentOptions"
+                    :key="accent.value"
+                    type="button"
+                    class="accent-dot"
+                    :class="{ active: themeAccent === accent.value }"
+                    :title="accent.label"
+                    :aria-label="accent.label"
+                    @click="selectThemeAccent(accent.value, $event)"
+                  >
                     <span
-                      v-for="swatch in accent.preview"
-                      :key="swatch"
-                      class="theme-accent-card__swatch"
-                      :style="{ background: swatch }"
+                      class="accent-dot__fill"
+                      :style="{ background: `linear-gradient(135deg, ${accent.preview[0]} 0 50%, ${accent.preview[1]} 50% 100%)` }"
                     />
-                  </span>
-                  <span class="theme-accent-card__label">{{ accent.label }}</span>
+                  </button>
+                  <span class="accent-current">{{ appearanceThemeAccentLabel }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-row__label">
+                <label class="setting-row__title">{{ t('settings.language') }}</label>
+                <p v-if="locale === SYSTEM_LOCALE" class="setting-row__hint">
+                  {{ t('settings.languageFollowSystemHint', { locale: currentResolvedLanguageLabel }) }}
+                </p>
+              </div>
+              <div class="setting-row__control">
+                <div ref="languageSelectWrap" class="language-select-wrap">
+                  <n-select
+                    :value="locale"
+                    :options="languageOptions"
+                    :consistent-menu-width="false"
+                    @update:value="selectLocale"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-row__label">
+                <label class="setting-row__title">{{ t('settings.scaleFactor') }}</label>
+                <button
+                  type="button"
+                  class="scale-reset"
+                  :disabled="isDefaultScaleFactor"
+                  @click="resetScaleFactorToDefault"
+                >
+                  {{ t('settings.restoreDefaultScale') }}
                 </button>
               </div>
-            </section>
-
-            <section class="setting-block">
-              <label class="text-muted text-sm">{{ t('settings.language') }}</label>
-              <div ref="languageSelectWrap">
-                <n-select
-                  :value="locale"
-                  :options="languageOptions"
-                  @update:value="selectLocale"
-                />
+              <div class="setting-row__control">
+                <div class="scale-control">
+                  <n-slider
+                    v-model:value="scaleSliderIndex"
+                    :min="0"
+                    :max="5"
+                    :step="1"
+                    :marks="scaleSliderMarks"
+                    :tooltip="false"
+                  />
+                  <span class="scale-value">{{ scaleFactorPercent }}</span>
+                </div>
               </div>
-              <p v-if="locale === SYSTEM_LOCALE" class="text-muted text-sm setting-field__hint">
-                {{ t('settings.languageFollowSystemHint', { locale: currentLocale === 'en' ? t('settings.languageEnglish') : t('settings.languageSimplifiedChinese') }) }}
-              </p>
-            </section>
+            </div>
 
-            <section class="setting-block">
-              <div class="setting-label-row">
-                <label class="text-muted text-sm">{{ t('settings.scaleFactor') }}</label>
-                <span class="scale-factor-value">{{ scaleFactorPercent }}</span>
+            <div class="setting-row">
+              <div class="setting-row__label">
+                <label class="setting-row__title">{{ t('settings.animations') }}</label>
+                <p class="setting-row__hint">{{ t('settings.animationsHint') }}</p>
               </div>
-              <n-slider
-                v-model:value="scaleFactor"
-                :min="settings.SCALE_FACTOR_MIN"
-                :max="settings.SCALE_FACTOR_MAX"
-                :step="settings.SCALE_FACTOR_STEP"
-                :format-tooltip="formatScaleFactorTooltip"
-              />
-              <p class="text-muted text-sm setting-field__hint">
-                {{ t('settings.scaleFactorHint') }}
-              </p>
-            </section>
+              <div class="setting-row__control">
+                <n-switch v-model:value="animationsEnabled" />
+              </div>
+            </div>
           </div>
         </n-card>
       </n-grid-item>
@@ -655,11 +742,7 @@ onMounted(() => {
 }
 
 .settings-grid {
-  align-items: stretch;
-}
-
-.settings-card {
-  height: 100%;
+  align-items: start;
 }
 
 .settings-card :deep(.n-card__header) {
@@ -710,16 +793,151 @@ onMounted(() => {
     0 4px 14px color-mix(in srgb, var(--primary-glow) 12%, transparent);
 }
 
-.settings-stack {
+.appearance-list {
   display: grid;
-  gap: 18px;
 }
 
-.settings-stack--compact {
-  gap: 22px;
+.appearance-hint {
+  margin: 0 0 4px;
+  color: var(--on-surface-muted);
+  font-size: 13px;
+  line-height: 1.7;
 }
 
-.setting-block,
+.setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 0;
+}
+
+.setting-row + .setting-row {
+  border-top: 1px solid color-mix(in srgb, var(--outline) 50%, transparent);
+}
+
+.setting-row__label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.setting-row__title {
+  color: var(--on-surface);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.setting-row__hint {
+  margin: 0;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.setting-row__control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.accent-dots {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.accent-dot {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--outline) 72%, transparent);
+  background: transparent;
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform 160ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.accent-dot__fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.accent-dot:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--primary-border) 70%, var(--outline));
+}
+
+.accent-dot.active {
+  border-color: transparent;
+  box-shadow:
+    0 0 0 2px var(--surface-1),
+    0 0 0 4px var(--primary);
+}
+
+.accent-current {
+  margin-left: auto;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.language-select-wrap {
+  width: 100%;
+  max-width: 240px;
+}
+
+.scale-reset {
+  justify-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary-strong);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 150ms ease, opacity 150ms ease;
+}
+
+.scale-reset:hover:not(:disabled) {
+  color: color-mix(in srgb, var(--primary-strong) 80%, white 20%);
+}
+
+.scale-reset:disabled {
+  color: var(--on-surface-muted);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scale-control {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 280px;
+}
+
+.scale-control :deep(.n-slider) {
+  flex: 1;
+}
+
+.scale-control :deep(.n-slider-mark) {
+  font-size: 11px;
+}
+
+.scale-value {
+  flex: 0 0 auto;
+  color: var(--primary-strong);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
 .setting-field {
   display: grid;
   gap: 10px;
@@ -728,21 +946,6 @@ onMounted(() => {
 .setting-field__hint {
   margin: 0;
   line-height: 1.6;
-}
-
-.setting-label-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.scale-factor-value {
-  flex: 0 0 auto;
-  color: var(--primary-strong);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.2;
 }
 
 .settings-merged-layout {
@@ -990,88 +1193,6 @@ onMounted(() => {
   font-weight: 600;
 }
 
-.theme-accent-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin: 0;
-}
-
-.theme-accent-card {
-  position: relative;
-  display: grid;
-  gap: 7px;
-  justify-items: flex-start;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
-  border-radius: 12px;
-  color: var(--on-surface);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 96%, transparent), color-mix(in srgb, var(--surface-2) 74%, transparent));
-  cursor: pointer;
-  transition: border-color 180ms ease, background 180ms ease, transform 160ms ease, box-shadow 180ms ease;
-}
-
-.theme-accent-card::after {
-  content: '';
-  position: absolute;
-  right: 10px;
-  top: 10px;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: transparent;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 78%, transparent);
-  transition: background 180ms ease, box-shadow 180ms ease, transform 160ms ease;
-}
-
-.theme-accent-card:hover {
-  border-color: color-mix(in srgb, var(--primary-border) 72%, var(--outline));
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--primary-softer) 26%, var(--surface-1)), color-mix(in srgb, var(--surface-2) 84%, transparent));
-  transform: translateY(-1px);
-  box-shadow: 0 8px 20px color-mix(in srgb, rgba(0, 0, 0, 0.28) 88%, transparent);
-}
-
-.theme-accent-card.active {
-  border-color: var(--primary);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 20%, var(--surface-1)), color-mix(in srgb, var(--surface-2) 88%, transparent));
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--primary-border) 54%, transparent),
-    0 10px 22px color-mix(in srgb, var(--primary-glow) 18%, transparent);
-}
-
-.theme-accent-card.active::after {
-  background: var(--primary);
-  box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--primary-soft) 30%, transparent),
-    0 0 10px color-mix(in srgb, var(--primary-glow) 28%, transparent);
-  transform: scale(1.04);
-}
-
-.theme-accent-card__swatches {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.theme-accent-card__swatch {
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--outline) 72%, transparent);
-  box-shadow:
-    inset 0 0 0 1px rgba(255,255,255,0.22),
-    0 2px 8px rgba(0,0,0,0.18);
-}
-
-.theme-accent-card__label {
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
 .checking-dialog {
   display: grid;
   justify-items: center;
@@ -1219,10 +1340,6 @@ onMounted(() => {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .theme-accent-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .migration-summary-grid {
     grid-template-columns: 1fr;
   }
@@ -1251,8 +1368,21 @@ onMounted(() => {
     margin-top: 0;
   }
 
-  .theme-accent-grid {
-    grid-template-columns: minmax(0, 1fr);
+  .setting-row {
+    grid-template-columns: 1fr;
+  }
+
+  .setting-row__control {
+    justify-content: flex-start;
+  }
+
+  .language-select-wrap {
+    max-width: none;
+  }
+
+  .scale-control {
+    width: 100%;
+    min-width: 0;
   }
 
   .path-item__head,

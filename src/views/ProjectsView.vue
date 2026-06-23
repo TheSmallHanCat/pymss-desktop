@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
@@ -17,6 +17,7 @@ import {
   useEditorStore,
   type EditorProjectSummary,
 } from '@/stores/editor'
+import { usePagedSelection } from '@/composables/usePagedSelection'
 
 type ProjectSort = 'time_desc' | 'time_asc' | 'name_asc' | 'name_desc'
 
@@ -30,6 +31,7 @@ const sortBy = ref<ProjectSort>('time_desc')
 const creating = ref(false)
 const refreshing = ref(false)
 const deletingIds = ref<string[]>([])
+const batchDeleting = ref(false)
 
 const sortOptions = computed(() => [
   { label: t('projects.sortTimeDesc'), value: 'time_desc' },
@@ -65,6 +67,29 @@ const filteredProjects = computed(() => {
         return b.updatedAt - a.updatedAt
     }
   })
+})
+
+const pagedSelection = usePagedSelection(filteredProjects, {
+  initialPageSize: 24,
+  pageSizeOptions: [12, 24, 48, 96],
+})
+const {
+  selecting,
+  selectedIds: selectedProjectIds,
+  selectedSet: selectedProjectSet,
+  page,
+  pageSize,
+  pageSizeOptions,
+  allSelected: allProjectsSelected,
+  someSelected: someProjectsSelected,
+  toggleSelecting,
+  toggleSelection: toggleProjectSelection,
+  toggleSelectPage: toggleSelectAllProjects,
+} = pagedSelection
+const pagedProjects = computed(() => pagedSelection.pagedItems.value)
+
+watch([search, sortBy, pageSize], () => {
+  page.value = 1
 })
 
 function formatTime(value: number) {
@@ -143,6 +168,41 @@ function confirmDelete(item: EditorProjectSummary) {
   })
 }
 
+function handleDeleteSelected() {
+  const ids = [...selectedProjectIds.value]
+  if (!ids.length) return
+  dialog.warning({
+    title: t('projects.deleteSelectedTitle'),
+    content: t('projects.deleteSelectedConfirm', { count: ids.length }),
+    positiveText: t('projects.deleteSelectedPositive'),
+    negativeText: t('common.cancel'),
+    positiveButtonProps: { type: 'error' },
+    onPositiveClick: async () => {
+      batchDeleting.value = true
+      deletingIds.value = [...deletingIds.value, ...ids]
+      let removed = 0
+      let failed = 0
+      for (const id of ids) {
+        try {
+          await editor.deleteProject(id)
+          removed += 1
+        } catch {
+          failed += 1
+        }
+      }
+      deletingIds.value = deletingIds.value.filter((id) => !ids.includes(id))
+      batchDeleting.value = false
+      selectedProjectIds.value = []
+      selecting.value = false
+      if (failed > 0) {
+        message.warning(t('projects.deleteSelectedPartial', { removed, failed }))
+      } else if (removed > 0) {
+        message.success(t('projects.deleteSelectedSuccess', { count: removed }))
+      }
+    },
+  })
+}
+
 onMounted(() => {
   void refreshProjects()
 })
@@ -156,6 +216,9 @@ onMounted(() => {
         <p>{{ t('projects.subtitle') }}</p>
       </div>
       <div class="projects-page__header-actions">
+        <n-button v-if="editor.projectSummaries.length" secondary @click="toggleSelecting">
+          {{ selecting ? t('projects.batchExit') : t('projects.batchSelect') }}
+        </n-button>
         <n-button secondary :loading="creating" @click="createBlankProject">
           <template #icon><n-icon :component="AddOutline" /></template>
           {{ t('projects.createBlank') }}
@@ -191,6 +254,27 @@ onMounted(() => {
       </div>
     </div>
 
+    <div v-if="selecting && filteredProjects.length" class="projects-batchbar">
+      <n-checkbox
+        :checked="allProjectsSelected"
+        :indeterminate="someProjectsSelected"
+        @update:checked="toggleSelectAllProjects"
+      >
+        {{ t('projects.selectPage') }}
+      </n-checkbox>
+      <span class="projects-batchbar__count">{{ t('projects.selectedCount', { count: selectedProjectIds.length }) }}</span>
+      <n-button
+        size="small"
+        type="error"
+        :loading="batchDeleting"
+        :disabled="!selectedProjectIds.length"
+        @click="handleDeleteSelected"
+      >
+        <template #icon><n-icon :component="TrashOutline" /></template>
+        {{ t('projects.deleteSelected') }}
+      </n-button>
+    </div>
+
     <div v-if="!editor.projectSummaries.length" class="projects-empty">
       <n-icon :component="LibraryOutline" size="46" />
       <strong>{{ t('projects.empty') }}</strong>
@@ -208,11 +292,20 @@ onMounted(() => {
 
     <div v-else class="projects-list">
       <section
-        v-for="item in filteredProjects"
+        v-for="item in pagedProjects"
         :key="item.id"
         class="project-row"
+        :class="{ 'project-row--selectable': selecting, 'project-row--selected': selectedProjectSet.has(item.id) }"
+        @click="selecting && toggleProjectSelection(item.id)"
       >
         <div class="project-row__main">
+          <n-checkbox
+            v-if="selecting"
+            class="project-row__check"
+            :checked="selectedProjectSet.has(item.id)"
+            @update:checked="() => toggleProjectSelection(item.id)"
+            @click.stop
+          />
           <span class="project-row__icon">
             <n-icon :component="LibraryOutline" size="18" />
           </span>
@@ -237,8 +330,8 @@ onMounted(() => {
           </div>
         </div>
 
-        <div class="project-row__actions">
-          <n-button size="small" type="primary" secondary @click="openProject(item)">
+        <div v-if="!selecting" class="project-row__actions">
+          <n-button size="small" type="primary" secondary @click.stop="openProject(item)">
             <template #icon><n-icon :component="FolderOpenOutline" /></template>
             {{ t('projects.openProject') }}
           </n-button>
@@ -247,13 +340,23 @@ onMounted(() => {
             tertiary
             type="error"
             :loading="deletingIds.includes(item.id)"
-            @click="confirmDelete(item)"
+            @click.stop="confirmDelete(item)"
           >
             <template #icon><n-icon :component="TrashOutline" /></template>
             {{ t('projects.deleteAction') }}
           </n-button>
         </div>
       </section>
+
+      <div v-if="filteredProjects.length > pageSize" class="projects-pagination">
+        <n-pagination
+          v-model:page="page"
+          v-model:page-size="pageSize"
+          :item-count="filteredProjects.length"
+          :page-sizes="pageSizeOptions"
+          show-size-picker
+        />
+      </div>
     </div>
   </div>
 </template>
@@ -333,6 +436,45 @@ onMounted(() => {
   grid-template-columns: 42px minmax(0, 1fr);
   align-items: center;
   gap: 12px;
+}
+
+.project-row--selectable {
+  cursor: pointer;
+}
+
+.project-row--selectable .project-row__main {
+  grid-template-columns: auto 42px minmax(0, 1fr);
+}
+
+.project-row--selected {
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--outline));
+  background: color-mix(in srgb, var(--surface-1) 80%, var(--primary-soft));
+}
+
+.project-row__check {
+  align-self: center;
+}
+
+.projects-batchbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--outline);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+}
+
+.projects-batchbar__count {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  margin-right: auto;
+}
+
+.projects-pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
 }
 
 .project-row__icon {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { darkTheme } from 'naive-ui'
 import TitleBar from '@/components/TitleBar.vue'
@@ -16,22 +16,54 @@ const app = useAppStore()
 const route = useRoute()
 const { t } = useI18n()
 const bootReady = ref(false)
+const backgroundWarmupsStarted = ref(false)
 
 const isDark = computed(() => resolvedIsDark(settings.themeMode))
 const isEditorRoute = computed(() => route.path === '/editor')
 const resolvedTheme = computed(() => getResolvedThemeTokens(settings.themeMode, settings.themeAccent))
 const showStartupOnboarding = computed(() => bootReady.value && !isEditorRoute.value && settings.shouldShowStartupOnboarding)
 
+const routeWarmupLoaders = [
+  () => import('@/views/HomeView.vue'),
+  () => import('@/views/SeparateView.vue'),
+  () => import('@/views/TasksView.vue'),
+  () => import('@/views/ModelsView.vue'),
+  () => import('@/views/ResultsView.vue'),
+  () => import('@/views/ProjectsView.vue'),
+  () => import('@/views/SettingsView.vue'),
+]
+
+function scheduleIdleWork(task: () => void) {
+  const idleWindow = window as Window & typeof globalThis & {
+    requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number
+  }
+  if (typeof idleWindow.requestIdleCallback === 'function') {
+    idleWindow.requestIdleCallback(() => task(), { timeout: 2000 })
+    return
+  }
+  window.setTimeout(task, 400)
+}
+
+function startBackgroundWarmups() {
+  if (backgroundWarmupsStarted.value || !bootReady.value || showStartupOnboarding.value) return
+  backgroundWarmupsStarted.value = true
+  scheduleIdleWork(() => {
+    void Promise.allSettled(routeWarmupLoaders.map((load) => load()))
+    if (!app.envInfo && !app.envLoading) {
+      app.checkEnvInBackground().catch(() => {})
+    }
+  })
+}
+
 onMounted(() => {
   window.setTimeout(() => {
     bootReady.value = true
   }, 120)
-  if (!app.envInfo && !app.envLoading) {
-    setTimeout(() => {
-      app.checkEnvInBackground().catch(() => {})
-    }, 120)
-  }
 })
+
+watch([bootReady, showStartupOnboarding], () => {
+  startBackgroundWarmups()
+}, { immediate: true })
 
 const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, settings.themeAccent))
 </script>
@@ -41,7 +73,7 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
     <n-notification-provider>
       <n-message-provider>
         <n-dialog-provider>
-        <div class="app-shell" :class="{ 'app-shell--editor': isEditorRoute }">
+        <div class="app-shell" :class="{ 'app-shell--editor': isEditorRoute, 'no-animations': !settings.animationsEnabled }">
           <div class="app-backdrop" />
           <TitleBar />
           <div class="app-body">

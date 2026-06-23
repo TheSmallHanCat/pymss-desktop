@@ -338,6 +338,25 @@ a { color: inherit; text-decoration: none; }
   z-index: 9999;
 }
 
+/* ===== Disable Animations ===== */
+.app-shell.no-animations .page-enter-active,
+.app-shell.no-animations .page-leave-active {
+  transition: none;
+}
+.app-shell.no-animations .page-enter-from,
+.app-shell.no-animations .page-leave-to {
+  opacity: 1;
+  transform: none;
+}
+.app-shell.no-animations *,
+.app-shell.no-animations *::before,
+.app-shell.no-animations *::after {
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}
+
 /* ===== Naive UI Overrides ===== */
 .dark-theme .n-card {
   --n-border: 1px solid var(--outline);

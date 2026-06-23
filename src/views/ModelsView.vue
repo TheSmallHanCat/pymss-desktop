@@ -755,7 +755,7 @@ onMounted(() => {
           </div>
 
           <div class="storage-actions">
-            <n-button size="small" secondary :loading="storageLoading" @click="modelStore.loadModelStorageSummary()">
+            <n-button size="small" secondary :loading="storageLoading" @click="modelStore.loadModelStorageSummary({ force: true })">
               <template #icon><n-icon :component="RefreshOutline" /></template>
               {{ t('models.storageRefresh') }}
             </n-button>

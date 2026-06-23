@@ -36,18 +36,19 @@ const {
   inputFiles,
   useTta,
   debug,
-  batchSize,
-  overlapSize,
-  chunkSize,
-  standardizeMode,
+  batch_size,
+  overlap_size,
+  num_overlap,
+  chunk_size,
+  standardize,
   normalize,
-  vrWindowSize,
-  vrAggression,
-  vrEnablePostProcess,
-  vrPostProcessThreshold,
-  vrHighEndProcess,
+  window_size,
+  aggression,
+  enable_post_process,
+  post_process_threshold,
+  high_end_process,
 } = storeToRefs(task)
-const { selectedModel, downloadedModels, isLoading } = storeToRefs(model)
+const { selectedModel, downloadedModels, isLoading, detailLoading } = storeToRefs(model)
 
 const isDragging = ref(false)
 const showSettingsDrawer = ref(false)
@@ -87,11 +88,6 @@ const bitRateOptions = computed(() => [
 const m4aCodecOptions = computed(() => [
   { label: t('audio.codecAac'), value: 'aac' },
 ])
-const standardizeModeOptions = computed(() => [
-  { label: t('inference.standardizeDefault'), value: 'default' },
-  { label: t('inference.standardizeEnabled'), value: 'enabled' },
-  { label: t('inference.standardizeDisabled'), value: 'disabled' },
-])
 const selectedModelName = computed(() => String(selectedModel.value || ''))
 const listedDownloadedModels = computed(() => {
   return [...downloadedModels.value].sort((a, b) => (
@@ -104,9 +100,28 @@ const currentModelInfo = computed(() => {
   if (model.selectedInfo?.name === selectedModelName.value) return model.selectedInfo
   return selectedModelListItem.value
 })
+const currentModelDefaults = computed(() => currentModelInfo.value?.defaultInferenceParams || {})
+const currentModelDefaultsResolved = computed(() => Boolean(currentModelInfo.value?.defaultInferenceParamsResolved))
 const currentModelType = computed(() => String(currentModelInfo.value?.modelType || '').trim().toLowerCase())
 const isVrModel = computed(() => currentModelType.value === 'vr')
-const isMssModel = computed(() => !isVrModel.value)
+const isApolloModel = computed(() => currentModelType.value === 'apollo')
+const showStandardizeField = computed(() => Boolean(currentModelInfo.value) && !isVrModel.value)
+const showNormalizeField = computed(() => Boolean(currentModelInfo.value))
+const hasVisibleAdvancedFields = computed(() => (
+  showStandardizeField.value
+  || showNormalizeField.value
+  || Object.keys(currentModelDefaults.value).length > 0
+))
+const shouldPrefetchAdvancedParams = computed(() => (
+  Boolean(currentModelInfo.value?.downloaded)
+  && Boolean(currentModelInfo.value?.configPath)
+  && !currentModelDefaultsResolved.value
+))
+const advancedParamsLoading = computed(() => shouldPrefetchAdvancedParams.value && detailLoading.value)
+function hasInferenceField(key: string) {
+  if (key === 'num_overlap' && isApolloModel.value) return false
+  return Object.prototype.hasOwnProperty.call(currentModelDefaults.value, key)
+}
 const modelCategoryOptions = computed(() => [
   { label: t('common.all'), value: '' },
   ...buildModelCategoryOptionsFromModels(listedDownloadedModels.value, locale.value),
@@ -185,6 +200,29 @@ function handleSelectModel(item: (typeof listedDownloadedModels.value)[number]) 
   model.selectModel(item).catch(() => {})
 }
 
+function prefetchSelectedModelAdvancedParams() {
+  if (!shouldPrefetchAdvancedParams.value || detailLoading.value || isLoading.value || !selectedModelName.value) return
+  model.selectModel(selectedModelName.value).catch(() => {})
+}
+
+watch(
+  currentModelInfo,
+  (info) => {
+    if (!info || info.name !== selectedModelName.value) return
+    task.applySelectedModelDefaults(info.defaultInferenceParams, info.modelType)
+  },
+  { immediate: true },
+)
+
+watch(
+  shouldPrefetchAdvancedParams,
+  (shouldPrefetch) => {
+    if (!shouldPrefetch) return
+    prefetchSelectedModelAdvancedParams()
+  },
+  { immediate: true },
+)
+
 watch(
   [listedDownloadedModels, selectedModel, isLoading],
   ([list, current, loading]) => {
@@ -193,12 +231,16 @@ watch(
     const valid = current && list.some((item) => item.name === current)
     if (!valid) {
       selectedModel.value = list[0].name
+      model.selectModel(list[0]).catch(() => {})
     }
   },
   { immediate: true },
 )
 
 onMounted(async () => {
+  if (downloadedModels.value.some((item) => item.downloaded && item.configPath && !item.defaultInferenceParamsResolved) && !isLoading.value) {
+    model.loadModels().catch(() => {})
+  }
   if (!app.envInfo && !app.envLoading) {
     app.checkEnvInBackground().catch(() => {})
   }
@@ -255,7 +297,6 @@ async function start() {
     } else {
       message.success(t('separate.batchStarted', { count: result?.succeeded ?? 1 }))
     }
-    task.clearInputFiles()
     router.push('/tasks')
   } catch (err) {
     message.error(err instanceof Error ? err.message : t('toast.taskFailed'))
@@ -491,7 +532,6 @@ async function start() {
             <div class="check-list">
               <n-checkbox v-model:checked="useTta">{{ t('separate.tta') }}</n-checkbox>
               <n-checkbox v-model:checked="debug">{{ t('separate.debug') }}</n-checkbox>
-              <n-checkbox v-model:checked="normalize">{{ t('inference.normalize') }}</n-checkbox>
             </div>
           </div>
 
@@ -538,60 +578,63 @@ async function start() {
             <n-collapse :default-expanded-names="[]">
               <n-collapse-item :title="t('inference.advancedParams')" name="inference">
                 <p class="advanced-hint">{{ t('separate.advancedPanelHint') }}</p>
+                <div v-if="advancedParamsLoading" class="advanced-loading">
+                  <n-spin size="small" />
+                  <span>{{ t('separate.advancedPanelLoading') }}</span>
+                </div>
                 <n-grid :cols="2" :x-gap="16" :y-gap="16" responsive="screen">
-                  <n-grid-item v-if="isMssModel">
+                  <n-grid-item v-if="hasInferenceField('batch_size')">
                     <div class="field-block">
                       <label>{{ t('inference.batchSize') }}</label>
-                      <n-input-number v-model:value="batchSize" :min="1" :max="32" style="width:100%" />
+                      <n-input-number v-model:value="batch_size" :min="0" :max="32" style="width:100%" @blur="task.restoreInferenceNumberFallback('batch_size')" />
                     </div>
                   </n-grid-item>
-                  <n-grid-item v-if="isMssModel">
+                  <n-grid-item v-if="hasInferenceField('overlap_size')">
                     <div class="field-block">
                       <label>{{ t('inference.overlapSize') }}</label>
-                      <n-input-number v-model:value="overlapSize" :min="0" :max="128" style="width:100%" />
+                      <n-input-number v-model:value="overlap_size" :min="0" :max="1048576" style="width:100%" @blur="task.restoreInferenceNumberFallback('overlap_size')" />
                     </div>
                   </n-grid-item>
-                  <n-grid-item v-if="isMssModel">
+                  <n-grid-item v-if="hasInferenceField('num_overlap')">
+                    <div class="field-block">
+                      <label>{{ t('inference.numOverlap') }}</label>
+                      <n-input-number v-model:value="num_overlap" :min="0" :max="128" style="width:100%" @blur="task.restoreInferenceNumberFallback('num_overlap')" />
+                    </div>
+                  </n-grid-item>
+                  <n-grid-item v-if="hasInferenceField('chunk_size')">
                     <div class="field-block">
                       <label>{{ t('inference.chunkSize') }}</label>
-                      <n-input-number v-model:value="chunkSize" :min="0" :max="1048576" :step="1024" style="width:100%" />
+                      <n-input-number v-model:value="chunk_size" :min="0" :max="1048576" :step="1024" style="width:100%" @blur="task.restoreInferenceNumberFallback('chunk_size')" />
                     </div>
                   </n-grid-item>
-                  <n-grid-item v-if="isMssModel">
-                    <div class="field-block">
-                      <label>{{ t('inference.standardize') }}</label>
-                      <n-select v-model:value="standardizeMode" :options="standardizeModeOptions" />
-                    </div>
-                  </n-grid-item>
-                  <n-grid-item v-if="isVrModel">
-                    <div class="field-block">
-                      <label>{{ t('inference.batchSize') }}</label>
-                      <n-input-number v-model:value="batchSize" :min="1" :max="32" style="width:100%" />
-                    </div>
-                  </n-grid-item>
-                  <n-grid-item v-if="isVrModel">
+                  <n-grid-item v-if="hasInferenceField('window_size')">
                     <div class="field-block">
                       <label>{{ t('inference.vrWindowSize') }}</label>
-                      <n-input-number v-model:value="vrWindowSize" :min="0" :max="4096" style="width:100%" />
+                      <n-input-number v-model:value="window_size" :min="0" :max="4096" style="width:100%" @blur="task.restoreInferenceNumberFallback('window_size')" />
                     </div>
                   </n-grid-item>
-                  <n-grid-item v-if="isVrModel">
+                  <n-grid-item v-if="hasInferenceField('aggression')">
                     <div class="field-block">
                       <label>{{ t('inference.vrAggression') }}</label>
-                      <n-input-number v-model:value="vrAggression" :min="0" :max="100" style="width:100%" />
+                      <n-input-number v-model:value="aggression" :min="0" :max="100" style="width:100%" />
                     </div>
                   </n-grid-item>
-                  <n-grid-item v-if="isVrModel">
+                  <n-grid-item v-if="hasInferenceField('post_process_threshold')">
                     <div class="field-block">
                       <label>{{ t('inference.vrPostProcessThreshold') }}</label>
-                      <n-input-number v-model:value="vrPostProcessThreshold" :min="0" :max="1" :step="0.05" style="width:100%" />
+                      <n-input-number v-model:value="post_process_threshold" :min="0" :max="1" :step="0.05" style="width:100%" />
                     </div>
                   </n-grid-item>
                 </n-grid>
-                <div v-if="isVrModel" class="check-list check-list--spaced">
-                  <n-checkbox v-model:checked="vrEnablePostProcess">{{ t('inference.vrEnablePostProcess') }}</n-checkbox>
-                  <n-checkbox v-model:checked="vrHighEndProcess">{{ t('inference.vrHighEndProcess') }}</n-checkbox>
+                <div class="check-list check-list--spaced">
+                  <n-checkbox v-if="showStandardizeField" v-model:checked="standardize">{{ t('inference.standardize') }}</n-checkbox>
+                  <n-checkbox v-if="showNormalizeField" v-model:checked="normalize">{{ t('inference.normalize') }}</n-checkbox>
+                  <n-checkbox v-if="hasInferenceField('enable_post_process')" v-model:checked="enable_post_process">{{ t('inference.vrEnablePostProcess') }}</n-checkbox>
+                  <n-checkbox v-if="hasInferenceField('high_end_process')" v-model:checked="high_end_process">{{ t('inference.vrHighEndProcess') }}</n-checkbox>
                 </div>
+                <p v-if="!advancedParamsLoading && !hasVisibleAdvancedFields" class="advanced-empty">
+                  {{ t('separate.advancedPanelEmpty') }}
+                </p>
               </n-collapse-item>
             </n-collapse>
           </div>
@@ -1234,6 +1277,12 @@ async function start() {
   color: var(--on-surface-muted);
 }
 
+.field-block__hint {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--on-surface-muted);
+}
+
 .output-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 180px;
@@ -1318,6 +1367,21 @@ async function start() {
   color: var(--on-surface-muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.advanced-loading,
+.advanced-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.advanced-empty {
+  margin-top: 14px;
 }
 
 .check-list {

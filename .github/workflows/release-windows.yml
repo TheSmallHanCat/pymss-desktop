@@ -73,7 +73,6 @@ jobs:
             Select-Object -First 1
           if (-not $ffmpegBin) { throw "ffmpeg bin directory not found" }
           Copy-Item (Join-Path $ffmpegBin.FullName "ffmpeg.exe") "$bin/ffmpeg.exe" -Force
-          Copy-Item (Join-Path $ffmpegBin.FullName "ffprobe.exe") "$bin/ffprobe.exe" -Force
 
           $aria2Zip = "release/aria2-1.37.0-win-64bit-build1.zip"
           $aria2Extract = "release/aria2"
@@ -261,7 +260,6 @@ jobs:
             Select-Object -First 1
           if (-not $ffmpegBin) { throw "ffmpeg bin directory not found" }
           Copy-Item (Join-Path $ffmpegBin.FullName "ffmpeg.exe") "$bin/ffmpeg.exe" -Force
-          Copy-Item (Join-Path $ffmpegBin.FullName "ffprobe.exe") "$bin/ffprobe.exe" -Force
 
           $aria2Zip = "release/aria2-1.37.0-win-64bit-build1.zip"
           $aria2Extract = "release/aria2"

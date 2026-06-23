@@ -110,6 +110,118 @@ def load_payload(payload_arg: str | None) -> dict[str, Any]:
     return json.loads(payload_arg)
 
 
+def _as_int(value: Any) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return None
+
+
+def _derive_overlap_size_from_num_overlap(chunk_size: Any, num_overlap: Any) -> int | None:
+    chunk_value = _as_int(chunk_size)
+    overlap_count = _as_int(num_overlap)
+    if chunk_value is None or overlap_count is None:
+        return None
+    if chunk_value <= 0 or overlap_count <= 0:
+        return None
+    if overlap_count == 1:
+        return 0
+    step = int(chunk_value // overlap_count)
+    overlap_size = int(chunk_value - step)
+    if overlap_size < 0 or overlap_size >= chunk_value:
+        return None
+    return overlap_size
+
+
+def resolve_default_inference_params(entry: Any, model_path: Path, config_path: Path | None) -> dict[str, Any]:
+    model_type = str(getattr(entry, "model_type", "") or "").strip().lower()
+    defaults: dict[str, Any] = {}
+
+    if not config_path or not config_path.is_file():
+        return defaults
+
+    try:
+        from pymss.config import load_config, to_plain  # type: ignore
+
+        config = to_plain(load_config(str(config_path)))
+    except Exception:
+        return defaults
+
+    inference = config.get("inference") if isinstance(config, dict) else None
+    audio = config.get("audio") if isinstance(config, dict) else None
+    inference = inference if isinstance(inference, dict) else {}
+    audio = audio if isinstance(audio, dict) else {}
+
+    if model_type == "vr":
+        batch_size = _as_int(inference.get("batch_size"))
+        window_size = _as_int(inference.get("window_size"))
+        aggression = _as_int(inference.get("aggression"))
+        enable_post_process = _as_bool(inference.get("enable_post_process"))
+        post_process_threshold = _as_float(inference.get("post_process_threshold"))
+        high_end_process = _as_bool(inference.get("high_end_process"))
+
+        if batch_size is not None:
+            defaults["batch_size"] = batch_size
+        if window_size is not None:
+            defaults["window_size"] = window_size
+        if aggression is not None:
+            defaults["aggression"] = aggression
+        if enable_post_process is not None:
+            defaults["enable_post_process"] = enable_post_process
+        if post_process_threshold is not None:
+            defaults["post_process_threshold"] = post_process_threshold
+        if high_end_process is not None:
+            defaults["high_end_process"] = high_end_process
+        return defaults
+
+    batch_size = _as_int(inference.get("batch_size"))
+    overlap_size = _as_int(inference.get("overlap_size"))
+    num_overlap = _as_int(inference.get("num_overlap"))
+    chunk_size = _as_int(audio.get("chunk_size"))
+    if chunk_size is None:
+        chunk_size = _as_int(inference.get("chunk_size"))
+    normalize = _as_bool(inference.get("normalize"))
+
+    if batch_size is not None:
+        defaults["batch_size"] = batch_size
+    if overlap_size is not None:
+        defaults["overlap_size"] = overlap_size
+    if model_type != "apollo" and num_overlap is not None:
+        defaults["num_overlap"] = num_overlap
+    if chunk_size is not None:
+        defaults["chunk_size"] = chunk_size
+    if normalize is not None:
+        defaults["normalize"] = normalize
+    return defaults
+
+
 def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state: bool = True) -> dict[str, Any]:
     from pymss.model_registry import auxiliary_paths_for, config_path_for, model_path_for  # type: ignore
 
@@ -147,6 +259,7 @@ def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state:
         "modelPath": str(model_path),
         "configPath": str(config_path) if config_path else None,
         "auxiliaryPaths": [str(path) for path in auxiliary_paths],
+        "defaultInferenceParams": resolve_default_inference_params(entry, model_path, config_path),
     }
 
 
@@ -411,6 +524,26 @@ def _path_size(path: Path) -> int:
     return 0
 
 
+def _normalized_path_key(path: Path) -> str:
+    return os.path.normcase(str(path.absolute()))
+
+
+def _scan_root_file_sizes(root: Path) -> dict[str, tuple[Path, int]]:
+    scanned: dict[str, tuple[Path, int]] = {}
+    if not root.exists():
+        return scanned
+    for dirpath, _, filenames in os.walk(root):
+        base = Path(dirpath)
+        for filename in filenames:
+            file_path = base / filename
+            try:
+                size = int(file_path.stat().st_size)
+            except Exception:
+                continue
+            scanned[_normalized_path_key(file_path)] = (file_path, size)
+    return scanned
+
+
 def _required_model_paths(entry: Any, model_dir: str | None) -> list[Path]:
     from pymss.model_registry import auxiliary_paths_for, config_path_for, model_path_for  # type: ignore
 
@@ -426,7 +559,8 @@ def _storage_summary_payload(model_dir: str | None = None) -> dict[str, Any]:
     from pymss.model_registry import list_models, model_root  # type: ignore
 
     root = model_root(model_dir)
-    known_files: set[Path] = set()
+    scanned_files = _scan_root_file_sizes(root)
+    known_file_keys: set[str] = set()
     models: list[dict[str, Any]] = []
     total_bytes = 0
     downloaded_count = 0
@@ -437,10 +571,18 @@ def _storage_summary_payload(model_dir: str | None = None) -> dict[str, Any]:
         model_size = 0
         downloaded = True
         for path in required_paths:
-            resolved = path.resolve() if path.exists() else path.absolute()
-            known_files.add(resolved)
-            exists = path.is_file()
-            size = _path_size(path) if exists else 0
+            normalized_key = _normalized_path_key(path)
+            known_file_keys.add(normalized_key)
+            scanned = scanned_files.get(normalized_key)
+            if scanned is not None:
+                exists = True
+                size = scanned[1]
+            elif path.is_file():
+                exists = True
+                size = _path_size(path)
+            else:
+                exists = False
+                size = 0
             if not exists:
                 downloaded = False
             model_size += size
@@ -459,16 +601,11 @@ def _storage_summary_payload(model_dir: str | None = None) -> dict[str, Any]:
 
     residual_files: list[dict[str, Any]] = []
     residual_bytes = 0
-    if root.exists():
-        for file_path in root.rglob("*"):
-            if not file_path.is_file():
-                continue
-            resolved = file_path.resolve()
-            if resolved in known_files:
-                continue
-            size = _path_size(file_path)
-            residual_files.append({"path": str(file_path), "sizeBytes": size})
-            residual_bytes += size
+    for normalized_key, (file_path, size) in scanned_files.items():
+        if normalized_key in known_file_keys:
+            continue
+        residual_files.append({"path": str(file_path), "sizeBytes": size})
+        residual_bytes += size
 
     residual_files.sort(key=lambda item: item["sizeBytes"], reverse=True)
     models.sort(key=lambda item: item["sizeBytes"], reverse=True)
@@ -1140,6 +1277,103 @@ def normalize_inference_params(payload_params: Any, version: Any = None) -> dict
     return params
 
 
+def _sanitize_runtime_inference_params(params: dict[str, Any]) -> dict[str, Any]:
+    next_params = dict(params or {})
+
+    def _drop_non_positive_int(key: str) -> None:
+        if key not in next_params:
+            return
+        value = _as_int(next_params.get(key))
+        if value is None or value <= 0:
+            next_params.pop(key, None)
+            return
+        next_params[key] = value
+
+    for numeric_key in ("batch_size", "overlap_size", "num_overlap", "chunk_size", "window_size"):
+        _drop_non_positive_int(numeric_key)
+
+    if "aggression" in next_params:
+        aggression_value = _as_int(next_params.get("aggression"))
+        if aggression_value is None or aggression_value < 0:
+            next_params.pop("aggression", None)
+        else:
+            next_params["aggression"] = aggression_value
+
+    if "post_process_threshold" in next_params:
+        threshold_value = _as_float(next_params.get("post_process_threshold"))
+        if threshold_value is None or threshold_value < 0:
+            next_params.pop("post_process_threshold", None)
+        else:
+            next_params["post_process_threshold"] = threshold_value
+
+    for bool_key in ("enable_post_process", "high_end_process", "standardize", "normalize"):
+        if bool_key not in next_params:
+            continue
+        bool_value = _as_bool(next_params.get(bool_key))
+        if bool_value is None:
+            next_params.pop(bool_key, None)
+        else:
+            next_params[bool_key] = bool_value
+
+    return next_params
+
+
+
+def _enrich_inference_params_for_model(
+    *,
+    model_type: str | None,
+    config_path: str | None,
+    inference_params: dict[str, Any],
+) -> dict[str, Any]:
+    params = _sanitize_runtime_inference_params(inference_params)
+    normalized_model_type = str(model_type or '').strip().lower()
+    if normalized_model_type == 'vr':
+        params.pop('num_overlap', None)
+        return params
+    if normalized_model_type == 'apollo':
+        params.pop('num_overlap', None)
+        return params
+    if not config_path or not Path(config_path).is_file():
+        params.pop('num_overlap', None)
+        return params
+
+    try:
+        from pymss.config import load_config, to_plain  # type: ignore
+
+        config = to_plain(load_config(str(config_path)))
+    except Exception:
+        params.pop('num_overlap', None)
+        return params
+
+    inference = config.get('inference') if isinstance(config, dict) else None
+    audio = config.get('audio') if isinstance(config, dict) else None
+    inference = inference if isinstance(inference, dict) else {}
+    audio = audio if isinstance(audio, dict) else {}
+
+    explicit_overlap_size = _as_int(params.get('overlap_size'))
+    explicit_num_overlap = _as_int(params.get('num_overlap'))
+    config_overlap_size = _as_int(inference.get('overlap_size'))
+    config_num_overlap = _as_int(inference.get('num_overlap'))
+    chunk_size = _as_int(params.get('chunk_size'))
+    if chunk_size is None:
+        chunk_size = _as_int(audio.get('chunk_size'))
+    if chunk_size is None:
+        chunk_size = _as_int(inference.get('chunk_size'))
+
+    if explicit_overlap_size is None:
+        derived_overlap_size: int | None = None
+        if explicit_num_overlap is not None:
+            derived_overlap_size = _derive_overlap_size_from_num_overlap(chunk_size, explicit_num_overlap)
+        elif config_overlap_size is None and config_num_overlap is not None:
+            derived_overlap_size = _derive_overlap_size_from_num_overlap(chunk_size, config_num_overlap)
+        if derived_overlap_size is not None:
+            params['overlap_size'] = derived_overlap_size
+
+    params.pop('num_overlap', None)
+    return params
+
+
+
 def normalize_audio_params(payload_audio_params: Any) -> dict[str, Any]:
     defaults = {
         "wav_bit_depth": "FLOAT",
@@ -1612,6 +1846,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
             emit("task_stage", {"stage": "ensuring_model", "message": "Checking model files"}, task_id=task_id)
 
         from pymss import MSSeparator  # type: ignore
+        from pymss.model_registry import resolve_model  # type: ignore
         emit("task_stage", {"stage": "loading_model", "message": "Loading model"}, task_id=task_id)
         try:
             from pymss import get_separation_logger  # type: ignore
@@ -1621,12 +1856,29 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         except Exception:
             logger = None
 
-        separator = MSSeparator.from_model_name(
-            model_name,
-            model_dir=model_dir,
-            download=download,
-            source=source,
-            endpoint=endpoint,
+        if download:
+            from pymss.model_download import download_model  # type: ignore
+
+            download_model(model_name, model_dir=model_dir, source=source, endpoint=endpoint)
+
+        resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
+        if not isinstance(resolved, dict):
+            raise RuntimeError(f"resolve_model returned unexpected result for {model_name!r}: {type(resolved).__name__}")
+        resolved_model_type = resolved.get('model_type')
+        resolved_model_path = resolved.get('model_path')
+        if not resolved_model_type or not resolved_model_path:
+            missing = [key for key in ('model_type', 'model_path') if not resolved.get(key)]
+            raise RuntimeError(f"resolve_model result for {model_name!r} is missing required field(s): {', '.join(missing)}")
+        runtime_inference_params = _enrich_inference_params_for_model(
+            model_type=resolved_model_type,
+            config_path=resolved.get('config_path'),
+            inference_params=inference_params,
+        )
+
+        separator = MSSeparator(
+            model_type=resolved_model_type,
+            model_path=resolved_model_path,
+            config_path=resolved.get('config_path'),
             device=device,
             device_ids=device_ids,
             output_format=output_format,
@@ -1636,7 +1888,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
             logger=logger,
             debug=debug,
             progress_callback=emit_separation_progress,
-            inference_params=inference_params,
+            inference_params=runtime_inference_params,
         )
         emit("task_stage", {"stage": "separating", "message": "Separating"}, task_id=task_id)
         success_files = separator.process_folder(input_path)

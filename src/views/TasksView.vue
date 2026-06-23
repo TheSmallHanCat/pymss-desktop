@@ -338,10 +338,6 @@ onMounted(() => {
         <h1>{{ t('tasks.title') }}</h1>
         <p>{{ t('tasks.subtitle') }}</p>
       </div>
-      <n-button v-if="historyTasks.length" secondary @click="handleClearHistory()">
-        <template #icon><n-icon :component="TrashOutline" /></template>
-        {{ t('tasks.clearHistory') }}
-      </n-button>
     </div>
 
     <n-card v-if="!task.taskBoardTasks.length" :bordered="true">
@@ -526,9 +522,15 @@ onMounted(() => {
             <span class="tasks-section__count">{{ historyTasks.length }}</span>
           </div>
           <template v-if="historyTasks.length">
-            <n-button size="small" :type="historySelecting ? 'primary' : 'default'" :secondary="!historySelecting" @click="toggleHistorySelecting">
-              {{ historySelecting ? t('tasks.batchExit') : t('tasks.batchSelect') }}
-            </n-button>
+            <div class="tasks-section__actions">
+              <n-button size="small" :type="historySelecting ? 'primary' : 'default'" :secondary="!historySelecting" @click="toggleHistorySelecting">
+                {{ historySelecting ? t('tasks.batchExit') : t('tasks.batchSelect') }}
+              </n-button>
+              <n-button size="small" secondary type="error" @click="handleClearHistory()">
+                <template #icon><n-icon :component="TrashOutline" /></template>
+                {{ t('tasks.clearHistory') }}
+              </n-button>
+            </div>
           </template>
         </div>
 
@@ -578,9 +580,9 @@ onMounted(() => {
               <span>{{ formatTime(item.updatedAt) }}</span>
             </div>
             <div v-if="!historySelecting" class="tasks-history-row__actions">
-              <n-button size="tiny" tertiary :disabled="!item.logs.length" @click="openLogs(item)">{{ t('tasks.logs') }}</n-button>
-              <n-button v-if="item.status === 'done'" size="tiny" tertiary @click="jumpToResult(item)">{{ t('tasks.viewResult') }}</n-button>
-              <n-button size="tiny" quaternary @click="handleRemoveTask(item)">{{ t('tasks.remove') }}</n-button>
+              <n-button size="tiny" tertiary :disabled="!item.logs.length" @click.stop="openLogs(item)">{{ t('tasks.logs') }}</n-button>
+              <n-button v-if="item.status === 'done'" size="tiny" tertiary @click.stop="jumpToResult(item)">{{ t('tasks.viewResult') }}</n-button>
+              <n-button size="tiny" quaternary @click.stop="handleRemoveTask(item)">{{ t('tasks.remove') }}</n-button>
             </div>
           </div>
         </div>
@@ -668,6 +670,12 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.tasks-section__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .tasks-section__title h2 {
