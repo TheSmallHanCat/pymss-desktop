@@ -1856,12 +1856,21 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         except Exception:
             logger = None
 
-        if download:
+        try:
+            resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
+        except Exception as resolve_exc:
+            if not download:
+                return emit_error("MODEL_NOT_FOUND", str(resolve_exc), traceback.format_exc(), task_id=task_id)
+
             from pymss.model_download import download_model  # type: ignore
 
-            download_model(model_name, model_dir=model_dir, source=source, endpoint=endpoint)
+            try:
+                emit("task_stage", {"stage": "downloading_model", "message": "Downloading model files"}, task_id=task_id)
+                download_model(model_name, model_dir=model_dir, source=source, endpoint=endpoint)
+                resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
+            except Exception as exc:
+                return emit_error("MODEL_DOWNLOAD_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
 
-        resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
         if not isinstance(resolved, dict):
             raise RuntimeError(f"resolve_model returned unexpected result for {model_name!r}: {type(resolved).__name__}")
         resolved_model_type = resolved.get('model_type')
