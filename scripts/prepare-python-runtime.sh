@@ -2,6 +2,7 @@
 set -euo pipefail
 
 VARIANT="${1:-cuda}"
+PYMSS_SOURCE_DIR="${2:-${PYMSS_SOURCE_DIR:-}}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 RUNTIME_DIR="${RUNTIME_DIR:-python-runtime}"
 TORCH_VERSION="${TORCH_VERSION:-2.7.1}"
@@ -19,7 +20,6 @@ if [[ "$OSTYPE" == darwin* ]]; then
   curl -L --fail --retry 3 --retry-delay 2 -o "$TMP_DIR/pbs.tar.gz" "$URL"
   tar -xzf "$TMP_DIR/pbs.tar.gz" -C "$TMP_DIR"
   mv "$TMP_DIR/python" "$RUNTIME_DIR"
-  PY_VERSION="$(printf '%s' "$PBS_PYTHON_VERSION" | awk -F. '{print $1 "." $2}')"
   PY="$RUNTIME_DIR/bin/python3"
   if [[ ! -x "$PY" ]]; then
     echo "Bundled macOS standalone python executable not found in $RUNTIME_DIR/bin/python3" >&2
@@ -46,6 +46,9 @@ PYTHONHOME="$RUNTIME_DIR" "$PY" -m pip install --no-cache-dir av librosa numpy p
 if [[ "$VARIANT" == "mlx" || "$VARIANT" == "mps" ]]; then
   PYTHONHOME="$RUNTIME_DIR" "$PY" -m pip install --no-cache-dir mlx
 fi
+if [[ -n "$PYMSS_SOURCE_DIR" ]]; then
+  PYTHONHOME="$RUNTIME_DIR" "$PY" -m pip install --no-cache-dir "$PYMSS_SOURCE_DIR"
+fi
 
 bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR"
 PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RUNTIME_DIR" "$PY" - <<'PY'
@@ -55,5 +58,6 @@ print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', 
 print('librosa', librosa.__version__)
 print('av', av.__version__)
 print('mlx', importlib.util.find_spec('mlx') is not None)
+print('pymss_core', importlib.util.find_spec('pymss_core') is not None)
 PY
 bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR"

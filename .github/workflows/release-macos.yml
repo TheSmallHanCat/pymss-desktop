@@ -36,7 +36,7 @@ jobs:
         env:
           TORCH_VERSION: "2.7.1"
           TORCH_INDEX_URL: ""
-        run: bash scripts/prepare-python-runtime.sh mlx
+        run: bash scripts/prepare-python-runtime.sh mlx pymss-core
 
       - name: Verify prepared macOS runtime
         run: |
@@ -47,7 +47,7 @@ jobs:
             otool -L python-runtime/bin/python3
             exit 1
           fi
-          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
+          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import sys, ssl, pymss_core; print(sys.prefix); print('ssl ok'); print('pymss_core ok')"
 
       - name: Copy clean resources for Tauri bundling
         run: |
@@ -101,14 +101,21 @@ jobs:
           test -d "$RES/python-runtime" || test -d "$RES/resources/python-runtime"
           test -f "$RES/pymss/__init__.py" || test -f "$RES/pymss/pymss/__init__.py" || test -f "$RES/resources/pymss/__init__.py" || test -f "$RES/resources/pymss/pymss/__init__.py"
           PY="$RES/python-runtime/bin/python3"
+          WORKER="$RES/python/worker.py"
+          if [ ! -f "$WORKER" ]; then
+            WORKER="$RES/resources/python/worker.py"
+          fi
           test -f "$PY"
+          test -f "$WORKER"
           test -d "$RES/python-runtime/lib/python3.12"
           if otool -L "$PY" | grep -q '/Library/Frameworks/Python.framework/Versions/'; then
             echo "Bundled app runtime unexpectedly links system Python framework: $PY"
             otool -L "$PY"
             exit 1
           fi
-          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl; print(sys.prefix); print('ssl ok')"
+          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl, pymss_core; print(sys.prefix); print('ssl ok'); print('pymss_core ok')"
+          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" env_info
+          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" list_models --payload "{}"
           codesign --verify --deep --strict --verbose=4 "$APP"
 
       - name: Build DMG with hdiutil
