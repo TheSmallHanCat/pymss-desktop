@@ -32,6 +32,7 @@ fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
     if let Ok(resource) = app.path().resource_dir() {
         let candidates = [
             resource.join("python").join("worker.py"),
+            resource.join("_up_").join("python").join("worker.py"),
             resource.join("resources").join("python").join("worker.py"),
             resource.join("worker.py"),
         ];
@@ -102,6 +103,8 @@ fn production_pymss_source_path(app: &AppHandle) -> Option<PathBuf> {
     if let Ok(resource) = app.path().resource_dir() {
         candidates.push(resource.clone());
         candidates.push(resource.join("pymss"));
+        candidates.push(resource.join("_up_"));
+        candidates.push(resource.join("_up_").join("pymss"));
         candidates.push(resource.join("resources"));
         candidates.push(resource.join("resources").join("pymss"));
     }
@@ -143,6 +146,7 @@ fn embedded_python_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
     let mut runtime_dirs = Vec::new();
     if let Ok(resource) = app.path().resource_dir() {
         runtime_dirs.push(resource.join("python-runtime"));
+        runtime_dirs.push(resource.join("_up_").join("python-runtime"));
         runtime_dirs.push(resource.join("resources").join("python-runtime"));
     }
     let exe_dir = std::env::current_exe()?
@@ -174,6 +178,7 @@ fn bundled_bin_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
     let mut dirs = Vec::new();
     if let Ok(resource) = app.path().resource_dir() {
         dirs.push(resource.join("bin"));
+        dirs.push(resource.join("_up_").join("bin"));
         dirs.push(resource.join("resources").join("bin"));
     }
     let exe_dir = std::env::current_exe()?

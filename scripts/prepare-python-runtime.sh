@@ -5,6 +5,7 @@ VARIANT="${1:-cuda}"
 PYMSS_SOURCE_DIR="${2:-${PYMSS_SOURCE_DIR:-}}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 RUNTIME_DIR="${RUNTIME_DIR:-python-runtime}"
+RUNTIME_HOME="$(cd "$(dirname "$RUNTIME_DIR")" && pwd)/$(basename "$RUNTIME_DIR")"
 TORCH_VERSION="${TORCH_VERSION:-2.7.1}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL-https://download.pytorch.org/whl/cu128}"
 PBS_TAG="${PBS_TAG:-20260602}"
@@ -30,7 +31,7 @@ else
   PY="$RUNTIME_DIR/bin/python"
 fi
 
-PYTHONHOME="$RUNTIME_DIR" "$PY" -m pip install --upgrade pip setuptools wheel
+PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --upgrade pip setuptools wheel
 if [[ -n "$TORCH_VERSION" ]]; then
   TORCH_REQUIREMENT="torch==${TORCH_VERSION}"
 else
@@ -38,20 +39,20 @@ else
 fi
 
 if [[ -z "$TORCH_INDEX_URL" ]]; then
-  PYTHONHOME="$RUNTIME_DIR" "$PY" -m pip install --no-cache-dir "$TORCH_REQUIREMENT"
+  PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir "$TORCH_REQUIREMENT"
 else
-  PYTHONHOME="$RUNTIME_DIR" "$PY" -m pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url "$TORCH_INDEX_URL"
+  PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url "$TORCH_INDEX_URL"
 fi
-PYTHONHOME="$RUNTIME_DIR" "$PY" -m pip install --no-cache-dir av librosa numpy pyyaml tqdm
+PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir av librosa numpy pyyaml tqdm
 if [[ "$VARIANT" == "mlx" || "$VARIANT" == "mps" ]]; then
-  PYTHONHOME="$RUNTIME_DIR" "$PY" -m pip install --no-cache-dir mlx
+  PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir mlx
 fi
 if [[ -n "$PYMSS_SOURCE_DIR" ]]; then
-  PYTHONHOME="$RUNTIME_DIR" "$PY" -m pip install --no-cache-dir "$PYMSS_SOURCE_DIR"
+  PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir "$PYMSS_SOURCE_DIR"
 fi
 
 bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR"
-PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RUNTIME_DIR" "$PY" - <<'PY'
+PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RUNTIME_HOME" "$PY" - <<'PY'
 import importlib.util
 import torch, librosa, av, yaml, tqdm
 print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available())
