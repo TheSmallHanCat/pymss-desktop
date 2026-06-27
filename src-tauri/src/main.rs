@@ -13,6 +13,9 @@ fn main() {
     tauri::Builder::default()
         .on_page_load(|webview, _payload| {
             let window = webview.window();
+            if !cfg!(target_os = "macos") {
+                let _ = window.set_decorations(false);
+            }
             let _ = window.show();
             let _ = window.set_focus();
         })

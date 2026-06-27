@@ -453,7 +453,7 @@ pub async fn open_editor_window(app: AppHandle, payload: Value) -> AppResult<Val
         .title("Pymss Studio Editor")
         .inner_size(1440.0, 900.0)
         .min_inner_size(1180.0, 720.0)
-        .decorations(false)
+        .decorations(cfg!(target_os = "macos"))
         .visible(false)
         .focused(true)
         .on_page_load(|window, payload| {

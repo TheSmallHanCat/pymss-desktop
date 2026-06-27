@@ -221,12 +221,15 @@ function resolveAssetUrl(path: string) {
   }
 }
 
-async function loadPeaksFromCache(path?: string | null) {
+async function loadPeaksFromCache(path?: string | null, sourcePath?: string | null) {
   if (!path) return null
   try {
     const response = await fetch(resolveAssetUrl(path))
     if (!response.ok) return null
-    const data = await response.json() as { peaks?: unknown }
+    const data = await response.json() as { path?: unknown, peaks?: unknown }
+    if (sourcePath && typeof data.path === 'string' && normalizePathKey(data.path) !== normalizePathKey(sourcePath)) {
+      return null
+    }
     return Array.isArray(data.peaks)
       ? data.peaks.map((value) => Number(value || 0))
       : null
@@ -673,7 +676,7 @@ export const useEditorStore = defineStore('editor', () => {
     const source = session.value.sources.find((item) => item.id === sourceId)
     if (!source || source.missing || hasPeaks(source.peaks)) return source || null
 
-    const cachedPeaks = await loadPeaksFromCache(source.peaksPath)
+    const cachedPeaks = await loadPeaksFromCache(source.peaksPath, source.path)
     if (cachedPeaks?.length) {
       source.peaks = cachedPeaks
       return source
@@ -822,7 +825,7 @@ export const useEditorStore = defineStore('editor', () => {
     const sources = [...session.value.sources]
     await Promise.allSettled(sources.map(async (source) => {
       if (hasPeaks(source.peaks)) return
-      const cachedPeaks = await loadPeaksFromCache(source.peaksPath)
+      const cachedPeaks = await loadPeaksFromCache(source.peaksPath, source.path)
       if (cachedPeaks?.length && session.value?.id === projectId) {
         source.peaks = cachedPeaks
       }

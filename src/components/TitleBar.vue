@@ -25,6 +25,7 @@ const pageTitle = computed(() => t(`nav.${String(route.name || 'home')}`))
 const isMainWindow = computed(() => !appWindow || appWindow.label === 'main')
 const runningTaskCount = computed(() => task.runningTasks.length)
 const closeDisabled = computed(() => settings.isModelDirMigrating || closeInProgress.value)
+const isMacOS = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)
 
 async function refreshMaximized() {
   if (!appWindow) { isMaximized.value = false; return }
@@ -179,7 +180,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <header class="title-bar">
+  <header v-if="!isMacOS" class="title-bar">
     <div class="title-brand" @mousedown.left="startDrag">
       <AppBrandMark :size="22" variant="compact" />
       <div class="brand-copy">

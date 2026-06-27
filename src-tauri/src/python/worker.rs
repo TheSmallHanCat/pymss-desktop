@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -14,6 +15,8 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+static PAYLOAD_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn pymss_sys_path_candidate(path: &std::path::Path) -> Option<PathBuf> {
     if path.join("pymss").join("__init__.py").is_file() {
@@ -217,14 +220,16 @@ fn make_payload_file(command: &str, task_id: Option<&str>, payload: Value) -> Ap
     let mut path = std::env::temp_dir();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_millis())
+        .map(|value| value.as_nanos())
         .unwrap_or_default();
+    let sequence = PAYLOAD_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     path.push(format!(
-        "pymss-studio-payload-{}-{}-{}-{}.json",
+        "pymss-studio-payload-{}-{}-{}-{}-{}.json",
         command,
         task_id.unwrap_or("once"),
         std::process::id(),
-        stamp
+        stamp,
+        sequence
     ));
     let mut file = std::fs::File::create(&path)?;
     file.write_all(serde_json::to_string(&payload)?.as_bytes())?;

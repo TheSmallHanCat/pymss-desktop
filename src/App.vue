@@ -20,6 +20,7 @@ const backgroundWarmupsStarted = ref(false)
 
 const isDark = computed(() => resolvedIsDark(settings.themeMode))
 const isEditorRoute = computed(() => route.path === '/editor')
+const isMacOS = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)
 const resolvedTheme = computed(() => getResolvedThemeTokens(settings.themeMode, settings.themeAccent))
 const showStartupOnboarding = computed(() => bootReady.value && !isEditorRoute.value && settings.shouldShowStartupOnboarding)
 
@@ -73,7 +74,7 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
     <n-notification-provider>
       <n-message-provider>
         <n-dialog-provider>
-        <div class="app-shell" :class="{ 'app-shell--editor': isEditorRoute, 'no-animations': !settings.animationsEnabled }">
+        <div class="app-shell" :class="{ 'app-shell--editor': isEditorRoute, 'app-shell--native-titlebar': isMacOS, 'no-animations': !settings.animationsEnabled }">
           <div class="app-backdrop" />
           <TitleBar />
           <div class="app-body">

@@ -100,6 +100,14 @@ a { color: inherit; text-decoration: none; }
   padding: 24px 28px 32px;
 }
 
+.app-shell--native-titlebar .app-body {
+  padding-top: 0;
+}
+
+.app-shell--native-titlebar .app-content {
+  height: 100vh;
+}
+
 .app-shell--editor .app-body {
   grid-template-columns: 1fr;
 }
