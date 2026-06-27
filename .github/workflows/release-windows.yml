@@ -44,7 +44,7 @@ jobs:
 
       - name: Prepare embedded CUDA Python runtime
         shell: pwsh
-        run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL
+        run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL -PymssSourceDir pymss-core
 
       - name: Sync build version metadata
         shell: pwsh
@@ -231,7 +231,7 @@ jobs:
 
       - name: Prepare embedded CPU Python runtime
         shell: pwsh
-        run: ./scripts/prepare-python-runtime.ps1 -Variant default -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL
+        run: ./scripts/prepare-python-runtime.ps1 -Variant default -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL -PymssSourceDir pymss-core
 
       - name: Sync build version metadata
         shell: pwsh
