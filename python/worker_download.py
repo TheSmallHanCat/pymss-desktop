@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
+import shutil
 import subprocess
 import time
 import traceback
@@ -12,6 +14,22 @@ from typing import Any
 
 from worker_models import model_to_dict
 from worker_protocol import emit, emit_error
+
+_ARIA2_PROGRESS_PATTERN = re.compile(
+    r"\[#.*?\s+(?P<downloaded>[\d.]+\s*[KMGTPE]?i?B|[\d.]+\s*B)/"
+    r"(?P<total>[\d.]+\s*[KMGTPE]?i?B|[\d.]+\s*B)"
+    r"\((?P<percent>\d+)%\).*?DL:(?P<speed>[\d.]+\s*[KMGTPE]?i?B/s|[\d.]+\s*B/s)",
+    re.IGNORECASE,
+)
+
+
+class DownloadValidationError(RuntimeError):
+    pass
+
+
+def _resolve_aria2c_path() -> str | None:
+    return shutil.which("aria2c")
+
 
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
@@ -155,6 +173,42 @@ def _download_file_with_progress_urllib(
         raise
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        while True:
+            chunk = file.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _cleanup_partial_download(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _validate_downloaded_file(
+    path: Path,
+    dest: Path,
+    expected_size: int | None,
+    expected_sha256: str,
+) -> None:
+    if expected_size is not None and path.stat().st_size != expected_size:
+        raise DownloadValidationError(
+            f"size mismatch for {dest.name}: expected {expected_size}, got {path.stat().st_size}"
+        )
+    if expected_sha256:
+        actual = _sha256(path)
+        if actual != expected_sha256:
+            raise DownloadValidationError(
+                f"sha256 mismatch for {dest.name}: expected {expected_sha256}, got {actual}"
+            )
+
+
 def _download_file_with_progress_aria2(
     *,
     aria2c_path: str,
@@ -282,18 +336,15 @@ def _download_model_with_observed_progress(
     progress_callback: Any,
 ) -> dict[str, Any]:
     from pymss.model_download import (  # type: ignore
-        ARIA2C_PATH,
         DownloadError,
-        DownloadValidationError,
         _already_valid,
-        _cleanup_partial_download,
         _expected_size_and_hash,
-        _validate_downloaded_file,
         fetch_modelscope_file_index,
         files_for_model,
         remote_url,
     )
 
+    aria2c_path = _resolve_aria2c_path()
     _, files = files_for_model(entry.name, model_dir)
     total_files = max(1, len(files))
     source_index = fetch_modelscope_file_index(timeout=timeout) if endpoint is None else None
@@ -324,9 +375,9 @@ def _download_model_with_observed_progress(
         last_error: Exception | None = None
         for attempt in range(3):
             try:
-                if ARIA2C_PATH:
+                if aria2c_path:
                     _download_file_with_progress_aria2(
-                        aria2c_path=ARIA2C_PATH,
+                        aria2c_path=aria2c_path,
                         url=url,
                         dest=dest,
                         expected_size=expected_size,
@@ -363,7 +414,7 @@ def _download_model_with_observed_progress(
                 DownloadError,
             ) as exc:
                 last_error = exc
-                if (not ARIA2C_PATH) or isinstance(exc, DownloadValidationError):
+                if (not aria2c_path) or isinstance(exc, DownloadValidationError):
                     _cleanup_partial_download(tmp)
                 if attempt < 2:
                     time.sleep(1.0 + attempt)
@@ -505,4 +556,3 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
         return emit_error("MODEL_NOT_FOUND", str(exc), task_id=task_id)
     except Exception as exc:
         return emit_error("MODEL_DOWNLOAD_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
-
