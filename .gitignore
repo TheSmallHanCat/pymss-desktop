@@ -39,6 +39,8 @@ outputs/
 
 # Local planning / generated docs not committed for public source release
 *.md
+!README.md
+!README.zh-CN.md
 docs/
 .omc/
 .spec-workflow/

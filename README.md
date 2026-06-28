@@ -1,114 +1,220 @@
-# Pymss Studio
+<!-- markdownlint-disable MD013 MD033 MD041 -->
 
-Pymss Studio 是一个基于 Tauri 的桌面端音频源分离应用，前端使用 Vue 3 + TypeScript + Vite，后端由 Rust/Tauri 调度 Python worker，核心分离能力来自外部的 [`pymss`](https://github.com/pymss-project/pymss) 项目。
+<p align="center">
+  <img src="./src/assets/app-logo-unified.png" alt="Pymss Studio" width="120" />
+</p>
 
-## 功能
+<h1 align="center">Pymss Studio</h1>
 
-- 音频源分离
-- 模型列表、下载、删除与存储管理
-- 音频信息读取与波形峰值缓存
-- 编辑器混音导出
-- Windows 发布版支持 CUDA / CPU 两套运行时
+<p align="center">
+  A polished desktop workspace for music source separation, model management, batch jobs, and stem editing.
+</p>
 
-## 技术栈
+<p align="center">
+  <img alt="Platform Windows" src="https://img.shields.io/badge/Platform-Windows-0078D4?style=flat-square&logo=windows11&logoColor=white" />
+  <img alt="Platform macOS" src="https://img.shields.io/badge/Platform-macOS-111111?style=flat-square&logo=apple&logoColor=white" />
+  <img alt="Platform Linux" src="https://img.shields.io/badge/Platform-Linux-FCC624?style=flat-square&logo=linux&logoColor=111111" />
+</p>
 
-- 前端：Vue 3、TypeScript、Vite、Naive UI
-- 桌面壳：Tauri v2
-- Python：`python/worker.py` 负责模型、音频和推理相关任务
+<p align="center">
+  <a href="./README.zh-CN.md">简体中文</a>
+  ·
+  <a href="https://github.com/pymss-project/pymss-studio/releases">Download</a>
+  ·
+  <a href="https://github.com/pymss-project/pymss">pymss core</a>
+</p>
 
-## 项目结构
+<p align="center">
+  <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8DB?style=for-the-badge&logo=tauri&logoColor=white" />
+  <img alt="Vue 3" src="https://img.shields.io/badge/Vue-3-42B883?style=for-the-badge&logo=vuedotjs&logoColor=white" />
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5-3178C6?style=for-the-badge&logo=typescript&logoColor=white" />
+  <img alt="License: AGPL-3.0" src="https://img.shields.io/badge/License-AGPL--3.0-111827?style=for-the-badge" />
+</p>
 
-- `src/`：前端页面、组件、路由、状态管理
-- `src-tauri/`：Rust 侧 Tauri 应用与配置
-- `python/`：Python worker 和运行时依赖说明
-- `scripts/`：Python 运行时准备与清理脚本
-- `installer/`：Windows 安装包脚本
+<p align="center">
+  <img src="./images/dark-home.png" alt="Pymss Studio dark home screen" width="900" />
+</p>
 
-## 开发前准备
+## Why Pymss Studio
 
-- `pnpm` 10.33.2
-- Node.js
-- Rust / Cargo
-- Python 解释器
-- `pymss` 核心仓库或可用的 `PYMSS_STUDIO_PYMSS_PATH`
+Pymss Studio turns the [`pymss`](https://github.com/pymss-project/pymss) source-separation engine into a complete desktop experience. It gives producers, researchers, and power users a single place to prepare models, import audio, monitor long-running separation tasks, review results, and export edited stems without dropping into command-line workflows.
 
-Python worker 会优先从以下位置寻找 `pymss`：
+> The desktop app is a wrapper around the external `pymss` package. Core separation algorithms and model behavior live in `pymss`; this repository focuses on the desktop product, frontend workflow, Tauri orchestration, and release packaging.
 
-- 开发环境：`<workspace>/pymss-desktop` 与 `<workspace>/pymss` 为兄弟目录
-- 发布环境：`<root>/python/worker.py`、`<root>/pymss/`、`<root>/python-runtime/python.exe`
+## Install
 
-如需手动指定核心库位置，可设置 `PYMSS_STUDIO_PYMSS_PATH`。
+Download the latest Windows, Linux, or macOS package from the [Pymss Studio releases page](https://github.com/pymss-project/pymss-studio/releases).
 
-## 运行项目
+On macOS, clear the quarantine attribute after installing the app:
+
+```bash
+xattr -cr '/Applications/Pymss Studio.app'
+```
+
+Then open Pymss Studio from `/Applications`.
+
+## Advantages
+
+Pymss Studio focuses on practical desktop performance across more machines:
+
+- Faster inference workflows through a packaged desktop runtime around `pymss`.
+- Lower memory pressure for day-to-day source separation and batch jobs.
+- Broader platform coverage across Windows, Linux, and macOS.
+
+## Preview
+
+| Light | Dark |
+| --- | --- |
+| <img src="./images/light-home.png" alt="Light home screen" /> | <img src="./images/dark-home.png" alt="Dark home screen" /> |
+| <img src="./images/light-separation.png" alt="Light separation setup" /> | <img src="./images/dark-separation.png" alt="Dark separation setup" /> |
+| <img src="./images/light-models.png" alt="Light model library" /> | <img src="./images/dark-models.png" alt="Dark model library" /> |
+| <img src="./images/light-editor.png" alt="Light editor" /> | <img src="./images/dark-editor.png" alt="Dark editor" /> |
+| <img src="./images/light-settings.png" alt="Light settings" /> | <img src="./images/dark-settings.png" alt="Dark settings" /> |
+
+## Highlights
+
+| Area | What it does |
+| --- | --- |
+| Workspace dashboard | Shows runtime health, local model status, running jobs, completed results, and the recommended workflow. |
+| Separation setup | Imports audio/video files or folders, chooses a downloaded model, configures output format, runtime device, TTA, debug logging, and advanced inference parameters. |
+| Task queue | Tracks queued and running jobs with stage-level progress, logs, retry/cancel actions, and history management. |
+| Model library | Browses available models, downloads and resumes model files, deletes local models, and manages storage cleanup. |
+| Results and projects | Keeps generated outputs and editor projects organized for review and later editing. |
+| Stem editor | Provides waveform preview, transport controls, asset panels, mix controls, project persistence, missing-asset relinking, and export. |
+| Desktop packaging | Uses Tauri v2 with a Python worker and release scripts for portable Python runtimes. |
+
+## Roadmap
+
+Near-term work:
+
+- Intel GPU and AMD GPU adaptation. Developers with Intel or AMD GPUs are welcome to join `pymss-project` and help with validation, packaging, and performance tuning.
+- iOS and Android GPU inference.
+
+Long-term work:
+
+- iOS and Android NPU inference.
+
+## Tech stack
+
+| Layer | Stack |
+| --- | --- |
+| Frontend | Vue 3, TypeScript, Vite, Pinia, Vue Router, Vue I18n, Naive UI |
+| Desktop shell | Tauri v2, Rust, Tauri dialog/shell/store plugins |
+| Worker | Python worker protocol in `python/worker.py` |
+| Core engine | External [`pymss`](https://github.com/pymss-project/pymss) package |
+| Packaging | pnpm, Tauri CLI, PowerShell runtime staging scripts, GitHub Actions |
+
+## Prerequisites
+
+- Node.js with `pnpm@10.33.2`
+- Rust and Cargo for Tauri development
+- Python for worker development
+- A local `pymss` checkout or `PYMSS_STUDIO_PYMSS_PATH` pointing to one
+- Platform-specific media/model dependencies required by the `pymss` core package
+
+The worker resolves `pymss` in this order:
+
+```text
+PYMSS_STUDIO_PYMSS_PATH
+<workspace>/pymss-desktop + <workspace>/pymss as sibling repositories
+<portable-root>/pymss in release builds
+```
+
+## Development
+
+Install dependencies:
 
 ```bash
 pnpm install
+```
+
+Run the frontend only:
+
+```bash
 pnpm dev
 ```
 
-`pnpm dev` 只启动前端开发服务器，默认运行在 `http://localhost:1420`。
-
-如果要同时启动 Tauri 主进程：
+Run the full desktop app with Tauri:
 
 ```bash
 pnpm tauri dev
 ```
 
-## 构建项目
+Build the frontend:
+
+```bash
+pnpm build
+```
+
+Build the production desktop app:
+
+```bash
+pnpm tauri build
+```
+
+## Configuration
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PYMSS_STUDIO_PYTHON` | `python` | Python interpreter used by the Tauri backend to launch the worker. |
+| `PYMSS_STUDIO_PYMSS_PATH` | auto-detected | Explicit path to the external `pymss` core repository/package. |
+| `PYMSS_STUDIO_DEFAULT_OUTPUT_DIR` | app default | Default directory for separation outputs. |
+
+## Project layout
+
+```text
+.
+├── src/                  # Vue frontend: views, components, stores, i18n, editor UI
+├── src-tauri/            # Tauri v2 app, Rust commands, bundle configuration
+├── python/               # JSON-based worker protocol and runtime dependency notes
+├── scripts/              # Runtime preparation, staging, and cleanup scripts
+├── installer/            # Windows installer assets
+├── images/               # README screenshots
+└── package.json          # Frontend and Tauri commands
+```
+
+## Architecture
+
+```mermaid
+flowchart LR
+  UI[Vue + Naive UI frontend] --> API[Tauri commands]
+  API --> Worker[python/worker.py]
+  Worker --> Core[pymss core package]
+  Core --> Models[Separation models]
+  Core --> Output[Separated stems]
+  UI --> Store[Pinia stores]
+  Store --> UI
+```
+
+The UI owns interaction design and state. Tauri owns desktop integration, process orchestration, file dialogs, and packaged resources. The Python worker exposes model, environment, audio, and inference operations through a JSON protocol while delegating separation logic to `pymss`.
+
+## Release packaging
+
+Windows releases are built in CUDA and CPU variants. The release flow prepares an embedded Python runtime, builds the Tauri executable, stages the portable directory with worker/core assets and tools, then produces archives or installers.
+
+```powershell
+./scripts/prepare-python-runtime.ps1 -Variant cuda
+./scripts/prepare-python-runtime.ps1 -Variant default
+```
+
+Staged builds are smoke-tested with worker commands such as `env_info` and `list_models`.
+
+## Verification
+
+This repository currently has no dedicated automated test suite. Use the existing build and smoke checks before shipping changes:
 
 ```bash
 pnpm build
 pnpm tauri build
 ```
 
-- `pnpm build` 会先执行 `vue-tsc --noEmit`，再执行 Vite 构建
-- `pnpm tauri build` 会先跑 `pnpm build`
+For packaged Python environments, verify:
 
-## Python 运行时
-
-`python/requirements.txt` 只用于说明 worker 需要哪些运行时依赖，真正的发布运行时由脚本准备：
-
-```powershell
-./scripts/prepare-python-runtime.ps1 -Variant cuda
+```bash
+python python/worker.py env_info
+python python/worker.py list_models
 ```
 
-可选的变体：
+## License
 
-- `cuda`：Windows CUDA 版
-- `default`：Windows CPU 版
-- `mps` / `mlx`：用于对应平台的扩展变体
-
-脚本会把 Python、Torch 和 worker 依赖打包到 `python-runtime/`。
-
-## 环境变量
-
-- `PYMSS_STUDIO_PYTHON`：指定 Python 解释器路径，默认是 `python`
-- `PYMSS_STUDIO_PYMSS_PATH`：指定 `pymss` 核心库路径
-- `PYMSS_STUDIO_DEFAULT_OUTPUT_DIR`：默认分离输出目录
-
-## 发布说明
-
-Windows 发布分为两条线：
-
-- CUDA 版：用于 NVIDIA GPU
-- CPU 版：用于不依赖 CUDA 的环境
-
-CI 会先准备 Python runtime，再构建 Tauri 程序，最后组装便携包和安装包。超出 GitHub Release 单文件限制的资产会被自动拆分。
-
-## 常见问题
-
-### 为什么 `pnpm build` 前要先确保 Python 依赖可用？
-
-因为桌面应用虽然是前端驱动，但真正的模型管理和推理逻辑在 Python worker 里；没有可用的 `pymss` 核心库，很多功能无法正常工作。
-
-### 为什么启动后找不到模型？
-
-先确认 `pymss` 核心仓库位置是否正确，再检查 `PYMSS_STUDIO_PYMSS_PATH` 是否指向了可用目录。
-
-### 发布包里为什么有 `python-runtime/`？
-
-这是打包后的嵌入式 Python 运行时，包含 worker 所需的依赖和 Torch。
-
-## 说明
-
-本项目默认没有单独的自动化测试套件；当前验证方式主要是 `pnpm build`、`pnpm tauri build`，以及 Python worker 的 `env_info` / `list_models` 冒烟检查。
+Pymss Studio is licensed under the GNU Affero General Public License v3.0. See [LICENSE](./LICENSE).
