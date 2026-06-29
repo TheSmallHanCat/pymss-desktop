@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from worker_audio import _apply_stereo_pan, _equal_power_fade, _read_audio, _resample_audio
+from worker_models import _derive_overlap_size_from_num_overlap
 from worker_protocol import _as_bool, _as_float, _as_int, emit, emit_error
 
 class JsonLogHandler:
