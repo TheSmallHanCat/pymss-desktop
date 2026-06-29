@@ -63,6 +63,8 @@ const VIDEO_EXTENSIONS = ['mp4', 'mkv', 'mov', 'avi', 'webm', 'flv']
 const CURRENT_INFERENCE_PARAMS_VERSION = 3
 const TERMINAL_STATUSES: TaskStatus[] = ['done', 'failed', 'cancelled']
 const INTERRUPTIBLE_STATUSES: TaskStatus[] = ['queued', 'preparing', 'validating_input', 'downloading_model', 'ensuring_model', 'loading_model', 'separating', 'writing_output']
+const NORMAL_LOG_LIMIT = 300
+const DEVELOPER_LOG_LIMIT = 1200
 
 const STAGE_META: Record<TaskStatus, { progress: number; label: string }> = {
   queued: { progress: 2, label: 'Queued' },
@@ -120,6 +122,10 @@ function outputsFromFiles(outputDir: string, files: string[], outputFormat = 'wa
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value))
+}
+
+function getLogLimit(developerMode: boolean) {
+  return developerMode ? DEVELOPER_LOG_LIMIT : NORMAL_LOG_LIMIT
 }
 
 function resolveStageProgress(status: TaskStatus, current?: number, total?: number) {
@@ -441,6 +447,7 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   function appendTaskLogs(task: SeparationTask, lines: string | string[]) {
+    const settings = useSettingsStore()
     const values = Array.isArray(lines) ? lines : [lines]
     const normalized = values
       .flatMap((line) => String(line || '').split(/\r?\n/))
@@ -448,7 +455,7 @@ export const useTaskStore = defineStore('task', () => {
       .filter(Boolean)
     if (!normalized.length) return
     task.logs.push(...normalized)
-    task.logs = task.logs.slice(-300)
+    task.logs = task.logs.slice(-getLogLimit(settings.developerMode))
     touch(task)
     queuePersist()
   }
@@ -558,6 +565,7 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   function setTaskStatus(id: string, status: TaskStatus, message?: string, progress?: number) {
+    const settings = useSettingsStore()
     const task = tasks.value.find((item) => item.id === id)
     if (!task) return
     if (TERMINAL_STATUSES.includes(task.status) && !TERMINAL_STATUSES.includes(status)) return
@@ -578,7 +586,7 @@ export const useTaskStore = defineStore('task', () => {
         ? normalizedProgress
         : Math.max(task.progress || 0, normalizedProgress)
     task.logs.push(`${new Date().toLocaleTimeString()} ${task.message}`)
-    task.logs = task.logs.slice(-300)
+    task.logs = task.logs.slice(-getLogLimit(settings.developerMode))
     touch(task)
     queuePersist()
   }
@@ -611,7 +619,10 @@ export const useTaskStore = defineStore('task', () => {
       touch(task)
       queueProgressPersist()
     } else if (event.type === 'task_log') {
-      appendTaskLogs(task, `${event.payload?.level || 'info'}: ${event.payload?.message || ''}`)
+      const settings = useSettingsStore()
+      const level = String(event.payload?.level || 'info')
+      const message = String(event.payload?.message || '')
+      appendTaskLogs(task, settings.developerMode ? `[${level}] ${message}` : `${level}: ${message}`)
     } else if (event.type === 'error') {
       if (task.status === 'cancelled') return
       const codeValue = event.payload?.code

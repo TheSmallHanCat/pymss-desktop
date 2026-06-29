@@ -82,6 +82,7 @@ type StoredSettings = {
   scaleFactor?: number
   locale?: LocaleSetting
   animationsEnabled?: boolean
+  developerMode?: boolean
   modelDir?: string
   outputDir?: string
   separateTaskOutputDir?: boolean
@@ -184,6 +185,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const scaleFactor = ref(DEFAULT_SCALE_FACTOR)
   const locale = ref<LocaleSetting>(DEFAULT_LOCALE)
   const animationsEnabled = ref(true)
+  const developerMode = ref(false)
   const modelDir = ref('')
   const outputDir = ref('')
   const separateTaskOutputDir = ref(true)
@@ -213,6 +215,7 @@ export const useSettingsStore = defineStore('settings', () => {
     scaleFactor: scaleFactor.value,
     locale: locale.value,
     animationsEnabled: animationsEnabled.value,
+    developerMode: developerMode.value,
     modelDir: modelDir.value,
     outputDir: outputDir.value,
     separateTaskOutputDir: separateTaskOutputDir.value,
@@ -263,6 +266,7 @@ export const useSettingsStore = defineStore('settings', () => {
     scaleFactor.value = normalizeScaleFactor(stored?.scaleFactor)
     locale.value = normalizeLocaleSetting(stored?.locale, DEFAULT_LOCALE)
     animationsEnabled.value = stored?.animationsEnabled ?? true
+    developerMode.value = stored?.developerMode === true
     modelDir.value = (stored?.modelDir || paths.modelsDir).trim() || paths.modelsDir
     outputDir.value = (stored?.outputDir || paths.outputsDir).trim() || paths.outputsDir
     separateTaskOutputDir.value = stored?.separateTaskOutputDir ?? true
@@ -326,6 +330,7 @@ export const useSettingsStore = defineStore('settings', () => {
       mp3BitRate,
       m4aBitRate,
       m4aCodec,
+      developerMode,
     ],
     () => queuePersist(),
     { deep: true },
@@ -728,6 +733,7 @@ export const useSettingsStore = defineStore('settings', () => {
     scaleFactor,
     locale,
     animationsEnabled,
+    developerMode,
     modelDir,
     outputDir,
     separateTaskOutputDir,

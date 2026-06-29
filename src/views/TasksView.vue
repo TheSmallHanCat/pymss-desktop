@@ -16,6 +16,7 @@ import {
   GridOutline,
 } from '@vicons/ionicons5'
 import { useTaskStore, type SeparationTask } from '@/stores/task'
+import { useSettingsStore } from '@/stores/settings'
 import { usePagedSelection } from '@/composables/usePagedSelection'
 
 const { t } = useI18n()
@@ -23,6 +24,7 @@ const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
 const task = useTaskStore()
+const settings = useSettingsStore()
 
 const terminalStatuses = ['done', 'failed', 'cancelled']
 const showLogModal = ref(false)
@@ -613,6 +615,9 @@ onMounted(() => {
         aria-modal="true"
       >
         <template #header-extra>
+          <n-tag v-if="settings.developerMode" size="small" :bordered="false" type="info">
+            {{ t('settings.developerMode') }}
+          </n-tag>
           <n-tag v-if="selectedLogTask" size="small" :bordered="false" :type="statusType(selectedLogTask.status)">
             {{ t('tasks.logLineCount', { status: statusLabel(selectedLogTask.status), count: selectedLogTask.logs.length }) }}
           </n-tag>

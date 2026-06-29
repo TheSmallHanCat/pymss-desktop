@@ -49,15 +49,19 @@ jobs:
           fi
           PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import sys, ssl, pymss_core; print(sys.prefix); print('ssl ok'); print('pymss_core ok')"
 
+      - name: Install macOS bundled tools
+        run: brew install ffmpeg aria2
+
       - name: Copy clean resources for Tauri bundling
         run: |
           mkdir -p src-tauri/resources
-          rm -rf src-tauri/resources/python src-tauri/resources/python-runtime src-tauri/resources/pymss
+          rm -rf src-tauri/resources/python src-tauri/resources/python-runtime src-tauri/resources/pymss src-tauri/resources/bin
           mkdir -p src-tauri/resources/python
           rsync -a --exclude '__pycache__' --exclude '*.pyc' python/ src-tauri/resources/python/
           cp -R python-runtime src-tauri/resources/python-runtime
           mkdir -p src-tauri/resources/pymss
           rsync -a --exclude '.git' --exclude '.github' --exclude '.claude' --exclude '.omc' --exclude '.spec-workflow' --exclude '__pycache__' --exclude '*.pyc' pymss-core/ src-tauri/resources/pymss/
+          bash scripts/prepare-macos-bundled-tools.sh src-tauri/resources/bin
 
       - name: Build Tauri app bundle
         working-directory: .
@@ -73,6 +77,7 @@ jobs:
                       str((root / "src-tauri" / "resources" / "python").resolve()): "python",
                       str((root / "src-tauri" / "resources" / "python-runtime").resolve()): "python-runtime",
                       str((root / "src-tauri" / "resources" / "pymss").resolve()): "pymss",
+                      str((root / "src-tauri" / "resources" / "bin").resolve()): "bin",
                   }
               }
           }))
@@ -100,13 +105,25 @@ jobs:
           test -f "$RES/python/worker.py" || test -f "$RES/resources/python/worker.py"
           test -d "$RES/python-runtime" || test -d "$RES/resources/python-runtime"
           test -f "$RES/pymss/__init__.py" || test -f "$RES/pymss/pymss/__init__.py" || test -f "$RES/resources/pymss/__init__.py" || test -f "$RES/resources/pymss/pymss/__init__.py"
+          test -x "$RES/bin/ffmpeg" || test -x "$RES/resources/bin/ffmpeg"
+          test -x "$RES/bin/aria2c" || test -x "$RES/resources/bin/aria2c"
           PY="$RES/python-runtime/bin/python3"
           WORKER="$RES/python/worker.py"
           if [ ! -f "$WORKER" ]; then
             WORKER="$RES/resources/python/worker.py"
           fi
+          BIN="$RES/bin"
+          if [ ! -x "$BIN/ffmpeg" ]; then
+            BIN="$RES/resources/bin"
+          fi
           test -f "$PY"
           test -f "$WORKER"
+          test -x "$BIN/ffmpeg"
+          test -x "$BIN/ffprobe"
+          test -x "$BIN/aria2c"
+          "$BIN/ffmpeg" -version
+          "$BIN/ffprobe" -version
+          "$BIN/aria2c" --version
           test -d "$RES/python-runtime/lib/python3.12"
           if otool -L "$PY" | grep -q '/Library/Frameworks/Python.framework/Versions/'; then
             echo "Bundled app runtime unexpectedly links system Python framework: $PY"
@@ -114,8 +131,9 @@ jobs:
             exit 1
           fi
           PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl, pymss_core; print(sys.prefix); print('ssl ok'); print('pymss_core ok')"
-          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" env_info
-          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" list_models --payload "{}"
+          PATH="$BIN:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import shutil; assert shutil.which('ffmpeg'); assert shutil.which('aria2c'); print('bundled tools ok')"
+          PATH="$BIN:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" env_info
+          PATH="$BIN:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" list_models --payload "{}"
           codesign --verify --deep --strict --verbose=4 "$APP"
 
       - name: Build DMG with hdiutil
