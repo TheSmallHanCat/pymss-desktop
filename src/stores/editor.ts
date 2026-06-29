@@ -591,6 +591,8 @@ export const useEditorStore = defineStore('editor', () => {
     return listProjects()
   }
 
+  // Keep this interface for the future import-first editor flow. The visible
+  // blank-project entry is hidden until external audio import has clear UI.
   async function createBlankProject(name?: string) {
     const locale = getCurrentLocale()
     const result = await invoke<PersistedSession>('create_blank_editor_project', {

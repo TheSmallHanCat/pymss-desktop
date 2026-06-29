@@ -30,7 +30,6 @@ const routeWarmupLoaders = [
   () => import('@/views/TasksView.vue'),
   () => import('@/views/ModelsView.vue'),
   () => import('@/views/ResultsView.vue'),
-  () => import('@/views/ProjectsView.vue'),
   () => import('@/views/SettingsView.vue'),
 ]
 

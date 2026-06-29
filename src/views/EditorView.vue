@@ -330,11 +330,7 @@ watch(
         <strong>{{ t('editor.noProjectSelected') }}</strong>
         <p>{{ t('editor.noProjectSelectedHint') }}</p>
         <div class="editor-empty-state__actions">
-          <n-button type="primary" @click="router.push('/projects')">
-            <template #icon><n-icon :component="FolderOpenOutline" /></template>
-            {{ t('editor.openProjectList') }}
-          </n-button>
-          <n-button secondary @click="router.push('/results')">
+          <n-button type="primary" @click="router.push('/results')">
             <template #icon><n-icon :component="MusicalNotesOutline" /></template>
             {{ t('editor.openResultsList') }}
           </n-button>
