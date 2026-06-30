@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import platform
-import shutil
 import sys
 import traceback
 from pathlib import Path
@@ -286,10 +285,21 @@ def cmd_delete_model(payload: dict[str, Any]) -> int:
     config_path = config_path_for(entry, model_dir)
     auxiliary_paths = auxiliary_paths_for(entry, model_dir)
 
-    all_paths = [model_path]
-    if config_path is not None:
-        all_paths.append(config_path)
-    all_paths.extend(auxiliary_paths)
+    def expand_cleanup_paths(path: Path) -> list[Path]:
+        part_path = path.with_name(path.name + ".part")
+        return [
+            path,
+            Path(str(path) + ".aria2"),
+            part_path,
+            Path(str(part_path) + ".aria2"),
+        ]
+
+    candidate_roots = [model_path, *([config_path] if config_path is not None else []), *auxiliary_paths]
+    all_paths: list[Path] = []
+    for path in candidate_roots:
+        for candidate in expand_cleanup_paths(path):
+            if candidate not in all_paths:
+                all_paths.append(candidate)
 
     if task_id is None:
         deleted: list[str] = []

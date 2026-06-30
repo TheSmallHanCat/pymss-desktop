@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import traceback
 import urllib.error
@@ -94,6 +95,7 @@ def _emit_download_progress_payload(
     downloaded_bytes: int,
     total_bytes: int,
     speed_bytes_per_second: float = 0.0,
+    percent: float | int | None = None,
 ) -> None:
     callback({
         "event": event,
@@ -104,6 +106,7 @@ def _emit_download_progress_payload(
         "downloaded_bytes": max(0, downloaded_bytes),
         "total_bytes": max(0, total_bytes),
         "speed_bytes_per_second": max(0.0, float(speed_bytes_per_second or 0.0)),
+        "percent": None if percent is None else max(0.0, min(100.0, float(percent))),
     })
 
 
@@ -231,6 +234,7 @@ def _download_file_with_progress_aria2(
         "--allow-overwrite=true",
         "--auto-file-renaming=false",
         "--continue=true",
+        "--enable-color=false",
         "--console-log-level=notice",
         "--show-console-readout=true",
         "--summary-interval=1",
@@ -247,9 +251,53 @@ def _download_file_with_progress_aria2(
         url,
     ]
     process = None
-    last_downloaded = 0
-    last_total = expected_size or 0
+    existing_partial_size = int(tmp.stat().st_size) if tmp.is_file() else 0
+    last_downloaded = existing_partial_size
+    last_total = max(expected_size or 0, existing_partial_size)
     last_speed = 0.0
+    progress_lock = threading.Lock()
+    stop_progress_poll = threading.Event()
+
+    def emit_polled_progress(
+        downloaded_bytes: int,
+        total_bytes: int | None = None,
+        speed_bytes: float | None = None,
+    ) -> None:
+        resolved_total = max(total_bytes or 0, expected_size or 0, downloaded_bytes)
+        _emit_download_progress_payload(
+            progress_callback,
+            event="file_progress",
+            path=dest,
+            file_index=file_index,
+            total_files=total_files,
+            completed_files=completed_before,
+            downloaded_bytes=downloaded_bytes,
+            total_bytes=resolved_total,
+            speed_bytes_per_second=speed_bytes if speed_bytes is not None else last_speed,
+            percent=(downloaded_bytes / resolved_total * 100.0) if resolved_total > 0 else None,
+        )
+
+    def poll_partial_file_progress() -> None:
+        nonlocal last_downloaded
+        last_polled_size = -1
+        while not stop_progress_poll.wait(0.4):
+            try:
+                if not tmp.is_file():
+                    continue
+                current_size = int(tmp.stat().st_size)
+            except Exception:
+                continue
+            if current_size <= 0 or current_size == last_polled_size:
+                continue
+            last_polled_size = current_size
+            with progress_lock:
+                if current_size > last_downloaded:
+                    last_downloaded = current_size
+                current_total = max(last_total, expected_size or 0, current_size)
+                current_speed = last_speed
+            emit_polled_progress(last_downloaded, current_total, current_speed)
+
+    poller = threading.Thread(target=poll_partial_file_progress, name=f"aria2-progress-{dest.name}", daemon=True)
     try:
         _emit_download_progress_payload(
             progress_callback,
@@ -258,9 +306,11 @@ def _download_file_with_progress_aria2(
             file_index=file_index,
             total_files=total_files,
             completed_files=completed_before,
-            downloaded_bytes=0,
+            downloaded_bytes=existing_partial_size,
             total_bytes=last_total,
+            percent=(existing_partial_size / last_total * 100.0) if last_total > 0 else None,
         )
+        poller.start()
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -275,21 +325,17 @@ def _download_file_with_progress_aria2(
                 parsed = _parse_aria2_progress_line(raw_line)
                 if parsed is None:
                     continue
-                last_downloaded = max(last_downloaded, _safe_int(parsed.get("downloaded_bytes")))
-                last_total = max(last_total, _safe_int(parsed.get("total_bytes")))
-                last_speed = float(parsed.get("speed_bytes_per_second") or last_speed or 0.0)
-                _emit_download_progress_payload(
-                    progress_callback,
-                    event="file_progress",
-                    path=dest,
-                    file_index=file_index,
-                    total_files=total_files,
-                    completed_files=completed_before,
-                    downloaded_bytes=last_downloaded,
-                    total_bytes=last_total,
-                    speed_bytes_per_second=last_speed,
-                )
+                with progress_lock:
+                    last_downloaded = max(last_downloaded, _safe_int(parsed.get("downloaded_bytes")))
+                    last_total = max(last_total, _safe_int(parsed.get("total_bytes")), expected_size or 0)
+                    last_speed = float(parsed.get("speed_bytes_per_second") or last_speed or 0.0)
+                    current_downloaded = last_downloaded
+                    current_total = last_total
+                    current_speed = last_speed
+                emit_polled_progress(current_downloaded, current_total, current_speed)
         return_code = process.wait()
+        stop_progress_poll.set()
+        poller.join(timeout=1.0)
         if return_code != 0:
             raise RuntimeError(f"aria2c failed with exit code {return_code}")
         if not tmp.is_file():
@@ -309,10 +355,13 @@ def _download_file_with_progress_aria2(
             downloaded_bytes=final_downloaded,
             total_bytes=final_total,
             speed_bytes_per_second=last_speed,
+            percent=100.0,
         )
         return dest
     except Exception:
-        cleanup_partial_download(tmp)
+        stop_progress_poll.set()
+        if poller.is_alive():
+            poller.join(timeout=1.0)
         if process is not None and process.poll() is None:
             try:
                 process.kill()
@@ -459,9 +508,11 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
             "progress": 0,
         }, task_id=task_id)
         emit("download_stage", {"stage": "resolving_files", "progress": 5}, task_id=task_id)
+        last_emitted_progress = -1
+        last_emitted_completed = -1
 
         def emit_download_progress(progress_payload: dict[str, Any]) -> None:
-            nonlocal total_files, total_bytes
+            nonlocal total_files, total_bytes, last_emitted_progress, last_emitted_completed
             event_name = progress_payload.get("event")
             file_path = str(progress_payload.get("path") or "")
             total_files = max(total_files, int(progress_payload.get("total_files") or total_files or 1))
@@ -469,8 +520,12 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
             file_downloaded = int(progress_payload.get("downloaded_bytes") or 0)
             completed_files = int(progress_payload.get("completed_files") or 0)
             speed = float(progress_payload.get("speed_bytes_per_second") or 0.0)
+            file_percent_raw = progress_payload.get("percent")
+            try:
+                file_percent = float(file_percent_raw) if file_percent_raw is not None else None
+            except (TypeError, ValueError):
+                file_percent = None
 
-            previous = download_progress_state.get(file_path) or {"downloaded": 0, "total": 0}
             download_progress_state[file_path] = {
                 "downloaded": file_downloaded,
                 "total": file_total,
@@ -481,6 +536,14 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
 
             if total_bytes > 0:
                 progress = min(95, max(8, int(downloaded_sum / total_bytes * 95)))
+            elif file_percent is not None:
+                progress = min(
+                    95,
+                    max(
+                        8,
+                        int(((completed_files + max(0.0, min(100.0, file_percent)) / 100.0) / max(1, total_files)) * 95),
+                    ),
+                )
             else:
                 progress = min(95, max(8, int((completed_files / max(1, total_files)) * 95)))
 
@@ -500,6 +563,8 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
                 return
 
             if event_name in {"file_start", "file_progress", "file_done"}:
+                if event_name == "file_progress" and progress == last_emitted_progress and completed_files == last_emitted_completed:
+                    return
                 emit("download_progress", {
                     "path": file_path,
                     "fileIndex": int(progress_payload.get("file_index") or 0),
@@ -512,6 +577,8 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
                     "speedBytesPerSecond": speed,
                     "progress": progress,
                 }, task_id=task_id)
+                last_emitted_progress = progress
+                last_emitted_completed = completed_files
                 if event_name == "file_done":
                     emit("download_file", {
                         "status": "downloaded",
