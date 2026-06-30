@@ -10,7 +10,6 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
   CubeOutline,
   CheckmarkCircle,
-  CheckmarkCircleOutline,
   PlayOutline,
   MusicalNotesOutline,
   SearchOutline,
@@ -21,7 +20,6 @@ import {
   OpenOutline,
   PauseOutline,
   TerminalOutline,
-  AlertCircleOutline,
   TimeOutline,
 } from '@vicons/ionicons5'
 import { useModelStore } from '@/stores/model'
@@ -783,9 +781,6 @@ async function retryCurrentTask() {
       </template>
       <template v-else-if="currentTask">
         <div class="task-done-main">
-          <span class="task-done-main__icon">
-            <n-icon :component="taskPanelState === 'done' ? CheckmarkCircleOutline : AlertCircleOutline" />
-          </span>
           <div>
             <strong>{{ statusLabel(currentTask.status) }}</strong>
             <span>
@@ -1848,18 +1843,6 @@ async function retryCurrentTask() {
   align-self: end;
 }
 
-.task-done-main__icon {
-  width: 42px;
-  height: 42px;
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  border-radius: 13px;
-  color: var(--success);
-  background: color-mix(in srgb, var(--success) 16%, transparent);
-  font-size: 20px;
-}
-
 .separation-task-panel--done .task-done-main,
 .separation-task-panel--failed .task-done-main,
 .separation-task-panel--cancelled .task-done-main,
@@ -1873,12 +1856,6 @@ async function retryCurrentTask() {
 .separation-task-panel--failed .task-panel-actions,
 .separation-task-panel--cancelled .task-panel-actions {
   animation-delay: 80ms;
-}
-
-.separation-task-panel--failed .task-done-main__icon,
-.separation-task-panel--cancelled .task-done-main__icon {
-  color: var(--warning);
-  background: color-mix(in srgb, var(--warning) 14%, transparent);
 }
 
 .result-preview-panel {
