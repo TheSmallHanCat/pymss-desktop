@@ -3,12 +3,14 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { useMessage } from 'naive-ui'
+import { useDialog, useMessage } from 'naive-ui'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
   CubeOutline,
   CheckmarkCircle,
+  CheckmarkCircleOutline,
   PlayOutline,
   MusicalNotesOutline,
   SearchOutline,
@@ -17,9 +19,13 @@ import {
   CloseOutline,
   SettingsOutline,
   OpenOutline,
+  PauseOutline,
+  TerminalOutline,
+  AlertCircleOutline,
+  TimeOutline,
 } from '@vicons/ionicons5'
 import { useModelStore } from '@/stores/model'
-import { useTaskStore } from '@/stores/task'
+import { useTaskStore, type SeparationTask, type StemOutput } from '@/stores/task'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { buildModelCategoryOptionsFromModels, getModelCategoryLabel } from '@/utils/modelCategory'
@@ -27,6 +33,7 @@ import AppBrandMark from '@/components/AppBrandMark.vue'
 
 const { t, locale } = useI18n()
 const message = useMessage()
+const dialog = useDialog()
 const router = useRouter()
 const task = useTaskStore()
 const model = useModelStore()
@@ -53,8 +60,14 @@ const { selectedModel, downloadedModels, isLoading, detailLoading } = storeToRef
 
 const isDragging = ref(false)
 const showSettingsDrawer = ref(false)
+const showLogModal = ref(false)
 const modelSearch = ref('')
 const modelCategoryFilter = ref('')
+const focusedSeparationTaskId = ref<string | null>(null)
+const cancellingTaskId = ref<string | null>(null)
+const audioElements = new Map<string, HTMLAudioElement>()
+const playingOutputPath = ref('')
+const outputPlayback = ref<Record<string, { currentTime: number; duration: number }>>({})
 let unlistenDragDrop: UnlistenFn | null = null
 
 const formatOptions = [
@@ -159,6 +172,47 @@ const formatLabel = computed(() => String(settings.defaultFormat || 'wav').toUpp
 const outputModeLabel = computed(() => settings.separateTaskOutputDir ? t('separate.outputModeSeparate') : t('separate.outputModeDirect'))
 const outputSummaryPath = computed(() => shortenMiddle(outputPreview.value, 60))
 const canStart = computed(() => inputFiles.value.length > 0 && modelDownloaded.value)
+const newestRunningTask = computed(() => {
+  return [...task.runningTasks].sort((a, b) => {
+    const aQueued = a.status === 'queued' ? 1 : 0
+    const bQueued = b.status === 'queued' ? 1 : 0
+    if (aQueued !== bQueued) return aQueued - bQueued
+    return b.createdAt - a.createdAt
+  })[0] || null
+})
+const focusedTask = computed(() => {
+  if (!focusedSeparationTaskId.value) return null
+  return task.tasks.find((item) => item.id === focusedSeparationTaskId.value) || null
+})
+const currentTask = computed(() => newestRunningTask.value || focusedTask.value)
+const taskPanelState = computed<'ready' | 'running' | 'done' | 'failed' | 'cancelled'>(() => {
+  const item = currentTask.value
+  if (!item) return 'ready'
+  if (item.status === 'done') return 'done'
+  if (item.status === 'failed') return 'failed'
+  if (item.status === 'cancelled') return 'cancelled'
+  return 'running'
+})
+const isConfigCompact = computed(() => taskPanelState.value !== 'ready')
+const inputCompactLine = computed(() => {
+  if (currentTask.value) return getFileName(currentTask.value.input)
+  if (!inputFiles.value.length) return t('separate.noInputSelected')
+  const first = getFileName(inputFiles.value[0])
+  if (inputFiles.value.length === 1) return first
+  return t('separate.inputCompactMultiple', { count: inputFiles.value.length, name: first })
+})
+const modelCompactLine = computed(() => {
+  if (currentTask.value?.model) return currentTask.value.model
+  const name = selectedModelName.value || t('separate.noModelSelected')
+  const category = currentModelInfo.value ? categoryLabel(currentModelInfo.value) : ''
+  return category ? `${name} · ${category}` : name
+})
+const currentTaskFileName = computed(() => currentTask.value ? getFileName(currentTask.value.input) : '')
+const currentTaskOutputPath = computed(() => currentTask.value?.output || normalizedOutputDir.value)
+const currentTaskOutputs = computed(() => currentTask.value?.outputs || [])
+const currentTaskOutputSummary = computed(() => shortenMiddle(currentTaskOutputPath.value, 72))
+const currentTaskDuration = computed(() => currentTask.value ? taskDuration(currentTask.value) : '')
+const playableOutputs = computed(() => currentTaskOutputs.value.filter((output) => Boolean(output.path)))
 
 function getFileName(path: string) {
   return path.split(/[/\\]/).filter(Boolean).pop() || path
@@ -195,6 +249,165 @@ function shortenMiddle(text: string, maxLength = 48) {
   if (text.length <= maxLength) return text
   const keep = Math.max(8, Math.floor((maxLength - 3) / 2))
   return `${text.slice(0, keep)}...${text.slice(-keep)}`
+}
+
+function statusLabel(status: string) {
+  const labels: Record<string, string> = {
+    queued: t('tasks.statusQueued'),
+    preparing: t('tasks.statusPreparing'),
+    validating_input: t('tasks.statusValidatingInput'),
+    downloading_model: t('tasks.statusCheckingModel'),
+    ensuring_model: t('tasks.statusCheckingModel'),
+    loading_model: t('tasks.statusLoadingModel'),
+    separating: t('tasks.statusSeparating'),
+    writing_output: t('tasks.statusWritingOutput'),
+    done: t('tasks.statusDone'),
+    failed: t('tasks.statusFailed'),
+    cancelled: t('tasks.statusCancelled'),
+  }
+  return labels[status] || status
+}
+
+function statusType(status: string) {
+  switch (status) {
+    case 'done': return 'success' as const
+    case 'failed': return 'error' as const
+    case 'cancelled': return 'warning' as const
+    default: return 'info' as const
+  }
+}
+
+function normalizeProgressMessage(value?: string) {
+  const message = (value || '').trim()
+  const key = message.toLowerCase()
+  const mapped: Record<string, string> = {
+    'task started': t('tasks.progressPreparingTask'),
+    'validating input': t('tasks.progressValidatingInput'),
+    'checking model files': t('tasks.progressCheckingModel'),
+    'loading model': t('tasks.progressLoadingModel'),
+    'separating audio': t('tasks.progressSeparatingHint'),
+    'processing audio chunks': t('tasks.progressProcessingChunks'),
+    'processing vr batches': t('tasks.progressProcessingVrBatches'),
+    'collecting outputs': t('tasks.progressCollectingOutputs'),
+  }
+  return mapped[key] || message
+}
+
+function progressStatus(status: string) {
+  switch (status) {
+    case 'done': return 'success' as const
+    case 'failed': return 'error' as const
+    case 'cancelled': return 'warning' as const
+    default: return 'info' as const
+  }
+}
+
+function progressTitle(item: SeparationTask) {
+  if (item.status === 'separating') return t('tasks.progressTitleSeparating')
+  return statusLabel(item.status)
+}
+
+function progressDetail(item: SeparationTask) {
+  if (
+    item.status === 'separating'
+    && typeof item.progressCurrent === 'number'
+    && typeof item.progressTotal === 'number'
+    && item.progressTotal > 0
+  ) {
+    return `${Math.round(item.progressCurrent)} / ${Math.round(item.progressTotal)}`
+  }
+  return ''
+}
+
+function taskSubMessage(item: SeparationTask) {
+  if (item.error) return item.error
+  return normalizeProgressMessage(item.progressDetail || item.message)
+}
+
+function taskDuration(item: SeparationTask) {
+  const seconds = Math.max(0, Math.round((item.updatedAt - item.createdAt) / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  return `${minutes}m ${rest}s`
+}
+
+function formatPlaybackTime(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '00:00'
+  const total = Math.floor(value)
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
+function getOutputPlayback(path: string) {
+  return outputPlayback.value[path] || { currentTime: 0, duration: 0 }
+}
+
+function setOutputPlayback(path: string, patch: Partial<{ currentTime: number; duration: number }>) {
+  const previous = getOutputPlayback(path)
+  outputPlayback.value = {
+    ...outputPlayback.value,
+    [path]: { ...previous, ...patch },
+  }
+}
+
+function getAudio(path: string) {
+  const cached = audioElements.get(path)
+  if (cached) return cached
+  const audio = new Audio(convertFileSrc(path))
+  audio.preload = 'metadata'
+  audio.addEventListener('loadedmetadata', () => {
+    setOutputPlayback(path, { duration: audio.duration || 0 })
+  })
+  audio.addEventListener('timeupdate', () => {
+    setOutputPlayback(path, { currentTime: audio.currentTime || 0, duration: audio.duration || 0 })
+  })
+  audio.addEventListener('ended', () => {
+    if (playingOutputPath.value === path) playingOutputPath.value = ''
+    setOutputPlayback(path, { currentTime: 0, duration: audio.duration || 0 })
+  })
+  audio.addEventListener('error', () => {
+    if (playingOutputPath.value === path) playingOutputPath.value = ''
+  })
+  audioElements.set(path, audio)
+  return audio
+}
+
+async function toggleOutputPlayback(output: StemOutput) {
+  if (!output.path) return
+  const audio = getAudio(output.path)
+  if (playingOutputPath.value === output.path && !audio.paused) {
+    audio.pause()
+    playingOutputPath.value = ''
+    return
+  }
+  audioElements.forEach((item, path) => {
+    if (path !== output.path) item.pause()
+  })
+  try {
+    await audio.play()
+    playingOutputPath.value = output.path
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('separate.previewPlayFailed'))
+  }
+}
+
+function seekOutput(path: string, value: number) {
+  const audio = getAudio(path)
+  const next = Number(value || 0)
+  audio.currentTime = next
+  setOutputPlayback(path, { currentTime: next, duration: audio.duration || getOutputPlayback(path).duration })
+}
+
+function stopAllPreviewAudio() {
+  audioElements.forEach((audio) => {
+    audio.pause()
+    audio.removeAttribute('src')
+    audio.load()
+  })
+  audioElements.clear()
+  playingOutputPath.value = ''
 }
 
 function handleSelectModel(item: (typeof listedDownloadedModels.value)[number]) {
@@ -267,6 +480,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (unlistenDragDrop) unlistenDragDrop()
+  stopAllPreviewAudio()
 })
 
 async function handlePickFiles() {
@@ -292,15 +506,68 @@ async function start() {
     return
   }
   try {
+    const beforeIds = new Set(task.tasks.map((item) => item.id))
     const result = await task.startSeparation()
+    const createdTasks = task.tasks
+      .filter((item) => !beforeIds.has(item.id))
+      .sort((a, b) => a.createdAt - b.createdAt)
+    focusedSeparationTaskId.value = createdTasks[0]?.id || task.runningTasks[0]?.id || focusedSeparationTaskId.value
+    task.clearInputFiles()
     if (result && result.failed > 0) {
       message.warning(t('separate.batchPartial', { succeeded: result.succeeded, failed: result.failed }))
     } else {
       message.success(t('separate.batchStarted', { count: result?.succeeded ?? 1 }))
     }
-    router.push('/tasks')
   } catch (err) {
     message.error(err instanceof Error ? err.message : t('toast.taskFailed'))
+  }
+}
+
+function resetForNextSeparation() {
+  stopAllPreviewAudio()
+  showLogModal.value = false
+  focusedSeparationTaskId.value = null
+}
+
+function openCurrentLogs() {
+  if (!currentTask.value) return
+  showLogModal.value = true
+}
+
+function handleCancelCurrentTask() {
+  const item = currentTask.value
+  if (!item) return
+  dialog.warning({
+    title: t('tasks.cancelConfirmTitle'),
+    content: t('tasks.cancelConfirmContent'),
+    positiveText: t('tasks.cancelAction'),
+    negativeText: t('common.cancel'),
+    positiveButtonProps: { type: 'error' },
+    negativeButtonProps: { secondary: true },
+    onPositiveClick: async () => {
+      if (cancellingTaskId.value) return
+      cancellingTaskId.value = item.id
+      try {
+        const ok = await task.cancelTask(item.id)
+        if (ok) message.success(t('tasks.cancelSuccess'))
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : String(error))
+      } finally {
+        cancellingTaskId.value = null
+      }
+    },
+  })
+}
+
+async function retryCurrentTask() {
+  const item = currentTask.value
+  if (!item) return
+  try {
+    const next = await task.retryTask(item.id)
+    focusedSeparationTaskId.value = next?.id || focusedSeparationTaskId.value
+    message.success(t('toast.taskRetried'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
   }
 }
 </script>
@@ -316,61 +583,66 @@ async function start() {
       </div>
     </div>
 
-    <div class="workspace-grid">
+    <div class="workspace-grid" :class="{ 'workspace-grid--compact': isConfigCompact }">
       <section class="config-panel config-panel--input">
         <div class="panel-heading">
           <div class="panel-heading__icon"><n-icon :component="MusicalNotesOutline" /></div>
           <div>
             <h2>{{ t('separate.input') }}</h2>
-            <p>{{ t('separate.inputPanelHint') }}</p>
+            <p :title="isConfigCompact ? inputCompactLine : t('separate.inputPanelHint')">
+              {{ isConfigCompact ? inputCompactLine : t('separate.inputPanelHint') }}
+            </p>
           </div>
         </div>
-
-        <div class="button-row">
-          <n-button secondary @click="handlePickFiles">
-            <template #icon><n-icon :component="MusicalNotesOutline" /></template>
-            {{ t('separate.chooseFiles') }}
-          </n-button>
-          <n-button secondary @click="handlePickFolder">
-            <template #icon><n-icon :component="FolderOutline" /></template>
-            {{ t('separate.chooseFolder') }}
-          </n-button>
-        </div>
-
-        <div class="candidate" :class="{ 'candidate--dragging': isDragging }">
-          <div class="candidate__head">
-            <strong>{{ t('separate.candidateTitle') }}</strong>
-            <span>{{ t('separate.candidateCount', { count: inputFiles.length }) }}</span>
-            <n-button
-              v-if="inputFiles.length"
-              text
-              size="small"
-              type="error"
-              @click="task.clearInputFiles()"
-            >
-              {{ t('separate.clearAll') }}
-            </n-button>
-          </div>
-
-          <div v-if="inputFiles.length" class="candidate__list">
-            <div v-for="path in inputFiles" :key="path" class="candidate__item">
-              <n-icon :component="MusicalNotesOutline" class="candidate__item-icon" />
-              <div class="candidate__item-main">
-                <strong :title="getFileName(path)">{{ getFileName(path) }}</strong>
-                <span class="candidate__item-kind">{{ getFileKindLabel(path) }}</span>
-                <code :title="path">{{ shortenMiddle(path, 56) }}</code>
-              </div>
-              <n-button quaternary circle size="tiny" :title="t('separate.remove')" @click="task.removeInputFile(path)">
-                <template #icon><n-icon :component="CloseOutline" /></template>
+        <n-collapse-transition :show="!isConfigCompact">
+          <div class="config-rollup-content config-rollup-content--input">
+            <div class="button-row">
+              <n-button secondary @click="handlePickFiles">
+                <template #icon><n-icon :component="MusicalNotesOutline" /></template>
+                {{ t('separate.chooseFiles') }}
+              </n-button>
+              <n-button secondary @click="handlePickFolder">
+                <template #icon><n-icon :component="FolderOutline" /></template>
+                {{ t('separate.chooseFolder') }}
               </n-button>
             </div>
-          </div>
 
-          <div v-else class="candidate__empty">
-            <div class="candidate__empty-icon"><n-icon :component="CloudUploadOutline" /></div>
-            <span>{{ isDragging ? t('separate.dropHere') : t('separate.candidateEmpty') }}</span>
+            <div class="candidate" :class="{ 'candidate--dragging': isDragging }">
+              <div class="candidate__head">
+                <strong>{{ t('separate.candidateTitle') }}</strong>
+                <span>{{ t('separate.candidateCount', { count: inputFiles.length }) }}</span>
+                <n-button
+                  v-if="inputFiles.length"
+                  text
+                  size="small"
+                  type="error"
+                  @click="task.clearInputFiles()"
+                >
+                  {{ t('separate.clearAll') }}
+                </n-button>
+              </div>
+
+              <div v-if="inputFiles.length" class="candidate__list">
+                <div v-for="path in inputFiles" :key="path" class="candidate__item">
+                  <n-icon :component="MusicalNotesOutline" class="candidate__item-icon" />
+                  <div class="candidate__item-main">
+                    <strong :title="getFileName(path)">{{ getFileName(path) }}</strong>
+                    <span class="candidate__item-kind">{{ getFileKindLabel(path) }}</span>
+                    <code :title="path">{{ shortenMiddle(path, 56) }}</code>
+                  </div>
+                  <n-button quaternary circle size="tiny" :title="t('separate.remove')" @click="task.removeInputFile(path)">
+                    <template #icon><n-icon :component="CloseOutline" /></template>
+                  </n-button>
+                </div>
+              </div>
+
+              <div v-else class="candidate__empty">
+                <div class="candidate__empty-icon"><n-icon :component="CloudUploadOutline" /></div>
+                <span>{{ isDragging ? t('separate.dropHere') : t('separate.candidateEmpty') }}</span>
+              </div>
+            </div>
           </div>
-        </div>
+        </n-collapse-transition>
       </section>
 
       <section class="config-panel config-panel--model">
@@ -378,85 +650,207 @@ async function start() {
           <div class="panel-heading__icon"><n-icon :component="CubeOutline" /></div>
           <div class="panel-heading__main">
             <h2>{{ t('separate.model') }}</h2>
-            <p>{{ t('separate.modelPanelHint') }}</p>
+            <p :title="isConfigCompact ? modelCompactLine : t('separate.modelPanelHint')">
+              {{ isConfigCompact ? modelCompactLine : t('separate.modelPanelHint') }}
+            </p>
           </div>
           <n-button text class="panel-heading__action" @click="router.push('/models')">
             {{ t('separate.manageModelsInline') }}
           </n-button>
         </div>
-
-        <div class="model-panel__body">
-          <div v-if="downloadedModels.length" class="model-picker">
-            <div class="model-picker__toolbar">
-              <n-input
-                v-model:value="modelSearch"
-                clearable
-                :placeholder="t('separate.modelSearchPlaceholder')"
-              >
-                <template #prefix>
-                  <n-icon :component="SearchOutline" />
-                </template>
-              </n-input>
-              <n-select
-                class="model-picker__category-select"
-                v-model:value="modelCategoryFilter"
-                :menu-props="{ class: 'model-picker__category-menu' }"
-                :options="modelCategoryOptions"
-              />
-            </div>
-
-            <div class="model-picker__divider" />
-
-            <div v-if="filteredDownloadedModels.length" class="model-picker__list" role="listbox" :aria-label="t('separate.model')">
-              <button
-                v-for="item in filteredDownloadedModels"
-                :key="item.name"
-                type="button"
-                role="option"
-                :aria-selected="selectedModelName === item.name"
-                class="model-picker__item"
-                :class="{ 'model-picker__item--active': selectedModelName === item.name }"
-                @click="handleSelectModel(item)"
-              >
-                <div class="model-picker__item-main">
-                  <div class="model-picker__item-title">
-                    <strong :title="item.name">{{ item.name }}</strong>
-                    <span class="model-picker__item-tag" :title="categoryLabel(item)">{{ categoryLabel(item) }}</span>
-                  </div>
-                  <div class="model-picker__item-sub" :title="modelMetaLine(item)">
-                    {{ modelMetaLine(item) }}
-                  </div>
+        <n-collapse-transition :show="!isConfigCompact">
+          <div class="config-rollup-content config-rollup-content--model">
+            <div class="model-panel__body">
+              <div v-if="downloadedModels.length" class="model-picker">
+                <div class="model-picker__toolbar">
+                  <n-input
+                    v-model:value="modelSearch"
+                    clearable
+                    :placeholder="t('separate.modelSearchPlaceholder')"
+                  >
+                    <template #prefix>
+                      <n-icon :component="SearchOutline" />
+                    </template>
+                  </n-input>
+                  <n-select
+                    class="model-picker__category-select"
+                    v-model:value="modelCategoryFilter"
+                    :menu-props="{ class: 'model-picker__category-menu' }"
+                    :options="modelCategoryOptions"
+                  />
                 </div>
-                <n-icon v-if="selectedModelName === item.name" class="model-picker__item-check" :component="CheckmarkCircle" />
-              </button>
-            </div>
-            <div v-else class="model-picker__empty">
-              {{ t('separate.modelSearchEmpty') }}
+
+                <div class="model-picker__divider" />
+
+                <div v-if="filteredDownloadedModels.length" class="model-picker__list" role="listbox" :aria-label="t('separate.model')">
+                  <button
+                    v-for="item in filteredDownloadedModels"
+                    :key="item.name"
+                    type="button"
+                    role="option"
+                    :aria-selected="selectedModelName === item.name"
+                    class="model-picker__item"
+                    :class="{ 'model-picker__item--active': selectedModelName === item.name }"
+                    @click="handleSelectModel(item)"
+                  >
+                    <div class="model-picker__item-main">
+                      <div class="model-picker__item-title">
+                        <strong :title="item.name">{{ item.name }}</strong>
+                        <span class="model-picker__item-tag" :title="categoryLabel(item)">{{ categoryLabel(item) }}</span>
+                      </div>
+                      <div class="model-picker__item-sub" :title="modelMetaLine(item)">
+                        {{ modelMetaLine(item) }}
+                      </div>
+                    </div>
+                    <n-icon v-if="selectedModelName === item.name" class="model-picker__item-check" :component="CheckmarkCircle" />
+                  </button>
+                </div>
+                <div v-else class="model-picker__empty">
+                  {{ t('separate.modelSearchEmpty') }}
+                </div>
+              </div>
+              <div v-if="selectedModelName && !modelDownloaded" class="model-info-card model-info-card--warn">
+                {{ t('separate.startHintModelMissing') }}
+              </div>
+              <div v-else-if="!downloadedModels.length" class="model-panel__empty-state" :class="{ 'model-panel__empty-state--loading': isLoading }">
+                <div class="model-panel__empty-visual">
+                  <n-spin v-if="isLoading" size="large" />
+                  <n-icon v-else :component="CubeOutline" />
+                </div>
+                <div class="model-panel__empty-main">
+                  <strong>{{ isLoading ? t('separate.modelPanelLoadingTitle') : t('separate.modelPanelEmptyTitle') }}</strong>
+                  <p>{{ isLoading ? t('separate.modelPanelLoadingDesc') : t('separate.modelPanelEmptyDesc') }}</p>
+                </div>
+                <div class="model-panel__empty-actions">
+                  <n-button secondary :loading="isLoading" @click="model.loadModels()">
+                    {{ t('separate.modelPanelPrimaryAction') }}
+                  </n-button>
+                </div>
+              </div>
             </div>
           </div>
-          <div v-if="selectedModelName && !modelDownloaded" class="model-info-card model-info-card--warn">
-            {{ t('separate.startHintModelMissing') }}
-          </div>
-          <div v-else-if="!downloadedModels.length" class="model-panel__empty-state" :class="{ 'model-panel__empty-state--loading': isLoading }">
-            <div class="model-panel__empty-visual">
-              <n-spin v-if="isLoading" size="large" />
-              <n-icon v-else :component="CubeOutline" />
-            </div>
-            <div class="model-panel__empty-main">
-              <strong>{{ isLoading ? t('separate.modelPanelLoadingTitle') : t('separate.modelPanelEmptyTitle') }}</strong>
-              <p>{{ isLoading ? t('separate.modelPanelLoadingDesc') : t('separate.modelPanelEmptyDesc') }}</p>
-            </div>
-            <div class="model-panel__empty-actions">
-              <n-button secondary :loading="isLoading" @click="model.loadModels()">
-                {{ t('separate.modelPanelPrimaryAction') }}
-              </n-button>
-            </div>
-          </div>
-        </div>
+        </n-collapse-transition>
       </section>
     </div>
 
-    <div class="summary-bar">
+    <section
+      v-if="currentTask && taskPanelState !== 'ready'"
+      class="separation-task-panel"
+      :class="`separation-task-panel--${taskPanelState}`"
+    >
+      <template v-if="taskPanelState === 'running'">
+        <div class="task-running-head">
+          <div>
+            <strong>{{ t('separate.taskRunningTitle') }}</strong>
+            <span>{{ currentTaskFileName }}</span>
+          </div>
+          <n-tag :bordered="false" :type="statusType(currentTask.status)">{{ statusLabel(currentTask.status) }}</n-tag>
+        </div>
+        <div class="task-progress-block">
+          <div class="task-progress-head">
+            <span>{{ progressTitle(currentTask) }}<template v-if="progressDetail(currentTask)"> · {{ progressDetail(currentTask) }}</template></span>
+            <strong>{{ Math.round(currentTask.progress || 0) }}%</strong>
+          </div>
+          <n-progress
+            type="line"
+            :percentage="Math.round(currentTask.progress || 0)"
+            :status="progressStatus(currentTask.status)"
+            processing
+            :height="9"
+            :show-indicator="false"
+          />
+          <p v-if="taskSubMessage(currentTask)" class="task-panel-message">{{ taskSubMessage(currentTask) }}</p>
+        </div>
+        <div class="task-panel-meta">
+          <span><n-icon :component="TimeOutline" /> {{ currentTaskDuration }}</span>
+          <span :title="currentTaskOutputPath">{{ t('separate.outputTo') }} {{ currentTaskOutputSummary }}</span>
+        </div>
+        <div class="task-panel-actions">
+          <n-button secondary :disabled="!currentTask.logs.length" @click="openCurrentLogs">
+            <template #icon><n-icon :component="TerminalOutline" /></template>
+            {{ t('tasks.logs') }}
+          </n-button>
+          <n-button
+            secondary
+            type="error"
+            :loading="cancellingTaskId === currentTask.id"
+            :disabled="cancellingTaskId === currentTask.id"
+            @click="handleCancelCurrentTask"
+          >
+            {{ t('tasks.cancelAction') }}
+          </n-button>
+        </div>
+      </template>
+      <template v-else-if="currentTask">
+        <div class="task-done-main">
+          <span class="task-done-main__icon">
+            <n-icon :component="taskPanelState === 'done' ? CheckmarkCircleOutline : AlertCircleOutline" />
+          </span>
+          <div>
+            <strong>{{ statusLabel(currentTask.status) }}</strong>
+            <span>
+              {{ currentTaskFileName }}
+              <template v-if="taskPanelState === 'done'"> · {{ currentTask.outputs.length }} {{ t('separate.previewStemUnit') }} · {{ currentTaskDuration }}</template>
+            </span>
+            <code v-if="taskPanelState === 'done'" :title="currentTaskOutputPath">{{ currentTaskOutputSummary }}</code>
+            <small v-else-if="taskSubMessage(currentTask)">{{ taskSubMessage(currentTask) }}</small>
+          </div>
+        </div>
+        <div class="task-panel-actions">
+          <n-button v-if="taskPanelState === 'done'" secondary @click="task.revealPath(currentTask.output)">
+            <template #icon><n-icon :component="OpenOutline" /></template>
+            {{ t('separate.openOutput') }}
+          </n-button>
+          <n-button v-if="currentTask.logs.length" secondary @click="openCurrentLogs">
+            <template #icon><n-icon :component="TerminalOutline" /></template>
+            {{ t('tasks.logs') }}
+          </n-button>
+          <n-button type="primary" secondary @click="retryCurrentTask">
+            <template #icon><n-icon :component="PlayOutline" /></template>
+            {{ t('common.retry') }}
+          </n-button>
+          <n-button v-if="taskPanelState === 'done'" type="primary" @click="resetForNextSeparation">
+            {{ t('separate.newSeparation') }}
+          </n-button>
+        </div>
+      </template>
+    </section>
+
+    <transition name="result-preview" appear>
+      <section v-if="taskPanelState === 'done' && playableOutputs.length" class="result-preview-panel">
+        <div class="result-preview-panel__head">
+          <strong>{{ t('separate.previewTitle') }}</strong>
+          <span>{{ playableOutputs.length }} {{ t('separate.previewStemUnit') }}</span>
+        </div>
+        <div class="preview-track-list">
+          <div v-for="output in playableOutputs" :key="output.path" class="preview-track">
+            <div class="preview-track__title">
+              <strong>{{ output.stem }}</strong>
+              <small :title="output.path">{{ shortenMiddle(output.path, 68) }}</small>
+            </div>
+            <n-button circle secondary size="small" @click="toggleOutputPlayback(output)">
+              <template #icon>
+                <n-icon :component="playingOutputPath === output.path ? PauseOutline : PlayOutline" />
+              </template>
+            </n-button>
+            <n-slider
+              class="preview-track__slider"
+              :value="getOutputPlayback(output.path).currentTime"
+              :min="0"
+              :max="Math.max(getOutputPlayback(output.path).duration, 1)"
+              :step="0.1"
+              :tooltip="false"
+              @update:value="(value: number) => seekOutput(output.path, value)"
+            />
+            <span class="preview-track__time">
+              {{ formatPlaybackTime(getOutputPlayback(output.path).currentTime) }} / {{ formatPlaybackTime(getOutputPlayback(output.path).duration) }}
+            </span>
+          </div>
+        </div>
+      </section>
+    </transition>
+
+    <section class="summary-bar">
       <div class="summary-bar__content">
         <div class="summary-bar__topline">
           <strong>{{ t('separate.outputSummaryTitle') }}</strong>
@@ -471,7 +865,6 @@ async function start() {
           <span>{{ t('separate.outputMode') }} · {{ outputModeLabel }}</span>
         </div>
       </div>
-
       <div class="summary-bar__actions">
         <n-button secondary size="large" @click="showSettingsDrawer = true">
           <template #icon><n-icon :component="SettingsOutline" /></template>
@@ -482,7 +875,7 @@ async function start() {
           {{ t('separate.startTask') }}
         </n-button>
       </div>
-    </div>
+    </section>
 
     <n-drawer v-model:show="showSettingsDrawer" :width="520" placement="right">
       <n-drawer-content class="settings-drawer" :title="t('separate.settingsDrawerTitle')" closable>
@@ -650,6 +1043,23 @@ async function start() {
         </template>
       </n-drawer-content>
     </n-drawer>
+    <n-modal v-model:show="showLogModal" style="width:min(900px, 92vw)">
+      <n-card
+        :title="currentTask ? `${currentTaskFileName} - ${t('tasks.logs')}` : t('tasks.logs')"
+        :bordered="false"
+        size="small"
+        role="dialog"
+        aria-modal="true"
+      >
+        <div v-if="currentTask?.logs.length" class="log-console">
+          <div v-for="(line, index) in currentTask.logs" :key="`${index}-${line}`" class="log-line">
+            <span class="log-line-number">{{ String(index + 1).padStart(3, '0') }}</span>
+            <span class="log-line-text">{{ line }}</span>
+          </div>
+        </div>
+        <div v-else class="log-empty">{{ t('tasks.noLogs') }}</div>
+      </n-card>
+    </n-modal>
   </div>
 </template>
 
@@ -683,6 +1093,10 @@ async function start() {
   min-height: 0;
 }
 
+.workspace-grid--compact {
+  height: auto;
+}
+
 .config-panel {
   display: grid;
   gap: 12px;
@@ -694,6 +1108,14 @@ async function start() {
   height: 100%;
   overflow: hidden;
   box-shadow: 0 12px 26px rgba(0, 0, 0, 0.08);
+  transition: box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.workspace-grid--compact .config-panel {
+  height: auto;
+  min-height: 72px;
+  padding: 12px;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.06);
 }
 
 .config-panel--input {
@@ -704,10 +1126,36 @@ async function start() {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
+.workspace-grid--compact .config-panel--input,
+.workspace-grid--compact .config-panel--model {
+  grid-template-rows: auto;
+}
+
+.config-rollup-content {
+  min-height: 0;
+  display: grid;
+  gap: 12px;
+  animation: rollup-content-enter 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.config-rollup-content--input {
+  height: 100%;
+  min-height: 0;
+}
+
+.config-rollup-content--model {
+  height: 100%;
+  min-height: 0;
+}
+
 .panel-heading {
   display: flex;
   align-items: flex-start;
   gap: 12px;
+}
+
+.panel-heading > div:not(.panel-heading__icon) {
+  min-width: 0;
 }
 
 .panel-heading__main {
@@ -741,6 +1189,10 @@ async function start() {
 
 .panel-heading p {
   margin: 2px 0 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--on-surface-muted);
   font-size: 12px;
   line-height: 1.5;
@@ -1236,6 +1688,399 @@ async function start() {
   gap: 10px;
 }
 
+.separation-task-panel,
+.result-preview-panel {
+  border: 1px solid var(--outline);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--surface-1) 90%, transparent);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.07);
+}
+
+.separation-task-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 86px;
+  padding: 16px 18px;
+  animation: task-panel-pop-in 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    min-height 520ms cubic-bezier(0.22, 1, 0.36, 1),
+    padding 520ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.separation-task-panel--running {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  min-height: 220px;
+  padding: 20px;
+}
+
+.separation-task-panel--done,
+.separation-task-panel--failed,
+.separation-task-panel--cancelled {
+  min-height: 104px;
+  padding: 16px 18px;
+  transform: translateY(-2px);
+}
+
+.task-ready-main,
+.task-done-main,
+.task-running-head,
+.task-panel-meta,
+.task-panel-actions {
+  min-width: 0;
+}
+
+.task-ready-main,
+.task-done-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.task-ready-main {
+  display: grid;
+  gap: 4px;
+}
+
+.task-ready-main strong,
+.task-running-head strong,
+.task-done-main strong {
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+.task-ready-main span,
+.task-done-main span,
+.task-panel-meta,
+.task-panel-message {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.task-ready-main code,
+.task-done-main code {
+  min-width: 0;
+  max-width: min(62vw, 720px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.task-running-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  grid-column: 1 / -1;
+}
+
+.task-running-head > div,
+.task-done-main > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.task-running-head span,
+.task-done-main small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.task-progress-block {
+  display: grid;
+  gap: 10px;
+  align-self: stretch;
+}
+
+.task-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.task-progress-head strong {
+  font-size: 20px;
+  letter-spacing: -0.03em;
+}
+
+.task-panel-message {
+  margin: 0;
+}
+
+.task-panel-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  grid-column: 1 / -1;
+}
+
+.task-panel-meta span {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.task-panel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.separation-task-panel--running .task-panel-actions {
+  align-self: end;
+}
+
+.task-done-main__icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 13px;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  font-size: 20px;
+}
+
+.separation-task-panel--done .task-done-main,
+.separation-task-panel--failed .task-done-main,
+.separation-task-panel--cancelled .task-done-main,
+.separation-task-panel--done .task-panel-actions,
+.separation-task-panel--failed .task-panel-actions,
+.separation-task-panel--cancelled .task-panel-actions {
+  animation: task-compact-content-enter 460ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.separation-task-panel--done .task-panel-actions,
+.separation-task-panel--failed .task-panel-actions,
+.separation-task-panel--cancelled .task-panel-actions {
+  animation-delay: 80ms;
+}
+
+.separation-task-panel--failed .task-done-main__icon,
+.separation-task-panel--cancelled .task-done-main__icon {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+}
+
+.result-preview-panel {
+  display: grid;
+  gap: 12px;
+  max-height: 320px;
+  padding: 16px 18px;
+  overflow: hidden;
+}
+
+.result-preview-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.result-preview-panel__head strong {
+  font-size: 14px;
+}
+
+.result-preview-panel__head span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.preview-track-list {
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.preview-track {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.9fr) auto minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--outline) 78%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-2) 44%, transparent);
+}
+
+.preview-track__title {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.preview-track__title strong,
+.preview-track__title small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-track__title strong {
+  font-size: 13px;
+}
+
+.preview-track__title small,
+.preview-track__time {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+}
+
+.preview-track__slider {
+  min-width: 0;
+}
+
+.preview-track__time {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.result-preview-enter-active,
+.result-preview-leave-active {
+  transition: opacity 420ms cubic-bezier(0.22, 1, 0.36, 1), transform 460ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.result-preview-enter-from,
+.result-preview-leave-to {
+  opacity: 0;
+  transform: translateY(-14px) scale(0.985);
+}
+
+.preview-track {
+  animation: panel-soft-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.preview-track:nth-child(2) {
+  animation-delay: 55ms;
+}
+
+.preview-track:nth-child(3) {
+  animation-delay: 110ms;
+}
+
+.preview-track:nth-child(4) {
+  animation-delay: 165ms;
+}
+
+.preview-track:nth-child(n + 5) {
+  animation-delay: 220ms;
+}
+
+@keyframes panel-roll-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes rollup-content-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes task-panel-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes task-compact-content-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes panel-soft-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.log-console {
+  max-height: min(62vh, 520px);
+  overflow: auto;
+  display: grid;
+  gap: 2px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #0b1020;
+  color: #dbeafe;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.log-line {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.log-line-number {
+  color: #64748b;
+  text-align: right;
+  user-select: none;
+}
+
+.log-line-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.log-empty {
+  padding: 18px;
+  color: var(--on-surface-muted);
+  text-align: center;
+}
+
 .settings-drawer__content {
   display: grid;
   gap: 14px;
@@ -1428,6 +2273,25 @@ async function start() {
     justify-content: flex-end;
     flex-wrap: wrap;
   }
+
+  .separation-task-panel,
+  .separation-task-panel--running {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .task-panel-actions {
+    justify-content: flex-start;
+  }
+
+  .preview-track {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .preview-track__slider,
+  .preview-track__time {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 620px) {
@@ -1451,6 +2315,25 @@ async function start() {
 
   .model-picker {
     height: 300px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .config-rollup-content,
+  .separation-task-panel,
+  .preview-track,
+  .separation-task-panel--done .task-done-main,
+  .separation-task-panel--failed .task-done-main,
+  .separation-task-panel--cancelled .task-done-main,
+  .separation-task-panel--done .task-panel-actions,
+  .separation-task-panel--failed .task-panel-actions,
+  .separation-task-panel--cancelled .task-panel-actions {
+    animation: none;
+  }
+
+  .result-preview-enter-active,
+  .result-preview-leave-active {
+    transition: none;
   }
 }
 </style>
