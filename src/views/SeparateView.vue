@@ -23,6 +23,7 @@ import { useTaskStore } from '@/stores/task'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { buildModelCategoryOptionsFromModels, getModelCategoryLabel } from '@/utils/modelCategory'
+import AppBrandMark from '@/components/AppBrandMark.vue'
 
 const { t, locale } = useI18n()
 const message = useMessage()
@@ -307,9 +308,11 @@ async function start() {
 <template>
   <div class="page separate-page">
     <div class="page-header-compact separate-header">
-      <div>
-        <h1>{{ t('separate.title') }}</h1>
-        <p>{{ t('separate.workspaceHint') }}</p>
+      <div class="separate-header__brand">
+        <AppBrandMark :size="38" variant="compact" shadow />
+        <div>
+          <h1>Pymss-Studio</h1>
+        </div>
       </div>
     </div>
 
@@ -661,12 +664,14 @@ async function start() {
   margin-bottom: 0;
 }
 
-.separate-header h1 {
-  font-size: 22px;
+.separate-header__brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
-.separate-header p {
-  margin-top: 2px;
+.separate-header h1 {
+  font-size: 22px;
 }
 
 .workspace-grid {

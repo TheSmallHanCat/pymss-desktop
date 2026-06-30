@@ -25,7 +25,6 @@ const resolvedTheme = computed(() => getResolvedThemeTokens(settings.themeMode, 
 const showStartupOnboarding = computed(() => bootReady.value && !isEditorRoute.value && settings.shouldShowStartupOnboarding)
 
 const routeWarmupLoaders = [
-  () => import('@/views/HomeView.vue'),
   () => import('@/views/SeparateView.vue'),
   () => import('@/views/TasksView.vue'),
   () => import('@/views/ModelsView.vue'),
