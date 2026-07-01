@@ -393,6 +393,10 @@ export const useSettingsStore = defineStore('settings', () => {
     if (folder) outputDir.value = folder
   }
 
+  async function pickFolder() {
+    return invoke<string | null>('pick_output_folder')
+  }
+
   async function refreshModelDataAfterDirChange() {
     const { useModelStore } = await import('@/stores/model')
     const modelStore = useModelStore()
@@ -750,6 +754,7 @@ export const useSettingsStore = defineStore('settings', () => {
     markStartupOnboardingCompleted,
     pickModelDir,
     pickOutputDir,
+    pickFolder,
     prepareModelDirChange,
     cancelModelDirChangeConfirmation,
     confirmModelDirMigration,

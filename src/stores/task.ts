@@ -1056,7 +1056,7 @@ export const useTaskStore = defineStore('task', () => {
     return createQueuedTask(input, model, inferenceParams, modelType, jobId, jobOutput, outputPrefix)
   }
 
-  async function startSeparation() {
+  async function startSeparation(options: { outputDir?: string } = {}) {
     const modelStore = useModelStore()
     if (!inputFiles.value.length) {
       throw new Error('Input file is required')
@@ -1074,7 +1074,7 @@ export const useTaskStore = defineStore('task', () => {
     const targets = [...inputFiles.value]
     const jobId = createRunId('job')
     const settings = useSettingsStore()
-    const jobOutput = resolveJobOutputPath(settings.outputDir, jobId)
+    const jobOutput = resolveJobOutputPath(options.outputDir || settings.outputDir, jobId)
     const outputPrefixes = buildOutputPrefixes(targets)
     const createdTasks = targets.map((input, index) => submitOne(input, model, inferenceParams, modelType, jobId, jobOutput, outputPrefixes[index]))
     scheduleQueue()

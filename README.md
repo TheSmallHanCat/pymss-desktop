@@ -154,8 +154,20 @@ pnpm tauri build
 
 ## Configuration
 
+Runtime data is stored under a single data root. The app derives `settings/`, `models/`,
+`outputs/`, `editor-projects/`, `logs/`, and `temp/` from that root.
+
+Data root selection order:
+
+1. `PYMSS_STUDIO_DATA_ROOT`, when set.
+2. `./data` in development builds.
+3. `data` next to the executable for Windows release builds that include a
+   `pymss-studio.portable` marker file next to the executable.
+4. `~/.pymss-studio` for regular installed release builds.
+
 | Variable | Default | Description |
 | --- | --- | --- |
+| `PYMSS_STUDIO_DATA_ROOT` | see above | Explicit root directory for settings, models, outputs, projects, logs, and temp files. |
 | `PYMSS_STUDIO_PYTHON` | `python` | Python interpreter used by the Tauri backend to launch the worker. |
 | `PYMSS_STUDIO_PYMSS_PATH` | auto-detected | Explicit path to the external `pymss` core repository/package. |
 | `PYMSS_STUDIO_DEFAULT_OUTPUT_DIR` | app default | Default directory for separation outputs. |

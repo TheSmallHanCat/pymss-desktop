@@ -61,6 +61,7 @@ const showSettingsDrawer = ref(false)
 const showLogModal = ref(false)
 const modelSearch = ref('')
 const modelCategoryFilter = ref('')
+const temporaryOutputDir = ref('')
 const focusedSeparationJobId = ref<string | null>(null)
 const cancellingTaskId = ref<string | null>(null)
 const audioElements = new Map<string, HTMLAudioElement>()
@@ -160,7 +161,7 @@ const filteredDownloadedModels = computed(() => {
   })
 })
 
-const normalizedOutputDir = computed(() => (settings.outputDir || 'results').trim() || 'results')
+const normalizedOutputDir = computed(() => (temporaryOutputDir.value || settings.outputDir || 'results').trim() || 'results')
 const outputPreview = computed(() => {
   const base = normalizedOutputDir.value.replace(/[\\/]$/, '')
   const separator = base.includes('\\') ? '\\' : '/'
@@ -559,6 +560,11 @@ async function handlePickFolder() {
   else message.warning(t('separate.folderEmpty'))
 }
 
+async function pickTemporaryOutputDir() {
+  const folder = await settings.pickFolder()
+  if (folder) temporaryOutputDir.value = folder
+}
+
 async function start() {
   if (!inputFiles.value.length) {
     message.warning(t('separate.startHintNoInput'))
@@ -569,7 +575,7 @@ async function start() {
     return
   }
   try {
-    const result = await task.startSeparation()
+    const result = await task.startSeparation({ outputDir: normalizedOutputDir.value })
     focusedSeparationJobId.value = result?.jobId || newestRunningJob.value?.id || focusedSeparationJobId.value
     task.clearInputFiles()
     if (result && result.failed > 0) {
@@ -955,8 +961,8 @@ async function retryCurrentTask() {
 
             <div class="output-grid">
               <div class="field-block field-block--wide">
-                <label>{{ t('settings.outputDir') }}</label>
-                <n-input v-model:value="settings.outputDir" :placeholder="t('separate.outputDefault')" clearable />
+                <label>{{ t('separate.temporaryOutputDir') }}</label>
+                <n-input v-model:value="temporaryOutputDir" :placeholder="settings.outputDir || t('separate.outputDefault')" clearable />
               </div>
               <div class="field-block">
                 <label>{{ t('settings.defaultFormat') }}</label>
@@ -965,7 +971,7 @@ async function retryCurrentTask() {
             </div>
 
             <div class="button-row">
-              <n-button secondary @click="settings.pickOutputDir()">
+              <n-button secondary @click="pickTemporaryOutputDir">
                 {{ t('separate.chooseOutput') }}
               </n-button>
               <n-button secondary @click="task.revealPath(normalizedOutputDir)">

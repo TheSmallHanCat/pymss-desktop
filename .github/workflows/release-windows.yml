@@ -140,6 +140,7 @@ jobs:
           $version = '${{ needs.windows-cuda-prepare.outputs.version }}'
           $stageName = '${{ needs.windows-cuda-prepare.outputs.stage_name }}'
           if (Test-Path "release/$stageName.7z") { Remove-Item "release/$stageName.7z" -Force }
+          Set-Content "release/$stageName/pymss-studio.portable" -Value "portable" -Encoding ASCII
           Push-Location "release"
           & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
           Pop-Location
@@ -326,6 +327,7 @@ jobs:
         run: |
           $stageName = '${{ needs.windows-cpu-prepare.outputs.stage_name }}'
           if (Test-Path "release/$stageName.7z") { Remove-Item "release/$stageName.7z" -Force }
+          Set-Content "release/$stageName/pymss-studio.portable" -Value "portable" -Encoding ASCII
           Push-Location "release"
           & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
           Pop-Location

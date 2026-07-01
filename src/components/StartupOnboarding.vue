@@ -30,6 +30,7 @@ const {
   themeMode,
   themeAccent,
   modelDir,
+  outputDir,
   modelDirMigrationState,
   isModelDirMigrating,
 } = storeToRefs(settings)
@@ -78,8 +79,8 @@ const stepList = computed(() => [
   },
   {
     icon: FolderOpenOutline,
-    title: t('onboarding.modelDirTitle'),
-    description: t('onboarding.modelDirDescription'),
+    title: t('onboarding.dataDirTitle'),
+    description: t('onboarding.dataDirDescription'),
   },
 ])
 
@@ -147,6 +148,11 @@ async function changeModelDir() {
   } finally {
     checkingModelDir.value = false
   }
+}
+
+async function changeOutputDir() {
+  const folder = await settings.pickFolder()
+  if (folder) outputDir.value = folder
 }
 
 function closeModelDirMigrationDialog() {
@@ -296,9 +302,19 @@ async function finishOnboarding(event?: MouseEvent) {
             </div>
             <div class="onboarding-path-card__actions">
               <n-button secondary :loading="checkingModelDir" :disabled="isModelDirMigrating" @click="changeModelDir">
-                {{ t('onboarding.chooseDirectory') }}
+                {{ t('onboarding.chooseModelDirectory') }}
               </n-button>
-              <p class="onboarding-hint">{{ t('onboarding.modelDirReady') }}</p>
+            </div>
+
+            <div class="onboarding-path-card">
+              <span>{{ t('onboarding.currentOutputDir') }}</span>
+              <code :title="outputDir">{{ outputDir }}</code>
+            </div>
+            <div class="onboarding-path-card__actions">
+              <n-button secondary @click="changeOutputDir">
+                {{ t('onboarding.chooseOutputDirectory') }}
+              </n-button>
+              <p class="onboarding-hint">{{ t('onboarding.dataDirReady') }}</p>
             </div>
           </section>
         </div>
