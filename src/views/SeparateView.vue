@@ -62,6 +62,7 @@ const showLogModal = ref(false)
 const modelSearch = ref('')
 const modelCategoryFilter = ref('')
 const focusedSeparationTaskId = ref<string | null>(null)
+const focusedSeparationTaskIds = ref<string[]>([])
 const cancellingTaskId = ref<string | null>(null)
 const audioElements = new Map<string, HTMLAudioElement>()
 const playingOutputPath = ref('')
@@ -182,17 +183,49 @@ const focusedTask = computed(() => {
   if (!focusedSeparationTaskId.value) return null
   return task.tasks.find((item) => item.id === focusedSeparationTaskId.value) || null
 })
-const currentTask = computed(() => newestRunningTask.value || focusedTask.value)
+const focusedBatchTasks = computed(() => {
+  if (!focusedSeparationTaskIds.value.length) return []
+  const byId = new Map(task.tasks.map((item) => [item.id, item]))
+  return focusedSeparationTaskIds.value
+    .map(id => byId.get(id))
+    .filter((item): item is SeparationTask => Boolean(item))
+})
+const activeFocusedBatchTask = computed(() => {
+  return [...focusedBatchTasks.value]
+    .filter(item => !['done', 'failed', 'cancelled'].includes(item.status))
+    .sort((a, b) => {
+      const aQueued = a.status === 'queued' ? 1 : 0
+      const bQueued = b.status === 'queued' ? 1 : 0
+      if (aQueued !== bQueued) return aQueued - bQueued
+      return a.createdAt - b.createdAt
+    })[0] || null
+})
+const currentTask = computed(() => {
+  if (focusedBatchTasks.value.length) return activeFocusedBatchTask.value || focusedBatchTasks.value[0] || null
+  return newestRunningTask.value || focusedTask.value
+})
+const currentBatchTasks = computed(() => focusedBatchTasks.value.length ? focusedBatchTasks.value : currentTask.value ? [currentTask.value] : [])
+const currentBatchTotal = computed(() => currentBatchTasks.value.length)
+const currentBatchDoneCount = computed(() => currentBatchTasks.value.filter(item => item.status === 'done').length)
+const currentBatchFailedCount = computed(() => currentBatchTasks.value.filter(item => item.status === 'failed').length)
+const currentBatchCancelledCount = computed(() => currentBatchTasks.value.filter(item => item.status === 'cancelled').length)
+const currentBatchFinishedCount = computed(() => currentBatchDoneCount.value + currentBatchFailedCount.value + currentBatchCancelledCount.value)
+const currentBatchIsMulti = computed(() => currentBatchTotal.value > 1)
 const taskPanelState = computed<'ready' | 'running' | 'done' | 'failed' | 'cancelled'>(() => {
-  const item = currentTask.value
-  if (!item) return 'ready'
-  if (item.status === 'done') return 'done'
-  if (item.status === 'failed') return 'failed'
-  if (item.status === 'cancelled') return 'cancelled'
+  const items = currentBatchTasks.value
+  if (!items.length) return 'ready'
+  if (items.some(item => !['done', 'failed', 'cancelled'].includes(item.status))) return 'running'
+  if (items.every(item => item.status === 'done')) return 'done'
+  if (items.every(item => item.status === 'cancelled')) return 'cancelled'
+  if (items.every(item => item.status === 'failed')) return 'failed'
+  if (items.some(item => item.status === 'done')) return 'done'
+  if (items.some(item => item.status === 'failed')) return 'failed'
+  if (items.some(item => item.status === 'cancelled')) return 'cancelled'
   return 'running'
 })
 const isConfigCompact = computed(() => taskPanelState.value !== 'ready')
 const inputCompactLine = computed(() => {
+  if (currentBatchIsMulti.value && currentBatchTotal.value) return t('separate.batchInputCompact', { count: currentBatchTotal.value })
   if (currentTask.value) return getFileName(currentTask.value.input)
   if (!inputFiles.value.length) return t('separate.noInputSelected')
   const first = getFileName(inputFiles.value[0])
@@ -207,10 +240,54 @@ const modelCompactLine = computed(() => {
 })
 const currentTaskFileName = computed(() => currentTask.value ? getFileName(currentTask.value.input) : '')
 const currentTaskOutputPath = computed(() => currentTask.value?.output || normalizedOutputDir.value)
-const currentTaskOutputs = computed(() => currentTask.value?.outputs || [])
 const currentTaskOutputSummary = computed(() => shortenMiddle(currentTaskOutputPath.value, 72))
 const currentTaskDuration = computed(() => currentTask.value ? taskDuration(currentTask.value) : '')
-const playableOutputs = computed(() => currentTaskOutputs.value.filter((output) => Boolean(output.path)))
+const currentBatchProgress = computed(() => {
+  const items = currentBatchTasks.value
+  if (!items.length) return 0
+  const total = items.reduce((sum, item) => {
+    if (item.status === 'done' || item.status === 'failed' || item.status === 'cancelled') return sum + 100
+    if (item.status === 'queued') return sum
+    return sum + Math.max(0, Math.min(99, Number(item.progress || 0)))
+  }, 0)
+  return Math.round(total / items.length)
+})
+const currentBatchActiveIndex = computed(() => {
+  if (!currentBatchTotal.value) return 0
+  if (taskPanelState.value !== 'running') return currentBatchFinishedCount.value
+  return Math.min(currentBatchTotal.value, currentBatchFinishedCount.value + 1)
+})
+const currentBatchTitle = computed(() => {
+  if (!currentBatchIsMulti.value) return t('separate.taskRunningTitle')
+  if (taskPanelState.value === 'running') {
+    return t('separate.batchRunningTitle', { current: currentBatchActiveIndex.value, total: currentBatchTotal.value })
+  }
+  if (taskPanelState.value === 'done') return t('separate.batchDoneTitle', { count: currentBatchDoneCount.value })
+  return statusLabel(taskPanelState.value)
+})
+const currentBatchLine = computed(() => {
+  if (!currentBatchIsMulti.value) return currentTaskFileName.value
+  if (taskPanelState.value === 'running' && currentTask.value) {
+    return t('separate.batchCurrentInput', { name: getFileName(currentTask.value.input) })
+  }
+  return t('separate.batchFinishedSummary', {
+    done: currentBatchDoneCount.value,
+    failed: currentBatchFailedCount.value,
+    cancelled: currentBatchCancelledCount.value,
+    total: currentBatchTotal.value,
+  })
+})
+const currentBatchOutputSummary = computed(() => {
+  if (!currentBatchIsMulti.value) return currentTaskOutputSummary.value
+  return t('separate.batchResultSummary', { count: currentBatchDoneCount.value, total: currentBatchTotal.value })
+})
+const playableOutputGroups = computed(() => currentBatchTasks.value
+  .filter(item => item.status === 'done' && item.outputs.some(output => Boolean(output.path)))
+  .map(item => ({
+    task: item,
+    outputs: item.outputs.filter(output => Boolean(output.path)),
+  })))
+const playableOutputs = computed(() => playableOutputGroups.value.flatMap(group => group.outputs))
 
 function getFileName(path: string) {
   return path.split(/[/\\]/).filter(Boolean).pop() || path
@@ -510,6 +587,7 @@ async function start() {
       .filter((item) => !beforeIds.has(item.id))
       .sort((a, b) => a.createdAt - b.createdAt)
     focusedSeparationTaskId.value = createdTasks[0]?.id || task.runningTasks[0]?.id || focusedSeparationTaskId.value
+    focusedSeparationTaskIds.value = createdTasks.length ? createdTasks.map(item => item.id) : focusedSeparationTaskId.value ? [focusedSeparationTaskId.value] : []
     task.clearInputFiles()
     if (result && result.failed > 0) {
       message.warning(t('separate.batchPartial', { succeeded: result.succeeded, failed: result.failed }))
@@ -525,6 +603,7 @@ function resetForNextSeparation() {
   stopAllPreviewAudio()
   showLogModal.value = false
   focusedSeparationTaskId.value = null
+  focusedSeparationTaskIds.value = []
 }
 
 function openCurrentLogs() {
@@ -533,8 +612,8 @@ function openCurrentLogs() {
 }
 
 function handleCancelCurrentTask() {
-  const item = currentTask.value
-  if (!item) return
+  const targets = currentBatchTasks.value.filter(item => !['done', 'failed', 'cancelled'].includes(item.status))
+  if (!targets.length) return
   dialog.warning({
     title: t('tasks.cancelConfirmTitle'),
     content: t('tasks.cancelConfirmContent'),
@@ -544,10 +623,10 @@ function handleCancelCurrentTask() {
     negativeButtonProps: { secondary: true },
     onPositiveClick: async () => {
       if (cancellingTaskId.value) return
-      cancellingTaskId.value = item.id
+      cancellingTaskId.value = targets.length > 1 ? 'batch' : targets[0].id
       try {
-        const ok = await task.cancelTask(item.id)
-        if (ok) message.success(t('tasks.cancelSuccess'))
+        const results = await Promise.all(targets.map(item => task.cancelTask(item.id)))
+        if (results.some(Boolean)) message.success(t('tasks.cancelSuccess'))
       } catch (error) {
         message.error(error instanceof Error ? error.message : String(error))
       } finally {
@@ -732,26 +811,29 @@ async function retryCurrentTask() {
     </div>
 
     <section
-      v-if="currentTask && taskPanelState !== 'ready'"
+      v-if="currentBatchTasks.length && currentTask && taskPanelState !== 'ready'"
       class="separation-task-panel"
       :class="`separation-task-panel--${taskPanelState}`"
     >
       <template v-if="taskPanelState === 'running'">
         <div class="task-running-head">
           <div>
-            <strong>{{ t('separate.taskRunningTitle') }}</strong>
-            <span>{{ currentTaskFileName }}</span>
+            <strong>{{ currentBatchTitle }}</strong>
+            <span>{{ currentBatchLine }}</span>
           </div>
           <n-tag :bordered="false" :type="statusType(currentTask.status)">{{ statusLabel(currentTask.status) }}</n-tag>
         </div>
         <div class="task-progress-block">
           <div class="task-progress-head">
-            <span>{{ progressTitle(currentTask) }}<template v-if="progressDetail(currentTask)"> · {{ progressDetail(currentTask) }}</template></span>
-            <strong>{{ Math.round(currentTask.progress || 0) }}%</strong>
+            <span>
+              {{ currentBatchIsMulti ? t('separate.batchOverallProgress') : progressTitle(currentTask) }}
+              <template v-if="!currentBatchIsMulti && progressDetail(currentTask)"> · {{ progressDetail(currentTask) }}</template>
+            </span>
+            <strong>{{ currentBatchProgress }}%</strong>
           </div>
           <n-progress
             type="line"
-            :percentage="Math.round(currentTask.progress || 0)"
+            :percentage="currentBatchProgress"
             :status="progressStatus(currentTask.status)"
             processing
             :height="9"
@@ -771,8 +853,8 @@ async function retryCurrentTask() {
           <n-button
             secondary
             type="error"
-            :loading="cancellingTaskId === currentTask.id"
-            :disabled="cancellingTaskId === currentTask.id"
+            :loading="cancellingTaskId === currentTask.id || cancellingTaskId === 'batch'"
+            :disabled="cancellingTaskId === currentTask.id || cancellingTaskId === 'batch'"
             @click="handleCancelCurrentTask"
           >
             {{ t('tasks.cancelAction') }}
@@ -782,17 +864,17 @@ async function retryCurrentTask() {
       <template v-else-if="currentTask">
         <div class="task-done-main">
           <div>
-            <strong>{{ statusLabel(currentTask.status) }}</strong>
+            <strong>{{ currentBatchIsMulti ? currentBatchTitle : statusLabel(currentTask.status) }}</strong>
             <span>
-              {{ currentTaskFileName }}
-              <template v-if="taskPanelState === 'done'"> · {{ currentTask.outputs.length }} {{ t('separate.previewStemUnit') }} · {{ currentTaskDuration }}</template>
+              {{ currentBatchLine }}
+              <template v-if="taskPanelState === 'done' && !currentBatchIsMulti"> · {{ currentTask.outputs.length }} {{ t('separate.previewStemUnit') }} · {{ currentTaskDuration }}</template>
             </span>
-            <code v-if="taskPanelState === 'done'" :title="currentTaskOutputPath">{{ currentTaskOutputSummary }}</code>
+            <code v-if="taskPanelState === 'done'" :title="currentTaskOutputPath">{{ currentBatchOutputSummary }}</code>
             <small v-else-if="taskSubMessage(currentTask)">{{ taskSubMessage(currentTask) }}</small>
           </div>
         </div>
         <div class="task-panel-actions">
-          <n-button v-if="taskPanelState === 'done'" secondary @click="task.revealPath(currentTask.output)">
+          <n-button v-if="taskPanelState === 'done'" secondary @click="task.revealPath(currentBatchIsMulti ? normalizedOutputDir : currentTask.output)">
             <template #icon><n-icon :component="OpenOutline" /></template>
             {{ t('separate.openOutput') }}
           </n-button>
@@ -812,35 +894,43 @@ async function retryCurrentTask() {
     </section>
 
     <transition name="result-preview" appear>
-      <section v-if="taskPanelState === 'done' && playableOutputs.length" class="result-preview-panel">
+      <section v-if="taskPanelState === 'done' && playableOutputGroups.length" class="result-preview-panel">
         <div class="result-preview-panel__head">
           <strong>{{ t('separate.previewTitle') }}</strong>
-          <span>{{ playableOutputs.length }} {{ t('separate.previewStemUnit') }}</span>
+          <span>{{ playableOutputGroups.length }} {{ t('separate.previewResultUnit') }} · {{ playableOutputs.length }} {{ t('separate.previewStemUnit') }}</span>
         </div>
-        <div class="preview-track-list">
-          <div v-for="output in playableOutputs" :key="output.path" class="preview-track">
-            <div class="preview-track__title">
-              <strong>{{ output.stem }}</strong>
-              <small :title="output.path">{{ shortenMiddle(output.path, 68) }}</small>
+        <div class="preview-result-list">
+          <section v-for="group in playableOutputGroups" :key="group.task.id" class="preview-result-card">
+            <div class="preview-result-card__head">
+              <strong>{{ getFileName(group.task.input) }}</strong>
+              <span>{{ group.outputs.length }} {{ t('separate.previewStemUnit') }}</span>
             </div>
-            <n-button circle secondary size="small" @click="toggleOutputPlayback(output)">
-              <template #icon>
-                <n-icon :component="playingOutputPath === output.path ? PauseOutline : PlayOutline" />
-              </template>
-            </n-button>
-            <n-slider
-              class="preview-track__slider"
-              :value="getOutputPlayback(output.path).currentTime"
-              :min="0"
-              :max="Math.max(getOutputPlayback(output.path).duration, 1)"
-              :step="0.1"
-              :tooltip="false"
-              @update:value="(value: number) => seekOutput(output.path, value)"
-            />
-            <span class="preview-track__time">
-              {{ formatPlaybackTime(getOutputPlayback(output.path).currentTime) }} / {{ formatPlaybackTime(getOutputPlayback(output.path).duration) }}
-            </span>
-          </div>
+            <div class="preview-track-list">
+              <div v-for="output in group.outputs" :key="output.path" class="preview-track">
+                <div class="preview-track__title">
+                  <strong>{{ output.stem }}</strong>
+                  <small :title="output.path">{{ shortenMiddle(output.path, 68) }}</small>
+                </div>
+                <n-button circle secondary size="small" @click="toggleOutputPlayback(output)">
+                  <template #icon>
+                    <n-icon :component="playingOutputPath === output.path ? PauseOutline : PlayOutline" />
+                  </template>
+                </n-button>
+                <n-slider
+                  class="preview-track__slider"
+                  :value="getOutputPlayback(output.path).currentTime"
+                  :min="0"
+                  :max="Math.max(getOutputPlayback(output.path).duration, 1)"
+                  :step="0.1"
+                  :tooltip="false"
+                  @update:value="(value: number) => seekOutput(output.path, value)"
+                />
+                <span class="preview-track__time">
+                  {{ formatPlaybackTime(getOutputPlayback(output.path).currentTime) }} / {{ formatPlaybackTime(getOutputPlayback(output.path).duration) }}
+                </span>
+              </div>
+            </div>
+          </section>
         </div>
       </section>
     </transition>
@@ -1860,8 +1950,9 @@ async function retryCurrentTask() {
 
 .result-preview-panel {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
-  max-height: 320px;
+  max-height: clamp(260px, 38vh, 520px);
   padding: 16px 18px;
   overflow: hidden;
 }
@@ -1882,12 +1973,49 @@ async function retryCurrentTask() {
   font-size: 12px;
 }
 
-.preview-track-list {
+.preview-result-list {
   min-height: 0;
   display: grid;
-  gap: 8px;
+  align-content: start;
+  gap: 10px;
   overflow-y: auto;
-  padding-right: 2px;
+  padding-right: 4px;
+}
+
+.preview-result-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--outline) 70%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-2) 30%, transparent);
+}
+
+.preview-result-card__head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.preview-result-card__head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.preview-result-card__head span {
+  flex: 0 0 auto;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+}
+
+.preview-track-list {
+  display: grid;
+  gap: 8px;
 }
 
 .preview-track {
