@@ -14,7 +14,7 @@ import {
   FolderOpenOutline,
   ServerOutline,
 } from '@vicons/ionicons5'
-import { useModelStore, type ModelEntry } from '@/stores/model'
+import { useModelStore, type ModelDefaultInferenceParams, type ModelEntry } from '@/stores/model'
 import { useSettingsStore } from '@/stores/settings'
 import { useTaskStore } from '@/stores/task'
 import { formatBytes } from '@/utils/format'
@@ -57,6 +57,11 @@ const storageSearch = ref('')
 const storageSort = ref<'size-desc' | 'size-asc' | 'name-asc' | 'name-desc'>('size-desc')
 const storageDownloadedOnly = ref(true)
 const selectedStorageModels = ref<string[]>([])
+const inferenceDraft = ref<Required<Pick<ModelDefaultInferenceParams, 'batch_size' | 'overlap_size' | 'chunk_size'>>>({
+  batch_size: 1,
+  overlap_size: 0,
+  chunk_size: 0,
+})
 
 const categoryOptions = computed(() => {
   return buildModelCategoryOptionsFromPairs(categories.value, categoriesCn.value, locale.value, t('common.all'))
@@ -123,6 +128,10 @@ watch(sortedModels, (list) => {
   if (page.value > maxPage) page.value = maxPage
 })
 
+watch(selectedInfo, (info) => {
+  syncInferenceDraft(info)
+}, { immediate: true })
+
 function categoryLabel(model: ModelEntry) {
   return getModelCategoryLabel(model, locale.value, '—')
 }
@@ -180,6 +189,42 @@ function deleteStatusMessage(modelName: string) {
 
 function isDeletingModel(modelName: string) {
   return deleteTasks.value[modelName]?.status === 'deleting'
+}
+
+function inferenceValue(model: ModelEntry | null | undefined, key: keyof typeof inferenceDraft.value, fallback: number) {
+  const value = model?.defaultInferenceParams?.[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function syncInferenceDraft(model: ModelEntry | null | undefined) {
+  inferenceDraft.value = {
+    batch_size: inferenceValue(model, 'batch_size', 1),
+    overlap_size: inferenceValue(model, 'overlap_size', 0),
+    chunk_size: inferenceValue(model, 'chunk_size', 0),
+  }
+}
+
+function hasInferenceOverride(model: ModelEntry | null | undefined) {
+  return Boolean(model?.name && modelStore.getModelInferenceOverrides(model.name))
+}
+
+function saveInferenceDefaults() {
+  if (!selectedInfo.value) return
+  modelStore.setModelInferenceOverrides(selectedInfo.value.name, inferenceDraft.value)
+  if (selectedModel.value === selectedInfo.value.name) {
+    taskStore.applySelectedModelDefaults(modelStore.selectedInfo?.defaultInferenceParams, modelStore.selectedInfo?.modelType)
+  }
+  message.success(t('models.inferenceDefaultsSaved'))
+}
+
+function resetInferenceDefaults() {
+  if (!selectedInfo.value) return
+  modelStore.resetModelInferenceOverrides(selectedInfo.value.name)
+  syncInferenceDraft(modelStore.selectedInfo)
+  if (selectedModel.value === selectedInfo.value?.name) {
+    taskStore.applySelectedModelDefaults(modelStore.selectedInfo?.defaultInferenceParams, modelStore.selectedInfo?.modelType)
+  }
+  message.success(t('models.inferenceDefaultsReset'))
 }
 
 async function loadModels() {
@@ -605,6 +650,39 @@ onMounted(() => {
               <div v-if="selectedInfo.aliases?.length" class="detail-row">
                 <span class="detail-label">{{ t('models.aliases') }}</span>
                 <span class="detail-val">{{ selectedInfo.aliases.join(', ') }}</span>
+              </div>
+            </div>
+
+            <n-divider style="margin:16px 0" />
+
+            <div class="detail-inference">
+              <div class="detail-section-head">
+                <strong>{{ t('models.inferenceDefaultsTitle') }}</strong>
+                <span>{{ t('models.inferenceDefaultsHint') }}</span>
+              </div>
+              <div class="inference-default-grid">
+                <label class="inference-default-field">
+                  <span>{{ t('inference.batchSize') }}</span>
+                  <n-input-number v-model:value="inferenceDraft.batch_size" :min="1" :max="32" style="width:100%" />
+                </label>
+                <label class="inference-default-field">
+                  <span>{{ t('inference.overlapSize') }}</span>
+                  <n-input-number v-model:value="inferenceDraft.overlap_size" :min="0" :max="1048576" style="width:100%" />
+                </label>
+                <label class="inference-default-field">
+                  <span>{{ t('inference.chunkSize') }}</span>
+                  <n-input-number v-model:value="inferenceDraft.chunk_size" :min="0" :max="1048576" :step="1024" style="width:100%" />
+                </label>
+              </div>
+              <div class="inference-default-actions">
+                <div>
+                  <n-button size="small" secondary :disabled="!hasInferenceOverride(selectedInfo)" @click="resetInferenceDefaults">
+                    {{ t('models.inferenceDefaultsReset') }}
+                  </n-button>
+                  <n-button size="small" type="primary" @click="saveInferenceDefaults">
+                    {{ t('common.save') }}
+                  </n-button>
+                </div>
               </div>
             </div>
 
@@ -1173,6 +1251,56 @@ onMounted(() => {
   padding: 8px 10px;
   border-radius: 8px;
   display: block;
+}
+
+.detail-section-head {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.detail-section-head strong {
+  font-size: 13px;
+}
+
+.detail-section-head span {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  line-height: 1.5;
+}
+
+.detail-inference {
+  display: grid;
+  gap: 10px;
+}
+
+.inference-default-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.inference-default-field {
+  display: grid;
+  gap: 6px;
+}
+
+.inference-default-field > span {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+}
+
+.inference-default-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.inference-default-actions > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 

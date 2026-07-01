@@ -131,6 +131,7 @@ type StoredModelState = {
   count?: number
   modelDir?: string
   downloadTasks?: Record<string, DownloadTask>
+  modelInferenceOverrides?: Record<string, ModelDefaultInferenceParams>
 }
 
 function normalizeDownloadTasks(input?: Record<string, DownloadTask>) {
@@ -143,6 +144,15 @@ function normalizeDownloadTasks(input?: Record<string, DownloadTask>) {
       message: task.status === 'downloading' ? '下载已中断' : task.message,
       updatedAt: Date.now(),
     }
+  })
+  return next
+}
+
+function normalizeModelInferenceOverrides(input?: Record<string, ModelDefaultInferenceParams>) {
+  const next: Record<string, ModelDefaultInferenceParams> = {}
+  Object.entries(input || {}).forEach(([name, value]) => {
+    const normalized = normalizeDefaultInferenceParams(value as Record<string, unknown>)
+    if (normalized) next[name] = normalized
   })
   return next
 }
@@ -197,6 +207,16 @@ function normalizeModelEntry(model: ModelEntry): ModelEntry {
   }
 }
 
+function mergeDefaultInferenceParams(
+  defaults: ModelDefaultInferenceParams | undefined,
+  overrides: ModelDefaultInferenceParams | undefined,
+) {
+  return normalizeDefaultInferenceParams({
+    ...(defaults || {}),
+    ...(overrides || {}),
+  } as Record<string, unknown>)
+}
+
 export const useModelStore = defineStore('model', () => {
   const initialized = ref(false)
   const models = ref<ModelEntry[]>([])
@@ -214,6 +234,7 @@ export const useModelStore = defineStore('model', () => {
   const downloadStates = ref<Record<string, DownloadStatus>>({})
   const downloadErrors = ref<Record<string, string>>({})
   const downloadTasks = ref<Record<string, DownloadTask>>({})
+  const modelInferenceOverrides = ref<Record<string, ModelDefaultInferenceParams>>({})
   const downloadTaskIndex = ref<Record<string, string>>({})
   const deleteTasks = ref<Record<string, DeleteTask>>({})
   const deleteTaskIndex = ref<Record<string, string>>({})
@@ -272,6 +293,7 @@ export const useModelStore = defineStore('model', () => {
       count: models.value.length,
       modelDir: modelDir.value,
       downloadTasks: downloadTasks.value,
+      modelInferenceOverrides: modelInferenceOverrides.value,
     } satisfies StoredModelState)
   }
 
@@ -287,8 +309,9 @@ export const useModelStore = defineStore('model', () => {
   async function initialize() {
     if (initialized.value) return
     const stored = await loadAppStore<StoredModelState>('model-state')
+    modelInferenceOverrides.value = normalizeModelInferenceOverrides(stored?.modelInferenceOverrides)
     if (stored?.models?.length) {
-      models.value = stored.models.map(normalizeModelEntry)
+      models.value = stored.models.map(normalizeModelEntryWithOverrides)
       categories.value = stored.categories || []
       categoriesCn.value = stored.categoriesCn || []
       modelDir.value = stored.modelDir || ''
@@ -313,6 +336,48 @@ export const useModelStore = defineStore('model', () => {
     queuePersist()
   }
 
+  function normalizeModelEntryWithOverrides(model: ModelEntry) {
+    const normalized = normalizeModelEntry(model)
+    const overrides = modelInferenceOverrides.value[normalized.name]
+    if (!overrides) return normalized
+    return {
+      ...normalized,
+      defaultInferenceParams: mergeDefaultInferenceParams(normalized.defaultInferenceParams, overrides),
+      defaultInferenceParamsResolved: true,
+    }
+  }
+
+  function setModelInferenceOverrides(name: string, overrides: ModelDefaultInferenceParams) {
+    const normalized = normalizeDefaultInferenceParams(overrides as Record<string, unknown>)
+    if (!normalized) return
+    modelInferenceOverrides.value = {
+      ...modelInferenceOverrides.value,
+      [name]: normalized,
+    }
+    const index = models.value.findIndex((item) => item.name === name)
+    if (index >= 0) models.value[index] = normalizeModelEntryWithOverrides(models.value[index])
+    if (selectedInfo.value?.name === name) selectedInfo.value = normalizeModelEntryWithOverrides(selectedInfo.value)
+    queuePersist()
+  }
+
+  function resetModelInferenceOverrides(name: string) {
+    if (!modelInferenceOverrides.value[name]) return
+    const { [name]: _, ...rest } = modelInferenceOverrides.value
+    modelInferenceOverrides.value = rest
+    const index = models.value.findIndex((item) => item.name === name)
+    if (index >= 0) {
+      models.value[index] = normalizeModelEntry(models.value[index])
+      if (selectedInfo.value?.name === name) selectedInfo.value = models.value[index]
+    } else if (selectedInfo.value?.name === name) {
+      selectedInfo.value = normalizeModelEntry(selectedInfo.value)
+    }
+    queuePersist()
+  }
+
+  function getModelInferenceOverrides(name: string) {
+    return modelInferenceOverrides.value[name]
+  }
+
   function isDeleteTaskTerminal(task?: DeleteTask | null) {
     return task?.status === 'done' || task?.status === 'error' || task?.status === 'cancelled'
   }
@@ -324,7 +389,7 @@ export const useModelStore = defineStore('model', () => {
   }
 
   function upsertModel(modelInfo: ModelEntry) {
-    const normalizedModel = normalizeModelEntry(modelInfo)
+    const normalizedModel = normalizeModelEntryWithOverrides(modelInfo)
     const index = models.value.findIndex((item) => item.name === modelInfo.name)
     if (index >= 0) models.value[index] = normalizedModel
     else models.value.push(normalizedModel)
@@ -345,7 +410,7 @@ export const useModelStore = defineStore('model', () => {
           modelDir: settings.modelDir || null,
         },
       })
-      models.value = result.models.map(normalizeModelEntry)
+      models.value = result.models.map(normalizeModelEntryWithOverrides)
       categories.value = result.categories
       categoriesCn.value = result.categoriesCn
       modelDir.value = result.modelDir
@@ -387,7 +452,7 @@ export const useModelStore = defineStore('model', () => {
         modelDir: settings.modelDir || null,
       },
     }).then((info) => {
-      const normalizedInfo = normalizeModelEntry(info)
+      const normalizedInfo = normalizeModelEntryWithOverrides(info)
       if (selectedModel.value === name) selectedInfo.value = normalizedInfo
       return normalizedInfo
     }).catch((err) => {
@@ -865,6 +930,7 @@ export const useModelStore = defineStore('model', () => {
     downloadStates,
     downloadErrors,
     downloadTasks,
+    modelInferenceOverrides,
     deleteTasks,
     modelStorageSummary,
     storageLoading,
@@ -875,6 +941,9 @@ export const useModelStore = defineStore('model', () => {
     initialize,
     loadModels,
     selectModel,
+    setModelInferenceOverrides,
+    resetModelInferenceOverrides,
+    getModelInferenceOverrides,
     deleteModel,
     downloadModel,
     cancelDownload,
