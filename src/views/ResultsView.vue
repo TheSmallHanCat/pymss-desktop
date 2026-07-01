@@ -18,6 +18,16 @@ import { usePagedSelection } from '@/composables/usePagedSelection'
 import { NCheckbox, useDialog, useMessage } from 'naive-ui'
 
 type ResultSort = 'time_desc' | 'time_asc' | 'name_asc' | 'name_desc'
+type ResultGroup = {
+  id: string
+  items: SeparationTask[]
+  primary: SeparationTask
+  inputCount: number
+  outputCount: number
+  model: string
+  output: string
+  updatedAt: number
+}
 
 const { t } = useI18n()
 const task = useTaskStore()
@@ -36,17 +46,39 @@ const sortOptions = [
   { label: t('results.sortNameDesc'), value: 'name_desc' },
 ]
 
+const resultGroups = computed<ResultGroup[]>(() => {
+  const groups = new Map<string, SeparationTask[]>()
+  task.resultTasks.forEach((item) => {
+    const id = item.batchId || item.id
+    groups.set(id, [...(groups.get(id) || []), item])
+  })
+  return [...groups.entries()].map(([id, items]) => {
+    const sorted = [...items].sort((a, b) => a.createdAt - b.createdAt)
+    const primary = sorted[0]
+    return {
+      id,
+      items: sorted,
+      primary,
+      inputCount: sorted.length,
+      outputCount: sorted.reduce((sum, item) => sum + item.outputs.length, 0),
+      model: primary.model,
+      output: primary.output,
+      updatedAt: Math.max(...sorted.map(item => item.updatedAt)),
+    }
+  })
+})
 const filteredResults = computed(() => {
   const keyword = search.value.trim().toLowerCase()
-  const list = task.resultTasks.filter((item) => {
+  const list = resultGroups.value.filter((group) => {
     if (!keyword) return true
-    const fileName = getFileName(item.input)
     const haystack = [
-      fileName,
-      item.model,
-      item.output,
-      ...item.outputs.map((output) => output.stem),
-      ...item.outputs.map((output) => output.path),
+      group.id,
+      group.model,
+      group.output,
+      ...group.items.map(item => getFileName(item.input)),
+      ...group.items.map(item => item.output),
+      ...group.items.flatMap(item => item.outputs.map((output) => output.stem)),
+      ...group.items.flatMap(item => item.outputs.map((output) => output.path)),
     ].join(' ').toLowerCase()
     return haystack.includes(keyword)
   })
@@ -56,9 +88,9 @@ const filteredResults = computed(() => {
       case 'time_asc':
         return a.updatedAt - b.updatedAt
       case 'name_asc':
-        return getFileName(a.input).localeCompare(getFileName(b.input), 'zh-CN')
+        return getGroupTitle(a).localeCompare(getGroupTitle(b), 'zh-CN')
       case 'name_desc':
-        return getFileName(b.input).localeCompare(getFileName(a.input), 'zh-CN')
+        return getGroupTitle(b).localeCompare(getGroupTitle(a), 'zh-CN')
       case 'time_desc':
       default:
         return b.updatedAt - a.updatedAt
@@ -93,12 +125,17 @@ function getFileName(path: string) {
   return path.split(/[/\\]/).pop() || path
 }
 
-function resultCardId(item: Pick<SeparationTask, 'id'>) {
+function getGroupTitle(group: ResultGroup) {
+  if (group.inputCount === 1) return getFileName(group.primary.input)
+  return t('results.groupTitle', { count: group.inputCount, name: getFileName(group.primary.input) })
+}
+
+function resultCardId(item: Pick<ResultGroup, 'id'>) {
   return `result-card-${item.id}`
 }
 
-function openResultDir(item: SeparationTask) {
-  task.revealPath(item.output)
+function openResultDir(group: ResultGroup) {
+  task.revealPath(group.inputCount === 1 ? group.primary.output : group.output)
 }
 
 async function openInEditor(item: SeparationTask) {
@@ -113,6 +150,10 @@ async function openInEditor(item: SeparationTask) {
 // 删除结果时仅回收当前结果对应的输出文件，避免误删共享目录或附加产物
 function trashTargets(item: SeparationTask) {
   return task.resultTrashTargets(item)
+}
+
+function groupTaskIds(group: ResultGroup) {
+  return group.items.map(item => item.id)
 }
 
 function trashTargetsForItems(items: SeparationTask[]) {
@@ -151,7 +192,8 @@ function confirmRemoveListOnly(failedCount: number, totalCount: number, mode: Re
   })
 }
 
-function handleRemoveResult(item: SeparationTask) {
+function handleRemoveResult(group: ResultGroup) {
+  const ids = groupTaskIds(group)
   const deleteFiles = ref(false)
   dialog.warning({
     title: t('results.removeTitle'),
@@ -167,14 +209,14 @@ function handleRemoveResult(item: SeparationTask) {
     positiveButtonProps: { type: 'error' },
     onPositiveClick: async () => {
       if (!deleteFiles.value) {
-        task.removeResult(item.id)
+        task.removeResults(ids)
         message.success(t('results.removeSuccess'))
         return
       }
 
-      const targets = trashTargets(item)
+      const targets = trashTargetsForItems(group.items)
       if (!targets.length) {
-        task.removeResult(item.id)
+        task.removeResults(ids)
         message.warning(t('results.removeNoFilesSingle'))
         return
       }
@@ -182,7 +224,7 @@ function handleRemoveResult(item: SeparationTask) {
       try {
         const result = await task.trashPaths(targets)
         if (!result.failed.length) {
-          task.removeResult(item.id)
+          task.removeResults(ids)
           message.success(t('results.removeFilesSuccessSingle'))
           return
         }
@@ -192,7 +234,7 @@ function handleRemoveResult(item: SeparationTask) {
           message.warning(t('results.removeFilesKeptSingle'))
           return
         }
-        task.removeResult(item.id)
+        task.removeResults(ids)
         if (result.failed.length === targets.length) {
           message.warning(t('results.removeFilesAllFailedListOnly'))
         } else {
@@ -204,7 +246,7 @@ function handleRemoveResult(item: SeparationTask) {
           message.error(error instanceof Error ? error.message : t('results.removeFilesFailed'))
           return
         }
-        task.removeResult(item.id)
+        task.removeResults(ids)
         message.warning(t('results.removeFilesAllFailedListOnly'))
       }
     },
@@ -214,7 +256,9 @@ function handleRemoveResult(item: SeparationTask) {
 function handleRemoveSelected() {
   const ids = [...selectedResultIds.value]
   if (!ids.length) return
-  const items = task.resultTasks.filter((item) => ids.includes(item.id))
+  const groups = resultGroups.value.filter((group) => ids.includes(group.id))
+  const taskIds = groups.flatMap(groupTaskIds)
+  const items = groups.flatMap(group => group.items)
   const deleteFiles = ref(false)
   dialog.warning({
     title: t('results.removeSelectedTitle'),
@@ -230,9 +274,9 @@ function handleRemoveSelected() {
     positiveButtonProps: { type: 'error' },
     onPositiveClick: async () => {
       const finishRemove = (silent = false) => {
-        const removed = task.removeResults(ids)
+        const removed = task.removeResults(taskIds)
         if (!silent && removed > 0) {
-          message.success(t('results.removeSelectedSuccess', { count: removed }))
+          message.success(t('results.removeSelectedSuccess', { count: ids.length }))
         }
         selectedResultIds.value = []
         selecting.value = false
@@ -283,13 +327,14 @@ function handleRemoveSelected() {
 }
 
 function handleClearResults() {
-  const items = [...task.resultTasks]
-  if (!items.length) return
+  const groups = [...resultGroups.value]
+  if (!groups.length) return
+  const items = groups.flatMap(group => group.items)
   const deleteFiles = ref(false)
   dialog.warning({
     title: t('results.clearTitle'),
     content: () => h('div', { style: 'display:grid;gap:12px;' }, [
-      h('span', t('results.clearContent', { count: items.length })),
+      h('span', t('results.clearContent', { count: groups.length })),
       h(NCheckbox, {
         checked: deleteFiles.value,
         'onUpdate:checked': (value: boolean) => { deleteFiles.value = value },
@@ -303,7 +348,7 @@ function handleClearResults() {
       const finishClear = (silent = false) => {
         const removed = task.clearResults(itemIds)
         if (!silent && removed > 0) {
-          message.success(t('results.clearSuccess', { count: removed }))
+          message.success(t('results.clearSuccess', { count: groups.length }))
         }
         selectedResultIds.value = []
         selecting.value = false
@@ -376,10 +421,12 @@ function shortenPath(value: string) {
 
 function scrollToFocusedResult(id: string | null) {
   if (!id) return
-  ensureExpanded(id)
-  ensureItemPage(id)
+  const group = resultGroups.value.find(group => group.id === id || group.items.some(item => item.id === id))
+  const groupId = group?.id || id
+  ensureExpanded(groupId)
+  ensureItemPage(groupId)
   nextTick(() => {
-    const target = document.getElementById(resultCardId({ id }))
+    const target = document.getElementById(resultCardId({ id: groupId }))
     target?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   })
 }
@@ -445,7 +492,7 @@ function formatTime(value: number) {
         <template #arrow><n-icon :component="SwapVerticalOutline" /></template>
       </n-select>
 
-      <span class="results-toolbar__count">{{ filteredResults.length }} / {{ task.resultTasks.length }}</span>
+      <span class="results-toolbar__count">{{ filteredResults.length }} / {{ resultGroups.length }}</span>
     </div>
 
     <div v-if="selecting && filteredResults.length" class="results-batchbar">
@@ -501,10 +548,11 @@ function formatTime(value: number) {
           </span>
 
           <span class="result-row__body">
-            <strong>{{ getFileName(item.input) }}</strong>
+            <strong>{{ getGroupTitle(item) }}</strong>
             <span class="result-row__meta">
               <span>{{ item.model }}</span>
-              <span>{{ item.outputs.length }} stem</span>
+              <span>{{ item.inputCount }} {{ t('results.inputUnit') }}</span>
+              <span>{{ item.outputCount }} {{ t('results.stemUnit') }}</span>
               <span class="result-row__time"><n-icon :component="TimeOutline" /> {{ formatTime(item.updatedAt) }}</span>
             </span>
             <span class="result-row__path">{{ shortenPath(item.output) }}</span>
@@ -516,7 +564,7 @@ function formatTime(value: number) {
         </button>
 
         <div v-if="!selecting" class="result-row__actions">
-          <n-button size="small" type="primary" @click.stop="openInEditor(item)">
+          <n-button v-if="item.inputCount === 1" size="small" type="primary" @click.stop="openInEditor(item.primary)">
             <template #icon><n-icon :component="ColorWandOutline" /></template>
             {{ t('results.openInEditor') }}
           </n-button>
@@ -532,10 +580,30 @@ function formatTime(value: number) {
 
         <n-collapse-transition :show="isExpanded(item.id)">
           <div class="result-row__details">
-            <div v-for="output in item.outputs" :key="output.path" class="stem-line">
-              <span>{{ output.stem }}</span>
-              <span class="stem-line__path">{{ output.path }}</span>
-            </div>
+            <section v-for="result in item.items" :key="result.id" class="result-detail-card">
+              <div class="result-detail-card__head">
+                <div>
+                  <strong>{{ getFileName(result.input) }}</strong>
+                  <span>{{ result.outputs.length }} {{ t('results.stemUnit') }}</span>
+                </div>
+                <div class="result-detail-card__actions">
+                  <n-button size="tiny" secondary @click.stop="openInEditor(result)">
+                    <template #icon><n-icon :component="ColorWandOutline" /></template>
+                    {{ t('results.openInEditor') }}
+                  </n-button>
+                  <n-button size="tiny" tertiary @click.stop="task.revealPath(result.output)">
+                    <template #icon><n-icon :component="FolderOpenOutline" /></template>
+                    {{ t('results.openDirectory') }}
+                  </n-button>
+                </div>
+              </div>
+              <div class="result-detail-card__stems">
+                <div v-for="output in result.outputs" :key="output.path" class="stem-line">
+                  <span>{{ output.stem }}</span>
+                  <span class="stem-line__path">{{ output.path }}</span>
+                </div>
+              </div>
+            </section>
           </div>
         </n-collapse-transition>
       </section>
@@ -733,8 +801,56 @@ function formatTime(value: number) {
 .result-row__details {
   grid-column: 1 / -1;
   display: grid;
-  gap: 8px;
+  gap: 10px;
   padding: 12px 0 2px 54px;
+}
+
+.result-detail-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-2) 34%, transparent);
+}
+
+.result-detail-card__head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.result-detail-card__head > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.result-detail-card__head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.result-detail-card__head span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.result-detail-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.result-detail-card__stems {
+  display: grid;
+  gap: 8px;
 }
 
 .stem-line {
@@ -824,6 +940,15 @@ function formatTime(value: number) {
 
   .result-row__actions {
     padding-left: 0;
+  }
+
+  .result-detail-card__head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .result-detail-card__actions {
+    justify-content: flex-start;
   }
 
   .stem-line {
