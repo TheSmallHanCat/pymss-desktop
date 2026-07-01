@@ -61,8 +61,7 @@ const showSettingsDrawer = ref(false)
 const showLogModal = ref(false)
 const modelSearch = ref('')
 const modelCategoryFilter = ref('')
-const focusedSeparationTaskId = ref<string | null>(null)
-const focusedSeparationTaskIds = ref<string[]>([])
+const focusedSeparationJobId = ref<string | null>(null)
 const cancellingTaskId = ref<string | null>(null)
 const audioElements = new Map<string, HTMLAudioElement>()
 const playingOutputPath = ref('')
@@ -165,31 +164,20 @@ const normalizedOutputDir = computed(() => (settings.outputDir || 'results').tri
 const outputPreview = computed(() => {
   const base = normalizedOutputDir.value.replace(/[\\/]$/, '')
   const separator = base.includes('\\') ? '\\' : '/'
-  return settings.separateTaskOutputDir ? `${base}${separator}sep_${t('separate.taskIdPreview')}` : base
+  return `${base}${separator}${t('separate.taskIdPreview')}${separator}${t('separate.resultIdPreview')}${separator}${t('separate.outputFilePreview')}`
 })
 const formatLabel = computed(() => String(settings.defaultFormat || 'wav').toUpperCase())
-const outputModeLabel = computed(() => settings.separateTaskOutputDir ? t('separate.outputModeSeparate') : t('separate.outputModeDirect'))
+const outputModeLabel = computed(() => t('separate.outputModeSeparate'))
 const outputSummaryPath = computed(() => shortenMiddle(outputPreview.value, 60))
 const canStart = computed(() => inputFiles.value.length > 0 && modelDownloaded.value)
-const newestRunningTask = computed(() => {
-  return [...task.runningTasks].sort((a, b) => {
-    const aQueued = a.status === 'queued' ? 1 : 0
-    const bQueued = b.status === 'queued' ? 1 : 0
-    if (aQueued !== bQueued) return aQueued - bQueued
-    return b.createdAt - a.createdAt
-  })[0] || null
+const newestRunningJob = computed(() => {
+  return [...task.allJobs]
+    .filter(job => job.tasks.some(item => !['done', 'failed', 'cancelled'].includes(item.status)))
+    .sort((a, b) => b.createdAt - a.createdAt)[0] || null
 })
-const focusedTask = computed(() => {
-  if (!focusedSeparationTaskId.value) return null
-  return task.tasks.find((item) => item.id === focusedSeparationTaskId.value) || null
-})
-const focusedBatchTasks = computed(() => {
-  if (!focusedSeparationTaskIds.value.length) return []
-  const byId = new Map(task.tasks.map((item) => [item.id, item]))
-  return focusedSeparationTaskIds.value
-    .map(id => byId.get(id))
-    .filter((item): item is SeparationTask => Boolean(item))
-})
+const focusedJob = computed(() => task.getJobById(focusedSeparationJobId.value))
+const currentJob = computed(() => focusedJob.value || newestRunningJob.value)
+const focusedBatchTasks = computed(() => currentJob.value?.tasks || [])
 const activeFocusedBatchTask = computed(() => {
   return [...focusedBatchTasks.value]
     .filter(item => !['done', 'failed', 'cancelled'].includes(item.status))
@@ -202,7 +190,7 @@ const activeFocusedBatchTask = computed(() => {
 })
 const currentTask = computed(() => {
   if (focusedBatchTasks.value.length) return activeFocusedBatchTask.value || focusedBatchTasks.value[0] || null
-  return newestRunningTask.value || focusedTask.value
+  return null
 })
 const currentBatchTasks = computed(() => focusedBatchTasks.value.length ? focusedBatchTasks.value : currentTask.value ? [currentTask.value] : [])
 const currentBatchTotal = computed(() => currentBatchTasks.value.length)
@@ -239,7 +227,7 @@ const modelCompactLine = computed(() => {
   return category ? `${name} · ${category}` : name
 })
 const currentTaskFileName = computed(() => currentTask.value ? getFileName(currentTask.value.input) : '')
-const currentTaskOutputPath = computed(() => currentTask.value?.output || normalizedOutputDir.value)
+const currentTaskOutputPath = computed(() => currentJob.value?.output || currentTask.value?.output || normalizedOutputDir.value)
 const currentTaskOutputSummary = computed(() => shortenMiddle(currentTaskOutputPath.value, 72))
 const currentTaskDuration = computed(() => currentTask.value ? taskDuration(currentTask.value) : '')
 const currentBatchProgress = computed(() => {
@@ -581,13 +569,8 @@ async function start() {
     return
   }
   try {
-    const beforeIds = new Set(task.tasks.map((item) => item.id))
     const result = await task.startSeparation()
-    const createdTasks = task.tasks
-      .filter((item) => !beforeIds.has(item.id))
-      .sort((a, b) => a.createdAt - b.createdAt)
-    focusedSeparationTaskId.value = createdTasks[0]?.id || task.runningTasks[0]?.id || focusedSeparationTaskId.value
-    focusedSeparationTaskIds.value = createdTasks.length ? createdTasks.map(item => item.id) : focusedSeparationTaskId.value ? [focusedSeparationTaskId.value] : []
+    focusedSeparationJobId.value = result?.jobId || newestRunningJob.value?.id || focusedSeparationJobId.value
     task.clearInputFiles()
     if (result && result.failed > 0) {
       message.warning(t('separate.batchPartial', { succeeded: result.succeeded, failed: result.failed }))
@@ -602,8 +585,7 @@ async function start() {
 function resetForNextSeparation() {
   stopAllPreviewAudio()
   showLogModal.value = false
-  focusedSeparationTaskId.value = null
-  focusedSeparationTaskIds.value = []
+  focusedSeparationJobId.value = null
 }
 
 function openCurrentLogs() {
@@ -641,7 +623,7 @@ async function retryCurrentTask() {
   if (!item) return
   try {
     const next = await task.retryTask(item.id)
-    focusedSeparationTaskId.value = next?.id || focusedSeparationTaskId.value
+    focusedSeparationJobId.value = next?.jobId || next?.id || focusedSeparationJobId.value
     message.success(t('toast.taskRetried'))
   } catch (error) {
     message.error(error instanceof Error ? error.message : String(error))
@@ -874,7 +856,7 @@ async function retryCurrentTask() {
           </div>
         </div>
         <div class="task-panel-actions">
-          <n-button v-if="taskPanelState === 'done'" secondary @click="task.revealPath(currentBatchIsMulti ? normalizedOutputDir : currentTask.output)">
+          <n-button v-if="taskPanelState === 'done'" secondary @click="task.revealPath(currentJob?.output || currentTask.output)">
             <template #icon><n-icon :component="OpenOutline" /></template>
             {{ t('separate.openOutput') }}
           </n-button>
@@ -989,14 +971,6 @@ async function retryCurrentTask() {
               <n-button secondary @click="task.revealPath(normalizedOutputDir)">
                 {{ t('separate.openOutput') }}
               </n-button>
-            </div>
-
-            <div class="settings-row">
-              <div class="settings-row__copy">
-                <strong>{{ t('separate.separateTaskOutputDir') }}</strong>
-                <span>{{ t('separate.separateTaskOutputDirHint') }}</span>
-              </div>
-              <n-switch v-model:value="settings.separateTaskOutputDir" />
             </div>
 
             <div class="output-preview">

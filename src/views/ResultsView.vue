@@ -12,22 +12,13 @@ import {
   TimeOutline,
   TrashOutline,
 } from '@vicons/ionicons5'
-import { useTaskStore, type SeparationTask } from '@/stores/task'
+import { useTaskStore, type SeparationJob, type SeparationTask } from '@/stores/task'
 import { useEditorStore } from '@/stores/editor'
 import { usePagedSelection } from '@/composables/usePagedSelection'
 import { NCheckbox, useDialog, useMessage } from 'naive-ui'
 
 type ResultSort = 'time_desc' | 'time_asc' | 'name_asc' | 'name_desc'
-type ResultGroup = {
-  id: string
-  items: SeparationTask[]
-  primary: SeparationTask
-  inputCount: number
-  outputCount: number
-  model: string
-  output: string
-  updatedAt: number
-}
+type ResultGroup = SeparationJob & { items: SeparationTask[] }
 
 const { t } = useI18n()
 const task = useTaskStore()
@@ -47,25 +38,7 @@ const sortOptions = [
 ]
 
 const resultGroups = computed<ResultGroup[]>(() => {
-  const groups = new Map<string, SeparationTask[]>()
-  task.resultTasks.forEach((item) => {
-    const id = item.batchId || item.id
-    groups.set(id, [...(groups.get(id) || []), item])
-  })
-  return [...groups.entries()].map(([id, items]) => {
-    const sorted = [...items].sort((a, b) => a.createdAt - b.createdAt)
-    const primary = sorted[0]
-    return {
-      id,
-      items: sorted,
-      primary,
-      inputCount: sorted.length,
-      outputCount: sorted.reduce((sum, item) => sum + item.outputs.length, 0),
-      model: primary.model,
-      output: primary.output,
-      updatedAt: Math.max(...sorted.map(item => item.updatedAt)),
-    }
-  })
+  return task.resultJobs.map((job) => ({ ...job, items: job.tasks }))
 })
 const filteredResults = computed(() => {
   const keyword = search.value.trim().toLowerCase()
@@ -135,7 +108,7 @@ function resultCardId(item: Pick<ResultGroup, 'id'>) {
 }
 
 function openResultDir(group: ResultGroup) {
-  task.revealPath(group.inputCount === 1 ? group.primary.output : group.output)
+  task.revealPath(group.output)
 }
 
 async function openInEditor(item: SeparationTask) {

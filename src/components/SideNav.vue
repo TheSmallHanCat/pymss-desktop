@@ -4,7 +4,6 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   MusicalNotesOutline,
-  ListOutline,
   CubeOutline,
   FolderOpenOutline,
   SettingsOutline,
@@ -14,7 +13,6 @@ const route = useRoute()
 const { t } = useI18n()
 const items = computed(() => [
   { name: 'separate', path: '/', icon: MusicalNotesOutline, label: t('nav.separate') },
-  { name: 'tasks', path: '/tasks', icon: ListOutline, label: t('nav.tasks') },
   { name: 'models', path: '/models', icon: CubeOutline, label: t('nav.models') },
   { name: 'results', path: '/results', icon: FolderOpenOutline, label: t('nav.results') },
   { name: 'settings', path: '/settings', icon: SettingsOutline, label: t('nav.settings') },

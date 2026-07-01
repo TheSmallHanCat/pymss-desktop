@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,32 @@ def collect_outputs(output_dir: str, success_files: list[str], output_format: st
         stem = path.stem.split("_")[-1] if "_" in path.stem else path.stem
         outputs.append({"stem": stem, "path": str(path)})
     return outputs
+
+
+def sanitize_output_prefix(value: Any, input_path: str) -> str:
+    raw = str(value or "").strip() or Path(input_path).stem
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned[:80] or "input"
+
+
+def prefix_output_files(outputs: list[dict[str, str]], prefix: str) -> list[dict[str, str]]:
+    renamed: list[dict[str, str]] = []
+    for output in outputs:
+        stem = output.get("stem") or ""
+        path_value = output.get("path") or ""
+        path = Path(path_value)
+        if not stem or not path.exists():
+            renamed.append(output)
+            continue
+        expected_name = f"{prefix}_{stem}{path.suffix}"
+        target = path.with_name(expected_name)
+        if path.name != expected_name:
+            if target.exists():
+                target.unlink()
+            path.rename(target)
+        renamed.append({"stem": stem, "path": str(target)})
+    return renamed
 
 
 def normalize_inference_params(payload_params: Any, version: Any = None) -> dict[str, Any]:
@@ -215,6 +242,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
     device = payload.get("device") or "auto"
     device_ids = payload.get("deviceIds") or [0]
     output_format = payload.get("outputFormat") or "wav"
+    output_prefix = sanitize_output_prefix(payload.get("outputPrefix"), input_path)
     use_tta = bool(payload.get("useTta", False))
     debug = bool(payload.get("debug", False))
     inference_params = normalize_inference_params(
@@ -321,7 +349,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         emit("task_stage", {"stage": "separating", "message": "Separating"}, task_id=task_id)
         success_files = separator.process_folder(input_path)
         emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
-        outputs = collect_outputs(output_dir, success_files, output_format)
+        outputs = prefix_output_files(collect_outputs(output_dir, success_files, output_format), output_prefix)
         emit("task_done", {"files": success_files, "outputs": outputs, "outputDir": str(Path(output_dir).resolve()), "outputFormat": output_format}, task_id=task_id)
         return 0
     except Exception as exc:

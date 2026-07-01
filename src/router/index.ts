@@ -5,7 +5,7 @@ const router = createRouter({
   routes: [
     { path: '/', name: 'separate', component: () => import('@/views/SeparateView.vue') },
     { path: '/separate', redirect: { name: 'separate' } },
-    { path: '/tasks', name: 'tasks', component: () => import('@/views/TasksView.vue') },
+    { path: '/tasks', redirect: { name: 'results' } },
     { path: '/models', name: 'models', component: () => import('@/views/ModelsView.vue') },
     { path: '/results', name: 'results', component: () => import('@/views/ResultsView.vue') },
     { path: '/projects', redirect: { name: 'results' } },

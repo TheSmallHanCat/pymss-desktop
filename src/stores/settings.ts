@@ -85,7 +85,6 @@ type StoredSettings = {
   developerMode?: boolean
   modelDir?: string
   outputDir?: string
-  separateTaskOutputDir?: boolean
   defaultDevice?: string
   defaultFormat?: string
   downloadSource?: string
@@ -188,7 +187,6 @@ export const useSettingsStore = defineStore('settings', () => {
   const developerMode = ref(false)
   const modelDir = ref('')
   const outputDir = ref('')
-  const separateTaskOutputDir = ref(true)
   const defaultDevice = ref(DEFAULT_DEFAULT_DEVICE)
   const defaultFormat = ref(DEFAULT_DEFAULT_FORMAT)
   const downloadSource = ref(DEFAULT_DOWNLOAD_SOURCE)
@@ -218,7 +216,6 @@ export const useSettingsStore = defineStore('settings', () => {
     developerMode: developerMode.value,
     modelDir: modelDir.value,
     outputDir: outputDir.value,
-    separateTaskOutputDir: separateTaskOutputDir.value,
     defaultDevice: defaultDevice.value,
     defaultFormat: defaultFormat.value,
     downloadSource: downloadSource.value,
@@ -269,7 +266,6 @@ export const useSettingsStore = defineStore('settings', () => {
     developerMode.value = stored?.developerMode === true
     modelDir.value = (stored?.modelDir || paths.modelsDir).trim() || paths.modelsDir
     outputDir.value = (stored?.outputDir || paths.outputsDir).trim() || paths.outputsDir
-    separateTaskOutputDir.value = stored?.separateTaskOutputDir ?? true
     defaultDevice.value = stored?.defaultDevice || DEFAULT_DEFAULT_DEVICE
     defaultFormat.value = stored?.defaultFormat || DEFAULT_DEFAULT_FORMAT
     downloadSource.value = stored?.downloadSource || DEFAULT_DOWNLOAD_SOURCE
@@ -320,7 +316,6 @@ export const useSettingsStore = defineStore('settings', () => {
     [
       modelDir,
       outputDir,
-      separateTaskOutputDir,
       defaultDevice,
       defaultFormat,
       downloadSource,
@@ -736,7 +731,6 @@ export const useSettingsStore = defineStore('settings', () => {
     developerMode,
     modelDir,
     outputDir,
-    separateTaskOutputDir,
     defaultDevice,
     defaultFormat,
     downloadSource,

@@ -33,8 +33,13 @@ type ScanMediaPathsResult = {
 
 export type SeparationTask = {
   id: string
+  jobId?: string
+  resultId?: string
+  batchId?: string
   model: string
   input: string
+  jobOutput?: string
+  outputPrefix?: string
   output: string
   status: TaskStatus
   message: string
@@ -52,6 +57,20 @@ export type SeparationTask = {
   runConfig?: SeparationRunConfig
   taskHidden?: boolean
   resultHidden?: boolean
+}
+
+export type SeparationJob = {
+  id: string
+  output: string
+  tasks: SeparationTask[]
+  primary: SeparationTask
+  model: string
+  inputCount: number
+  outputCount: number
+  createdAt: number
+  updatedAt: number
+  status: TaskStatus
+  progress: number
 }
 
 type PersistedTaskState = {
@@ -102,20 +121,38 @@ function joinOutputPath(base: string, child: string) {
   return `${base.replace(/[\\/]$/, '')}${separator}${child}`
 }
 
-function resolveTaskOutputPath(base: string, taskId: string, separateTaskOutputDir: boolean) {
-  const outputDir = normalizeOutputPath(base)
-  return separateTaskOutputDir ? joinOutputPath(outputDir, taskId) : outputDir
+function safeOutputSegment(value: string, fallback: string) {
+  const name = value
+    .split(/[/\\]/)
+    .filter(Boolean)
+    .pop()
+    ?.replace(/\.[^/.\\]+$/, '')
+    .trim() || fallback
+  return name
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .slice(0, 80) || fallback
 }
 
-function outputsFromFiles(outputDir: string, files: string[], outputFormat = 'wav'): StemOutput[] {
+function createRunId(prefix: string) {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+}
+
+function resolveJobOutputPath(base: string, jobId: string) {
+  const outputDir = normalizeOutputPath(base)
+  return joinOutputPath(outputDir, jobId)
+}
+
+function outputsFromFiles(outputDir: string, files: string[], outputFormat = 'wav', outputPrefix?: string): StemOutput[] {
   if (!files?.length) return []
   const separator = outputDir.includes('\\') ? '\\' : '/'
   const base = outputDir.replace(/[\\/]$/, '')
   return files.map((file) => {
     const stemName = file.replace(/\.[^/.\\]+$/, '')
+    const fileName = outputPrefix ? `${outputPrefix}_${stemName}` : stemName
     return {
       stem: stemName,
-      path: `${base}${separator}${stemName}.${outputFormat}`,
+      path: `${base}${separator}${fileName}.${outputFormat}`,
     }
   })
 }
@@ -155,15 +192,20 @@ function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
   const normalizedFiles = task.files || []
   const normalizedOutputs = task.outputs?.length
     ? task.outputs
-    : outputsFromFiles(normalizedOutput, normalizedFiles, normalizedRunConfig?.outputFormat || 'wav')
+    : outputsFromFiles(normalizedOutput, normalizedFiles, normalizedRunConfig?.outputFormat || 'wav', task.outputPrefix)
   const meta = STAGE_META[status]
   const progress = typeof task.progress === 'number'
     ? Math.max(meta.progress, Math.min(100, task.progress))
     : meta.progress
   return {
     id: task.id || `task_${Date.now()}`,
+    jobId: typeof task.jobId === 'string' && task.jobId.trim() ? task.jobId : undefined,
+    resultId: typeof task.resultId === 'string' && task.resultId.trim() ? task.resultId : undefined,
+    batchId: typeof task.batchId === 'string' && task.batchId.trim() ? task.batchId : undefined,
     model: task.model || '',
     input: task.input || '',
+    jobOutput: typeof task.jobOutput === 'string' && task.jobOutput.trim() ? normalizeOutputPath(task.jobOutput) : undefined,
+    outputPrefix: typeof task.outputPrefix === 'string' && task.outputPrefix.trim() ? task.outputPrefix : undefined,
     output: normalizedOutput,
     status,
     message: interrupted ? '上次运行未完成' : (task.message || meta.label),
@@ -345,9 +387,62 @@ export const useTaskStore = defineStore('task', () => {
   const resultTasks = computed(() => completedTasks.value.filter((task) => !task.resultHidden && (task.outputs.length || task.files.length)))
   const queuedTasks = computed(() => tasks.value.filter((task) => task.status === 'queued'))
   const failedTasks = computed(() => tasks.value.filter((task) => task.status === 'failed'))
+  const allJobs = computed(() => buildJobs(tasks.value))
+  const resultJobs = computed(() => buildJobs(resultTasks.value))
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null
   let progressPersistTimer: ReturnType<typeof setTimeout> | null = null
+
+  function taskJobId(task: SeparationTask) {
+    return task.jobId || task.batchId || task.id
+  }
+
+  function buildJobs(sourceTasks: SeparationTask[]): SeparationJob[] {
+    const groups = new Map<string, SeparationTask[]>()
+    sourceTasks.forEach((task) => {
+      const id = taskJobId(task)
+      groups.set(id, [...(groups.get(id) || []), task])
+    })
+    return [...groups.entries()].map(([id, items]) => {
+      const sorted = [...items].sort((a, b) => a.createdAt - b.createdAt)
+      const primary = sorted[0]
+      const output = primary.jobOutput || primary.output
+      const progressTotal = sorted.reduce((sum, item) => {
+        if (TERMINAL_STATUSES.includes(item.status)) return sum + 100
+        if (item.status === 'queued') return sum
+        return sum + Math.max(0, Math.min(99, Number(item.progress || 0)))
+      }, 0)
+      const status = resolveJobStatus(sorted)
+      return {
+        id,
+        output,
+        tasks: sorted,
+        primary,
+        model: primary.model,
+        inputCount: sorted.length,
+        outputCount: sorted.reduce((sum, item) => sum + item.outputs.length, 0),
+        createdAt: Math.min(...sorted.map(item => item.createdAt)),
+        updatedAt: Math.max(...sorted.map(item => item.updatedAt)),
+        status,
+        progress: Math.round(progressTotal / sorted.length),
+      }
+    })
+  }
+
+  function resolveJobStatus(items: SeparationTask[]): TaskStatus {
+    if (items.some(item => !TERMINAL_STATUSES.includes(item.status))) return 'separating'
+    if (items.every(item => item.status === 'done')) return 'done'
+    if (items.every(item => item.status === 'cancelled')) return 'cancelled'
+    if (items.every(item => item.status === 'failed')) return 'failed'
+    if (items.some(item => item.status === 'done')) return 'done'
+    if (items.some(item => item.status === 'failed')) return 'failed'
+    return 'cancelled'
+  }
+
+  function getJobById(id: string | null | undefined) {
+    if (!id) return null
+    return allJobs.value.find((job) => job.id === id) || null
+  }
 
   async function persistTasks() {
     if (!initialized.value) return
@@ -486,14 +581,20 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  function createQueuedTask(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null) {
+  function createQueuedTask(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputPrefix?: string) {
     const settings = useSettingsStore()
-    const id = `sep_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    const id = createRunId('sep')
+    const resultId = createRunId('result')
+    const resolvedJobOutput = jobOutput || resolveJobOutputPath(settings.outputDir, jobId || id)
     const task: SeparationTask = {
       id,
+      jobId,
+      resultId,
       model,
       input,
-      output: resolveTaskOutputPath(settings.outputDir, id, settings.separateTaskOutputDir),
+      jobOutput: resolvedJobOutput,
+      outputPrefix,
+      output: joinOutputPath(resolvedJobOutput, resultId),
       status: 'queued',
       message: 'Queued',
       createdAt: Date.now(),
@@ -524,6 +625,7 @@ export const useTaskStore = defineStore('task', () => {
           model: task.model,
           input: task.input,
           output: task.output,
+          outputPrefix: task.outputPrefix,
           modelDir: config.modelDir ?? (settings.modelDir || null),
           download: true,
           source: config.downloadSource || settings.downloadSource,
@@ -656,7 +758,7 @@ export const useTaskStore = defineStore('task', () => {
       if (event.payload?.outputDir) task.output = event.payload.outputDir
       task.outputs = event.payload?.outputs?.length
         ? event.payload.outputs
-        : outputsFromFiles(task.output, task.files, event.payload?.outputFormat || 'wav')
+        : outputsFromFiles(task.output, task.files, event.payload?.outputFormat || 'wav', task.outputPrefix)
       task.error = undefined
       touch(task)
       queuePersist()
@@ -940,8 +1042,18 @@ export const useTaskStore = defineStore('task', () => {
     return inferenceParams
   }
 
-  function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null) {
-    return createQueuedTask(input, model, inferenceParams, modelType)
+  function buildOutputPrefixes(inputs: string[]) {
+    const counts = new Map<string, number>()
+    return inputs.map((input, index) => {
+      const base = safeOutputSegment(input, `input-${index + 1}`)
+      const count = counts.get(base) || 0
+      counts.set(base, count + 1)
+      return count ? `${base}-${count + 1}` : base
+    })
+  }
+
+  function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputPrefix?: string) {
+    return createQueuedTask(input, model, inferenceParams, modelType, jobId, jobOutput, outputPrefix)
   }
 
   async function startSeparation() {
@@ -960,9 +1072,13 @@ export const useTaskStore = defineStore('task', () => {
     normalizeInferenceInputsBeforeSubmit()
     const inferenceParams = buildInferenceParams(modelType)
     const targets = [...inputFiles.value]
-    targets.forEach((input) => submitOne(input, model, inferenceParams, modelType))
+    const jobId = createRunId('job')
+    const settings = useSettingsStore()
+    const jobOutput = resolveJobOutputPath(settings.outputDir, jobId)
+    const outputPrefixes = buildOutputPrefixes(targets)
+    const createdTasks = targets.map((input, index) => submitOne(input, model, inferenceParams, modelType, jobId, jobOutput, outputPrefixes[index]))
     scheduleQueue()
-    return { succeeded: targets.length, failed: 0, total: targets.length }
+    return { succeeded: targets.length, failed: 0, total: targets.length, jobId, tasks: createdTasks }
   }
 
   async function retryTask(taskId: string) {
@@ -989,6 +1105,8 @@ export const useTaskStore = defineStore('task', () => {
     activeWorkerTasks,
     taskBoardTasks,
     resultTasks,
+    allJobs,
+    resultJobs,
     queuedTasks,
     failedTasks,
     focusedResultTaskId,
@@ -1022,6 +1140,8 @@ export const useTaskStore = defineStore('task', () => {
     resultTrashTargets,
     primaryRevealPath,
     getTaskById,
+    getJobById,
+    taskJobId,
     focusResultTask,
     focusTask,
     removeTask,
