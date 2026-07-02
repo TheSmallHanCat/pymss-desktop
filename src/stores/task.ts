@@ -581,7 +581,7 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  function createQueuedTask(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputPrefix?: string) {
+  function createQueuedTask(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputPrefix?: string, outputChild?: string) {
     const settings = useSettingsStore()
     const id = createRunId('sep')
     const resultId = createRunId('result')
@@ -594,7 +594,7 @@ export const useTaskStore = defineStore('task', () => {
       input,
       jobOutput: resolvedJobOutput,
       outputPrefix,
-      output: joinOutputPath(resolvedJobOutput, resultId),
+      output: joinOutputPath(resolvedJobOutput, outputChild || resultId),
       status: 'queued',
       message: 'Queued',
       createdAt: Date.now(),
@@ -648,6 +648,57 @@ export const useTaskStore = defineStore('task', () => {
       task.stageLabel = STAGE_META.failed.label
       task.progress = 100
       appendTaskLogs(task, `error: ${task.error}`)
+      queuePersist()
+      scheduleQueue()
+      return false
+    }
+  }
+
+  async function startBatchWorker(batchTasks: SeparationTask[]) {
+    if (!batchTasks.length) return false
+    const settings = useSettingsStore()
+    const primary = batchTasks[0]
+    const config = primary.runConfig || buildRunConfig({})
+    batchTasks.forEach((task) => {
+      setTaskStatus(task.id, 'preparing', 'Preparing batch task')
+    })
+    try {
+      await invoke<{ taskId: string; started: boolean }>('start_separation', {
+        payload: {
+          taskId: primary.id,
+          model: primary.model,
+          output: primary.jobOutput || primary.output,
+          tasks: batchTasks.map((task) => ({
+            taskId: task.id,
+            input: task.input,
+            outputPrefix: task.outputPrefix,
+            output: task.output,
+          })),
+          modelDir: config.modelDir ?? (settings.modelDir || null),
+          download: true,
+          source: config.downloadSource || settings.downloadSource,
+          endpoint: null,
+          device: config.device,
+          deviceIds: config.deviceIds,
+          outputFormat: config.outputFormat,
+          useTta: config.useTta,
+          debug: config.debug,
+          audioParams: config.audioParams,
+          inferenceParamsVersion: config.inferenceParamsVersion ?? CURRENT_INFERENCE_PARAMS_VERSION,
+          inferenceParams: config.inferenceParams || {},
+        },
+      })
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      batchTasks.forEach((task) => {
+        task.status = 'failed'
+        task.error = message
+        task.message = message
+        task.stageLabel = STAGE_META.failed.label
+        task.progress = 100
+        appendTaskLogs(task, `error: ${message}`)
+      })
       queuePersist()
       scheduleQueue()
       return false
@@ -1052,8 +1103,8 @@ export const useTaskStore = defineStore('task', () => {
     })
   }
 
-  function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputPrefix?: string) {
-    return createQueuedTask(input, model, inferenceParams, modelType, jobId, jobOutput, outputPrefix)
+  function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputPrefix?: string, outputChild?: string) {
+    return createQueuedTask(input, model, inferenceParams, modelType, jobId, jobOutput, outputPrefix, outputChild)
   }
 
   async function startSeparation(options: { outputDir?: string } = {}) {
@@ -1076,8 +1127,22 @@ export const useTaskStore = defineStore('task', () => {
     const settings = useSettingsStore()
     const jobOutput = resolveJobOutputPath(options.outputDir || settings.outputDir, jobId)
     const outputPrefixes = buildOutputPrefixes(targets)
-    const createdTasks = targets.map((input, index) => submitOne(input, model, inferenceParams, modelType, jobId, jobOutput, outputPrefixes[index]))
-    scheduleQueue()
+    const batchMode = targets.length > 1
+    const createdTasks = targets.map((input, index) => submitOne(
+      input,
+      model,
+      inferenceParams,
+      modelType,
+      jobId,
+      jobOutput,
+      outputPrefixes[index],
+      batchMode ? outputPrefixes[index] : undefined,
+    ))
+    if (batchMode) {
+      void startBatchWorker(createdTasks)
+    } else {
+      scheduleQueue()
+    }
     return { succeeded: targets.length, failed: 0, total: targets.length, jobId, tasks: createdTasks }
   }
 

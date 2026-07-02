@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import tempfile
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +67,131 @@ def prefix_output_files(outputs: list[dict[str, str]], prefix: str) -> list[dict
             path.rename(target)
         renamed.append({"stem": stem, "path": str(target)})
     return renamed
+
+def _emit_inference_error(exc: Exception, task_id: str) -> int:
+    message = str(exc)
+    lowered = message.lower()
+    if "no audio stream found" in lowered:
+        return emit_error(
+            "INPUT_AUDIO_STREAM_MISSING",
+            message,
+            traceback.format_exc(),
+            task_id=task_id,
+        )
+    if "invalid data found" in lowered or "could not open input" in lowered:
+        return emit_error(
+            "INPUT_MEDIA_UNSUPPORTED",
+            message,
+            traceback.format_exc(),
+            task_id=task_id,
+        )
+    return emit_error("INFERENCE_FAILED", message, traceback.format_exc(), task_id=task_id)
+
+def _close_separator(separator: Any) -> None:
+    if separator is None:
+        return
+    close = getattr(separator, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+    else:
+        try:
+            separator.del_cache()
+        except Exception:
+            pass
+
+def _link_batch_input(source: Path, target: Path) -> None:
+    try:
+        target.symlink_to(source)
+        return
+    except Exception:
+        pass
+    try:
+        os.link(source, target)
+        return
+    except Exception:
+        pass
+    shutil.copy2(source, target)
+
+def _normalize_output_dir(value: Any) -> str:
+    default_output_dir = os.environ.get("PYMSS_STUDIO_DEFAULT_OUTPUT_DIR")
+    output_dir = value or default_output_dir or "results"
+    output_path = Path(str(output_dir))
+    if not output_path.is_absolute() and default_output_dir:
+        return str(Path(default_output_dir).parent / output_path)
+    return str(output_dir)
+
+def _prepare_separator(
+    *,
+    payload: dict[str, Any],
+    task_id: str,
+    progress_callback: Any,
+    logger: Any,
+) -> Any:
+    model_name = payload.get("model")
+    if not model_name:
+        raise ValueError("Missing model name")
+    model_dir = payload.get("modelDir") or None
+    download = bool(payload.get("download", True))
+    source = payload.get("source") or "modelscope"
+    endpoint = payload.get("endpoint") or None
+    device = payload.get("device") or "auto"
+    device_ids = payload.get("deviceIds") or [0]
+    output_format = payload.get("outputFormat") or "wav"
+    use_tta = bool(payload.get("useTta", False))
+    debug = bool(payload.get("debug", False))
+    inference_params = normalize_inference_params(
+        payload.get("inferenceParams"),
+        payload.get("inferenceParamsVersion"),
+    )
+    audio_params = normalize_audio_params(payload.get("audioParams"))
+
+    if download:
+        emit("task_stage", {"stage": "downloading_model", "message": "Checking model files"}, task_id=task_id)
+    else:
+        emit("task_stage", {"stage": "ensuring_model", "message": "Checking model files"}, task_id=task_id)
+    from pymss import MSSeparator  # type: ignore
+    from pymss.model_registry import resolve_model  # type: ignore
+    emit("task_stage", {"stage": "loading_model", "message": "Loading model"}, task_id=task_id)
+    try:
+        resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
+    except Exception as resolve_exc:
+        if not download:
+            raise resolve_exc
+        from pymss.model_download import download_model  # type: ignore
+        emit("task_stage", {"stage": "downloading_model", "message": "Downloading model files"}, task_id=task_id)
+        download_model(model_name, model_dir=model_dir, source=source, endpoint=endpoint)
+        resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
+    if not isinstance(resolved, dict):
+        raise RuntimeError(f"resolve_model returned unexpected result for {model_name!r}: {type(resolved).__name__}")
+    resolved_model_type = resolved.get('model_type')
+    resolved_model_path = resolved.get('model_path')
+    if not resolved_model_type or not resolved_model_path:
+        missing = [key for key in ('model_type', 'model_path') if not resolved.get(key)]
+        raise RuntimeError(f"resolve_model result for {model_name!r} is missing required field(s): {', '.join(missing)}")
+    runtime_inference_params = _enrich_inference_params_for_model(
+        model_type=resolved_model_type,
+        config_path=resolved.get('config_path'),
+        inference_params=inference_params,
+    )
+    return MSSeparator(
+        model_type=resolved_model_type,
+        model_path=resolved_model_path,
+        config_path=resolved.get('config_path'),
+        device=device,
+        device_ids=device_ids,
+        output_format=output_format,
+        use_tta=use_tta,
+        store_dirs=_normalize_output_dir(payload.get("output")),
+        save_as_folder=bool(payload.get("saveAsFolder", False)),
+        audio_params=audio_params,
+        logger=logger,
+        debug=debug,
+        progress_callback=progress_callback,
+        inference_params=runtime_inference_params,
+    )
 
 
 def normalize_inference_params(payload_params: Any, version: Any = None) -> dict[str, Any]:
@@ -218,8 +345,137 @@ def normalize_audio_params(payload_audio_params: Any) -> dict[str, Any]:
     return normalized
 
 
+def cmd_infer_batch(payload: dict[str, Any]) -> int:
+    raw_tasks = payload.get("tasks")
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        return emit_error("INPUT_NOT_FOUND", "Missing batch tasks", task_id=payload.get("taskId") or None)
+
+    root_task_id = str(payload.get("taskId") or raw_tasks[0].get("taskId") or f"sep_{int(datetime.now().timestamp())}")
+    output_root = _normalize_output_dir(payload.get("output"))
+    output_format = payload.get("outputFormat") or "wav"
+    batch_tasks: list[dict[str, str]] = []
+    used_aliases: set[str] = set()
+
+    for index, item in enumerate(raw_tasks):
+        if not isinstance(item, dict):
+            return emit_error("INPUT_NOT_FOUND", f"Invalid batch task at index {index}", task_id=root_task_id)
+        task_id = str(item.get("taskId") or "").strip()
+        input_path = str(item.get("input") or "").strip()
+        if not task_id:
+            return emit_error("INPUT_NOT_FOUND", f"Missing taskId for batch task {index + 1}", task_id=root_task_id)
+        if not input_path:
+            return emit_error("INPUT_NOT_FOUND", f"Missing input path for batch task {task_id}", task_id=task_id)
+        source_path = Path(input_path)
+        if not source_path.exists():
+            return emit_error("INPUT_NOT_FOUND", f"Input path does not exist: {input_path}", task_id=task_id)
+        alias = sanitize_output_prefix(item.get("outputPrefix"), input_path)
+        base_alias = alias
+        suffix = 2
+        while alias.lower() in used_aliases:
+            alias = f"{base_alias}-{suffix}"
+            suffix += 1
+        used_aliases.add(alias.lower())
+        batch_tasks.append({
+            "taskId": task_id,
+            "input": str(source_path),
+            "alias": alias,
+            "linkName": f"{alias}{source_path.suffix}",
+        })
+
+    logger = None
+    log_handler = None
+    separator = None
+    last_reported_done: float | None = None
+    last_reported_total: float | None = None
+    last_progress_message = ""
+
+    def emit_batch_progress(done: Any, total: Any, message: str | None = None) -> None:
+        nonlocal last_reported_done, last_reported_total, last_progress_message
+        try:
+            total_value = float(total)
+            done_value = float(done)
+        except (TypeError, ValueError):
+            return
+        safe_message = message or "Separating"
+        if (
+            done_value == last_reported_done
+            and total_value == last_reported_total
+            and safe_message == last_progress_message
+        ):
+            return
+        last_reported_done = done_value
+        last_reported_total = total_value
+        last_progress_message = safe_message
+        for item in batch_tasks:
+            emit("task_progress", {
+                "stage": "separating",
+                "message": safe_message,
+                "done": done_value,
+                "total": total_value,
+            }, task_id=item["taskId"])
+
+    try:
+        Path(output_root).mkdir(parents=True, exist_ok=True)
+        for item in batch_tasks:
+            task_output = str(Path(output_root) / item["alias"])
+            emit("task_started", {"model": payload.get("model"), "input": item["input"], "output": task_output}, task_id=item["taskId"])
+            emit("task_stage", {"stage": "validating_input", "message": "Validating input"}, task_id=item["taskId"])
+        try:
+            from pymss import get_separation_logger  # type: ignore
+            logger = get_separation_logger()
+            log_handler = JsonLogHandler(root_task_id)
+            logger.addHandler(log_handler)
+        except Exception:
+            logger = None
+        separator = _prepare_separator(
+            payload={**payload, "output": output_root, "saveAsFolder": True},
+            task_id=root_task_id,
+            progress_callback=emit_batch_progress,
+            logger=logger,
+        )
+        for item in batch_tasks:
+            emit("task_stage", {"stage": "separating", "message": "Waiting for batch separation"}, task_id=item["taskId"])
+        with tempfile.TemporaryDirectory(prefix="pymss-studio-batch-") as temp_dir:
+            temp_path = Path(temp_dir)
+            for item in batch_tasks:
+                _link_batch_input(Path(item["input"]), temp_path / item["linkName"])
+            success_files = separator.process_folder(str(temp_path))
+        success_names = {Path(name).name for name in success_files}
+        success_stems = {Path(name).stem for name in success_files}
+        for item in batch_tasks:
+            task_id = item["taskId"]
+            alias = item["alias"]
+            link_name = item["linkName"]
+            task_output = str(Path(output_root) / alias)
+            if link_name not in success_names and alias not in success_stems:
+                emit_error("INFERENCE_FAILED", f"Batch separation did not produce outputs for {Path(item['input']).name}", task_id=task_id)
+                continue
+            emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
+            outputs = collect_outputs(task_output, [link_name], output_format)
+            emit("task_done", {
+                "files": [Path(item["input"]).name],
+                "outputs": outputs,
+                "outputDir": str(Path(task_output).resolve()),
+                "outputFormat": output_format,
+            }, task_id=task_id)
+        return 0
+    except Exception as exc:
+        for item in batch_tasks:
+            _emit_inference_error(exc, item["taskId"])
+        return 1
+    finally:
+        if logger is not None and log_handler is not None:
+            try:
+                logger.removeHandler(log_handler)
+            except Exception:
+                pass
+        _close_separator(separator)
+
 
 def cmd_infer(payload: dict[str, Any]) -> int:
+    if isinstance(payload.get("tasks"), list):
+        return cmd_infer_batch(payload)
+
     task_id = payload.get("taskId") or f"sep_{int(datetime.now().timestamp())}"
     model_name = payload.get("model")
     input_path = payload.get("input")

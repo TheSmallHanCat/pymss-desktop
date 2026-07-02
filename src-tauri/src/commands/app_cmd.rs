@@ -953,19 +953,38 @@ pub async fn cancel_task(
         .ok()
         .and_then(|mut tasks| tasks.remove(&task_id));
     if let Some(child) = child {
+        let mut cancelled_task_ids = vec![task_id.clone()];
+        if let Ok(mut tasks) = state.tasks.lock() {
+            let linked_ids: Vec<String> = tasks
+                .iter()
+                .filter_map(|(id, registered)| {
+                    if std::sync::Arc::ptr_eq(registered, &child) {
+                        Some(id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for id in linked_ids {
+                tasks.remove(&id);
+                cancelled_task_ids.push(id);
+            }
+        }
         if let Ok(mut child) = child.lock() {
             let pid = child.id();
             kill_process_tree(pid);
             let _ = child.kill();
         }
-        let _ = app.emit(
-            "pymss://worker-event",
-            serde_json::json!({
-                "type": "task_cancelled",
-                "taskId": task_id,
-                "payload": { "message": "Cancelled" }
-            }),
-        );
+        for cancelled_task_id in cancelled_task_ids {
+            let _ = app.emit(
+                "pymss://worker-event",
+                serde_json::json!({
+                    "type": "task_cancelled",
+                    "taskId": cancelled_task_id,
+                    "payload": { "message": "Cancelled" }
+                }),
+            );
+        }
         Ok(true)
     } else {
         Ok(false)
