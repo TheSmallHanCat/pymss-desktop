@@ -53,6 +53,7 @@ const {
   enable_post_process,
   post_process_threshold,
   high_end_process,
+  selectedStems,
 } = storeToRefs(task)
 const { selectedModel, downloadedModels, isLoading, detailLoading } = storeToRefs(model)
 
@@ -121,20 +122,61 @@ const isApolloModel = computed(() => currentModelType.value === 'apollo')
 const showStandardizeField = computed(() => Boolean(currentModelInfo.value) && !isVrModel.value)
 const showNormalizeField = computed(() => Boolean(currentModelInfo.value))
 const hasVisibleAdvancedFields = computed(() => (
-  showStandardizeField.value
-  || showNormalizeField.value
-  || Object.keys(currentModelDefaults.value).length > 0
+  Object.keys(currentModelDefaults.value).some(key => !['standardize', 'normalize'].includes(key))
 ))
 const shouldPrefetchAdvancedParams = computed(() => (
   Boolean(currentModelInfo.value?.downloaded)
-  && Boolean(currentModelInfo.value?.configPath)
-  && !currentModelDefaultsResolved.value
+  && (!currentModelDefaultsResolved.value || !String(currentModelInfo.value?.configInstruments || '').trim())
 ))
 const advancedParamsLoading = computed(() => shouldPrefetchAdvancedParams.value && detailLoading.value)
 function hasInferenceField(key: string) {
+  if (key === 'standardize' || key === 'normalize') return false
   if (key === 'num_overlap' && isApolloModel.value) return false
   return Object.prototype.hasOwnProperty.call(currentModelDefaults.value, key)
 }
+function parseModelInstruments(value?: unknown) {
+  const seen = new Set<string>()
+  const rawItems = Array.isArray(value)
+    ? value
+    : (() => {
+        const text = String(value || '').trim()
+        if (!text) return []
+        if (text.startsWith('[')) {
+          try {
+            const parsed = JSON.parse(text)
+            if (Array.isArray(parsed)) return parsed
+          } catch {
+            // Fall through to delimiter parsing for Python-style list strings.
+          }
+        }
+        return text.split(/[,，;；/|\n]+/)
+      })()
+  return rawItems
+    .map(item => String(item || '').trim().replace(/^[\s"'[\](){}]+|[\s"'[\](){}]+$/g, ''))
+    .filter((item) => {
+      if (!item) return false
+      const key = item.toLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+const availableStemNames = computed(() => parseModelInstruments(currentModelInfo.value?.configInstruments))
+const selectedStemSummary = computed(() => {
+  if (!selectedStems.value.length) return t('separate.allStems')
+  return selectedStems.value.join(', ')
+})
+const checkedOutputStems = computed<string[]>({
+  get() {
+    if (!selectedStems.value.length) return [...availableStemNames.value]
+    return selectedStems.value
+  },
+  set(value) {
+    const allowed = new Set(availableStemNames.value)
+    const next = value.filter(stem => allowed.has(stem))
+    selectedStems.value = next.length === availableStemNames.value.length ? [] : next
+  },
+})
 const modelCategoryOptions = computed(() => [
   { label: t('common.all'), value: '' },
   ...buildModelCategoryOptionsFromModels(listedDownloadedModels.value, locale.value),
@@ -483,6 +525,20 @@ function prefetchSelectedModelAdvancedParams() {
   model.selectModel(selectedModelName.value).catch(() => {})
 }
 
+watch(selectedModelName, () => {
+  selectedStems.value = []
+})
+
+watch(
+  availableStemNames,
+  (stems) => {
+    if (!selectedStems.value.length) return
+    const allowed = new Set(stems)
+    selectedStems.value = selectedStems.value.filter(stem => allowed.has(stem))
+  },
+  { immediate: true },
+)
+
 watch(
   currentModelInfo,
   (info) => {
@@ -516,9 +572,6 @@ watch(
 )
 
 onMounted(async () => {
-  if (downloadedModels.value.some((item) => item.downloaded && item.configPath && !item.defaultInferenceParamsResolved) && !isLoading.value) {
-    model.loadModels().catch(() => {})
-  }
   if (!app.envInfo && !app.envLoading) {
     app.checkEnvInBackground().catch(() => {})
   }
@@ -932,9 +985,41 @@ async function retryCurrentTask() {
             {{ t('separate.openOutput') }}
           </n-button>
         </div>
+        <div class="summary-config-grid">
+          <div class="field-block field-block--wide">
+            <label>{{ t('separate.temporaryOutputDir') }}</label>
+            <n-input-group>
+              <n-input v-model:value="temporaryOutputDir" :placeholder="settings.outputDir || t('separate.outputDefault')" clearable />
+              <n-button secondary @click="pickTemporaryOutputDir">{{ t('separate.chooseOutput') }}</n-button>
+            </n-input-group>
+          </div>
+          <div class="field-block">
+            <label>{{ t('settings.defaultFormat') }}</label>
+            <n-select v-model:value="settings.defaultFormat" :options="formatOptions" />
+          </div>
+          <div v-if="showStandardizeField || showNormalizeField" class="summary-checks">
+            <n-checkbox v-if="showStandardizeField" v-model:checked="standardize">{{ t('inference.standardize') }}</n-checkbox>
+            <n-checkbox v-if="showNormalizeField" v-model:checked="normalize">{{ t('inference.normalize') }}</n-checkbox>
+          </div>
+        </div>
+        <div class="summary-stems-row">
+          <label>{{ t('separate.outputStems') }}</label>
+          <div v-if="availableStemNames.length" class="stem-toggle-list">
+            <n-checkbox-group v-model:value="checkedOutputStems">
+              <n-checkbox
+                v-for="stem in availableStemNames"
+                :key="stem"
+                :value="stem"
+                :label="stem"
+              />
+            </n-checkbox-group>
+          </div>
+          <div v-else class="stem-toggle-empty">{{ t('separate.allStems') }}</div>
+        </div>
         <div class="summary-bar__path" :title="outputPreview">{{ outputSummaryPath }}</div>
         <div class="summary-bar__details">
           <span>{{ t('separate.currentFormat') }} · {{ formatLabel }}</span>
+          <span>{{ t('separate.outputStems') }} · {{ selectedStemSummary }}</span>
           <span>{{ t('separate.outputMode') }} · {{ outputModeLabel }}</span>
         </div>
       </div>
@@ -953,38 +1038,6 @@ async function retryCurrentTask() {
     <n-drawer v-model:show="showSettingsDrawer" :width="520" placement="right">
       <n-drawer-content class="settings-drawer" :title="t('separate.settingsDrawerTitle')" closable>
         <div class="settings-drawer__content">
-          <div class="settings-group">
-            <div class="settings-group__head">
-              <strong>{{ t('separate.outputLocationTitle') }}</strong>
-              <span>{{ t('separate.outputLocationHint') }}</span>
-            </div>
-
-            <div class="output-grid">
-              <div class="field-block field-block--wide">
-                <label>{{ t('separate.temporaryOutputDir') }}</label>
-                <n-input v-model:value="temporaryOutputDir" :placeholder="settings.outputDir || t('separate.outputDefault')" clearable />
-              </div>
-              <div class="field-block">
-                <label>{{ t('settings.defaultFormat') }}</label>
-                <n-select v-model:value="settings.defaultFormat" :options="formatOptions" />
-              </div>
-            </div>
-
-            <div class="button-row">
-              <n-button secondary @click="pickTemporaryOutputDir">
-                {{ t('separate.chooseOutput') }}
-              </n-button>
-              <n-button secondary @click="task.revealPath(normalizedOutputDir)">
-                {{ t('separate.openOutput') }}
-              </n-button>
-            </div>
-
-            <div class="output-preview">
-              <span>{{ t('separate.outputPreview') }}</span>
-              <code :title="outputPreview">{{ outputPreview }}</code>
-            </div>
-          </div>
-
           <div class="settings-group">
             <div class="settings-group__head">
               <strong>{{ t('separate.runOptionsTitle') }}</strong>
@@ -1088,8 +1141,6 @@ async function retryCurrentTask() {
                   </n-grid-item>
                 </n-grid>
                 <div class="check-list check-list--spaced">
-                  <n-checkbox v-if="showStandardizeField" v-model:checked="standardize">{{ t('inference.standardize') }}</n-checkbox>
-                  <n-checkbox v-if="showNormalizeField" v-model:checked="normalize">{{ t('inference.normalize') }}</n-checkbox>
                   <n-checkbox v-if="hasInferenceField('enable_post_process')" v-model:checked="enable_post_process">{{ t('inference.vrEnablePostProcess') }}</n-checkbox>
                   <n-checkbox v-if="hasInferenceField('high_end_process')" v-model:checked="high_end_process">{{ t('inference.vrHighEndProcess') }}</n-checkbox>
                 </div>
@@ -1739,6 +1790,55 @@ async function retryCurrentTask() {
   font-size: 13px;
 }
 
+.summary-config-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) 120px auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.summary-checks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 34px;
+  padding-bottom: 2px;
+}
+
+.stem-toggle-list {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+}
+
+.stem-toggle-list :deep(.n-checkbox-group) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.stem-toggle-empty {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  color: var(--on-surface-muted);
+  font-size: 13px;
+}
+
+.summary-stems-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.summary-stems-row > label {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .summary-bar__details {
   display: flex;
   flex-wrap: wrap;
@@ -2354,6 +2454,14 @@ async function retryCurrentTask() {
     align-items: stretch;
   }
 
+  .summary-config-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 0.7fr);
+  }
+
+  .summary-checks {
+    grid-column: 1 / -1;
+  }
+
   .summary-bar__actions {
     justify-content: flex-end;
     flex-wrap: wrap;
@@ -2380,6 +2488,23 @@ async function retryCurrentTask() {
 }
 
 @media (max-width: 620px) {
+  .summary-config-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .summary-stems-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .summary-stems-row > label {
+    line-height: 1.4;
+  }
+
+  .summary-bar__actions .n-button {
+    flex: 1 1 160px;
+  }
+
   .settings-drawer__content,
   .settings-drawer :deep(.n-drawer-body-content) {
     padding-left: 16px;

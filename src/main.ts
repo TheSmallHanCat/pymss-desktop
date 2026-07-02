@@ -24,6 +24,9 @@ async function bootstrap() {
   app.use(router)
   app.use(i18n)
   app.mount('#app')
+  models.loadModels().catch((error) => {
+    console.warn('Failed to preload model metadata', error)
+  })
 }
 
 bootstrap().catch((error) => {

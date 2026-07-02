@@ -18,6 +18,7 @@ export type SeparationRunConfig = {
   device: string
   deviceIds: number[]
   outputFormat: string
+  selectedStems: string[]
   useTta: boolean
   debug: boolean
   audioParams: Record<string, string | number>
@@ -232,6 +233,9 @@ function normalizeRunConfig(runConfig?: SeparationRunConfig): SeparationRunConfi
   if (!runConfig) return undefined
   const next: SeparationRunConfig = {
     ...runConfig,
+    selectedStems: Array.isArray(runConfig.selectedStems)
+      ? runConfig.selectedStems.map(item => String(item || '').trim()).filter(Boolean)
+      : [],
     audioParams: { ...(runConfig.audioParams || {}) },
     inferenceParams: { ...(runConfig.inferenceParams || {}) },
   }
@@ -368,6 +372,7 @@ export const useTaskStore = defineStore('task', () => {
   const chunk_size = ref<number | null>(0)
   const standardize = ref(true)
   const normalize = ref(false)
+  const selectedStems = ref<string[]>([])
   const window_size = ref<number | null>(0)
   const aggression = ref<number | null>(0)
   const enable_post_process = ref(false)
@@ -573,6 +578,7 @@ export const useTaskStore = defineStore('task', () => {
       device: runtimeDevice.device,
       deviceIds: runtimeDevice.deviceIds,
       outputFormat: settings.defaultFormat,
+      selectedStems: [...selectedStems.value],
       useTta: useTta.value,
       debug: debug.value,
       audioParams: settings.getAudioParams(),
@@ -633,6 +639,7 @@ export const useTaskStore = defineStore('task', () => {
           device: config.device,
           deviceIds: config.deviceIds,
           outputFormat: config.outputFormat,
+          selectedStems: config.selectedStems || [],
           useTta: config.useTta,
           debug: config.debug,
           audioParams: config.audioParams,
@@ -681,6 +688,7 @@ export const useTaskStore = defineStore('task', () => {
           device: config.device,
           deviceIds: config.deviceIds,
           outputFormat: config.outputFormat,
+          selectedStems: config.selectedStems || [],
           useTta: config.useTta,
           debug: config.debug,
           audioParams: config.audioParams,
@@ -1186,6 +1194,7 @@ export const useTaskStore = defineStore('task', () => {
     chunk_size,
     standardize,
     normalize,
+    selectedStems,
     window_size,
     aggression,
     enable_post_process,

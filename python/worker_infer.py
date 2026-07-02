@@ -123,6 +123,24 @@ def _normalize_output_dir(value: Any) -> str:
         return str(Path(default_output_dir).parent / output_path)
     return str(output_dir)
 
+def _normalize_selected_stems(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    stems: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        stem = str(item or "").strip()
+        if not stem or stem.lower() in seen:
+            continue
+        stems.append(stem)
+        seen.add(stem.lower())
+    return stems
+
+def _store_dirs_for_selected_stems(output_dir: str, selected_stems: list[str]) -> Any:
+    if not selected_stems:
+        return output_dir
+    return {stem: output_dir for stem in selected_stems}
+
 def _prepare_separator(
     *,
     payload: dict[str, Any],
@@ -140,6 +158,7 @@ def _prepare_separator(
     device = payload.get("device") or "auto"
     device_ids = payload.get("deviceIds") or [0]
     output_format = payload.get("outputFormat") or "wav"
+    selected_stems = _normalize_selected_stems(payload.get("selectedStems"))
     use_tta = bool(payload.get("useTta", False))
     debug = bool(payload.get("debug", False))
     inference_params = normalize_inference_params(
@@ -184,7 +203,7 @@ def _prepare_separator(
         device_ids=device_ids,
         output_format=output_format,
         use_tta=use_tta,
-        store_dirs=_normalize_output_dir(payload.get("output")),
+        store_dirs=_store_dirs_for_selected_stems(_normalize_output_dir(payload.get("output")), selected_stems),
         save_as_folder=bool(payload.get("saveAsFolder", False)),
         audio_params=audio_params,
         logger=logger,
@@ -499,6 +518,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
     device_ids = payload.get("deviceIds") or [0]
     output_format = payload.get("outputFormat") or "wav"
     output_prefix = sanitize_output_prefix(payload.get("outputPrefix"), input_path)
+    selected_stems = _normalize_selected_stems(payload.get("selectedStems"))
     use_tta = bool(payload.get("useTta", False))
     debug = bool(payload.get("debug", False))
     inference_params = normalize_inference_params(
@@ -595,7 +615,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
             device_ids=device_ids,
             output_format=output_format,
             use_tta=use_tta,
-            store_dirs=output_dir,
+            store_dirs=_store_dirs_for_selected_stems(output_dir, selected_stems),
             audio_params=audio_params,
             logger=logger,
             debug=debug,

@@ -1,13 +1,179 @@
 from __future__ import annotations
 
+import json
 import os
 import platform
 import sys
 import traceback
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from worker_protocol import WORKER_VERSION, _as_bool, _as_float, _as_int, emit, emit_error, import_available
+
+
+@dataclass(frozen=True)
+class ModelEntry:
+    name: str
+    aliases: tuple[str, ...]
+    model_type: str | None
+    architecture: str
+    supported: bool
+    unsupported_reason: str
+    relpath: str
+    config_relpath: str
+    auxiliary_relpaths: tuple[str, ...]
+    size_bytes: int
+    sha256: str
+    primary_category: str
+    primary_category_cn: str
+    secondary_category: str
+    secondary_category_cn: str
+    target_stem: str
+    config_instruments: str
+    config_target_instrument: str
+    classification_confidence: str
+    classification_basis: str
+
+    @property
+    def stem(self) -> str:
+        return Path(self.name).stem
+
+    @property
+    def category_path(self) -> str:
+        return "/".join(part for part in (self.primary_category, self.secondary_category) if part)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ModelEntry":
+        return cls(
+            name=data["name"],
+            aliases=tuple(data.get("aliases", ())),
+            model_type=data.get("model_type"),
+            architecture=data.get("architecture", ""),
+            supported=bool(data.get("supported", False)),
+            unsupported_reason=data.get("unsupported_reason", ""),
+            relpath=data["relpath"],
+            config_relpath=data.get("config_relpath", ""),
+            auxiliary_relpaths=tuple(data.get("auxiliary_relpaths", ())),
+            size_bytes=int(data.get("size_bytes", 0)),
+            sha256=data.get("sha256", ""),
+            primary_category=data.get("primary_category", ""),
+            primary_category_cn=data.get("primary_category_cn", ""),
+            secondary_category=data.get("secondary_category", ""),
+            secondary_category_cn=data.get("secondary_category_cn", ""),
+            target_stem=data.get("target_stem", ""),
+            config_instruments=data.get("config_instruments", ""),
+            config_target_instrument=data.get("config_target_instrument", ""),
+            classification_confidence=data.get("classification_confidence", ""),
+            classification_basis=data.get("classification_basis", ""),
+        )
+
+
+def _package_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _model_catalog_path() -> Path:
+    candidates: list[Path] = []
+    env_pymss = os.environ.get("PYMSS_STUDIO_PYMSS_PATH")
+    if env_pymss:
+        candidates.append(Path(env_pymss))
+    worker_dir = Path(__file__).resolve().parent
+    candidates.extend([
+        _package_root() / "src-tauri" / "resources" / "pymss",
+        worker_dir.parent / "pymss",
+        worker_dir.parent / "resources" / "pymss",
+        worker_dir.parent.parent / "resources" / "pymss",
+    ])
+    candidates.extend(Path(item) for item in sys.path if item)
+    for candidate in candidates:
+        direct = candidate / "resources" / "model_catalog.json"
+        if direct.is_file():
+            return direct
+        nested = candidate / "pymss" / "resources" / "model_catalog.json"
+        if nested.is_file():
+            return nested
+    raise FileNotFoundError("Unable to locate pymss/resources/model_catalog.json")
+
+
+def _default_model_dir() -> Path:
+    env_value = os.environ.get("PYMSS_MODEL_DIR")
+    if env_value:
+        return Path(env_value)
+    repo_models = _model_catalog_path().parent.parent.parent / "all_models"
+    if repo_models.is_dir():
+        return repo_models
+    return Path.home() / ".cache" / "pymss" / "models"
+
+
+def _load_yaml_config(config_path: Path) -> dict[str, Any]:
+    with config_path.open(encoding="utf-8") as handle:
+        data = yaml.load(handle, Loader=yaml.FullLoader)
+    return data if isinstance(data, dict) else {}
+
+
+@lru_cache(maxsize=1)
+def load_model_catalog() -> dict[str, Any]:
+    with _model_catalog_path().open(encoding="utf-8") as handle:
+        data = json.load(handle)
+    models = [ModelEntry.from_dict(item) for item in data["models"]]
+    return {**data, "models": models}
+
+
+@lru_cache(maxsize=1)
+def _model_index() -> dict[str, ModelEntry]:
+    index: dict[str, ModelEntry] = {}
+    for entry in load_model_catalog()["models"]:
+        names = {entry.name, entry.stem, *entry.aliases}
+        for name in names:
+            key = str(name).strip().lower()
+            if key in index and index[key].name != entry.name:
+                continue
+            index[key] = entry
+    return index
+
+
+def list_catalog_models(category: str | None = None, supported: bool | None = None) -> list[ModelEntry]:
+    models = load_model_catalog()["models"]
+    if category:
+        category = category.lower()
+        models = [
+            item
+            for item in models
+            if item.primary_category.lower() == category
+            or item.secondary_category.lower() == category
+            or item.category_path.lower() == category
+        ]
+    if supported is not None:
+        models = [item for item in models if item.supported is bool(supported)]
+    return models
+
+
+def get_catalog_model_entry(model_name: str) -> ModelEntry:
+    try:
+        return _model_index()[str(model_name).strip().lower()]
+    except KeyError as exc:
+        raise KeyError(f"Unknown pymss model: {model_name}") from exc
+
+
+def model_root(model_dir: str | None = None) -> Path:
+    return Path(model_dir).expanduser() if model_dir else _default_model_dir()
+
+
+def model_path_for(entry: ModelEntry, model_dir: str | None = None) -> Path:
+    return model_root(model_dir) / entry.relpath
+
+
+def config_path_for(entry: ModelEntry, model_dir: str | None = None) -> Path | None:
+    return model_root(model_dir) / entry.config_relpath if entry.config_relpath else None
+
+
+def auxiliary_paths_for(entry: ModelEntry, model_dir: str | None = None) -> list[Path]:
+    root = model_root(model_dir)
+    return [root / relpath for relpath in entry.auxiliary_relpaths]
 
 def _derive_overlap_size_from_num_overlap(chunk_size: Any, num_overlap: Any) -> int | None:
     chunk_value = _as_int(chunk_size)
@@ -33,9 +199,7 @@ def resolve_default_inference_params(entry: Any, model_path: Path, config_path: 
         return defaults
 
     try:
-        from pymss.config import load_config, to_plain  # type: ignore
-
-        config = to_plain(load_config(str(config_path)))
+        config = _load_yaml_config(config_path)
     except Exception:
         return defaults
 
@@ -87,9 +251,25 @@ def resolve_default_inference_params(entry: Any, model_path: Path, config_path: 
     return defaults
 
 
-def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state: bool = True) -> dict[str, Any]:
-    from pymss.model_registry import auxiliary_paths_for, config_path_for, model_path_for  # type: ignore
+def resolve_config_stems(config_path: Path | None) -> tuple[str, str]:
+    if not config_path or not config_path.is_file():
+        return "", ""
+    try:
+        config = _load_yaml_config(config_path)
+    except Exception:
+        return "", ""
+    training = config.get("training") if isinstance(config, dict) else None
+    training = training if isinstance(training, dict) else {}
+    instruments = training.get("instruments")
+    target_instrument = training.get("target_instrument")
+    if isinstance(instruments, (list, tuple)):
+        config_instruments = "|".join(str(item).strip() for item in instruments if str(item).strip())
+    else:
+        config_instruments = str(instruments or "").strip()
+    return config_instruments, str(target_instrument or "").strip()
 
+
+def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state: bool = True) -> dict[str, Any]:
     model_path = model_path_for(entry, model_dir)
     config_path = config_path_for(entry, model_dir)
     auxiliary_paths = auxiliary_paths_for(entry, model_dir)
@@ -99,6 +279,12 @@ def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state:
     required_paths.extend(auxiliary_paths)
     missing_paths = [str(path) for path in required_paths if not path.is_file()]
     downloaded = include_local_state and not missing_paths
+    config_instruments = str(entry.config_instruments or "").strip()
+    config_target_instrument = str(entry.config_target_instrument or "").strip()
+    if config_path and config_path.is_file():
+        resolved_instruments, resolved_target = resolve_config_stems(config_path)
+        config_instruments = resolved_instruments or config_instruments
+        config_target_instrument = resolved_target or config_target_instrument
     return {
         "name": entry.name,
         "aliases": list(entry.aliases),
@@ -113,8 +299,8 @@ def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state:
         "secondaryCategory": entry.secondary_category,
         "secondaryCategoryCn": entry.secondary_category_cn,
         "targetStem": entry.target_stem,
-        "configInstruments": entry.config_instruments,
-        "configTargetInstrument": entry.config_target_instrument,
+        "configInstruments": config_instruments,
+        "configTargetInstrument": config_target_instrument,
         "classificationConfidence": entry.classification_confidence,
         "classificationBasis": entry.classification_basis,
         "sizeBytes": entry.size_bytes,
@@ -187,17 +373,12 @@ def cmd_env_info() -> int:
 
 
 def cmd_list_models(payload: dict[str, Any]) -> int:
-    try:
-        from pymss.model_registry import list_models, model_root  # type: ignore
-    except Exception as exc:
-        return emit_error("PYMSS_IMPORT_FAILED", str(exc), traceback.format_exc())
-
     category = payload.get("category") or None
     supported_only = bool(payload.get("supportedOnly", True))
     include_local_state = bool(payload.get("includeLocalState", True))
     model_dir = payload.get("modelDir") or None
 
-    entries = list_models(category=category, supported=True if supported_only else None)
+    entries = list_catalog_models(category=category, supported=True if supported_only else None)
     models = [model_to_dict(entry, model_dir, include_local_state) for entry in entries]
     category_pairs = sorted({
         (m["category"], m.get("categoryCn") or m["category"])
@@ -219,12 +400,9 @@ def cmd_model_info(payload: dict[str, Any]) -> int:
     if not model_name:
         return emit_error("MODEL_NOT_FOUND", "Missing model name")
     try:
-        from pymss.model_registry import get_model_entry  # type: ignore
-        entry = get_model_entry(model_name)
+        entry = get_catalog_model_entry(model_name)
     except KeyError as exc:
         return emit_error("MODEL_NOT_FOUND", str(exc))
-    except Exception as exc:
-        return emit_error("PYMSS_IMPORT_FAILED", str(exc), traceback.format_exc())
 
     model_dir = payload.get("modelDir") or None
     emit("model_info", model_to_dict(entry, model_dir, include_local_state=True))
