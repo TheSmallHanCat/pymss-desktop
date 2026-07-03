@@ -848,6 +848,55 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
+  async function startWorkflowBatchWorker(batchTasks: SeparationTask[]) {
+    if (!batchTasks.length) return false
+    const settings = useSettingsStore()
+    const primary = batchTasks[0]
+    const config = primary.runConfig || buildRunConfig({})
+    batchTasks.forEach((task) => {
+      setTaskStatus(task.id, 'preparing', 'Preparing workflow batch task')
+    })
+    try {
+      await invoke<{ taskId: string; started: boolean }>('start_workflow_inference', {
+        payload: {
+          taskId: primary.id,
+          workflowName: config.workflowName || primary.model,
+          workflow: config.workflowDefinition || {},
+          output: primary.jobOutput || primary.output,
+          tasks: batchTasks.map((task) => ({
+            taskId: task.id,
+            input: task.input,
+            outputPrefix: task.outputPrefix,
+            output: task.output,
+          })),
+          modelDir: config.modelDir ?? (settings.modelDir || null),
+          source: config.downloadSource || settings.downloadSource,
+          device: config.device,
+          deviceIds: config.deviceIds,
+          outputFormat: config.outputFormat,
+          outputLayout: config.outputLayout,
+          useTta: config.useTta,
+          debug: config.debug,
+          audioParams: config.audioParams,
+        },
+      })
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      batchTasks.forEach((task) => {
+        task.status = 'failed'
+        task.error = message
+        task.message = message
+        task.stageLabel = STAGE_META.failed.label
+        task.progress = 100
+        appendTaskLogs(task, `error: ${message}`)
+      })
+      queuePersist()
+      scheduleQueue()
+      return false
+    }
+  }
+
   function scheduleQueue() {
     const available = maxConcurrentSeparations() - activeWorkerTasks.value.length
     if (available <= 0) return
@@ -1312,7 +1361,11 @@ export const useTaskStore = defineStore('task', () => {
       outputPrefixes[index],
       outputLayout,
     ))
-    scheduleQueue()
+    if (targets.length > 1) {
+      void startWorkflowBatchWorker(createdTasks)
+    } else {
+      scheduleQueue()
+    }
     return { succeeded: targets.length, failed: 0, total: targets.length, jobId, tasks: createdTasks }
   }
 
