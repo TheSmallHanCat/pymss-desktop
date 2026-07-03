@@ -8,7 +8,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from worker_infer import collect_outputs
+from worker_infer import _link_batch_input, _normalize_output_layout, collect_outputs, sanitize_output_prefix
 from worker_protocol import emit, emit_error
 
 
@@ -35,7 +35,7 @@ def _write_workflow_definition(payload: dict[str, Any], task_id: str) -> Path:
     return path
 
 
-def _candidate_commands(workflow_path: Path, input_path: str, output_dir: str, payload: dict[str, Any]) -> list[list[str]]:
+def _candidate_commands(workflow_path: Path, input_path: str, output_dir: str, payload: dict[str, Any], output_layout: str) -> list[list[str]]:
     output_format = str(payload.get("outputFormat") or "wav")
     audio_params = payload.get("audioParams") if isinstance(payload.get("audioParams"), dict) else {}
     run_args = [
@@ -47,6 +47,8 @@ def _candidate_commands(workflow_path: Path, input_path: str, output_dir: str, p
         input_path,
         "-o",
         output_dir,
+        "--output-layout",
+        output_layout,
         "--download",
         "--source",
         str(payload.get("source") or "modelscope"),
@@ -114,6 +116,7 @@ def cmd_infer_workflow(payload: dict[str, Any]) -> int:
     input_path = str(payload.get("input") or "").strip()
     output_dir = _normalize_output_dir(payload.get("output"))
     output_format = str(payload.get("outputFormat") or "wav")
+    output_layout = _normalize_output_layout(payload.get("outputLayout"))
     if not task_id:
         return emit_error("WORKFLOW_TASK_ID_MISSING", "Workflow task id is required")
     if not input_path:
@@ -124,29 +127,40 @@ def cmd_infer_workflow(payload: dict[str, Any]) -> int:
         return emit_error("WORKFLOW_MISSING", "Workflow definition is required", task_id=task_id)
 
     try:
+        source_path = Path(input_path)
+        output_prefix = sanitize_output_prefix(payload.get("outputPrefix"), input_path)
+        task_output_dir = Path(output_dir) / output_prefix if output_layout == "folders" else Path(output_dir)
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        emit("task_started", {"workflow": payload.get("workflowName"), "input": input_path, "output": output_dir}, task_id=task_id)
+        emit("task_started", {"workflow": payload.get("workflowName"), "input": input_path, "output": str(task_output_dir)}, task_id=task_id)
         emit("task_stage", {"stage": "validating_input", "message": "Validating workflow input", "progress": 12}, task_id=task_id)
-        if not Path(input_path).exists():
+        if not source_path.exists():
             return emit_error("INPUT_NOT_FOUND", f"Input not found: {input_path}", task_id=task_id)
 
         emit("task_stage", {"stage": "separating", "message": "Running workflow", "progress": 35}, task_id=task_id)
         failures: list[str] = []
-        for command in _candidate_commands(workflow_path, input_path, output_dir, payload):
-            try:
-                code, tail = _run_workflow_cli(command, task_id)
-            except FileNotFoundError as exc:
-                failures.append(str(exc))
-                continue
-            if code == 0:
-                emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
-                outputs = collect_outputs(output_dir, [Path(input_path).stem], output_format)
-                files = [item["path"] for item in outputs]
-                if not files:
-                    files = [str(path) for path in Path(output_dir).rglob("*") if path.is_file()]
-                emit("task_done", {"files": files, "outputs": outputs, "outputDir": output_dir, "outputFormat": output_format}, task_id=task_id)
-                return 0
-            failures.append(tail or f"command exited with {code}: {' '.join(command)}")
+        with tempfile.TemporaryDirectory(prefix="pymss-studio-workflow-") as temp_dir:
+            linked_input = Path(temp_dir) / f"{output_prefix}{source_path.suffix}"
+            _link_batch_input(source_path, linked_input)
+            for command in _candidate_commands(workflow_path, str(linked_input), output_dir, payload, output_layout):
+                try:
+                    code, tail = _run_workflow_cli(command, task_id)
+                except FileNotFoundError as exc:
+                    failures.append(str(exc))
+                    continue
+                if code == 0:
+                    emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
+                    outputs = collect_outputs(str(task_output_dir), [linked_input.name], output_format)
+                    files = [item["path"] for item in outputs]
+                    if not files:
+                        files = [str(path) for path in task_output_dir.rglob("*") if path.is_file()]
+                    emit("task_done", {
+                        "files": files,
+                        "outputs": outputs,
+                        "outputDir": str(task_output_dir.resolve()),
+                        "outputFormat": output_format,
+                    }, task_id=task_id)
+                    return 0
+                failures.append(tail or f"command exited with {code}: {' '.join(command)}")
 
         return emit_error(
             "WORKFLOW_RUN_FAILED",

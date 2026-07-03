@@ -24,7 +24,7 @@ import {
   TimeOutline,
 } from '@vicons/ionicons5'
 import { useModelStore } from '@/stores/model'
-import { useTaskStore, type SeparationTask, type StemOutput } from '@/stores/task'
+import { useTaskStore, type OutputLayout, type SeparationTask, type StemOutput } from '@/stores/task'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
@@ -70,6 +70,7 @@ const modelCategoryFilter = ref('')
 const workflowSearch = ref('')
 const runMode = ref<'model' | 'workflow'>(route.query.mode === 'workflow' ? 'workflow' : 'model')
 const temporaryOutputDir = ref('')
+const outputLayout = ref<OutputLayout>('folders')
 const focusedSeparationJobId = ref<string | null>(null)
 const cancellingTaskId = ref<string | null>(null)
 const audioElements = new Map<string, HTMLAudioElement>()
@@ -113,6 +114,10 @@ const selectedModelName = computed(() => String(selectedModel.value || ''))
 const runModeOptions = computed(() => [
   { label: t('separate.runModeModel'), value: 'model' },
   { label: t('separate.runModeWorkflow'), value: 'workflow' },
+])
+const outputLayoutOptions = computed(() => [
+  { label: t('separate.outputLayoutFolders'), value: 'folders' },
+  { label: t('separate.outputLayoutFlat'), value: 'flat' },
 ])
 const listedDownloadedModels = computed(() => {
   return [...downloadedModels.value].sort((a, b) => (
@@ -227,10 +232,16 @@ const normalizedOutputDir = computed(() => (temporaryOutputDir.value || settings
 const outputPreview = computed(() => {
   const base = normalizedOutputDir.value.replace(/[\\/]$/, '')
   const separator = base.includes('\\') ? '\\' : '/'
+  if (outputLayout.value === 'flat') {
+    return `${base}${separator}${t('separate.taskIdPreview')}${separator}${t('separate.outputFilePreview')}`
+  }
   return `${base}${separator}${t('separate.taskIdPreview')}${separator}${t('separate.resultIdPreview')}${separator}${t('separate.outputFilePreview')}`
 })
 const formatLabel = computed(() => String(settings.defaultFormat || 'wav').toUpperCase())
 const outputModeLabel = computed(() => runMode.value === 'workflow' ? t('separate.outputModeWorkflow') : t('separate.outputModeSeparate'))
+const outputLayoutLabel = computed(() => outputLayout.value === 'flat'
+  ? t('separate.outputLayoutFlat')
+  : t('separate.outputLayoutFolders'))
 const outputSummaryPath = computed(() => shortenMiddle(outputPreview.value, 60))
 const canStart = computed(() => (
   inputFiles.value.length > 0
@@ -668,8 +679,8 @@ async function start() {
   }
   try {
     const result = runMode.value === 'workflow' && selectedWorkflow.value
-      ? await task.startWorkflowInference(selectedWorkflow.value, { outputDir: normalizedOutputDir.value })
-      : await task.startSeparation({ outputDir: normalizedOutputDir.value })
+      ? await task.startWorkflowInference(selectedWorkflow.value, { outputDir: normalizedOutputDir.value, outputLayout: outputLayout.value })
+      : await task.startSeparation({ outputDir: normalizedOutputDir.value, outputLayout: outputLayout.value })
     focusedSeparationJobId.value = result?.jobId || newestRunningJob.value?.id || focusedSeparationJobId.value
     task.clearInputFiles()
     if (result && result.failed > 0) {
@@ -1098,6 +1109,10 @@ async function retryCurrentTask() {
             <label>{{ t('settings.defaultFormat') }}</label>
             <n-select v-model:value="settings.defaultFormat" :options="formatOptions" />
           </div>
+          <div class="field-block">
+            <label>{{ t('separate.outputLayout') }}</label>
+            <n-select v-model:value="outputLayout" :options="outputLayoutOptions" />
+          </div>
         </div>
         <div v-if="runMode === 'model'" class="summary-stems-row">
           <label>{{ t('separate.outputStems') }}</label>
@@ -1116,6 +1131,7 @@ async function retryCurrentTask() {
         <div class="summary-bar__path" :title="outputPreview">{{ outputSummaryPath }}</div>
         <div class="summary-bar__details">
           <span>{{ t('separate.currentFormat') }} · {{ formatLabel }}</span>
+          <span>{{ t('separate.outputLayout') }} · {{ outputLayoutLabel }}</span>
           <span>{{ t('separate.outputStems') }} · {{ selectedStemSummary }}</span>
           <span>{{ t('separate.outputMode') }} · {{ outputModeLabel }}</span>
         </div>
@@ -1923,9 +1939,13 @@ async function retryCurrentTask() {
 
 .summary-config-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 1.4fr) 120px auto;
-  gap: 10px;
+  grid-template-columns: minmax(320px, 1fr) minmax(120px, 140px) minmax(112px, 128px);
+  gap: 12px;
   align-items: end;
+}
+
+.summary-config-grid .field-block {
+  min-width: 0;
 }
 
 .summary-checks {
@@ -2586,7 +2606,7 @@ async function retryCurrentTask() {
   }
 
   .summary-config-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(180px, 0.7fr);
+    grid-template-columns: minmax(0, 1fr) 160px;
   }
 
   .summary-checks {

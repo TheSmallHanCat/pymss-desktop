@@ -141,6 +141,9 @@ def _store_dirs_for_selected_stems(output_dir: str, selected_stems: list[str]) -
         return output_dir
     return {stem: output_dir for stem in selected_stems}
 
+def _normalize_output_layout(value: Any) -> str:
+    return "flat" if str(value or "").strip().lower() == "flat" else "folders"
+
 def _prepare_separator(
     *,
     payload: dict[str, Any],
@@ -372,6 +375,8 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
     root_task_id = str(payload.get("taskId") or raw_tasks[0].get("taskId") or f"sep_{int(datetime.now().timestamp())}")
     output_root = _normalize_output_dir(payload.get("output"))
     output_format = payload.get("outputFormat") or "wav"
+    output_layout = _normalize_output_layout(payload.get("outputLayout"))
+    save_as_folder = output_layout == "folders"
     batch_tasks: list[dict[str, str]] = []
     used_aliases: set[str] = set()
 
@@ -436,7 +441,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
     try:
         Path(output_root).mkdir(parents=True, exist_ok=True)
         for item in batch_tasks:
-            task_output = str(Path(output_root) / item["alias"])
+            task_output = str(Path(output_root) / item["alias"]) if save_as_folder else str(Path(output_root))
             emit("task_started", {"model": payload.get("model"), "input": item["input"], "output": task_output}, task_id=item["taskId"])
             emit("task_stage", {"stage": "validating_input", "message": "Validating input"}, task_id=item["taskId"])
         try:
@@ -447,7 +452,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
         except Exception:
             logger = None
         separator = _prepare_separator(
-            payload={**payload, "output": output_root, "saveAsFolder": True},
+            payload={**payload, "output": output_root, "saveAsFolder": save_as_folder},
             task_id=root_task_id,
             progress_callback=emit_batch_progress,
             logger=logger,
@@ -465,7 +470,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
             task_id = item["taskId"]
             alias = item["alias"]
             link_name = item["linkName"]
-            task_output = str(Path(output_root) / alias)
+            task_output = str(Path(output_root) / alias) if save_as_folder else str(Path(output_root))
             if link_name not in success_names and alias not in success_stems:
                 emit_error("INFERENCE_FAILED", f"Batch separation did not produce outputs for {Path(item['input']).name}", task_id=task_id)
                 continue
