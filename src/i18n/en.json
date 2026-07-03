@@ -113,8 +113,7 @@
     "modelReady": "Model Ready",
     "noModelSelected": "No Model Selected",
     "outputPreview": "Final Output Location",
-<<<<<<< HEAD
-    "outputSummaryTitle": "Output Summary",
+    "outputSummaryTitle": "Task Configuration",
     "dataDir": "Data Directory",
     "migrateDataDirToPortable": "Move to Local data",
     "dataDirMigrationConfirmTitle": "Migrate Data Directory",
@@ -122,9 +121,6 @@
     "dataDirMigrationStart": "Start Migration",
     "dataDirMigrationSuccess": "Data directory migrated to the local data folder.",
     "dataDirMigrationCleanupPartial": "Data was copied to the local data folder, but {count} item(s) remain in the old directory. Clean up the old directory manually, then the next launch will use the local data folder.",
-=======
-    "outputSummaryTitle": "Task Configuration",
->>>>>>> origin/main
     "currentFormat": "Current Format",
     "outputStems": "Output Stems",
     "allStems": "All Stems",

@@ -6,13 +6,9 @@ use tauri::{AppHandle, Manager};
 
 const DATA_ROOT_ENV: &str = "PYMSS_STUDIO_DATA_ROOT";
 const DATA_ROOT_DIR_NAME: &str = ".pymss-studio";
-<<<<<<< HEAD
-const PORTABLE_DATA_ROOT_DIR_NAME: &str = "data";
-=======
 const LOCAL_DATA_ROOT_DIR_NAME: &str = "data";
 #[cfg(windows)]
 const PORTABLE_MARKER_FILE_NAME: &str = "pymss-studio.portable";
->>>>>>> origin/main
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,37 +46,6 @@ fn legacy_data_root_dir(app: &AppHandle) -> AppResult<PathBuf> {
     Ok(home_dir(app)?.join(DATA_ROOT_DIR_NAME))
 }
 
-<<<<<<< HEAD
-#[cfg(windows)]
-fn portable_data_root_dir() -> AppResult<PathBuf> {
-    let exe = std::env::current_exe()?;
-    let exe_dir = exe
-        .parent()
-        .ok_or_else(|| AppError::Worker("failed to resolve executable directory".into()))?;
-    Ok(exe_dir.join(PORTABLE_DATA_ROOT_DIR_NAME))
-}
-
-#[cfg(not(windows))]
-fn portable_data_root_dir() -> AppResult<PathBuf> {
-    Err(AppError::Worker(
-        "portable data directory is only supported on Windows".into(),
-    ))
-}
-
-pub fn data_root_dir(app: &AppHandle) -> AppResult<PathBuf> {
-    let legacy = legacy_data_root_dir(app)?;
-    if legacy.exists() {
-        return Ok(legacy);
-    }
-    #[cfg(windows)]
-    {
-        return portable_data_root_dir();
-    }
-    #[cfg(not(windows))]
-    {
-        Ok(legacy)
-    }
-=======
 fn development_data_root_dir() -> AppResult<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let project_root = manifest_dir
@@ -133,7 +98,6 @@ pub fn data_root_dir(app: &AppHandle) -> AppResult<PathBuf> {
         legacy_data_root_dir(app)?,
         cfg!(debug_assertions),
     ))
->>>>>>> origin/main
 }
 
 pub fn settings_dir(app: &AppHandle) -> AppResult<PathBuf> {
@@ -181,7 +145,7 @@ pub fn app_paths_payload(app: &AppHandle) -> AppResult<AppPathsPayload> {
 }
 
 fn app_paths_payload_for_root(root: &Path) -> AppResult<AppPathsPayload> {
-    let portable_root = portable_data_root_dir().ok();
+    let portable_root = portable_data_root_dir().ok().flatten();
     let data_root_is_portable = portable_root
         .as_ref()
         .map(|portable| path_eq(root, portable))
@@ -337,7 +301,11 @@ fn cleanup_source_tree(source_root: &Path) -> Vec<String> {
 
 pub fn migrate_data_root_to_portable(app: &AppHandle) -> AppResult<DataRootMigrationPayload> {
     let previous_root = data_root_dir(app)?;
-    let target_root = portable_data_root_dir()?;
+    let target_root = portable_data_root_dir()?.ok_or_else(|| {
+        AppError::Worker(
+            "portable data directory is not available on this platform or configuration".into(),
+        )
+    })?;
     if path_eq(&previous_root, &target_root) {
         ensure_app_directories(app)?;
         return Ok(DataRootMigrationPayload {

@@ -113,8 +113,7 @@
     "modelReady": "模型就绪",
     "noModelSelected": "未选择模型",
     "outputPreview": "最终输出位置",
-<<<<<<< HEAD
-    "outputSummaryTitle": "输出摘要",
+    "outputSummaryTitle": "任务配置",
     "dataDir": "数据目录",
     "migrateDataDirToPortable": "迁移到同级 data",
     "dataDirMigrationConfirmTitle": "迁移数据目录",
@@ -122,9 +121,6 @@
     "dataDirMigrationStart": "开始迁移",
     "dataDirMigrationSuccess": "数据目录已迁移到同级 data。",
     "dataDirMigrationCleanupPartial": "数据已复制到同级 data，但旧目录仍有 {count} 个残留项。请手动清理旧目录，清理后下次启动会使用同级 data。",
-=======
-    "outputSummaryTitle": "任务配置",
->>>>>>> origin/main
     "currentFormat": "当前格式",
     "outputStems": "输出音轨",
     "allStems": "全部音轨",
