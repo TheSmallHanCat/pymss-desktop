@@ -239,13 +239,6 @@ pub async fn get_app_paths(app: AppHandle) -> AppResult<storage::AppPathsPayload
 }
 
 #[tauri::command]
-pub async fn migrate_data_root_to_portable(
-    app: AppHandle,
-) -> AppResult<storage::DataRootMigrationPayload> {
-    storage::migrate_data_root_to_portable(&app)
-}
-
-#[tauri::command]
 pub async fn load_app_store(app: AppHandle, name: String) -> AppResult<Value> {
     storage::read_app_store(&app, &name)
 }

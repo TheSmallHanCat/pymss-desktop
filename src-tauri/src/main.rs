@@ -45,7 +45,6 @@ fn main() {
             commands::app_cmd::list_models,
             commands::app_cmd::load_app_store,
             commands::app_cmd::load_editor_project,
-            commands::app_cmd::migrate_data_root_to_portable,
             commands::app_cmd::relink_editor_sources,
             commands::app_cmd::open_editor_window,
             commands::app_cmd::pick_media_files,

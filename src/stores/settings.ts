@@ -23,24 +23,12 @@ import type { EnvInfo } from '@/stores/app'
 
 type AppPathsPayload = {
   dataRoot: string
-  portableDataRoot: string
-  dataRootIsPortable: boolean
-  canMigrateDataRootToPortable: boolean
   settingsDir: string
   modelsDir: string
   outputsDir: string
   editorProjectsDir: string
   logsDir: string
   tempDir: string
-}
-
-type DataRootMigrationPayload = {
-  previousDataRoot: string
-  targetDataRoot: string
-  fileCount: number
-  totalBytes: number
-  cleanupFailedPaths: string[]
-  paths: AppPathsPayload
 }
 
 export type ModelDirMigrationConflict = {
@@ -125,16 +113,6 @@ function displayModelDirPath(path: unknown): string {
     .replace(/^\\\\\?\\/, '')
     .replace(/^\/\/\?\/UNC\//i, '//')
     .replace(/^\/\/\?\//, '')
-}
-
-function normalizePathForCompare(path: string): string {
-  return displayModelDirPath(path).replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase()
-}
-
-function isPathUnderRoot(path: string, root: string): boolean {
-  const normalizedPath = normalizePathForCompare(path)
-  const normalizedRoot = normalizePathForCompare(root)
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}\\`)
 }
 
 function normalizePrepareModelDirChangePayload(payload: PrepareModelDirChangePayload): PrepareModelDirChangePayload {
@@ -413,26 +391,6 @@ export const useSettingsStore = defineStore('settings', () => {
   async function pickOutputDir() {
     const folder = await invoke<string | null>('pick_output_folder')
     if (folder) outputDir.value = folder
-  }
-
-  function refreshPathsAfterDataRootMigration(payload: DataRootMigrationPayload) {
-    const previousRoot = displayModelDirPath(payload.previousDataRoot)
-    const nextPaths = payload.paths
-    const shouldMoveModelDir = Boolean(modelDir.value) && isPathUnderRoot(modelDir.value, previousRoot)
-    const shouldMoveOutputDir = Boolean(outputDir.value) && isPathUnderRoot(outputDir.value, previousRoot)
-    appPaths.value = nextPaths
-    if (shouldMoveModelDir) modelDir.value = nextPaths.modelsDir
-    if (shouldMoveOutputDir) outputDir.value = nextPaths.outputsDir
-  }
-
-  async function migrateDataRootToPortable() {
-    const payload = await invoke<DataRootMigrationPayload>('migrate_data_root_to_portable')
-    if (!payload.cleanupFailedPaths?.length) {
-      refreshPathsAfterDataRootMigration(payload)
-      await refreshModelDataAfterDirChange().catch(() => {})
-      queuePersist()
-    }
-    return payload
   }
 
   async function pickFolder() {
@@ -796,7 +754,6 @@ export const useSettingsStore = defineStore('settings', () => {
     markStartupOnboardingCompleted,
     pickModelDir,
     pickOutputDir,
-    migrateDataRootToPortable,
     pickFolder,
     prepareModelDirChange,
     cancelModelDirChangeConfirmation,
