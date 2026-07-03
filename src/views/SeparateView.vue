@@ -1098,10 +1098,6 @@ async function retryCurrentTask() {
             <label>{{ t('settings.defaultFormat') }}</label>
             <n-select v-model:value="settings.defaultFormat" :options="formatOptions" />
           </div>
-          <div v-if="runMode === 'model' && (showStandardizeField || showNormalizeField)" class="summary-checks">
-            <n-checkbox v-if="showStandardizeField" v-model:checked="standardize">{{ t('inference.standardize') }}</n-checkbox>
-            <n-checkbox v-if="showNormalizeField" v-model:checked="normalize">{{ t('inference.normalize') }}</n-checkbox>
-          </div>
         </div>
         <div v-if="runMode === 'model'" class="summary-stems-row">
           <label>{{ t('separate.outputStems') }}</label>
@@ -1145,12 +1141,12 @@ async function retryCurrentTask() {
               <span>{{ t('separate.runOptionsHint') }}</span>
             </div>
             <div class="check-list">
-              <n-checkbox v-if="runMode === 'model'" v-model:checked="useTta">{{ t('separate.tta') }}</n-checkbox>
+              <n-checkbox v-model:checked="useTta">{{ t('separate.tta') }}</n-checkbox>
               <n-checkbox v-model:checked="debug">{{ t('separate.debug') }}</n-checkbox>
             </div>
           </div>
 
-          <div v-if="runMode === 'model'" class="settings-group">
+          <div class="settings-group">
             <div class="settings-group__head">
               <strong>{{ t('separate.audioQualityTitle') }} · {{ formatLabel }}</strong>
               <span>{{ t('separate.audioQualityEditable') }}</span>
@@ -1189,7 +1185,7 @@ async function retryCurrentTask() {
             </n-grid>
           </div>
 
-          <div v-if="runMode === 'model'" class="settings-group">
+          <div class="settings-group">
             <n-collapse :default-expanded-names="[]">
               <n-collapse-item :title="t('inference.advancedParams')" name="inference">
                 <p class="advanced-hint">{{ t('separate.advancedPanelHint') }}</p>
@@ -1197,7 +1193,7 @@ async function retryCurrentTask() {
                   <n-spin size="small" />
                   <span>{{ t('separate.advancedPanelLoading') }}</span>
                 </div>
-                <n-grid :cols="2" :x-gap="16" :y-gap="16" responsive="screen">
+                <n-grid v-if="runMode === 'model'" :cols="2" :x-gap="16" :y-gap="16" responsive="screen">
                   <n-grid-item v-if="hasInferenceField('batch_size')">
                     <div class="field-block">
                       <label>{{ t('inference.batchSize') }}</label>
@@ -1242,10 +1238,12 @@ async function retryCurrentTask() {
                   </n-grid-item>
                 </n-grid>
                 <div class="check-list check-list--spaced">
-                  <n-checkbox v-if="hasInferenceField('enable_post_process')" v-model:checked="enable_post_process">{{ t('inference.vrEnablePostProcess') }}</n-checkbox>
-                  <n-checkbox v-if="hasInferenceField('high_end_process')" v-model:checked="high_end_process">{{ t('inference.vrHighEndProcess') }}</n-checkbox>
+                  <n-checkbox v-if="runMode === 'workflow' || showStandardizeField" v-model:checked="standardize">{{ t('inference.standardize') }}</n-checkbox>
+                  <n-checkbox v-if="runMode === 'workflow' || showNormalizeField" v-model:checked="normalize">{{ t('inference.normalize') }}</n-checkbox>
+                  <n-checkbox v-if="runMode === 'model' && hasInferenceField('enable_post_process')" v-model:checked="enable_post_process">{{ t('inference.vrEnablePostProcess') }}</n-checkbox>
+                  <n-checkbox v-if="runMode === 'model' && hasInferenceField('high_end_process')" v-model:checked="high_end_process">{{ t('inference.vrHighEndProcess') }}</n-checkbox>
                 </div>
-                <p v-if="!advancedParamsLoading && !hasVisibleAdvancedFields" class="advanced-empty">
+                <p v-if="runMode === 'model' && !advancedParamsLoading && !hasVisibleAdvancedFields" class="advanced-empty">
                   {{ t('separate.advancedPanelEmpty') }}
                 </p>
               </n-collapse-item>

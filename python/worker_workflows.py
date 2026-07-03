@@ -72,6 +72,8 @@ def _candidate_commands(workflow_path: Path, input_path: str, output_dir: str, p
     device = str(payload.get("device") or "").strip()
     if device and device != "auto":
         run_args.extend(["--device", device])
+    if payload.get("useTta"):
+        run_args.append("--tta")
     if payload.get("debug"):
         run_args.append("--debug")
     return [

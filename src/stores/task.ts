@@ -340,8 +340,8 @@ function applyModelDefaultsToUi(
     overlap_size: vrModel ? 0 : (defaults?.overlap_size ?? 0),
     num_overlap: (vrModel || apolloModel) ? 0 : (defaults?.num_overlap ?? 0),
     chunk_size: vrModel ? 0 : (defaults?.chunk_size ?? 0),
-    standardize: vrModel ? false : (defaults?.standardize ?? true),
-    normalize: defaults?.normalize ?? false,
+    standardize: false,
+    normalize: false,
     window_size: vrModel ? (defaults?.window_size ?? 512) : 0,
     aggression: vrModel ? (defaults?.aggression ?? 5) : 0,
     enable_post_process: vrModel ? (defaults?.enable_post_process ?? false) : false,
@@ -375,7 +375,7 @@ export const useTaskStore = defineStore('task', () => {
   const overlap_size = ref<number | null>(0)
   const num_overlap = ref<number | null>(0)
   const chunk_size = ref<number | null>(0)
-  const standardize = ref(true)
+  const standardize = ref(false)
   const normalize = ref(false)
   const selectedStems = ref<string[]>([])
   const window_size = ref<number | null>(0)
@@ -503,7 +503,7 @@ export const useTaskStore = defineStore('task', () => {
     overlap_size.value = next.overlap_size ?? 0
     num_overlap.value = next.num_overlap ?? 0
     chunk_size.value = next.chunk_size ?? 0
-    standardize.value = next.standardize ?? !isVrModelType(modelType)
+    standardize.value = next.standardize ?? false
     normalize.value = next.normalize ?? false
     window_size.value = next.window_size ?? 0
     aggression.value = next.aggression ?? 0
@@ -600,11 +600,19 @@ export const useTaskStore = defineStore('task', () => {
     const defaults = definition.defaults && typeof definition.defaults === 'object'
       ? definition.defaults as Record<string, unknown>
       : {}
+    const inferenceDefaults = defaults.inference_params && typeof defaults.inference_params === 'object'
+      ? defaults.inference_params as Record<string, unknown>
+      : {}
     return {
       ...definition,
       defaults: {
         ...defaults,
         output_format: outputFormat,
+        inference_params: {
+          ...inferenceDefaults,
+          standardize: standardize.value,
+          normalize: normalize.value,
+        },
       },
     }
   }
@@ -635,7 +643,7 @@ export const useTaskStore = defineStore('task', () => {
       deviceIds: workflowDevice === runtimeDevice.device ? runtimeDevice.deviceIds : [],
       outputFormat: workflowFormat,
       selectedStems: [],
-      useTta: false,
+      useTta: useTta.value,
       debug: debug.value,
       audioParams: settings.getAudioParams(),
       inferenceParamsVersion: CURRENT_INFERENCE_PARAMS_VERSION,
@@ -726,6 +734,7 @@ export const useTaskStore = defineStore('task', () => {
             device: config.device,
             deviceIds: config.deviceIds,
             outputFormat: config.outputFormat,
+            useTta: config.useTta,
             debug: config.debug,
             audioParams: config.audioParams,
           },
