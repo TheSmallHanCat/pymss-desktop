@@ -1098,7 +1098,7 @@ async function retryCurrentTask() {
             <label>{{ t('settings.defaultFormat') }}</label>
             <n-select v-model:value="settings.defaultFormat" :options="formatOptions" />
           </div>
-          <div v-if="showStandardizeField || showNormalizeField" class="summary-checks">
+          <div v-if="runMode === 'model' && (showStandardizeField || showNormalizeField)" class="summary-checks">
             <n-checkbox v-if="showStandardizeField" v-model:checked="standardize">{{ t('inference.standardize') }}</n-checkbox>
             <n-checkbox v-if="showNormalizeField" v-model:checked="normalize">{{ t('inference.normalize') }}</n-checkbox>
           </div>
@@ -1189,7 +1189,7 @@ async function retryCurrentTask() {
             </n-grid>
           </div>
 
-          <div class="settings-group">
+          <div v-if="runMode === 'model'" class="settings-group">
             <n-collapse :default-expanded-names="[]">
               <n-collapse-item :title="t('inference.advancedParams')" name="inference">
                 <p class="advanced-hint">{{ t('separate.advancedPanelHint') }}</p>
