@@ -593,6 +593,21 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
+  function buildWorkflowDefinitionForRun(workflow: WorkflowEntry, outputFormat: string): Record<string, unknown> {
+    const definition = workflow.definition && typeof workflow.definition === 'object'
+      ? workflow.definition
+      : {}
+    const defaults = definition.defaults && typeof definition.defaults === 'object'
+      ? definition.defaults as Record<string, unknown>
+      : {}
+    return {
+      ...definition,
+      defaults: {
+        ...defaults,
+        output_format: outputFormat,
+      },
+    }
+  }
   function buildWorkflowRunConfig(workflow: WorkflowEntry): SeparationRunConfig {
     const settings = useSettingsStore()
     const app = useAppStore()
@@ -603,9 +618,9 @@ export const useTaskStore = defineStore('task', () => {
     const workflowDevice = typeof defaults.device === 'string' && defaults.device.trim()
       ? defaults.device.trim()
       : runtimeDevice.device
-    const workflowFormat = typeof defaults.output_format === 'string' && defaults.output_format.trim()
-      ? defaults.output_format.trim()
-      : settings.defaultFormat
+    const workflowFormat = typeof settings.defaultFormat === 'string' && settings.defaultFormat.trim()
+      ? settings.defaultFormat.trim()
+      : 'wav'
     const workflowModelDir = typeof defaults.model_dir === 'string' && defaults.model_dir.trim()
       ? defaults.model_dir.trim()
       : settings.modelDir || null
@@ -615,7 +630,7 @@ export const useTaskStore = defineStore('task', () => {
       downloadSource: settings.downloadSource,
       workflowId: workflow.id,
       workflowName: workflow.name,
-      workflowDefinition: workflow.definition,
+      workflowDefinition: buildWorkflowDefinitionForRun(workflow, workflowFormat),
       device: workflowDevice,
       deviceIds: workflowDevice === runtimeDevice.device ? runtimeDevice.deviceIds : [],
       outputFormat: workflowFormat,
