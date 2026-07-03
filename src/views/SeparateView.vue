@@ -804,7 +804,7 @@ async function retryCurrentTask() {
         </n-collapse-transition>
       </section>
 
-      <section class="config-panel config-panel--model">
+      <section class="config-panel config-panel--model" :class="{ 'config-panel--workflow': runMode === 'workflow' }">
         <div class="panel-heading">
           <div class="panel-heading__icon"><n-icon :component="runMode === 'workflow' ? GitNetworkOutline : CubeOutline" /></div>
           <div class="panel-heading__main">
@@ -895,7 +895,7 @@ async function retryCurrentTask() {
                   </n-button>
                 </div>
               </div>
-              <div v-if="runMode === 'workflow'" class="model-picker">
+              <div v-if="runMode === 'workflow'" class="model-picker model-picker--workflow">
                 <div class="model-picker__toolbar">
                   <n-input
                     v-model:value="workflowSearch"
@@ -1366,6 +1366,7 @@ async function retryCurrentTask() {
 }
 
 .panel-heading {
+  min-width: 0;
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -1381,9 +1382,20 @@ async function retryCurrentTask() {
 }
 
 .panel-heading__action {
-  flex: 0 0 auto;
+  min-width: 0;
+  max-width: min(210px, 34%);
+  flex: 0 1 auto;
   margin-left: auto;
   color: var(--on-surface-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-heading__action :deep(.n-button__content) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .panel-heading__icon {
@@ -1598,6 +1610,9 @@ async function retryCurrentTask() {
   grid-template-columns: minmax(0, 1.3fr) minmax(180px, 0.7fr);
   gap: 8px;
 }
+.model-picker--workflow .model-picker__toolbar {
+  grid-template-columns: minmax(0, 1fr);
+}
 
 .model-picker__divider {
   height: 1px;
@@ -1619,6 +1634,9 @@ async function retryCurrentTask() {
 
 .model-picker__item {
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   position: relative;
   display: flex;
   align-items: center;
@@ -1663,6 +1681,8 @@ async function retryCurrentTask() {
 
 .model-picker__item-title {
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1719,6 +1739,18 @@ async function retryCurrentTask() {
   flex: 0 0 auto;
   font-size: 14px;
   color: var(--primary);
+}
+@media (max-width: 1080px) {
+  .config-panel--workflow .panel-heading {
+    display: grid;
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+  .config-panel--workflow .panel-heading__action {
+    grid-column: 2;
+    justify-self: start;
+    max-width: 100%;
+    margin-left: 0;
+  }
 }
 
 .model-picker__empty {
