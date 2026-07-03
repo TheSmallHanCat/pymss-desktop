@@ -6,18 +6,24 @@ import { loadAppStore, saveAppStore } from '@/utils/appStore'
 import { useSettingsStore } from '@/stores/settings'
 import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
 import { useAppStore } from '@/stores/app'
+import type { WorkflowEntry } from '@/stores/workflow'
 
 export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
 
 export type StemOutput = { stem: string; path: string }
 
 export type SeparationRunConfig = {
+  runMode?: 'model' | 'workflow'
   modelDir: string | null
   downloadSource: string
+  workflowId?: string
+  workflowName?: string
+  workflowDefinition?: Record<string, unknown>
   modelType?: string | null
   device: string
   deviceIds: number[]
   outputFormat: string
+  selectedStems: string[]
   useTta: boolean
   debug: boolean
   audioParams: Record<string, string | number>
@@ -232,6 +238,9 @@ function normalizeRunConfig(runConfig?: SeparationRunConfig): SeparationRunConfi
   if (!runConfig) return undefined
   const next: SeparationRunConfig = {
     ...runConfig,
+    selectedStems: Array.isArray(runConfig.selectedStems)
+      ? runConfig.selectedStems.map(item => String(item || '').trim()).filter(Boolean)
+      : [],
     audioParams: { ...(runConfig.audioParams || {}) },
     inferenceParams: { ...(runConfig.inferenceParams || {}) },
   }
@@ -331,8 +340,8 @@ function applyModelDefaultsToUi(
     overlap_size: vrModel ? 0 : (defaults?.overlap_size ?? 0),
     num_overlap: (vrModel || apolloModel) ? 0 : (defaults?.num_overlap ?? 0),
     chunk_size: vrModel ? 0 : (defaults?.chunk_size ?? 0),
-    standardize: vrModel ? false : (defaults?.standardize ?? true),
-    normalize: defaults?.normalize ?? false,
+    standardize: false,
+    normalize: false,
     window_size: vrModel ? (defaults?.window_size ?? 512) : 0,
     aggression: vrModel ? (defaults?.aggression ?? 5) : 0,
     enable_post_process: vrModel ? (defaults?.enable_post_process ?? false) : false,
@@ -366,8 +375,9 @@ export const useTaskStore = defineStore('task', () => {
   const overlap_size = ref<number | null>(0)
   const num_overlap = ref<number | null>(0)
   const chunk_size = ref<number | null>(0)
-  const standardize = ref(true)
+  const standardize = ref(false)
   const normalize = ref(false)
+  const selectedStems = ref<string[]>([])
   const window_size = ref<number | null>(0)
   const aggression = ref<number | null>(0)
   const enable_post_process = ref(false)
@@ -493,7 +503,7 @@ export const useTaskStore = defineStore('task', () => {
     overlap_size.value = next.overlap_size ?? 0
     num_overlap.value = next.num_overlap ?? 0
     chunk_size.value = next.chunk_size ?? 0
-    standardize.value = next.standardize ?? !isVrModelType(modelType)
+    standardize.value = next.standardize ?? false
     normalize.value = next.normalize ?? false
     window_size.value = next.window_size ?? 0
     aggression.value = next.aggression ?? 0
@@ -567,12 +577,14 @@ export const useTaskStore = defineStore('task', () => {
     const app = useAppStore()
     const runtimeDevice = settings.getRuntimeDeviceConfig(app.envInfo)
     return {
+      runMode: 'model',
       modelDir: settings.modelDir || null,
       downloadSource: settings.downloadSource,
       modelType: modelType ?? null,
       device: runtimeDevice.device,
       deviceIds: runtimeDevice.deviceIds,
       outputFormat: settings.defaultFormat,
+      selectedStems: [...selectedStems.value],
       useTta: useTta.value,
       debug: debug.value,
       audioParams: settings.getAudioParams(),
@@ -581,7 +593,65 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  function createQueuedTask(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputPrefix?: string) {
+  function buildWorkflowDefinitionForRun(workflow: WorkflowEntry, outputFormat: string): Record<string, unknown> {
+    const definition = workflow.definition && typeof workflow.definition === 'object'
+      ? workflow.definition
+      : {}
+    const defaults = definition.defaults && typeof definition.defaults === 'object'
+      ? definition.defaults as Record<string, unknown>
+      : {}
+    const inferenceDefaults = defaults.inference_params && typeof defaults.inference_params === 'object'
+      ? defaults.inference_params as Record<string, unknown>
+      : {}
+    return {
+      ...definition,
+      defaults: {
+        ...defaults,
+        output_format: outputFormat,
+        inference_params: {
+          ...inferenceDefaults,
+          standardize: standardize.value,
+          normalize: normalize.value,
+        },
+      },
+    }
+  }
+  function buildWorkflowRunConfig(workflow: WorkflowEntry): SeparationRunConfig {
+    const settings = useSettingsStore()
+    const app = useAppStore()
+    const runtimeDevice = settings.getRuntimeDeviceConfig(app.envInfo)
+    const defaults = workflow.definition.defaults && typeof workflow.definition.defaults === 'object'
+      ? workflow.definition.defaults as Record<string, unknown>
+      : {}
+    const workflowDevice = typeof defaults.device === 'string' && defaults.device.trim()
+      ? defaults.device.trim()
+      : runtimeDevice.device
+    const workflowFormat = typeof settings.defaultFormat === 'string' && settings.defaultFormat.trim()
+      ? settings.defaultFormat.trim()
+      : 'wav'
+    const workflowModelDir = typeof defaults.model_dir === 'string' && defaults.model_dir.trim()
+      ? defaults.model_dir.trim()
+      : settings.modelDir || null
+    return {
+      runMode: 'workflow',
+      modelDir: workflowModelDir,
+      downloadSource: settings.downloadSource,
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      workflowDefinition: buildWorkflowDefinitionForRun(workflow, workflowFormat),
+      device: workflowDevice,
+      deviceIds: workflowDevice === runtimeDevice.device ? runtimeDevice.deviceIds : [],
+      outputFormat: workflowFormat,
+      selectedStems: [],
+      useTta: useTta.value,
+      debug: debug.value,
+      audioParams: settings.getAudioParams(),
+      inferenceParamsVersion: CURRENT_INFERENCE_PARAMS_VERSION,
+      inferenceParams: {},
+    }
+  }
+
+  function createQueuedTask(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputPrefix?: string, outputChild?: string) {
     const settings = useSettingsStore()
     const id = createRunId('sep')
     const resultId = createRunId('result')
@@ -594,7 +664,7 @@ export const useTaskStore = defineStore('task', () => {
       input,
       jobOutput: resolvedJobOutput,
       outputPrefix,
-      output: joinOutputPath(resolvedJobOutput, resultId),
+      output: joinOutputPath(resolvedJobOutput, outputChild || resultId),
       status: 'queued',
       message: 'Queued',
       createdAt: Date.now(),
@@ -612,6 +682,37 @@ export const useTaskStore = defineStore('task', () => {
     return task
   }
 
+  function createQueuedWorkflowTask(input: string, workflow: WorkflowEntry, jobId?: string, jobOutput?: string, outputPrefix?: string, outputChild?: string) {
+    const settings = useSettingsStore()
+    const id = createRunId('wf')
+    const resultId = createRunId('result')
+    const resolvedJobOutput = jobOutput || resolveJobOutputPath(settings.outputDir, jobId || id)
+    const task: SeparationTask = {
+      id,
+      jobId,
+      resultId,
+      model: workflow.name,
+      input,
+      jobOutput: resolvedJobOutput,
+      outputPrefix,
+      output: joinOutputPath(resolvedJobOutput, outputChild || resultId),
+      status: 'queued',
+      message: 'Queued',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      progress: STAGE_META.queued.progress,
+      stageLabel: STAGE_META.queued.label,
+      files: [],
+      outputs: [],
+      logs: [`${new Date().toLocaleTimeString()} Queued workflow: ${workflow.name}`],
+      runConfig: buildWorkflowRunConfig(workflow),
+    }
+    tasks.value.unshift(task)
+    activeTaskId.value = id
+    queuePersist()
+    return task
+  }
+
   async function startQueuedTask(taskId: string) {
     const task = tasks.value.find((item) => item.id === taskId)
     if (!task || task.status !== 'queued') return false
@@ -619,6 +720,27 @@ export const useTaskStore = defineStore('task', () => {
     const config = task.runConfig || buildRunConfig({})
     setTaskStatus(task.id, 'preparing', 'Preparing task')
     try {
+      if (config.runMode === 'workflow') {
+        await invoke<{ taskId: string; started: boolean }>('start_workflow_inference', {
+          payload: {
+            taskId: task.id,
+            workflowName: config.workflowName || task.model,
+            workflow: config.workflowDefinition || {},
+            input: task.input,
+            output: task.output,
+            outputPrefix: task.outputPrefix,
+            modelDir: config.modelDir ?? (settings.modelDir || null),
+            source: config.downloadSource || settings.downloadSource,
+            device: config.device,
+            deviceIds: config.deviceIds,
+            outputFormat: config.outputFormat,
+            useTta: config.useTta,
+            debug: config.debug,
+            audioParams: config.audioParams,
+          },
+        })
+        return true
+      }
       await invoke<{ taskId: string; started: boolean }>('start_separation', {
         payload: {
           taskId: task.id,
@@ -633,6 +755,7 @@ export const useTaskStore = defineStore('task', () => {
           device: config.device,
           deviceIds: config.deviceIds,
           outputFormat: config.outputFormat,
+          selectedStems: config.selectedStems || [],
           useTta: config.useTta,
           debug: config.debug,
           audioParams: config.audioParams,
@@ -648,6 +771,58 @@ export const useTaskStore = defineStore('task', () => {
       task.stageLabel = STAGE_META.failed.label
       task.progress = 100
       appendTaskLogs(task, `error: ${task.error}`)
+      queuePersist()
+      scheduleQueue()
+      return false
+    }
+  }
+
+  async function startBatchWorker(batchTasks: SeparationTask[]) {
+    if (!batchTasks.length) return false
+    const settings = useSettingsStore()
+    const primary = batchTasks[0]
+    const config = primary.runConfig || buildRunConfig({})
+    batchTasks.forEach((task) => {
+      setTaskStatus(task.id, 'preparing', 'Preparing batch task')
+    })
+    try {
+      await invoke<{ taskId: string; started: boolean }>('start_separation', {
+        payload: {
+          taskId: primary.id,
+          model: primary.model,
+          output: primary.jobOutput || primary.output,
+          tasks: batchTasks.map((task) => ({
+            taskId: task.id,
+            input: task.input,
+            outputPrefix: task.outputPrefix,
+            output: task.output,
+          })),
+          modelDir: config.modelDir ?? (settings.modelDir || null),
+          download: true,
+          source: config.downloadSource || settings.downloadSource,
+          endpoint: null,
+          device: config.device,
+          deviceIds: config.deviceIds,
+          outputFormat: config.outputFormat,
+          selectedStems: config.selectedStems || [],
+          useTta: config.useTta,
+          debug: config.debug,
+          audioParams: config.audioParams,
+          inferenceParamsVersion: config.inferenceParamsVersion ?? CURRENT_INFERENCE_PARAMS_VERSION,
+          inferenceParams: config.inferenceParams || {},
+        },
+      })
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      batchTasks.forEach((task) => {
+        task.status = 'failed'
+        task.error = message
+        task.message = message
+        task.stageLabel = STAGE_META.failed.label
+        task.progress = 100
+        appendTaskLogs(task, `error: ${message}`)
+      })
       queuePersist()
       scheduleQueue()
       return false
@@ -1052,11 +1227,11 @@ export const useTaskStore = defineStore('task', () => {
     })
   }
 
-  function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputPrefix?: string) {
-    return createQueuedTask(input, model, inferenceParams, modelType, jobId, jobOutput, outputPrefix)
+  function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputPrefix?: string, outputChild?: string) {
+    return createQueuedTask(input, model, inferenceParams, modelType, jobId, jobOutput, outputPrefix, outputChild)
   }
 
-  async function startSeparation() {
+  async function startSeparation(options: { outputDir?: string } = {}) {
     const modelStore = useModelStore()
     if (!inputFiles.value.length) {
       throw new Error('Input file is required')
@@ -1074,9 +1249,47 @@ export const useTaskStore = defineStore('task', () => {
     const targets = [...inputFiles.value]
     const jobId = createRunId('job')
     const settings = useSettingsStore()
-    const jobOutput = resolveJobOutputPath(settings.outputDir, jobId)
+    const jobOutput = resolveJobOutputPath(options.outputDir || settings.outputDir, jobId)
     const outputPrefixes = buildOutputPrefixes(targets)
-    const createdTasks = targets.map((input, index) => submitOne(input, model, inferenceParams, modelType, jobId, jobOutput, outputPrefixes[index]))
+    const batchMode = targets.length > 1
+    const createdTasks = targets.map((input, index) => submitOne(
+      input,
+      model,
+      inferenceParams,
+      modelType,
+      jobId,
+      jobOutput,
+      outputPrefixes[index],
+      batchMode ? outputPrefixes[index] : undefined,
+    ))
+    if (batchMode) {
+      void startBatchWorker(createdTasks)
+    } else {
+      scheduleQueue()
+    }
+    return { succeeded: targets.length, failed: 0, total: targets.length, jobId, tasks: createdTasks }
+  }
+
+  async function startWorkflowInference(workflow: WorkflowEntry, options: { outputDir?: string } = {}) {
+    if (!inputFiles.value.length) {
+      throw new Error('Input file is required')
+    }
+    if (!workflow?.id) {
+      throw new Error('Workflow is required')
+    }
+    const targets = [...inputFiles.value]
+    const jobId = createRunId('job')
+    const settings = useSettingsStore()
+    const jobOutput = resolveJobOutputPath(options.outputDir || settings.outputDir, jobId)
+    const outputPrefixes = buildOutputPrefixes(targets)
+    const createdTasks = targets.map((input, index) => createQueuedWorkflowTask(
+      input,
+      workflow,
+      jobId,
+      jobOutput,
+      outputPrefixes[index],
+      targets.length > 1 ? outputPrefixes[index] : undefined,
+    ))
     scheduleQueue()
     return { succeeded: targets.length, failed: 0, total: targets.length, jobId, tasks: createdTasks }
   }
@@ -1084,6 +1297,18 @@ export const useTaskStore = defineStore('task', () => {
   async function retryTask(taskId: string) {
     const existing = tasks.value.find((t) => t.id === taskId)
     if (!existing) return
+    if (existing.runConfig?.runMode === 'workflow' && existing.runConfig.workflowId && existing.runConfig.workflowName && existing.runConfig.workflowDefinition) {
+      const task = createQueuedWorkflowTask(existing.input, {
+        id: existing.runConfig.workflowId,
+        name: existing.runConfig.workflowName,
+        description: '',
+        definition: existing.runConfig.workflowDefinition,
+        createdAt: existing.createdAt,
+        updatedAt: existing.updatedAt,
+      })
+      scheduleQueue()
+      return task
+    }
     const modelStore = useModelStore()
     modelStore.selectedModel = existing.model
     const retryParams = existing.runConfig?.inferenceParams || {}
@@ -1121,6 +1346,7 @@ export const useTaskStore = defineStore('task', () => {
     chunk_size,
     standardize,
     normalize,
+    selectedStems,
     window_size,
     aggression,
     enable_post_process,
@@ -1153,6 +1379,7 @@ export const useTaskStore = defineStore('task', () => {
     cancelTask,
     cancelAllTasks,
     startSeparation,
+    startWorkflowInference,
     retryTask,
     scheduleQueue,
     applySelectedModelDefaults,

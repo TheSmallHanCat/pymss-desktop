@@ -518,16 +518,23 @@ pub fn spawn_worker_background(
     task_id: String,
     payload: Value,
 ) -> AppResult<()> {
+    let mut registered_task_ids = vec![task_id.clone()];
+    if let Some(tasks) = payload.get("tasks").and_then(Value::as_array) {
+        for item in tasks {
+            if let Some(child_task_id) = item.get("taskId").and_then(Value::as_str) {
+                if !registered_task_ids.iter().any(|id| id == child_task_id) {
+                    registered_task_ids.push(child_task_id.to_string());
+                }
+            }
+        }
+    }
     {
         let tasks = state
             .tasks
             .lock()
             .map_err(|_| AppError::Worker("task registry lock poisoned".into()))?;
-        if tasks.contains_key(&task_id) {
-            return Err(AppError::Worker(format!(
-                "task already exists: {}",
-                task_id
-            )));
+        if let Some(existing) = registered_task_ids.iter().find(|id| tasks.contains_key(*id)) {
+            return Err(AppError::Worker(format!("task already exists: {}", existing)));
         }
     }
 
@@ -559,7 +566,9 @@ pub fn spawn_worker_background(
             .tasks
             .lock()
             .map_err(|_| AppError::Worker("task registry lock poisoned".into()))?;
-        tasks.insert(task_id.clone(), shared_child.clone());
+        for registered_task_id in &registered_task_ids {
+            tasks.insert(registered_task_id.clone(), shared_child.clone());
+        }
     }
     std::thread::spawn(move || {
         let saw_terminal_event = Arc::new(Mutex::new(false));
@@ -612,12 +621,14 @@ pub fn spawn_worker_background(
         let _ = std::fs::remove_file(payload_file);
         let cleanup_state = app.state::<AppState>();
         if let Ok(mut tasks) = cleanup_state.tasks.lock() {
-            if tasks
-                .get(&task_id)
-                .map(|registered| Arc::ptr_eq(registered, &shared_child))
-                .unwrap_or(false)
-            {
-                tasks.remove(&task_id);
+            for registered_task_id in registered_task_ids {
+                if tasks
+                    .get(&registered_task_id)
+                    .map(|registered| Arc::ptr_eq(registered, &shared_child))
+                    .unwrap_or(false)
+                {
+                    tasks.remove(&registered_task_id);
+                }
             }
         };
     });

@@ -27,6 +27,7 @@ const showStartupOnboarding = computed(() => bootReady.value && !isEditorRoute.v
 const routeWarmupLoaders = [
   () => import('@/views/SeparateView.vue'),
   () => import('@/views/ModelsView.vue'),
+  () => import('@/views/WorkflowsView.vue'),
   () => import('@/views/ResultsView.vue'),
   () => import('@/views/SettingsView.vue'),
 ]

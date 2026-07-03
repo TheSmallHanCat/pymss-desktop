@@ -152,8 +152,19 @@ pnpm tauri build
 
 ## 环境变量
 
+运行数据统一存放在一个数据根目录下。应用会基于该根目录派生出
+`settings/`、`models/`、`outputs/`、`editor-projects/`、`logs/` 和 `temp/`。
+
+数据根目录选择顺序：
+
+1. 设置了 `PYMSS_STUDIO_DATA_ROOT` 时，优先使用它。
+2. 开发构建使用项目根目录下的 `./data`。
+3. Windows release 构建如果在可执行文件同级存在 `pymss-studio.portable` 标记文件，则使用可执行文件同级的 `data`。
+4. 普通安装版 release 构建使用 `~/.pymss-studio`。
+
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `PYMSS_STUDIO_DATA_ROOT` | 见上方说明 | 设置、模型、输出、工程、日志和临时文件的数据根目录。 |
 | `PYMSS_STUDIO_PYTHON` | `python` | Tauri 后端启动 worker 时使用的 Python 解释器。 |
 | `PYMSS_STUDIO_PYMSS_PATH` | 自动探测 | 外部 `pymss` 核心仓库或包路径。 |
 | `PYMSS_STUDIO_DEFAULT_OUTPUT_DIR` | 应用默认值 | 分离结果的默认输出目录。 |

@@ -415,6 +415,7 @@ export const useSettingsStore = defineStore('settings', () => {
     if (folder) outputDir.value = folder
   }
 
+<<<<<<< HEAD
   function refreshPathsAfterDataRootMigration(payload: DataRootMigrationPayload) {
     const previousRoot = displayModelDirPath(payload.previousDataRoot)
     const nextPaths = payload.paths
@@ -433,6 +434,10 @@ export const useSettingsStore = defineStore('settings', () => {
       queuePersist()
     }
     return payload
+=======
+  async function pickFolder() {
+    return invoke<string | null>('pick_output_folder')
+>>>>>>> origin/main
   }
 
   async function refreshModelDataAfterDirChange() {
@@ -792,7 +797,11 @@ export const useSettingsStore = defineStore('settings', () => {
     markStartupOnboardingCompleted,
     pickModelDir,
     pickOutputDir,
+<<<<<<< HEAD
     migrateDataRootToPortable,
+=======
+    pickFolder,
+>>>>>>> origin/main
     prepareModelDirChange,
     cancelModelDirChangeConfirmation,
     confirmModelDirMigration,

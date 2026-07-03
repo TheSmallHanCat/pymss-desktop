@@ -6,6 +6,7 @@ import {
   HomeOutline,
   MusicalNotesOutline,
   CubeOutline,
+  GitNetworkOutline,
   FolderOpenOutline,
   SettingsOutline,
 } from '@vicons/ionicons5'
@@ -16,6 +17,7 @@ const items = computed(() => [
   { name: 'home', path: '/', icon: HomeOutline, label: t('nav.home') },
   { name: 'separate', path: '/separate', icon: MusicalNotesOutline, label: t('nav.separate') },
   { name: 'models', path: '/models', icon: CubeOutline, label: t('nav.models') },
+  { name: 'workflows', path: '/workflows', icon: GitNetworkOutline, label: t('nav.workflows') },
   { name: 'results', path: '/results', icon: FolderOpenOutline, label: t('nav.results') },
   { name: 'settings', path: '/settings', icon: SettingsOutline, label: t('nav.settings') },
 ])

@@ -28,6 +28,7 @@ Thumbs.db
 .idea/
 
 # Local runtime outputs
+data/
 results/
 outputs/
 *.tmp

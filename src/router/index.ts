@@ -7,6 +7,7 @@ const router = createRouter({
     { path: '/separate', name: 'separate', component: () => import('@/views/SeparateView.vue') },
     { path: '/tasks', redirect: { name: 'results' } },
     { path: '/models', name: 'models', component: () => import('@/views/ModelsView.vue') },
+    { path: '/workflows', name: 'workflows', component: () => import('@/views/WorkflowsView.vue') },
     { path: '/results', name: 'results', component: () => import('@/views/ResultsView.vue') },
     { path: '/projects', redirect: { name: 'results' } },
     { path: '/editor', name: 'editor', component: () => import('@/views/EditorView.vue') },

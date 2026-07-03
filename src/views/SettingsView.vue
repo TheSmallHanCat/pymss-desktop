@@ -116,7 +116,6 @@ const maxConcurrentSeparationsInput = computed({
   },
 })
 const dataDirEntries = computed(() => [
-  { key: 'settings.outputDir', value: outputDir.value, fallback: 'outputs' },
   { key: 'settings.editorProjectsDir', value: editorProjectsDir.value, fallback: 'editor-projects' },
   { key: 'settings.settingsDir', value: settingsDir.value, fallback: 'settings' },
   { key: 'settings.logsDir', value: logsDir.value, fallback: 'logs' },
@@ -252,6 +251,14 @@ async function changeModelDir() {
     message.error(error instanceof Error ? error.message : String(error))
   } finally {
     isCheckingModelDir.value = false
+  }
+}
+
+async function changeOutputDir() {
+  try {
+    await settings.pickOutputDir()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
   }
 }
 
@@ -466,29 +473,46 @@ onMounted(() => {
               </div>
             </div>
 
-            <div class="path-item path-item--primary">
-              <div class="path-item__head">
-                <div class="path-item__head-copy">
-                  <strong>{{ t('settings.modelDir') }}</strong>
+            <div class="path-primary-grid">
+              <div class="path-item path-item--primary">
+                <div class="path-item__head">
+                  <div class="path-item__head-copy">
+                    <strong>{{ t('settings.modelDir') }}</strong>
+                  </div>
+                  <div class="path-item__actions">
+                    <n-tag v-if="hasActiveModelDirUsage && !isModelDirMigrating" :bordered="false" size="small" type="warning">
+                      {{ t('settings.modelDirInUse') }}
+                    </n-tag>
+                    <n-button
+                      secondary
+                      type="primary"
+                      size="small"
+                      :loading="isCheckingModelDir"
+                      :disabled="hasActiveModelDirUsage || isCheckingModelDir"
+                      @click="changeModelDir"
+                    >
+                      <template #icon><n-icon :component="SwapHorizontalOutline" /></template>
+                      {{ t('settings.changeModelDir') }}
+                    </n-button>
+                  </div>
                 </div>
-                <div class="path-item__actions">
-                  <n-tag v-if="hasActiveModelDirUsage && !isModelDirMigrating" :bordered="false" size="small" type="warning">
-                    {{ t('settings.modelDirInUse') }}
-                  </n-tag>
-                  <n-button
-                    secondary
-                    type="primary"
-                    size="small"
-                    :loading="isCheckingModelDir"
-                    :disabled="hasActiveModelDirUsage || isCheckingModelDir"
-                    @click="changeModelDir"
-                  >
-                    <template #icon><n-icon :component="SwapHorizontalOutline" /></template>
-                    {{ t('settings.changeModelDir') }}
-                  </n-button>
-                </div>
+                <code class="path-item__value" :title="modelDir || t('common.notSet')">{{ modelDir || t('common.notSet') }}</code>
               </div>
-              <code class="path-item__value" :title="modelDir || t('common.notSet')">{{ modelDir || t('common.notSet') }}</code>
+
+              <div class="path-item path-item--primary">
+                <div class="path-item__head">
+                  <div class="path-item__head-copy">
+                    <strong>{{ t('settings.outputDir') }}</strong>
+                  </div>
+                  <div class="path-item__actions">
+                    <n-button secondary type="primary" size="small" @click="changeOutputDir">
+                      <template #icon><n-icon :component="FolderOpenOutline" /></template>
+                      {{ t('settings.changeOutputDir') }}
+                    </n-button>
+                  </div>
+                </div>
+                <code class="path-item__value" :title="outputDir || t('common.notSet')">{{ outputDir || t('common.notSet') }}</code>
+              </div>
             </div>
 
             <div class="path-grid">
@@ -1116,6 +1140,12 @@ onMounted(() => {
   border-top: 1px solid color-mix(in srgb, var(--outline) 48%, transparent);
 }
 
+.path-primary-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .path-item {
   display: grid;
   gap: 12px;
@@ -1395,6 +1425,10 @@ onMounted(() => {
 
   .path-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .path-primary-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .migration-summary-grid {

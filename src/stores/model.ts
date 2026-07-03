@@ -440,7 +440,7 @@ export const useModelStore = defineStore('model', () => {
       : modelOrName
     if (listEntry) selectedInfo.value = listEntry
 
-    if (listEntry?.defaultInferenceParamsResolved) {
+    if (listEntry?.defaultInferenceParamsResolved && String(listEntry.configInstruments || '').trim()) {
       detailLoading.value = false
       return Promise.resolve(listEntry)
     }

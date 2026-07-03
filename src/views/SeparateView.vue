@@ -2,13 +2,14 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
   CubeOutline,
+  GitNetworkOutline,
   CheckmarkCircle,
   PlayOutline,
   MusicalNotesOutline,
@@ -24,6 +25,7 @@ import {
 } from '@vicons/ionicons5'
 import { useModelStore } from '@/stores/model'
 import { useTaskStore, type SeparationTask, type StemOutput } from '@/stores/task'
+import { useWorkflowStore } from '@/stores/workflow'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { buildModelCategoryOptionsFromModels, getModelCategoryLabel } from '@/utils/modelCategory'
@@ -33,8 +35,10 @@ const { t, locale } = useI18n()
 const message = useMessage()
 const dialog = useDialog()
 const router = useRouter()
+const route = useRoute()
 const task = useTaskStore()
 const model = useModelStore()
+const workflow = useWorkflowStore()
 const settings = useSettingsStore()
 const app = useAppStore()
 
@@ -53,14 +57,19 @@ const {
   enable_post_process,
   post_process_threshold,
   high_end_process,
+  selectedStems,
 } = storeToRefs(task)
 const { selectedModel, downloadedModels, isLoading, detailLoading } = storeToRefs(model)
+const { workflows, selectedWorkflow, selectedWorkflowId } = storeToRefs(workflow)
 
 const isDragging = ref(false)
 const showSettingsDrawer = ref(false)
 const showLogModal = ref(false)
 const modelSearch = ref('')
 const modelCategoryFilter = ref('')
+const workflowSearch = ref('')
+const runMode = ref<'model' | 'workflow'>(route.query.mode === 'workflow' ? 'workflow' : 'model')
+const temporaryOutputDir = ref('')
 const focusedSeparationJobId = ref<string | null>(null)
 const cancellingTaskId = ref<string | null>(null)
 const audioElements = new Map<string, HTMLAudioElement>()
@@ -101,6 +110,10 @@ const m4aCodecOptions = computed(() => [
   { label: t('audio.codecAac'), value: 'aac' },
 ])
 const selectedModelName = computed(() => String(selectedModel.value || ''))
+const runModeOptions = computed(() => [
+  { label: t('separate.runModeModel'), value: 'model' },
+  { label: t('separate.runModeWorkflow'), value: 'workflow' },
+])
 const listedDownloadedModels = computed(() => {
   return [...downloadedModels.value].sort((a, b) => (
     a.name.localeCompare(b.name, locale.value === 'zh-CN' ? 'zh-CN' : 'en')
@@ -120,20 +133,61 @@ const isApolloModel = computed(() => currentModelType.value === 'apollo')
 const showStandardizeField = computed(() => Boolean(currentModelInfo.value) && !isVrModel.value)
 const showNormalizeField = computed(() => Boolean(currentModelInfo.value))
 const hasVisibleAdvancedFields = computed(() => (
-  showStandardizeField.value
-  || showNormalizeField.value
-  || Object.keys(currentModelDefaults.value).length > 0
+  Object.keys(currentModelDefaults.value).some(key => !['standardize', 'normalize'].includes(key))
 ))
 const shouldPrefetchAdvancedParams = computed(() => (
   Boolean(currentModelInfo.value?.downloaded)
-  && Boolean(currentModelInfo.value?.configPath)
-  && !currentModelDefaultsResolved.value
+  && (!currentModelDefaultsResolved.value || !String(currentModelInfo.value?.configInstruments || '').trim())
 ))
 const advancedParamsLoading = computed(() => shouldPrefetchAdvancedParams.value && detailLoading.value)
 function hasInferenceField(key: string) {
+  if (key === 'standardize' || key === 'normalize') return false
   if (key === 'num_overlap' && isApolloModel.value) return false
   return Object.prototype.hasOwnProperty.call(currentModelDefaults.value, key)
 }
+function parseModelInstruments(value?: unknown) {
+  const seen = new Set<string>()
+  const rawItems = Array.isArray(value)
+    ? value
+    : (() => {
+        const text = String(value || '').trim()
+        if (!text) return []
+        if (text.startsWith('[')) {
+          try {
+            const parsed = JSON.parse(text)
+            if (Array.isArray(parsed)) return parsed
+          } catch {
+            // Fall through to delimiter parsing for Python-style list strings.
+          }
+        }
+        return text.split(/[,，;；/|\n]+/)
+      })()
+  return rawItems
+    .map(item => String(item || '').trim().replace(/^[\s"'[\](){}]+|[\s"'[\](){}]+$/g, ''))
+    .filter((item) => {
+      if (!item) return false
+      const key = item.toLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+const availableStemNames = computed(() => parseModelInstruments(currentModelInfo.value?.configInstruments))
+const selectedStemSummary = computed(() => {
+  if (!selectedStems.value.length) return t('separate.allStems')
+  return selectedStems.value.join(', ')
+})
+const checkedOutputStems = computed<string[]>({
+  get() {
+    if (!selectedStems.value.length) return [...availableStemNames.value]
+    return selectedStems.value
+  },
+  set(value) {
+    const allowed = new Set(availableStemNames.value)
+    const next = value.filter(stem => allowed.has(stem))
+    selectedStems.value = next.length === availableStemNames.value.length ? [] : next
+  },
+})
 const modelCategoryOptions = computed(() => [
   { label: t('common.all'), value: '' },
   ...buildModelCategoryOptionsFromModels(listedDownloadedModels.value, locale.value),
@@ -159,17 +213,29 @@ const filteredDownloadedModels = computed(() => {
     return matchesQuery && matchesCategory
   })
 })
+const filteredWorkflows = computed(() => {
+  const query = workflowSearch.value.trim().toLowerCase()
+  return [...workflows.value]
+    .filter((item) => {
+      if (!query) return true
+      return item.name.toLowerCase().includes(query) || item.description.toLowerCase().includes(query)
+    })
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+})
 
-const normalizedOutputDir = computed(() => (settings.outputDir || 'results').trim() || 'results')
+const normalizedOutputDir = computed(() => (temporaryOutputDir.value || settings.outputDir || 'results').trim() || 'results')
 const outputPreview = computed(() => {
   const base = normalizedOutputDir.value.replace(/[\\/]$/, '')
   const separator = base.includes('\\') ? '\\' : '/'
   return `${base}${separator}${t('separate.taskIdPreview')}${separator}${t('separate.resultIdPreview')}${separator}${t('separate.outputFilePreview')}`
 })
 const formatLabel = computed(() => String(settings.defaultFormat || 'wav').toUpperCase())
-const outputModeLabel = computed(() => t('separate.outputModeSeparate'))
+const outputModeLabel = computed(() => runMode.value === 'workflow' ? t('separate.outputModeWorkflow') : t('separate.outputModeSeparate'))
 const outputSummaryPath = computed(() => shortenMiddle(outputPreview.value, 60))
-const canStart = computed(() => inputFiles.value.length > 0 && modelDownloaded.value)
+const canStart = computed(() => (
+  inputFiles.value.length > 0
+  && (runMode.value === 'workflow' ? Boolean(selectedWorkflow.value) : modelDownloaded.value)
+))
 const newestRunningJob = computed(() => {
   return [...task.allJobs]
     .filter(job => job.tasks.some(item => !['done', 'failed', 'cancelled'].includes(item.status)))
@@ -222,6 +288,7 @@ const inputCompactLine = computed(() => {
 })
 const modelCompactLine = computed(() => {
   if (currentTask.value?.model) return currentTask.value.model
+  if (runMode.value === 'workflow') return selectedWorkflow.value?.name || t('separate.noWorkflowSelected')
   const name = selectedModelName.value || t('separate.noModelSelected')
   const category = currentModelInfo.value ? categoryLabel(currentModelInfo.value) : ''
   return category ? `${name} · ${category}` : name
@@ -478,9 +545,24 @@ function handleSelectModel(item: (typeof listedDownloadedModels.value)[number]) 
 }
 
 function prefetchSelectedModelAdvancedParams() {
+  if (runMode.value !== 'model') return
   if (!shouldPrefetchAdvancedParams.value || detailLoading.value || isLoading.value || !selectedModelName.value) return
   model.selectModel(selectedModelName.value).catch(() => {})
 }
+
+watch(selectedModelName, () => {
+  selectedStems.value = []
+})
+
+watch(
+  availableStemNames,
+  (stems) => {
+    if (!selectedStems.value.length) return
+    const allowed = new Set(stems)
+    selectedStems.value = selectedStems.value.filter(stem => allowed.has(stem))
+  },
+  { immediate: true },
+)
 
 watch(
   currentModelInfo,
@@ -513,11 +595,18 @@ watch(
   },
   { immediate: true },
 )
+watch(
+  [workflows, selectedWorkflowId],
+  ([list, current]) => {
+    if (!list.length) return
+    if (!current || !list.some(item => item.id === current)) {
+      workflow.selectWorkflow(list[0].id)
+    }
+  },
+  { immediate: true },
+)
 
 onMounted(async () => {
-  if (downloadedModels.value.some((item) => item.downloaded && item.configPath && !item.defaultInferenceParamsResolved) && !isLoading.value) {
-    model.loadModels().catch(() => {})
-  }
   if (!app.envInfo && !app.envLoading) {
     app.checkEnvInBackground().catch(() => {})
   }
@@ -559,17 +648,28 @@ async function handlePickFolder() {
   else message.warning(t('separate.folderEmpty'))
 }
 
+async function pickTemporaryOutputDir() {
+  const folder = await settings.pickFolder()
+  if (folder) temporaryOutputDir.value = folder
+}
+
 async function start() {
   if (!inputFiles.value.length) {
     message.warning(t('separate.startHintNoInput'))
     return
   }
-  if (!modelDownloaded.value) {
+  if (runMode.value === 'workflow' && !selectedWorkflow.value) {
+    message.warning(t('separate.startHintNoWorkflow'))
+    return
+  }
+  if (runMode.value === 'model' && !modelDownloaded.value) {
     message.warning(t('separate.startHintModelMissing'))
     return
   }
   try {
-    const result = await task.startSeparation()
+    const result = runMode.value === 'workflow' && selectedWorkflow.value
+      ? await task.startWorkflowInference(selectedWorkflow.value, { outputDir: normalizedOutputDir.value })
+      : await task.startSeparation({ outputDir: normalizedOutputDir.value })
     focusedSeparationJobId.value = result?.jobId || newestRunningJob.value?.id || focusedSeparationJobId.value
     task.clearInputFiles()
     if (result && result.failed > 0) {
@@ -704,23 +804,32 @@ async function retryCurrentTask() {
         </n-collapse-transition>
       </section>
 
-      <section class="config-panel config-panel--model">
+      <section class="config-panel config-panel--model" :class="{ 'config-panel--workflow': runMode === 'workflow' }">
         <div class="panel-heading">
-          <div class="panel-heading__icon"><n-icon :component="CubeOutline" /></div>
+          <div class="panel-heading__icon"><n-icon :component="runMode === 'workflow' ? GitNetworkOutline : CubeOutline" /></div>
           <div class="panel-heading__main">
-            <h2>{{ t('separate.model') }}</h2>
-            <p :title="isConfigCompact ? modelCompactLine : t('separate.modelPanelHint')">
-              {{ isConfigCompact ? modelCompactLine : t('separate.modelPanelHint') }}
+            <h2>{{ t('separate.runTarget') }}</h2>
+            <p :title="isConfigCompact ? modelCompactLine : (runMode === 'workflow' ? t('separate.workflowPanelHint') : t('separate.modelPanelHint'))">
+              {{ isConfigCompact ? modelCompactLine : (runMode === 'workflow' ? t('separate.workflowPanelHint') : t('separate.modelPanelHint')) }}
             </p>
           </div>
-          <n-button text class="panel-heading__action" @click="router.push('/models')">
-            {{ t('separate.manageModelsInline') }}
+          <n-button text class="panel-heading__action" @click="router.push(runMode === 'workflow' ? '/workflows' : '/models')">
+            {{ runMode === 'workflow' ? t('separate.manageWorkflowsInline') : t('separate.manageModelsInline') }}
           </n-button>
         </div>
         <n-collapse-transition :show="!isConfigCompact">
           <div class="config-rollup-content config-rollup-content--model">
             <div class="model-panel__body">
-              <div v-if="downloadedModels.length" class="model-picker">
+              <n-radio-group v-model:value="runMode" class="run-mode-toggle">
+                <n-radio-button
+                  v-for="option in runModeOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </n-radio-button>
+              </n-radio-group>
+              <div v-if="runMode === 'model' && downloadedModels.length" class="model-picker">
                 <div class="model-picker__toolbar">
                   <n-input
                     v-model:value="modelSearch"
@@ -768,10 +877,10 @@ async function retryCurrentTask() {
                   {{ t('separate.modelSearchEmpty') }}
                 </div>
               </div>
-              <div v-if="selectedModelName && !modelDownloaded" class="model-info-card model-info-card--warn">
+              <div v-if="runMode === 'model' && selectedModelName && !modelDownloaded" class="model-info-card model-info-card--warn">
                 {{ t('separate.startHintModelMissing') }}
               </div>
-              <div v-else-if="!downloadedModels.length" class="model-panel__empty-state" :class="{ 'model-panel__empty-state--loading': isLoading }">
+              <div v-else-if="runMode === 'model' && !downloadedModels.length" class="model-panel__empty-state" :class="{ 'model-panel__empty-state--loading': isLoading }">
                 <div class="model-panel__empty-visual">
                   <n-spin v-if="isLoading" size="large" />
                   <n-icon v-else :component="CubeOutline" />
@@ -784,6 +893,57 @@ async function retryCurrentTask() {
                   <n-button secondary :loading="isLoading" @click="model.loadModels()">
                     {{ t('separate.modelPanelPrimaryAction') }}
                   </n-button>
+                </div>
+              </div>
+              <div v-if="runMode === 'workflow'" class="model-picker model-picker--workflow">
+                <div class="model-picker__toolbar">
+                  <n-input
+                    v-model:value="workflowSearch"
+                    clearable
+                    :placeholder="t('separate.workflowSearchPlaceholder')"
+                  >
+                    <template #prefix>
+                      <n-icon :component="SearchOutline" />
+                    </template>
+                  </n-input>
+                </div>
+                <div class="model-picker__divider" />
+                <div v-if="filteredWorkflows.length" class="model-picker__list" role="listbox" :aria-label="t('separate.workflow')">
+                  <button
+                    v-for="item in filteredWorkflows"
+                    :key="item.id"
+                    type="button"
+                    role="option"
+                    :aria-selected="selectedWorkflowId === item.id"
+                    class="model-picker__item"
+                    :class="{ 'model-picker__item--active': selectedWorkflowId === item.id }"
+                    @click="workflow.selectWorkflow(item.id)"
+                  >
+                    <div class="model-picker__item-main">
+                      <div class="model-picker__item-title">
+                        <strong :title="item.name">{{ item.name }}</strong>
+                        <span class="model-picker__item-tag">{{ t('separate.workflow') }}</span>
+                      </div>
+                      <div class="model-picker__item-sub" :title="item.description">
+                        {{ item.description || t('separate.workflowNoDescription') }}
+                      </div>
+                    </div>
+                    <n-icon v-if="selectedWorkflowId === item.id" class="model-picker__item-check" :component="CheckmarkCircle" />
+                  </button>
+                </div>
+                <div v-else class="model-panel__empty-state">
+                  <div class="model-panel__empty-visual">
+                    <n-icon :component="GitNetworkOutline" />
+                  </div>
+                  <div class="model-panel__empty-main">
+                    <strong>{{ t('separate.workflowEmptyTitle') }}</strong>
+                    <p>{{ t('separate.workflowEmptyDesc') }}</p>
+                  </div>
+                  <div class="model-panel__empty-actions">
+                    <n-button secondary @click="router.push('/workflows')">
+                      {{ t('separate.workflowCreateAction') }}
+                    </n-button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -926,9 +1086,37 @@ async function retryCurrentTask() {
             {{ t('separate.openOutput') }}
           </n-button>
         </div>
+        <div class="summary-config-grid">
+          <div class="field-block field-block--wide">
+            <label>{{ t('separate.temporaryOutputDir') }}</label>
+            <n-input-group>
+              <n-input v-model:value="temporaryOutputDir" :placeholder="settings.outputDir || t('separate.outputDefault')" clearable />
+              <n-button secondary @click="pickTemporaryOutputDir">{{ t('separate.chooseOutput') }}</n-button>
+            </n-input-group>
+          </div>
+          <div class="field-block">
+            <label>{{ t('settings.defaultFormat') }}</label>
+            <n-select v-model:value="settings.defaultFormat" :options="formatOptions" />
+          </div>
+        </div>
+        <div v-if="runMode === 'model'" class="summary-stems-row">
+          <label>{{ t('separate.outputStems') }}</label>
+          <div v-if="availableStemNames.length" class="stem-toggle-list">
+            <n-checkbox-group v-model:value="checkedOutputStems">
+              <n-checkbox
+                v-for="stem in availableStemNames"
+                :key="stem"
+                :value="stem"
+                :label="stem"
+              />
+            </n-checkbox-group>
+          </div>
+          <div v-else class="stem-toggle-empty">{{ t('separate.allStems') }}</div>
+        </div>
         <div class="summary-bar__path" :title="outputPreview">{{ outputSummaryPath }}</div>
         <div class="summary-bar__details">
           <span>{{ t('separate.currentFormat') }} · {{ formatLabel }}</span>
+          <span>{{ t('separate.outputStems') }} · {{ selectedStemSummary }}</span>
           <span>{{ t('separate.outputMode') }} · {{ outputModeLabel }}</span>
         </div>
       </div>
@@ -947,38 +1135,6 @@ async function retryCurrentTask() {
     <n-drawer v-model:show="showSettingsDrawer" :width="520" placement="right">
       <n-drawer-content class="settings-drawer" :title="t('separate.settingsDrawerTitle')" closable>
         <div class="settings-drawer__content">
-          <div class="settings-group">
-            <div class="settings-group__head">
-              <strong>{{ t('separate.outputLocationTitle') }}</strong>
-              <span>{{ t('separate.outputLocationHint') }}</span>
-            </div>
-
-            <div class="output-grid">
-              <div class="field-block field-block--wide">
-                <label>{{ t('settings.outputDir') }}</label>
-                <n-input v-model:value="settings.outputDir" :placeholder="t('separate.outputDefault')" clearable />
-              </div>
-              <div class="field-block">
-                <label>{{ t('settings.defaultFormat') }}</label>
-                <n-select v-model:value="settings.defaultFormat" :options="formatOptions" />
-              </div>
-            </div>
-
-            <div class="button-row">
-              <n-button secondary @click="settings.pickOutputDir()">
-                {{ t('separate.chooseOutput') }}
-              </n-button>
-              <n-button secondary @click="task.revealPath(normalizedOutputDir)">
-                {{ t('separate.openOutput') }}
-              </n-button>
-            </div>
-
-            <div class="output-preview">
-              <span>{{ t('separate.outputPreview') }}</span>
-              <code :title="outputPreview">{{ outputPreview }}</code>
-            </div>
-          </div>
-
           <div class="settings-group">
             <div class="settings-group__head">
               <strong>{{ t('separate.runOptionsTitle') }}</strong>
@@ -1037,7 +1193,7 @@ async function retryCurrentTask() {
                   <n-spin size="small" />
                   <span>{{ t('separate.advancedPanelLoading') }}</span>
                 </div>
-                <n-grid :cols="2" :x-gap="16" :y-gap="16" responsive="screen">
+                <n-grid v-if="runMode === 'model'" :cols="2" :x-gap="16" :y-gap="16" responsive="screen">
                   <n-grid-item v-if="hasInferenceField('batch_size')">
                     <div class="field-block">
                       <label>{{ t('inference.batchSize') }}</label>
@@ -1082,12 +1238,12 @@ async function retryCurrentTask() {
                   </n-grid-item>
                 </n-grid>
                 <div class="check-list check-list--spaced">
-                  <n-checkbox v-if="showStandardizeField" v-model:checked="standardize">{{ t('inference.standardize') }}</n-checkbox>
-                  <n-checkbox v-if="showNormalizeField" v-model:checked="normalize">{{ t('inference.normalize') }}</n-checkbox>
-                  <n-checkbox v-if="hasInferenceField('enable_post_process')" v-model:checked="enable_post_process">{{ t('inference.vrEnablePostProcess') }}</n-checkbox>
-                  <n-checkbox v-if="hasInferenceField('high_end_process')" v-model:checked="high_end_process">{{ t('inference.vrHighEndProcess') }}</n-checkbox>
+                  <n-checkbox v-if="runMode === 'workflow' || showStandardizeField" v-model:checked="standardize">{{ t('inference.standardize') }}</n-checkbox>
+                  <n-checkbox v-if="runMode === 'workflow' || showNormalizeField" v-model:checked="normalize">{{ t('inference.normalize') }}</n-checkbox>
+                  <n-checkbox v-if="runMode === 'model' && hasInferenceField('enable_post_process')" v-model:checked="enable_post_process">{{ t('inference.vrEnablePostProcess') }}</n-checkbox>
+                  <n-checkbox v-if="runMode === 'model' && hasInferenceField('high_end_process')" v-model:checked="high_end_process">{{ t('inference.vrHighEndProcess') }}</n-checkbox>
                 </div>
-                <p v-if="!advancedParamsLoading && !hasVisibleAdvancedFields" class="advanced-empty">
+                <p v-if="runMode === 'model' && !advancedParamsLoading && !hasVisibleAdvancedFields" class="advanced-empty">
                   {{ t('separate.advancedPanelEmpty') }}
                 </p>
               </n-collapse-item>
@@ -1208,6 +1364,7 @@ async function retryCurrentTask() {
 }
 
 .panel-heading {
+  min-width: 0;
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -1223,9 +1380,20 @@ async function retryCurrentTask() {
 }
 
 .panel-heading__action {
-  flex: 0 0 auto;
+  min-width: 0;
+  max-width: min(210px, 34%);
+  flex: 0 1 auto;
   margin-left: auto;
   color: var(--on-surface-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-heading__action :deep(.n-button__content) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .panel-heading__icon {
@@ -1440,6 +1608,9 @@ async function retryCurrentTask() {
   grid-template-columns: minmax(0, 1.3fr) minmax(180px, 0.7fr);
   gap: 8px;
 }
+.model-picker--workflow .model-picker__toolbar {
+  grid-template-columns: minmax(0, 1fr);
+}
 
 .model-picker__divider {
   height: 1px;
@@ -1461,6 +1632,9 @@ async function retryCurrentTask() {
 
 .model-picker__item {
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   position: relative;
   display: flex;
   align-items: center;
@@ -1505,6 +1679,8 @@ async function retryCurrentTask() {
 
 .model-picker__item-title {
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1561,6 +1737,18 @@ async function retryCurrentTask() {
   flex: 0 0 auto;
   font-size: 14px;
   color: var(--primary);
+}
+@media (max-width: 1080px) {
+  .config-panel--workflow .panel-heading {
+    display: grid;
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+  .config-panel--workflow .panel-heading__action {
+    grid-column: 2;
+    justify-self: start;
+    max-width: 100%;
+    margin-left: 0;
+  }
 }
 
 .model-picker__empty {
@@ -1731,6 +1919,55 @@ async function retryCurrentTask() {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
+}
+
+.summary-config-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) 120px auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.summary-checks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 34px;
+  padding-bottom: 2px;
+}
+
+.stem-toggle-list {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+}
+
+.stem-toggle-list :deep(.n-checkbox-group) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.stem-toggle-empty {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  color: var(--on-surface-muted);
+  font-size: 13px;
+}
+
+.summary-stems-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.summary-stems-row > label {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .summary-bar__details {
@@ -2348,6 +2585,14 @@ async function retryCurrentTask() {
     align-items: stretch;
   }
 
+  .summary-config-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 0.7fr);
+  }
+
+  .summary-checks {
+    grid-column: 1 / -1;
+  }
+
   .summary-bar__actions {
     justify-content: flex-end;
     flex-wrap: wrap;
@@ -2374,6 +2619,23 @@ async function retryCurrentTask() {
 }
 
 @media (max-width: 620px) {
+  .summary-config-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .summary-stems-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .summary-stems-row > label {
+    line-height: 1.4;
+  }
+
+  .summary-bar__actions .n-button {
+    flex: 1 1 160px;
+  }
+
   .settings-drawer__content,
   .settings-drawer :deep(.n-drawer-body-content) {
     padding-left: 16px;
