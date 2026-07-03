@@ -15,6 +15,7 @@ from worker_models import (
     cmd_model_info,
     cmd_model_storage_summary,
 )
+from worker_workflows import cmd_infer_workflow
 from worker_protocol import emit_error, load_payload
 
 
@@ -53,6 +54,8 @@ def main(argv: list[str]) -> int:
             return cmd_export_editor_mix(payload)
         if args.command == "infer":
             return cmd_infer(payload)
+        if args.command == "infer_workflow":
+            return cmd_infer_workflow(payload)
         return emit_error("UNKNOWN_COMMAND", f"Unknown command: {args.command}")
     except Exception as exc:
         import traceback

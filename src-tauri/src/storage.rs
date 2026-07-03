@@ -144,6 +144,7 @@ fn store_file_name(name: &str) -> AppResult<&'static str> {
         "task-history" => Ok("tasks.json"),
         "model-state" => Ok("model-cache.json"),
         "editor-ui" => Ok("editor-ui.json"),
+        "workflow-state" => Ok("workflows.json"),
         _ => Err(AppError::Worker(format!("unknown app store: {name}"))),
     }
 }

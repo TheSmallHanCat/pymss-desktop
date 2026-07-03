@@ -219,6 +219,21 @@ pub async fn start_separation(
 }
 
 #[tauri::command]
+pub async fn start_workflow_inference(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> AppResult<Value> {
+    let task_id = payload
+        .get("taskId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Worker("missing taskId".into()))?
+        .to_string();
+    spawn_worker_background(app, state, "infer_workflow", task_id.clone(), payload)?;
+    Ok(serde_json::json!({ "taskId": task_id, "started": true }))
+}
+
+#[tauri::command]
 pub async fn get_app_paths(app: AppHandle) -> AppResult<storage::AppPathsPayload> {
     storage::app_paths_payload(&app)
 }

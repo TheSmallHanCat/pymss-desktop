@@ -69,6 +69,7 @@ fn main() {
             commands::app_cmd::start_model_dir_migration,
             commands::app_cmd::start_model_download,
             commands::app_cmd::start_separation,
+            commands::app_cmd::start_workflow_inference,
             commands::app_cmd::worker_health,
         ])
         .run(tauri::generate_context!())
