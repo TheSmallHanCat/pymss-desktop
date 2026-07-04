@@ -3,6 +3,7 @@ use crate::python::protocol::WorkerEnvelope;
 use crate::state::AppState;
 use crate::storage;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -27,7 +28,6 @@ fn pymss_sys_path_candidate(path: &std::path::Path) -> Option<PathBuf> {
     }
     None
 }
-
 fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
     if let Ok(resource) = app.path().resource_dir() {
         let candidates = [
@@ -278,14 +278,11 @@ fn build_worker_command(
         }
     }
     if let Some(pymss_source) = pymss_source_path(app)? {
-        let mut python_path = pymss_source.to_string_lossy().to_string();
-        if let Ok(existing) = std::env::var("PYTHONPATH") {
-            if !existing.trim().is_empty() {
-                python_path.push(';');
-                python_path.push_str(&existing);
-            }
+        if let Some(python_path) =
+            prepend_path(std::env::var("PYTHONPATH").ok(), vec![pymss_source])
+        {
+            cmd.env("PYTHONPATH", python_path);
         }
-        cmd.env("PYTHONPATH", python_path);
     }
     if let Ok(models_dir) = storage::models_dir(app) {
         cmd.env("PYMSS_MODEL_DIR", models_dir.to_string_lossy().to_string());
@@ -326,6 +323,20 @@ fn emit_task_error(app: &AppHandle, task_id: &str, message: String) {
             "payload": { "message": message }
         }),
     );
+}
+fn emit_task_error_to_all(app: &AppHandle, task_ids: &[String], message: String) {
+    for task_id in task_ids {
+        emit_task_error(app, task_id, message.clone());
+    }
+}
+fn worker_error_message(envelope: &WorkerEnvelope) -> String {
+    envelope
+        .payload
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or("Worker failed")
+        .to_string()
 }
 
 #[cfg(debug_assertions)]
@@ -389,7 +400,9 @@ fn is_background_terminal_event(command: &str, event_type: &str) -> bool {
             "error" | "model_residual_cleanup_done" | "model_residual_cleanup_failed"
         ),
         "download_model" => matches!(event_type, "error" | "download_done" | "task_cancelled"),
-        "infer" => matches!(event_type, "task_done" | "task_cancelled"),
+        "infer" | "infer_workflow" => {
+            matches!(event_type, "error" | "task_done" | "task_cancelled")
+        }
         _ => matches!(event_type, "error"),
     }
 }
@@ -533,8 +546,14 @@ pub fn spawn_worker_background(
             .tasks
             .lock()
             .map_err(|_| AppError::Worker("task registry lock poisoned".into()))?;
-        if let Some(existing) = registered_task_ids.iter().find(|id| tasks.contains_key(*id)) {
-            return Err(AppError::Worker(format!("task already exists: {}", existing)));
+        if let Some(existing) = registered_task_ids
+            .iter()
+            .find(|id| tasks.contains_key(*id))
+        {
+            return Err(AppError::Worker(format!(
+                "task already exists: {}",
+                existing
+            )));
         }
     }
 
@@ -548,15 +567,17 @@ pub fn spawn_worker_background(
         .ok_or_else(|| AppError::Worker("missing worker stdout".into()))?;
     let stderr = child.stderr.take();
     let stderr_app = app.clone();
-    let stderr_task_id = task_id.clone();
+    let stderr_task_ids = registered_task_ids.clone();
     #[cfg(debug_assertions)]
     let stderr_command = command_name.clone();
     let stderr_handle = stderr.map(|stderr| {
         std::thread::spawn(move || {
             read_lossy_lines(stderr, |line| {
-                #[cfg(debug_assertions)]
-                debug_log_worker_stderr(&stderr_command, Some(&stderr_task_id), &line);
-                emit_task_log(&stderr_app, &stderr_task_id, "warning", line);
+                for stderr_task_id in &stderr_task_ids {
+                    #[cfg(debug_assertions)]
+                    debug_log_worker_stderr(&stderr_command, Some(stderr_task_id), &line);
+                    emit_task_log(&stderr_app, stderr_task_id, "warning", line.clone());
+                }
             });
         })
     });
@@ -571,8 +592,7 @@ pub fn spawn_worker_background(
         }
     }
     std::thread::spawn(move || {
-        let saw_terminal_event = Arc::new(Mutex::new(false));
-        let saw_terminal_event_for_stdout = Arc::clone(&saw_terminal_event);
+        let mut terminal_task_ids: HashSet<String> = HashSet::new();
         read_lossy_lines(stdout, |line| {
             if line.trim().is_empty() {
                 return;
@@ -580,8 +600,16 @@ pub fn spawn_worker_background(
             match serde_json::from_str::<WorkerEnvelope>(&line) {
                 Ok(envelope) => {
                     if is_background_terminal_event(&command_name, envelope.event_type.as_str()) {
-                        if let Ok(mut seen) = saw_terminal_event_for_stdout.lock() {
-                            *seen = true;
+                        if let Some(envelope_task_id) = envelope.task_id.as_deref() {
+                            if registered_task_ids.iter().any(|id| id == envelope_task_id) {
+                                terminal_task_ids.insert(envelope_task_id.to_string());
+                            }
+                        } else if envelope.event_type == "error" {
+                            let message = worker_error_message(&envelope);
+                            emit_task_error_to_all(&app, &registered_task_ids, message);
+                            terminal_task_ids.extend(registered_task_ids.iter().cloned());
+                        } else {
+                            terminal_task_ids.insert(task_id.clone());
                         }
                     }
                     #[cfg(debug_assertions)]
@@ -589,12 +617,14 @@ pub fn spawn_worker_background(
                     let _ = app.emit("pymss://worker-event", &envelope);
                 }
                 Err(err) => {
-                    if let Ok(mut seen) = saw_terminal_event_for_stdout.lock() {
-                        *seen = true;
-                    }
                     #[cfg(debug_assertions)]
                     debug_log_worker_parse_error(&command_name, Some(&task_id), &err, &line);
-                    emit_task_error(&app, &task_id, format!("Invalid worker event: {err}"));
+                    emit_task_error_to_all(
+                        &app,
+                        &registered_task_ids,
+                        format!("Invalid worker event: {err}"),
+                    );
+                    terminal_task_ids.extend(registered_task_ids.iter().cloned());
                 }
             }
         });
@@ -603,14 +633,26 @@ pub fn spawn_worker_background(
         } else {
             None
         };
-        let saw_terminal_event = saw_terminal_event.lock().map(|seen| *seen).unwrap_or(false);
-        if !saw_terminal_event {
+        let missing_terminal_task_ids = registered_task_ids
+            .iter()
+            .filter(|task_id| !terminal_task_ids.contains(*task_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing_terminal_task_ids.is_empty() {
             match exit_status {
                 Some(status) if !status.success() => {
-                    emit_task_error(&app, &task_id, format!("worker exited with {status}"));
+                    emit_task_error_to_all(
+                        &app,
+                        &missing_terminal_task_ids,
+                        format!("worker exited with {status}"),
+                    );
                 }
                 None => {
-                    emit_task_error(&app, &task_id, "worker exited unexpectedly".to_string());
+                    emit_task_error_to_all(
+                        &app,
+                        &missing_terminal_task_ids,
+                        "worker exited unexpectedly".to_string(),
+                    );
                 }
                 _ => {}
             }
