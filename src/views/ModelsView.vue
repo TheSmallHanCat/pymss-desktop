@@ -47,7 +47,6 @@ const {
 } = storeToRefs(modelStore)
 
 const showDetail = ref(false)
-
 const downloadedOnly = ref(false)
 const page = ref(1)
 const pageSize = ref(24)
@@ -972,8 +971,8 @@ onMounted(() => {
 
 .model-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
-  gap: 9px;
+  grid-template-columns: 1fr;
+  gap: 7px;
   min-height: 200px;
 }
 
@@ -999,17 +998,21 @@ onMounted(() => {
 /* ===== Model Card ===== */
 .model-card {
   cursor: pointer;
-  min-height: 154px;
-  padding: 13px 14px;
-  border-radius: 14px;
+  min-height: 0;
+  padding: 11px 12px 11px 14px;
+  border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.026), transparent 50%),
-    color-mix(in srgb, var(--surface-1) 72%, transparent);
+    linear-gradient(180deg, rgba(255,255,255,0.018), transparent 54%),
+    color-mix(in srgb, var(--surface-1) 64%, transparent);
   transition: box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(170px, 0.55fr) minmax(132px, auto);
+  grid-template-areas:
+    "header tags footer"
+    "meta meta footer";
+  align-items: center;
+  gap: 7px 14px;
 }
 
 .model-card:hover {
@@ -1023,11 +1026,11 @@ onMounted(() => {
 .model-card--selected {
   border-color: color-mix(in srgb, var(--primary) 48%, var(--outline)) !important;
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 26%, transparent), transparent 70%),
-    color-mix(in srgb, var(--surface-2) 54%, transparent);
+    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 18%, transparent), transparent 72%),
+    color-mix(in srgb, var(--surface-2) 48%, transparent);
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.06),
-    0 10px 24px color-mix(in srgb, var(--primary-glow) 8%, transparent);
+    0 8px 18px color-mix(in srgb, var(--primary-glow) 6%, transparent);
 }
 
 .model-card--unsupported {
@@ -1036,6 +1039,7 @@ onMounted(() => {
 
 /* Card header */
 .mc-header {
+  grid-area: header;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -1045,7 +1049,7 @@ onMounted(() => {
 
 .mc-name {
   display: -webkit-box;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
   flex: 1;
   min-width: 0;
@@ -1058,9 +1062,11 @@ onMounted(() => {
 
 /* Tags row */
 .mc-tags {
+  grid-area: tags;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 5px;
 }
 
@@ -1072,9 +1078,12 @@ onMounted(() => {
 
 /* Meta info */
 .mc-meta {
-  display: grid;
-  gap: 5px;
+  grid-area: meta;
+  display: flex;
+  align-items: center;
+  gap: 14px;
   font-size: 11px;
+  min-width: 0;
 }
 
 .mc-meta-item {
@@ -1096,16 +1105,18 @@ onMounted(() => {
 
 /* Footer */
 .mc-footer {
-  margin-top: auto;
-  padding-top: 9px;
-  border-top: 1px solid color-mix(in srgb, var(--outline) 52%, transparent);
+  grid-area: footer;
+  min-width: 132px;
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
 /* Download progress */
 .mc-dl {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .mc-dl-info {
@@ -1179,7 +1190,7 @@ onMounted(() => {
 
 .mc-dl-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
 }
 
@@ -1197,6 +1208,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
 }
 
 /* ===== Drawer Footer ===== */
@@ -1447,8 +1459,29 @@ onMounted(() => {
     max-width: 100%;
   }
 
-  .model-grid {
+  .toolbar-row,
+  .model-card {
     grid-template-columns: 1fr;
+  }
+
+  .model-card {
+    grid-template-areas:
+      "header"
+      "tags"
+      "meta"
+      "footer";
+  }
+
+  .mc-tags {
+    justify-content: flex-start;
+  }
+
+  .mc-meta {
+    flex-wrap: wrap;
+  }
+
+  .mc-footer {
+    min-width: 0;
   }
 }
 </style>
