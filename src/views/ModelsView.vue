@@ -972,7 +972,7 @@ onMounted(() => {
 
 .model-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
   gap: 9px;
   min-height: 200px;
 }
@@ -1044,12 +1044,16 @@ onMounted(() => {
 }
 
 .mc-name {
+  display: -webkit-box;
   font-size: 12px;
   font-weight: 600;
-  word-break: break-word;
   flex: 1;
   min-width: 0;
   line-height: 1.45;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 /* Tags row */

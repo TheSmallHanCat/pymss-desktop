@@ -368,51 +368,56 @@ watch(workflows, (items) => {
             </n-button>
           </div>
 
-          <article v-for="(step, index) in steps" :key="index" class="step-card">
-            <div class="step-card__head">
-              <strong>{{ t('workflows.stepTitle', { index: index + 1 }) }}</strong>
-              <n-button quaternary circle size="small" :disabled="steps.length <= 1" @click="removeStep(index)">
-                <template #icon><n-icon :component="TrashOutline" /></template>
-              </n-button>
-            </div>
-            <div class="form-grid form-grid--step">
+          <div class="workflow-chain">
+            <article v-for="(step, index) in steps" :key="index" class="step-card">
+              <div class="step-card__head">
+                <div class="step-card__title">
+                  <span class="step-card__index">{{ index + 1 }}</span>
+                  <strong>{{ t('workflows.stepTitle', { index: index + 1 }) }}</strong>
+                </div>
+                <n-button quaternary circle size="small" :disabled="steps.length <= 1" @click="removeStep(index)">
+                  <template #icon><n-icon :component="TrashOutline" /></template>
+                </n-button>
+              </div>
+              <div class="form-grid form-grid--step">
+                <label>
+                  <span>{{ t('workflows.stepModel') }}</span>
+                  <n-select
+                    v-model:value="step.model"
+                    filterable
+                    :options="modelOptions"
+                    :placeholder="t('workflows.stepModelPlaceholder')"
+                    @update:value="handleModelChange(step)"
+                  />
+                </label>
+                <label>
+                  <span>{{ t('workflows.stepInput') }}</span>
+                  <n-select
+                    v-model:value="step.input"
+                    filterable
+                    tag
+                    :options="inputOptions(index)"
+                    :placeholder="t('workflows.stepInputPlaceholder')"
+                  />
+                </label>
+                <label>
+                  <span>{{ t('workflows.stepOverlap') }}</span>
+                  <n-input-number v-model:value="step.overlapSize" clearable :min="0" :step="1024" style="width: 100%" />
+                </label>
+              </div>
               <label>
-                <span>{{ t('workflows.stepModel') }}</span>
+                <span>{{ t('workflows.stepStems') }}</span>
                 <n-select
-                  v-model:value="step.model"
-                  filterable
-                  :options="modelOptions"
-                  :placeholder="t('workflows.stepModelPlaceholder')"
-                  @update:value="handleModelChange(step)"
-                />
-              </label>
-              <label>
-                <span>{{ t('workflows.stepInput') }}</span>
-                <n-select
-                  v-model:value="step.input"
+                  v-model:value="step.stems"
+                  multiple
                   filterable
                   tag
-                  :options="inputOptions(index)"
-                  :placeholder="t('workflows.stepInputPlaceholder')"
+                  :options="modelStemOptions(step.model)"
+                  :placeholder="t('workflows.stepStemsPlaceholder')"
                 />
               </label>
-              <label>
-                <span>{{ t('workflows.stepOverlap') }}</span>
-                <n-input-number v-model:value="step.overlapSize" clearable :min="0" :step="1024" style="width: 100%" />
-              </label>
-            </div>
-            <label>
-              <span>{{ t('workflows.stepStems') }}</span>
-              <n-select
-                v-model:value="step.stems"
-                multiple
-                filterable
-                tag
-                :options="modelStemOptions(step.model)"
-                :placeholder="t('workflows.stepStemsPlaceholder')"
-              />
-            </label>
-          </article>
+            </article>
+          </div>
 
           <p v-if="formError" class="json-error">{{ formError }}</p>
           <p v-else class="json-ok">{{ t('workflows.formValid') }}</p>
@@ -437,7 +442,8 @@ watch(workflows, (items) => {
 <style scoped>
 .workflows-page {
   display: grid;
-  gap: 22px;
+  gap: 18px;
+  max-width: 1240px;
 }
 .workflows-header {
   display: flex;
@@ -446,8 +452,8 @@ watch(workflows, (items) => {
   align-items: flex-start;
 }
 .eyebrow {
-  color: var(--primary-strong);
-  font-size: 12px;
+  color: color-mix(in srgb, var(--primary-strong) 82%, var(--on-surface-muted));
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -463,49 +469,62 @@ watch(workflows, (items) => {
 }
 .workflows-layout {
   display: grid;
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: minmax(270px, 340px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
 }
 .workflow-list-panel,
 .workflow-editor-panel {
-  border: 1px solid var(--outline);
-  border-radius: 24px;
-  background: color-mix(in srgb, var(--surface-1) 86%, transparent);
-  box-shadow: var(--shadow-soft);
+  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.026), transparent 48%),
+    color-mix(in srgb, var(--surface-1) 72%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.04),
+    0 18px 46px rgba(0, 0, 0, 0.075);
 }
 .workflow-list-panel {
   display: grid;
   align-content: start;
-  gap: 12px;
-  padding: 16px;
+  gap: 10px;
+  padding: 14px;
+  position: sticky;
+  top: 0;
 }
 .workflow-list {
   display: grid;
-  gap: 10px;
+  gap: 7px;
 }
 .workflow-card {
   display: grid;
-  grid-template-columns: 34px 1fr auto;
-  gap: 10px;
+  grid-template-columns: 30px 1fr auto;
+  gap: 9px;
   align-items: center;
-  padding: 12px;
+  padding: 10px;
   border: 1px solid transparent;
-  border-radius: 16px;
+  border-radius: 14px;
   cursor: pointer;
-  background: var(--surface-2);
+  background: color-mix(in srgb, var(--surface-2) 42%, transparent);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.workflow-card:hover {
+  background: color-mix(in srgb, var(--surface-2) 62%, transparent);
 }
 .workflow-card--active {
-  border-color: var(--primary-border);
-  background: var(--primary-softer);
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--outline));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 28%, transparent), transparent 72%),
+    color-mix(in srgb, var(--surface-2) 64%, transparent);
 }
 .workflow-card__icon {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 12px;
-  color: var(--primary-strong);
-  background: var(--primary-soft);
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  color: color-mix(in srgb, var(--primary-strong) 76%, var(--on-surface-muted));
+  background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface-2));
 }
 .workflow-card__main {
   min-width: 0;
@@ -537,7 +556,7 @@ watch(workflows, (items) => {
   color: var(--primary-strong);
 }
 .workflow-editor-panel {
-  padding: 20px;
+  padding: 18px;
 }
 .editor-head,
 .steps-head,
@@ -554,14 +573,14 @@ watch(workflows, (items) => {
   justify-content: flex-end;
 }
 .editor-form {
-  margin-top: 18px;
+  margin-top: 16px;
   display: grid;
-  gap: 16px;
+  gap: 14px;
 }
 .form-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(140px, 1fr));
-  gap: 14px;
+  gap: 12px;
   align-items: end;
 }
 .form-grid--step {
@@ -573,16 +592,65 @@ watch(workflows, (items) => {
 }
 .editor-form label > span {
   color: var(--on-surface-muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.workflow-chain {
+  position: relative;
+  display: grid;
+  gap: 12px;
+  padding-left: 20px;
+}
+.workflow-chain::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 10px;
+  bottom: 10px;
+  width: 1px;
+  background: linear-gradient(180deg, var(--primary), color-mix(in srgb, var(--outline) 58%, transparent));
+  opacity: 0.42;
 }
 .step-card {
+  position: relative;
   display: grid;
-  gap: 14px;
-  padding: 16px;
-  border: 1px solid var(--outline);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--surface-2) 80%, transparent);
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--outline) 54%, transparent);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.024), transparent 48%),
+    color-mix(in srgb, var(--surface-2) 50%, transparent);
+}
+.step-card::before {
+  content: '';
+  position: absolute;
+  left: -18px;
+  top: 22px;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--primary);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--primary-soft) 52%, var(--surface-1)),
+    0 0 18px color-mix(in srgb, var(--primary-glow) 55%, transparent);
+}
+.step-card__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.step-card__index {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--primary-strong) 82%, var(--on-surface));
+  background: color-mix(in srgb, var(--primary-soft) 32%, var(--surface-2));
+  font-size: 12px;
+  font-weight: 700;
 }
 .definition-input :deep(textarea) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
