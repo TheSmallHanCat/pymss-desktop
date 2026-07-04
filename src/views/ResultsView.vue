@@ -597,7 +597,7 @@ function formatTime(value: number) {
 <style scoped>
 .results-page {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .results-page__header {
@@ -616,11 +616,11 @@ function formatTime(value: number) {
   align-items: center;
   gap: 10px;
   padding: 10px;
-  border: 1px solid var(--outline);
-  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--outline) 56%, transparent);
+  border-radius: 14px;
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--primary-soft) 44%, transparent), transparent 48%),
-    color-mix(in srgb, var(--surface-1) 88%, transparent);
+    linear-gradient(180deg, rgba(255,255,255,0.025), transparent 52%),
+    color-mix(in srgb, var(--surface-1) 72%, transparent);
 }
 
 .results-toolbar__count {
@@ -632,7 +632,7 @@ function formatTime(value: number) {
 
 .results-list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .results-pagination {
@@ -661,11 +661,13 @@ function formatTime(value: number) {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
-  padding: 12px;
-  border: 1px solid var(--outline);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--surface-1) 92%, transparent);
-  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--outline) 54%, transparent);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.018), transparent 58%),
+    color-mix(in srgb, var(--surface-1) 70%, transparent);
+  transition: border-color 160ms ease, background 160ms ease;
 }
 
 .result-row--selectable {
@@ -682,15 +684,16 @@ function formatTime(value: number) {
 }
 
 .result-row:hover {
-  border-color: color-mix(in srgb, var(--primary) 34%, var(--outline));
-  background: color-mix(in srgb, var(--surface-1) 82%, var(--primary-soft));
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--primary) 22%, var(--outline));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 10%, transparent), transparent 58%),
+    color-mix(in srgb, var(--surface-1) 74%, transparent);
 }
 
 .result-row__main {
   min-width: 0;
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) 28px;
+  grid-template-columns: 36px minmax(0, 1fr) 26px;
   align-items: center;
   gap: 12px;
   border: 0;
@@ -702,13 +705,13 @@ function formatTime(value: number) {
 }
 
 .result-row__icon {
-  width: 42px;
-  height: 42px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
-  border-radius: 14px;
-  color: var(--primary-strong);
-  background: var(--primary-soft);
+  border-radius: 11px;
+  color: color-mix(in srgb, var(--primary-strong) 78%, var(--on-surface-muted));
+  background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface-2));
 }
 
 .result-row__body {
@@ -721,7 +724,7 @@ function formatTime(value: number) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 15px;
+  font-size: 13px;
   line-height: 1.25;
 }
 
@@ -730,16 +733,16 @@ function formatTime(value: number) {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--on-surface-muted);
-  font-size: 12px;
+  font-size: 11px;
   font-family: inherit;
 }
 
 .result-row__meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 7px 10px;
   color: var(--on-surface-muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .result-row__time {
@@ -749,13 +752,13 @@ function formatTime(value: number) {
 }
 
 .result-row__toggle {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   display: grid;
   place-items: center;
   border-radius: 999px;
   color: var(--on-surface-muted);
-  background: var(--surface-2);
+  background: color-mix(in srgb, var(--surface-2) 68%, transparent);
   transition: transform 180ms ease, color 180ms ease, background 180ms ease;
 }
 
@@ -781,10 +784,10 @@ function formatTime(value: number) {
 .result-detail-card {
   display: grid;
   gap: 10px;
-  padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--surface-2) 34%, transparent);
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--outline) 48%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--surface) 28%, transparent);
 }
 
 .result-detail-card__head {
@@ -831,9 +834,9 @@ function formatTime(value: number) {
   grid-template-columns: 120px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
-  padding: 9px 10px;
-  border-radius: 12px;
-  background: var(--surface-2);
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 54%, transparent);
 }
 
 .stem-line span {
@@ -858,10 +861,10 @@ function formatTime(value: number) {
   place-items: center;
   align-content: center;
   gap: 10px;
-  border: 1px dashed var(--outline);
-  border-radius: 20px;
+  border: 1px dashed color-mix(in srgb, var(--outline) 64%, transparent);
+  border-radius: 18px;
   color: var(--on-surface-muted);
-  background: color-mix(in srgb, var(--surface-1) 70%, transparent);
+  background: color-mix(in srgb, var(--surface-1) 58%, transparent);
 }
 
 .results-empty strong {

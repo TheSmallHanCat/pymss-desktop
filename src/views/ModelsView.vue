@@ -369,7 +369,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page page--models">
     <div class="page-header-compact">
       <div>
         <h1>{{ t('models.title') }}</h1>
@@ -924,31 +924,37 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.page--models {
+  max-width: 1240px;
+}
+
 /* ===== Toolbar ===== */
 .toolbar {
-  margin-bottom: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  margin-bottom: 14px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.03), transparent 58%),
+    color-mix(in srgb, var(--surface-1) 72%, transparent);
 }
 
 .toolbar-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) 170px auto;
   align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .search-input {
-  max-width: 380px;
-  flex: 1;
+  max-width: none;
   min-width: 200px;
 }
 
 .toolbar-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   white-space: nowrap;
 }
 
@@ -966,8 +972,8 @@ onMounted(() => {
 
 .model-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 9px;
   min-height: 200px;
 }
 
@@ -993,28 +999,35 @@ onMounted(() => {
 /* ===== Model Card ===== */
 .model-card {
   cursor: pointer;
-  padding: 16px;
-  border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 98%, transparent), color-mix(in srgb, var(--surface-1) 92%, var(--surface-2)));
-  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  min-height: 154px;
+  padding: 13px 14px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.026), transparent 50%),
+    color-mix(in srgb, var(--surface-1) 72%, transparent);
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 9px;
 }
 
 .model-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
-  border-color: color-mix(in srgb, var(--outline) 90%, var(--primary-border));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
+  border-color: color-mix(in srgb, var(--primary) 22%, var(--outline));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 12%, transparent), transparent 64%),
+    color-mix(in srgb, var(--surface-1) 78%, transparent);
 }
 
 .model-card--selected {
-  border-color: var(--primary) !important;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 14%, var(--surface-1)), color-mix(in srgb, var(--surface-1) 90%, var(--surface-2)));
+  border-color: color-mix(in srgb, var(--primary) 48%, var(--outline)) !important;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 26%, transparent), transparent 70%),
+    color-mix(in srgb, var(--surface-2) 54%, transparent);
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--primary-border) 44%, transparent),
-    0 10px 24px color-mix(in srgb, var(--primary-glow) 12%, transparent);
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    0 10px 24px color-mix(in srgb, var(--primary-glow) 8%, transparent);
 }
 
 .model-card--unsupported {
@@ -1031,12 +1044,12 @@ onMounted(() => {
 }
 
 .mc-name {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   word-break: break-word;
   flex: 1;
   min-width: 0;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 /* Tags row */
@@ -1044,7 +1057,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
 }
 
 .mc-size {
@@ -1055,9 +1068,9 @@ onMounted(() => {
 
 /* Meta info */
 .mc-meta {
-  display: flex;
-  gap: 16px;
-  font-size: 12px;
+  display: grid;
+  gap: 5px;
+  font-size: 11px;
 }
 
 .mc-meta-item {
@@ -1080,8 +1093,8 @@ onMounted(() => {
 /* Footer */
 .mc-footer {
   margin-top: auto;
-  padding-top: 10px;
-  border-top: 1px solid var(--outline);
+  padding-top: 9px;
+  border-top: 1px solid color-mix(in srgb, var(--outline) 52%, transparent);
 }
 
 /* Download progress */
@@ -1169,11 +1182,11 @@ onMounted(() => {
 .mc-done {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 6px;
   font-size: 12px;
   color: var(--success);
-  padding: 4px 0;
+  padding: 2px 0;
 }
 
 .mc-done-row {
@@ -1191,10 +1204,10 @@ onMounted(() => {
 
 /* ===== Skeleton ===== */
 .skel-card {
-  padding: 16px;
-  border-radius: 12px;
-  border: 1px solid var(--outline);
-  background: var(--surface-1);
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
+  background: color-mix(in srgb, var(--surface-1) 72%, transparent);
 }
 
 /* ===== Detail Drawer ===== */

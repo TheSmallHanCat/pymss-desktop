@@ -803,7 +803,7 @@ onMounted(() => {
 
 <style scoped>
 .page--settings {
-  max-width: 1220px;
+  max-width: 1180px;
 }
 
 .page-header-compact {
@@ -824,18 +824,29 @@ onMounted(() => {
 
 .settings-grid {
   align-items: start;
+  row-gap: 14px !important;
+  column-gap: 14px !important;
+}
+
+.settings-card {
+  border-color: color-mix(in srgb, var(--outline) 58%, transparent) !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.025), transparent 42%),
+    color-mix(in srgb, var(--surface-1) 72%, transparent) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
 }
 
 .settings-card :deep(.n-card__header) {
-  padding-bottom: 16px;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
 }
 
 .settings-card :deep(.n-card__content) {
-  padding-top: 0;
+  padding: 4px 20px 18px;
 }
 
 .settings-card--compact :deep(.n-card__content) {
-  padding-bottom: 30px;
+  padding-bottom: 20px;
 }
 
 .settings-card--feature {
@@ -843,13 +854,7 @@ onMounted(() => {
 }
 
 .settings-card--feature::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  border-radius: 18px;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 8%, transparent), transparent 28%);
-  opacity: 0.78;
+  display: none;
 }
 
 .section-title {
@@ -862,16 +867,15 @@ onMounted(() => {
 }
 
 .section-title__icon {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   border-radius: 10px;
-  color: var(--primary-strong);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 72%, var(--surface-2)), color-mix(in srgb, var(--primary-softer) 58%, var(--surface-1)));
+  color: color-mix(in srgb, var(--primary-strong) 74%, var(--on-surface-muted));
+  background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface-2));
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 72%, transparent),
-    0 4px 14px color-mix(in srgb, var(--primary-glow) 12%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 36%, transparent);
 }
 
 .appearance-list {
@@ -881,7 +885,7 @@ onMounted(() => {
 .appearance-hint {
   margin: 0 0 4px;
   color: var(--on-surface-muted);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.7;
 }
 
@@ -890,7 +894,7 @@ onMounted(() => {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 16px;
-  padding: 14px 0;
+  padding: 13px 0;
 }
 
 .setting-row + .setting-row {
@@ -1057,11 +1061,10 @@ onMounted(() => {
 }
 
 .settings-group--soft {
-  padding: 14px;
-  border: 1px solid color-mix(in srgb, var(--outline) 64%, transparent);
-  border-radius: 14px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 96%, transparent), color-mix(in srgb, var(--surface-2) 38%, transparent));
+  padding: 14px 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
+  border-radius: 0;
+  background: transparent;
   align-self: stretch;
   align-content: start;
 }
@@ -1081,9 +1084,9 @@ onMounted(() => {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  color: var(--primary-strong);
-  background: color-mix(in srgb, var(--primary-soft) 84%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 72%, transparent);
+  color: color-mix(in srgb, var(--primary-strong) 78%, var(--on-surface-muted));
+  background: color-mix(in srgb, var(--primary-soft) 36%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 36%, transparent);
 }
 
 .path-panel {
@@ -1121,10 +1124,10 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   padding: 0 14px;
-  border: 1px solid color-mix(in srgb, var(--outline) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--outline) 56%, transparent);
   border-radius: 13px;
   color: color-mix(in srgb, var(--on-surface) 92%, black 8%);
-  background: color-mix(in srgb, var(--surface-1) 94%, transparent);
+  background: color-mix(in srgb, var(--surface) 26%, transparent);
   font-family: "JetBrains Mono", "Cascadia Code", Consolas, "MiSans", "PingFang SC", "Microsoft YaHei", ui-monospace, monospace;
   font-size: 13px;
   line-height: 1.45;
@@ -1151,8 +1154,8 @@ onMounted(() => {
   gap: 12px;
   padding: 14px;
   border-radius: 16px;
-  border: 1px solid color-mix(in srgb, var(--outline) 72%, transparent);
-  background: color-mix(in srgb, var(--surface-1) 96%, transparent);
+  border: 1px solid color-mix(in srgb, var(--outline) 56%, transparent);
+  background: color-mix(in srgb, var(--surface) 24%, transparent);
 }
 
 .path-item--primary {
@@ -1160,19 +1163,14 @@ onMounted(() => {
   overflow: hidden;
   border-color: color-mix(in srgb, var(--primary-border) 34%, var(--outline));
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 98%, transparent), color-mix(in srgb, var(--surface-1) 90%, var(--surface-2)));
+    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 10%, transparent), transparent 58%),
+    color-mix(in srgb, var(--surface) 26%, transparent);
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 16%, transparent),
-    0 12px 28px rgba(0, 0, 0, 0.10);
+    inset 0 1px 0 rgba(255,255,255,0.035);
 }
 
 .path-item--primary::before {
-  content: '';
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--primary) 64%, white 8%), transparent);
-  opacity: 0.82;
+  display: none;
 }
 
 .path-item__head {
@@ -1252,9 +1250,9 @@ onMounted(() => {
   gap: 4px;
   margin: 0;
   padding: 4px;
-  border: 1px solid color-mix(in srgb, var(--outline) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--outline) 56%, transparent);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+  background: color-mix(in srgb, var(--surface) 34%, transparent);
 }
 
 .theme-switcher button {
@@ -1274,9 +1272,9 @@ onMounted(() => {
 }
 
 .theme-switcher button.active {
-  color: color-mix(in srgb, var(--primary-strong) 88%, white 12%);
-  background: color-mix(in srgb, var(--primary-soft) 54%, var(--surface-3));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 58%, transparent);
+  color: color-mix(in srgb, var(--primary-strong) 86%, var(--on-surface));
+  background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface-3));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 42%, transparent);
   font-weight: 600;
 }
 
