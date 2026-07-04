@@ -453,16 +453,7 @@ onMounted(() => {
           <!-- Card Header -->
           <div class="mc-header">
             <span class="mc-name">{{ model.name }}</span>
-            <n-tag
-              :bordered="false"
-              size="tiny"
-              :type="modelStatusType(model)"
-              round
-            >
-              {{ modelStatusLabel(model) }}
-            </n-tag>
           </div>
-
           <!-- Meta Tags -->
           <div class="mc-tags">
             <n-tag v-if="model.architecture" :bordered="false" size="tiny" type="info" round>
@@ -471,8 +462,8 @@ onMounted(() => {
             <n-tag v-if="showModelTypeTag(model)" :bordered="false" size="tiny" round>
               {{ model.modelType }}
             </n-tag>
-            <span class="mc-size">{{ formatBytes(model.sizeBytes) }}</span>
           </div>
+          <span class="mc-size">{{ formatBytes(model.sizeBytes) }}</span>
 
           <!-- Key Info -->
           <div class="mc-meta">
@@ -511,9 +502,9 @@ onMounted(() => {
             <!-- Download button -->
             <n-button
               v-else-if="model.supported && !model.downloaded && (!downloadTasks[model.name] || downloadTasks[model.name].status === 'done')"
-              block
+              class="mc-download-button"
               secondary
-              size="small"
+              size="tiny"
               @click="downloadModel(model, $event)"
             >
               <template #icon><n-icon :component="DownloadOutline" /></template>
@@ -575,7 +566,7 @@ onMounted(() => {
             <!-- Already downloaded -->
             <div v-else-if="model.downloaded" class="mc-done-row">
               <div class="mc-done">
-                <n-icon :component="CheckmarkCircleOutline" color="var(--success)" size="16" />
+                <n-icon :component="CheckmarkCircleOutline" color="var(--success)" size="17" />
                 <span>{{ t('models.downloaded') }}</span>
               </div>
               <n-button
@@ -972,7 +963,7 @@ onMounted(() => {
 .model-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 7px;
+  gap: 10px;
   min-height: 200px;
 }
 
@@ -999,7 +990,7 @@ onMounted(() => {
 .model-card {
   cursor: pointer;
   min-height: 0;
-  padding: 11px 12px 11px 14px;
+  padding: 14px 14px 14px 16px;
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
   background:
@@ -1007,12 +998,12 @@ onMounted(() => {
     color-mix(in srgb, var(--surface-1) 64%, transparent);
   transition: box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(170px, 0.55fr) minmax(132px, auto);
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 180px) 96px 124px;
   grid-template-areas:
-    "header tags footer"
-    "meta meta footer";
+    "header tags size footer"
+    "meta tags size footer";
   align-items: center;
-  gap: 7px 14px;
+  gap: 8px 16px;
 }
 
 .model-card:hover {
@@ -1041,9 +1032,7 @@ onMounted(() => {
 .mc-header {
   grid-area: header;
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
+  align-items: center;
   min-width: 0;
 }
 
@@ -1066,14 +1055,18 @@ onMounted(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 5px;
 }
 
+
 .mc-size {
+  grid-area: size;
   font-size: 11px;
   color: var(--on-surface-muted);
-  margin-left: auto;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* Meta info */
@@ -1106,10 +1099,30 @@ onMounted(() => {
 /* Footer */
 .mc-footer {
   grid-area: footer;
-  min-width: 132px;
+  min-width: 124px;
+  width: 124px;
   margin-top: 0;
   padding-top: 0;
   border-top: 0;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.mc-download-button {
+  min-width: 72px;
+  --n-height: 30px;
+  --n-padding: 0 10px;
+}
+
+.mc-download-button :deep(.n-button__content) {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.mc-download-button :deep(.n-icon) {
+  font-size: 17px;
 }
 
 /* Download progress */
@@ -1199,16 +1212,27 @@ onMounted(() => {
   align-items: center;
   justify-content: flex-start;
   gap: 6px;
-  font-size: 12px;
+  font-size: 12.5px;
+  font-weight: 600;
   color: var(--success);
-  padding: 2px 0;
+  min-height: 30px;
 }
 
 .mc-done-row {
-  display: flex;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 72px 1fr 24px;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  min-height: 30px;
+}
+
+.mc-done-row .mc-done {
+  justify-content: center;
+}
+
+.mc-done-row .n-button {
+  grid-column: 3;
+  justify-self: end;
 }
 
 /* ===== Drawer Footer ===== */
@@ -1468,6 +1492,7 @@ onMounted(() => {
     grid-template-areas:
       "header"
       "tags"
+      "size"
       "meta"
       "footer";
   }
@@ -1476,12 +1501,18 @@ onMounted(() => {
     justify-content: flex-start;
   }
 
+  .mc-size {
+    text-align: left;
+  }
+
   .mc-meta {
     flex-wrap: wrap;
   }
 
   .mc-footer {
     min-width: 0;
+    width: 100%;
+    justify-self: stretch;
   }
 }
 </style>
