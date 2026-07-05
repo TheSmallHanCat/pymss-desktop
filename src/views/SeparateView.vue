@@ -193,6 +193,22 @@ const checkedOutputStems = computed<string[]>({
     selectedStems.value = next.length === availableStemNames.value.length ? [] : next
   },
 })
+const selectedOutputStemCount = computed(() => checkedOutputStems.value.length)
+const selectedStemDetail = computed(() => {
+  if (selectedStems.value.length > 6) {
+    return t('separate.selectedStemCount', {
+      count: selectedOutputStemCount.value,
+      total: availableStemNames.value.length,
+    })
+  }
+  return selectedStemSummary.value
+})
+const startStatusText = computed(() => {
+  if (!inputFiles.value.length) return t('separate.startHintNoInput')
+  if (runMode.value === 'workflow' && !selectedWorkflow.value) return t('separate.startHintNoWorkflow')
+  if (runMode.value === 'model' && !modelDownloaded.value) return t('separate.startHintModelMissing')
+  return t('separate.readyToStart')
+})
 const modelCategoryOptions = computed(() => [
   { label: t('common.all'), value: '' },
   ...buildModelCategoryOptionsFromModels(listedDownloadedModels.value, locale.value),
@@ -1091,60 +1107,85 @@ async function retryCurrentTask() {
     <section class="summary-bar">
       <div class="summary-bar__content">
         <div class="summary-bar__topline">
-          <strong>{{ t('separate.outputSummaryTitle') }}</strong>
-          <n-button quaternary size="small" @click="task.revealPath(normalizedOutputDir)">
-            <template #icon><n-icon :component="OpenOutline" /></template>
-            {{ t('separate.openOutput') }}
-          </n-button>
-        </div>
-        <div class="summary-config-grid">
-          <div class="field-block field-block--wide">
-            <label>{{ t('separate.temporaryOutputDir') }}</label>
-            <n-input-group>
-              <n-input v-model:value="temporaryOutputDir" :placeholder="settings.outputDir || t('separate.outputDefault')" clearable />
-              <n-button secondary @click="pickTemporaryOutputDir">{{ t('separate.chooseOutput') }}</n-button>
-            </n-input-group>
-          </div>
-          <div class="field-block">
-            <label>{{ t('settings.defaultFormat') }}</label>
-            <n-select v-model:value="settings.defaultFormat" :options="formatOptions" />
-          </div>
-          <div class="field-block">
-            <label>{{ t('separate.outputLayout') }}</label>
-            <n-select v-model:value="outputLayout" :options="outputLayoutOptions" />
+          <div class="summary-bar__heading">
+            <span class="summary-bar__heading-icon">
+              <n-icon :component="SettingsOutline" />
+            </span>
+            <div>
+              <strong>{{ t('separate.outputSummaryTitle') }}</strong>
+              <span>{{ t('separate.outputSummaryHint') }}</span>
+            </div>
           </div>
         </div>
-        <div v-if="runMode === 'model'" class="summary-stems-row">
-          <label>{{ t('separate.outputStems') }}</label>
-          <div v-if="availableStemNames.length" class="stem-toggle-list">
-            <n-checkbox-group v-model:value="checkedOutputStems">
-              <n-checkbox
-                v-for="stem in availableStemNames"
-                :key="stem"
-                :value="stem"
-                :label="stem"
-              />
-            </n-checkbox-group>
+        <div class="summary-bar__body">
+          <div class="summary-bar__options">
+            <div class="summary-config-grid">
+              <div class="field-block field-block--wide">
+                <label>{{ t('separate.temporaryOutputDir') }}</label>
+                <n-input-group>
+                  <n-input v-model:value="temporaryOutputDir" :placeholder="settings.outputDir || t('separate.outputDefault')" clearable />
+                  <n-button secondary @click="pickTemporaryOutputDir">{{ t('separate.chooseOutput') }}</n-button>
+                </n-input-group>
+              </div>
+              <div class="field-block">
+                <label>{{ t('settings.defaultFormat') }}</label>
+                <n-select v-model:value="settings.defaultFormat" :options="formatOptions" />
+              </div>
+              <div class="field-block">
+                <label>{{ t('separate.outputLayout') }}</label>
+                <n-select v-model:value="outputLayout" :options="outputLayoutOptions" />
+              </div>
+              <n-button class="summary-bar__advanced" secondary @click="showSettingsDrawer = true">
+                <template #icon><n-icon :component="SettingsOutline" /></template>
+                {{ t('separate.configParams') }}
+              </n-button>
+            </div>
           </div>
-          <div v-else class="stem-toggle-empty">{{ t('separate.allStems') }}</div>
+
+          <div v-if="runMode === 'model'" class="summary-stems-row">
+            <div class="summary-stems-row__head">
+              <label>{{ t('separate.outputStems') }}</label>
+            </div>
+            <div v-if="availableStemNames.length" class="stem-toggle-list">
+              <n-checkbox-group v-model:value="checkedOutputStems">
+                <n-checkbox
+                  v-for="stem in availableStemNames"
+                  :key="stem"
+                  :value="stem"
+                  :label="stem"
+                />
+              </n-checkbox-group>
+            </div>
+            <div v-else class="stem-toggle-empty">{{ t('separate.allStems') }}</div>
+          </div>
         </div>
-        <div class="summary-bar__path" :title="outputPreview">{{ outputSummaryPath }}</div>
-        <div class="summary-bar__details">
-          <span>{{ t('separate.currentFormat') }} · {{ formatLabel }}</span>
-          <span>{{ t('separate.outputLayout') }} · {{ outputLayoutLabel }}</span>
-          <span>{{ t('separate.outputStems') }} · {{ selectedStemSummary }}</span>
-          <span>{{ t('separate.outputMode') }} · {{ outputModeLabel }}</span>
+        <div class="summary-bar__output-line" :title="outputPreview">
+          <span class="summary-bar__path">{{ outputSummaryPath }}</span>
+          <div class="summary-bar__details">
+            <span>{{ t('separate.currentFormat') }} · {{ formatLabel }}</span>
+            <span>{{ t('separate.outputLayout') }} · {{ outputLayoutLabel }}</span>
+            <span>{{ t('separate.outputStems') }} · {{ selectedStemDetail }}</span>
+            <span>{{ t('separate.outputMode') }} · {{ outputModeLabel }}</span>
+          </div>
         </div>
-      </div>
-      <div class="summary-bar__actions">
-        <n-button secondary size="large" @click="showSettingsDrawer = true">
-          <template #icon><n-icon :component="SettingsOutline" /></template>
-          {{ t('separate.configParams') }}
-        </n-button>
-        <n-button type="primary" size="large" :disabled="!canStart" @click="start">
-          <template #icon><n-icon :component="PlayOutline" /></template>
-          {{ t('separate.startTask') }}
-        </n-button>
+        <div class="summary-bar__footer">
+          <div class="summary-bar__status">
+            <div class="summary-bar__ready" :class="{ 'summary-bar__ready--disabled': !canStart }">
+              <n-icon :component="CheckmarkCircle" />
+              <strong>{{ startStatusText }}</strong>
+            </div>
+          </div>
+          <div class="summary-bar__actions">
+            <n-button secondary size="large" @click="task.revealPath(normalizedOutputDir)">
+              <template #icon><n-icon :component="OpenOutline" /></template>
+              {{ t('separate.openOutput') }}
+            </n-button>
+            <n-button type="primary" size="large" :disabled="!canStart" @click="start">
+              <template #icon><n-icon :component="PlayOutline" /></template>
+              {{ t('separate.startTask') }}
+            </n-button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -1962,11 +2003,7 @@ async function retryCurrentTask() {
 }
 
 .summary-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px;
+  padding: 16px;
   border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
   border-radius: 18px;
   background:
@@ -1979,15 +2016,40 @@ async function retryCurrentTask() {
 
 .summary-bar__content {
   min-width: 0;
-  flex: 1;
   display: grid;
-  gap: 7px;
+  gap: 12px;
 }
 
 .summary-bar__topline {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
+}
+
+.summary-bar__heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.summary-bar__heading-icon {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  color: var(--on-surface);
+  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
+}
+
+.summary-bar__heading > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
 }
 
 .summary-bar__topline strong {
@@ -1995,8 +2057,35 @@ async function retryCurrentTask() {
   letter-spacing: -0.01em;
 }
 
+.summary-bar__heading > div > span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.summary-bar__body {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.summary-bar__options {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.summary-bar__output-line {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
 .summary-bar__path {
   min-width: 0;
+  flex: 0 1 auto;
+  max-width: 520px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2007,13 +2096,19 @@ async function retryCurrentTask() {
 
 .summary-config-grid {
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(104px, 124px) minmax(104px, 124px);
-  gap: 10px;
+  grid-template-columns: minmax(260px, 460px) minmax(104px, 132px) minmax(132px, 180px) auto;
+  gap: 12px;
   align-items: end;
+  justify-content: start;
 }
 
 .summary-config-grid .field-block {
   min-width: 0;
+}
+
+.summary-bar__advanced {
+  align-self: end;
+  justify-self: start;
 }
 
 .summary-checks {
@@ -2027,14 +2122,29 @@ async function retryCurrentTask() {
 
 .stem-toggle-list {
   min-height: 28px;
-  display: flex;
-  align-items: center;
+  min-width: 0;
+  max-height: 96px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  overscroll-behavior: contain;
 }
 
 .stem-toggle-list :deep(.n-checkbox-group) {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 12px;
+}
+
+.stem-toggle-list :deep(.n-checkbox) {
+  max-width: 190px;
+}
+
+.stem-toggle-list :deep(.n-checkbox__label) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stem-toggle-empty {
@@ -2046,21 +2156,65 @@ async function retryCurrentTask() {
 }
 
 .summary-stems-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  gap: 10px 14px;
+  min-height: 26px;
+}
+
+.summary-stems-row__head {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 26px;
-  padding-top: 0;
 }
 
-.summary-stems-row > label {
-  flex: 0 0 auto;
+.summary-stems-row__head label {
   color: var(--on-surface-muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
+.summary-stems-row__head span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.summary-bar__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 2px;
+}
+
+.summary-bar__status {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.summary-bar__ready {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--success);
+}
+
+.summary-bar__ready strong {
+  color: color-mix(in srgb, var(--success) 82%, var(--on-surface));
+  font-size: 13px;
+}
+
+.summary-bar__ready--disabled,
+.summary-bar__ready--disabled strong {
+  color: var(--on-surface-muted);
+}
+
 .summary-bar__details {
+  min-width: 0;
+  flex: 1 1 360px;
   display: flex;
   flex-wrap: wrap;
   gap: 7px 12px;
@@ -2072,8 +2226,8 @@ async function retryCurrentTask() {
   display: flex;
   align-items: center;
   gap: 10px;
-  align-self: end;
-  padding-bottom: 2px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .summary-bar__actions :deep(.n-button--primary-type) {
@@ -2705,17 +2859,22 @@ async function retryCurrentTask() {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .summary-bar {
-    flex-direction: column;
-    align-items: stretch;
+  .summary-config-grid {
+    grid-template-columns: minmax(0, 160px) minmax(0, 180px) auto;
   }
 
-  .summary-config-grid {
-    grid-template-columns: minmax(0, 1fr) 160px;
+  .summary-config-grid .field-block--wide {
+    grid-column: 1 / -1;
+    max-width: 520px;
   }
 
   .summary-checks {
     grid-column: 1 / -1;
+  }
+
+  .summary-bar__footer {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .summary-bar__actions {
@@ -2748,12 +2907,25 @@ async function retryCurrentTask() {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .summary-bar__topline {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .summary-bar__heading {
+    justify-content: space-between;
+  }
+
+  .summary-bar__actions {
+    justify-content: stretch;
+  }
+
   .summary-stems-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 6px;
   }
 
-  .summary-stems-row > label {
+  .summary-stems-row__head label {
     line-height: 1.4;
   }
 
