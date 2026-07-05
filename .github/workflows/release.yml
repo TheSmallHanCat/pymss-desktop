@@ -6,7 +6,7 @@ on:
       version:
         description: "Release version"
         required: true
-        default: "0.0.1"
+        default: "0.0.8"
       target:
         description: "Build target"
         required: true

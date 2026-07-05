@@ -32,7 +32,7 @@
 </p>
 
 <p align="center">
-  <img src="./images/dark-home.png" alt="Pymss Studio dark home screen" width="900" />
+  <img src="./images/en-light-home.png" alt="Pymss Studio light home screen" width="900" />
 </p>
 
 ## Why Pymss Studio
@@ -65,11 +65,7 @@ Pymss Studio focuses on practical desktop performance across more machines:
 
 | Light | Dark |
 | --- | --- |
-| <img src="./images/light-home.png" alt="Light home screen" /> | <img src="./images/dark-home.png" alt="Dark home screen" /> |
-| <img src="./images/light-separation.png" alt="Light separation setup" /> | <img src="./images/dark-separation.png" alt="Dark separation setup" /> |
-| <img src="./images/light-models.png" alt="Light model library" /> | <img src="./images/dark-models.png" alt="Dark model library" /> |
-| <img src="./images/light-editor.png" alt="Light editor" /> | <img src="./images/dark-editor.png" alt="Dark editor" /> |
-| <img src="./images/light-settings.png" alt="Light settings" /> | <img src="./images/dark-settings.png" alt="Dark settings" /> |
+| <img src="./images/en-light-preview.jpg" alt="Light theme interface preview collage" /> | <img src="./images/en-dark-preview.jpg" alt="Dark theme interface preview collage" /> |
 
 ## Highlights
 

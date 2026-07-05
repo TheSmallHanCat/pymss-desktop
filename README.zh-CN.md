@@ -32,7 +32,7 @@
 </p>
 
 <p align="center">
-  <img src="./images/dark-home.png" alt="Pymss Studio 深色首页" width="900" />
+  <img src="./images/zh-light-home.png" alt="Pymss Studio 浅色首页" width="900" />
 </p>
 
 ## 项目定位
@@ -65,11 +65,7 @@ Pymss Studio 的目标是让更多设备获得更顺畅的桌面分离体验：
 
 | 浅色主题 | 深色主题 |
 | --- | --- |
-| <img src="./images/light-home.png" alt="浅色首页" /> | <img src="./images/dark-home.png" alt="深色首页" /> |
-| <img src="./images/light-separation.png" alt="浅色分离配置" /> | <img src="./images/dark-separation.png" alt="深色分离配置" /> |
-| <img src="./images/light-models.png" alt="浅色模型库" /> | <img src="./images/dark-models.png" alt="深色模型库" /> |
-| <img src="./images/light-editor.png" alt="浅色编辑器" /> | <img src="./images/dark-editor.png" alt="深色编辑器" /> |
-| <img src="./images/light-settings.png" alt="浅色设置页" /> | <img src="./images/dark-settings.png" alt="深色设置页" /> |
+| <img src="./images/zh-light-preview.jpg" alt="浅色主题界面预览拼图" /> | <img src="./images/zh-dark-preview.jpg" alt="深色主题界面预览拼图" /> |
 
 ## 核心能力
 
