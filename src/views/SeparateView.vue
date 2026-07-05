@@ -120,6 +120,8 @@ const outputLayoutOptions = computed(() => [
   { label: t('separate.outputLayoutFolders'), value: 'folders' },
   { label: t('separate.outputLayoutFlat'), value: 'flat' },
 ])
+const canChooseOutputLayout = computed(() => inputFiles.value.length > 1)
+const effectiveOutputLayout = computed<OutputLayout>(() => canChooseOutputLayout.value ? outputLayout.value : 'folders')
 const listedDownloadedModels = computed(() => {
   return [...downloadedModels.value].sort((a, b) => (
     a.name.localeCompare(b.name, locale.value === 'zh-CN' ? 'zh-CN' : 'en')
@@ -249,13 +251,13 @@ const normalizedOutputDir = computed(() => (temporaryOutputDir.value || settings
 const outputPreview = computed(() => {
   const base = normalizedOutputDir.value.replace(/[\\/]$/, '')
   const separator = base.includes('\\') ? '\\' : '/'
-  if (outputLayout.value === 'flat') {
+  if (effectiveOutputLayout.value === 'flat') {
     return `${base}${separator}${t('separate.taskIdPreview')}${separator}${t('separate.outputFilePreview')}`
   }
   return `${base}${separator}${t('separate.taskIdPreview')}${separator}${t('separate.resultIdPreview')}${separator}${t('separate.outputFilePreview')}`
 })
 const formatLabel = computed(() => String(settings.defaultFormat || 'wav').toUpperCase())
-const outputLayoutLabel = computed(() => outputLayout.value === 'flat'
+const outputLayoutLabel = computed(() => effectiveOutputLayout.value === 'flat'
   ? t('separate.outputLayoutFlat')
   : t('separate.outputLayoutFolders'))
 const outputSummaryPath = computed(() => shortenMiddle(outputPreview.value, 60))
@@ -582,6 +584,14 @@ watch(selectedModelName, () => {
 })
 
 watch(
+  canChooseOutputLayout,
+  (canChoose) => {
+    if (!canChoose) outputLayout.value = 'folders'
+  },
+  { immediate: true },
+)
+
+watch(
   availableStemNames,
   (stems) => {
     if (!selectedStems.value.length) return
@@ -695,8 +705,8 @@ async function start() {
   }
   try {
     const result = runMode.value === 'workflow' && selectedWorkflow.value
-      ? await task.startWorkflowInference(selectedWorkflow.value, { outputDir: normalizedOutputDir.value, outputLayout: outputLayout.value })
-      : await task.startSeparation({ outputDir: normalizedOutputDir.value, outputLayout: outputLayout.value })
+      ? await task.startWorkflowInference(selectedWorkflow.value, { outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value })
+      : await task.startSeparation({ outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value })
     focusedSeparationJobId.value = result?.jobId || newestRunningJob.value?.id || focusedSeparationJobId.value
     task.clearInputFiles()
     if (result && result.failed > 0) {
@@ -1125,7 +1135,7 @@ async function retryCurrentTask() {
         </div>
         <div class="summary-bar__body">
           <div class="summary-bar__options">
-            <div class="summary-config-grid">
+            <div class="summary-config-grid" :class="{ 'summary-config-grid--batch': canChooseOutputLayout }">
               <div class="field-block field-block--wide">
                 <label>{{ t('separate.temporaryOutputDir') }}</label>
                 <n-input-group>
@@ -1137,7 +1147,7 @@ async function retryCurrentTask() {
                 <label>{{ t('settings.defaultFormat') }}</label>
                 <n-select v-model:value="settings.defaultFormat" :options="formatOptions" />
               </div>
-              <div class="field-block">
+              <div v-if="canChooseOutputLayout" class="field-block">
                 <label>{{ t('separate.outputLayout') }}</label>
                 <n-select v-model:value="outputLayout" :options="outputLayoutOptions" />
               </div>
@@ -2197,10 +2207,14 @@ async function retryCurrentTask() {
 
 .summary-config-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 460px) minmax(104px, 132px) minmax(132px, 180px) max-content;
+  grid-template-columns: minmax(260px, 460px) minmax(104px, 132px) max-content;
   gap: 12px;
   align-items: end;
   justify-content: start;
+}
+
+.summary-config-grid--batch {
+  grid-template-columns: minmax(260px, 460px) minmax(104px, 132px) minmax(132px, 180px) max-content;
 }
 
 .summary-config-grid .field-block {
@@ -3035,6 +3049,10 @@ async function retryCurrentTask() {
   }
 
   .summary-config-grid {
+    grid-template-columns: minmax(0, 160px) max-content;
+  }
+
+  .summary-config-grid--batch {
     grid-template-columns: minmax(0, 160px) minmax(0, 180px) max-content;
   }
 

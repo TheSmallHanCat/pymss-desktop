@@ -1318,9 +1318,9 @@ export const useTaskStore = defineStore('task', () => {
     const jobId = createRunId('job')
     const settings = useSettingsStore()
     const jobOutput = resolveJobOutputPath(options.outputDir || settings.outputDir, jobId)
-    const outputLayout = normalizeOutputLayout(options.outputLayout)
-    const outputPrefixes = buildOutputPrefixes(targets)
     const batchMode = targets.length > 1
+    const outputLayout = batchMode ? normalizeOutputLayout(options.outputLayout) : 'folders'
+    const outputPrefixes = buildOutputPrefixes(targets)
     const createdTasks = targets.map((input, index) => submitOne(
       input,
       model,
@@ -1351,7 +1351,8 @@ export const useTaskStore = defineStore('task', () => {
     const jobId = createRunId('job')
     const settings = useSettingsStore()
     const jobOutput = resolveJobOutputPath(options.outputDir || settings.outputDir, jobId)
-    const outputLayout = normalizeOutputLayout(options.outputLayout)
+    const batchMode = targets.length > 1
+    const outputLayout = batchMode ? normalizeOutputLayout(options.outputLayout) : 'folders'
     const outputPrefixes = buildOutputPrefixes(targets)
     const createdTasks = targets.map((input, index) => createQueuedWorkflowTask(
       input,
@@ -1361,7 +1362,7 @@ export const useTaskStore = defineStore('task', () => {
       outputPrefixes[index],
       outputLayout,
     ))
-    if (targets.length > 1) {
+    if (batchMode) {
       void startWorkflowBatchWorker(createdTasks)
     } else {
       scheduleQueue()
