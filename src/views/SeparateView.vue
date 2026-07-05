@@ -1421,7 +1421,7 @@ async function retryCurrentTask() {
   grid-template-columns: minmax(0, 1.16fr) minmax(380px, 0.84fr);
   gap: 14px;
   align-items: stretch;
-  height: clamp(430px, 62vh, 700px);
+  height: clamp(420px, calc(330px + 20vh), 620px);
   min-height: 0;
 }
 
@@ -1457,7 +1457,7 @@ async function retryCurrentTask() {
 }
 
 .config-panel--input {
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .config-panel--model {
@@ -1479,11 +1479,15 @@ async function retryCurrentTask() {
 .config-rollup-content--input {
   height: 100%;
   min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .config-rollup-content--model {
   height: 100%;
   min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .panel-heading {
@@ -1739,18 +1743,22 @@ async function retryCurrentTask() {
 }
 
 .model-panel__body {
+  height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
+  overflow: hidden;
 }
 
 .model-picker {
+  flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  overflow: hidden;
 }
 
 .model-picker__toolbar {
@@ -1768,8 +1776,11 @@ async function retryCurrentTask() {
 }
 
 .model-picker__list {
+  flex: 1 1 auto;
   min-height: 0;
   display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 5px;
   overflow-y: auto;
   max-height: min(340px, 42vh);
@@ -1782,6 +1793,7 @@ async function retryCurrentTask() {
 
 .model-picker__item {
   min-width: 0;
+  min-height: 46px;
   width: 100%;
   max-width: 100%;
   overflow: hidden;
@@ -2188,9 +2200,10 @@ async function retryCurrentTask() {
 .stem-toggle-list :deep(.n-checkbox) {
   max-width: 190px;
   min-height: 30px;
+  align-items: center;
   padding: 5px 10px 5px 8px;
   border: 1px solid color-mix(in srgb, var(--outline) 62%, transparent);
-  border-radius: 10px;
+  border-radius: 12px;
   background:
     linear-gradient(180deg, rgba(255,255,255,0.04), transparent),
     color-mix(in srgb, var(--surface-2) 58%, transparent);
@@ -2202,9 +2215,34 @@ async function retryCurrentTask() {
   background: color-mix(in srgb, var(--primary) 12%, var(--surface-2));
 }
 
-.stem-toggle-list :deep(.n-checkbox:has(.n-checkbox-box--checked)) {
+.stem-toggle-list :deep(.n-checkbox--checked) {
   border-color: color-mix(in srgb, var(--primary) 58%, var(--outline));
   background: color-mix(in srgb, var(--primary) 16%, var(--surface-2));
+}
+
+.stem-toggle-list :deep(.n-checkbox-box-wrapper) {
+  width: 16px;
+  height: 16px;
+}
+
+.stem-toggle-list :deep(.n-checkbox-box) {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  background-color: color-mix(in srgb, var(--surface-2) 82%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+.stem-toggle-list :deep(.n-checkbox-box__border) {
+  border: 1px solid color-mix(in srgb, var(--outline) 72%, transparent);
+}
+
+.stem-toggle-list :deep(.n-checkbox--checked .n-checkbox-box) {
+  background-color: color-mix(in srgb, var(--primary) 82%, white);
+}
+
+.stem-toggle-list :deep(.n-checkbox--checked .n-checkbox-box__border) {
+  border-color: color-mix(in srgb, var(--primary-border) 72%, transparent);
 }
 
 .stem-toggle-list :deep(.n-checkbox__label) {
