@@ -17,6 +17,7 @@ import {
   FolderOutline,
   CloudUploadOutline,
   CloseOutline,
+  OptionsOutline,
   SettingsOutline,
   OpenOutline,
   PauseOutline,
@@ -254,7 +255,6 @@ const outputPreview = computed(() => {
   return `${base}${separator}${t('separate.taskIdPreview')}${separator}${t('separate.resultIdPreview')}${separator}${t('separate.outputFilePreview')}`
 })
 const formatLabel = computed(() => String(settings.defaultFormat || 'wav').toUpperCase())
-const outputModeLabel = computed(() => runMode.value === 'workflow' ? t('separate.outputModeWorkflow') : t('separate.outputModeSeparate'))
 const outputLayoutLabel = computed(() => outputLayout.value === 'flat'
   ? t('separate.outputLayoutFlat')
   : t('separate.outputLayoutFolders'))
@@ -1109,7 +1109,7 @@ async function retryCurrentTask() {
         <div class="summary-bar__topline">
           <div class="summary-bar__heading">
             <span class="summary-bar__heading-icon">
-              <n-icon :component="SettingsOutline" />
+              <n-icon :component="OptionsOutline" />
             </span>
             <div>
               <strong>{{ t('separate.outputSummaryTitle') }}</strong>
@@ -1159,31 +1159,32 @@ async function retryCurrentTask() {
             <div v-else class="stem-toggle-empty">{{ t('separate.allStems') }}</div>
           </div>
         </div>
-        <div class="summary-bar__output-line" :title="outputPreview">
-          <span class="summary-bar__path">{{ outputSummaryPath }}</span>
-          <div class="summary-bar__details">
-            <span>{{ t('separate.currentFormat') }} · {{ formatLabel }}</span>
-            <span>{{ t('separate.outputLayout') }} · {{ outputLayoutLabel }}</span>
-            <span>{{ t('separate.outputStems') }} · {{ selectedStemDetail }}</span>
-            <span>{{ t('separate.outputMode') }} · {{ outputModeLabel }}</span>
-          </div>
-        </div>
-        <div class="summary-bar__footer">
-          <div class="summary-bar__status">
-            <div class="summary-bar__ready" :class="{ 'summary-bar__ready--disabled': !canStart }">
-              <n-icon :component="CheckmarkCircle" />
-              <strong>{{ startStatusText }}</strong>
+        <div class="summary-bar__execution">
+          <div class="summary-bar__output-line" :title="outputPreview">
+            <span class="summary-bar__path">{{ outputSummaryPath }}</span>
+            <div class="summary-bar__details">
+              <span>{{ t('separate.currentFormat') }} · {{ formatLabel }}</span>
+              <span>{{ t('separate.outputLayout') }} · {{ outputLayoutLabel }}</span>
+              <span>{{ t('separate.outputStems') }} · {{ selectedStemDetail }}</span>
             </div>
           </div>
-          <div class="summary-bar__actions">
-            <n-button secondary size="large" @click="task.revealPath(normalizedOutputDir)">
-              <template #icon><n-icon :component="OpenOutline" /></template>
-              {{ t('separate.openOutput') }}
-            </n-button>
-            <n-button type="primary" size="large" :disabled="!canStart" @click="start">
-              <template #icon><n-icon :component="PlayOutline" /></template>
-              {{ t('separate.startTask') }}
-            </n-button>
+          <div class="summary-bar__footer">
+            <div class="summary-bar__status">
+              <div class="summary-bar__ready" :class="{ 'summary-bar__ready--disabled': !canStart }">
+                <n-icon :component="CheckmarkCircle" />
+                <strong>{{ startStatusText }}</strong>
+              </div>
+            </div>
+            <div class="summary-bar__actions">
+              <n-button secondary size="large" @click="task.revealPath(normalizedOutputDir)">
+                <template #icon><n-icon :component="OpenOutline" /></template>
+                {{ t('separate.openOutput') }}
+              </n-button>
+              <n-button type="primary" size="large" :disabled="!canStart" @click="start">
+                <template #icon><n-icon :component="PlayOutline" /></template>
+                {{ t('separate.startTask') }}
+              </n-button>
+            </div>
           </div>
         </div>
       </div>
@@ -1379,14 +1380,40 @@ async function retryCurrentTask() {
 
 .run-mode-toggle {
   width: fit-content;
+  display: inline-flex;
+  align-items: center;
   padding: 3px;
   border: 1px solid color-mix(in srgb, var(--outline) 54%, transparent);
   border-radius: 13px;
-  background: color-mix(in srgb, var(--surface) 34%, transparent);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.07), transparent 52%, rgba(0,0,0,0.08)),
+    color-mix(in srgb, var(--surface) 34%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.18),
+    0 1px 2px rgba(0,0,0,0.16);
+  overflow: hidden;
 }
 
 .run-mode-toggle :deep(.n-radio-button) {
+  height: 28px;
+  line-height: 28px;
+  border: 0;
   border-radius: 10px;
+  background: transparent;
+}
+
+.run-mode-toggle :deep(.n-radio-group__splitor) {
+  display: none;
+}
+
+.run-mode-toggle :deep(.n-radio-button--checked) {
+  background: var(--n-button-color-active);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.16);
+}
+
+.run-mode-toggle :deep(.n-radio-button__state-border) {
+  display: none;
 }
 
 .workspace-grid {
@@ -2031,19 +2058,24 @@ async function retryCurrentTask() {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .summary-bar__heading-icon {
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
-  border-radius: 11px;
-  color: var(--on-surface);
-  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
+  border-radius: 14px;
+  font-size: 19px;
+  color: color-mix(in srgb, var(--primary-strong) 88%, var(--on-surface));
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.08), transparent 58%),
+    color-mix(in srgb, var(--primary-soft) 58%, var(--surface-2));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 45%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.08);
 }
 
 .summary-bar__heading > div {
@@ -2072,6 +2104,24 @@ async function retryCurrentTask() {
   min-width: 0;
   display: grid;
   gap: 12px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-2) 36%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
+}
+
+.summary-bar__execution {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px 16px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-2) 30%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
 }
 
 .summary-bar__output-line {
@@ -2096,7 +2146,7 @@ async function retryCurrentTask() {
 
 .summary-config-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 460px) minmax(104px, 132px) minmax(132px, 180px) auto;
+  grid-template-columns: minmax(260px, 460px) minmax(104px, 132px) minmax(132px, 180px) max-content;
   gap: 12px;
   align-items: end;
   justify-content: start;
@@ -2107,7 +2157,6 @@ async function retryCurrentTask() {
 }
 
 .summary-bar__advanced {
-  align-self: end;
   justify-self: start;
 }
 
@@ -2133,11 +2182,29 @@ async function retryCurrentTask() {
 .stem-toggle-list :deep(.n-checkbox-group) {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 8px;
 }
 
 .stem-toggle-list :deep(.n-checkbox) {
   max-width: 190px;
+  min-height: 30px;
+  padding: 5px 10px 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--outline) 62%, transparent);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.04), transparent),
+    color-mix(in srgb, var(--surface-2) 58%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
+}
+
+.stem-toggle-list :deep(.n-checkbox:hover) {
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--outline));
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface-2));
+}
+
+.stem-toggle-list :deep(.n-checkbox:has(.n-checkbox-box--checked)) {
+  border-color: color-mix(in srgb, var(--primary) 58%, var(--outline));
+  background: color-mix(in srgb, var(--primary) 16%, var(--surface-2));
 }
 
 .stem-toggle-list :deep(.n-checkbox__label) {
@@ -2161,11 +2228,17 @@ async function retryCurrentTask() {
   align-items: start;
   gap: 10px 14px;
   min-height: 26px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-2) 34%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
 }
 
 .summary-stems-row__head {
   min-width: 0;
   display: flex;
+  align-self: center;
   align-items: center;
   gap: 10px;
 }
@@ -2186,7 +2259,6 @@ async function retryCurrentTask() {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding-top: 2px;
 }
 
 .summary-bar__status {
@@ -2860,12 +2932,16 @@ async function retryCurrentTask() {
   }
 
   .summary-config-grid {
-    grid-template-columns: minmax(0, 160px) minmax(0, 180px) auto;
+    grid-template-columns: minmax(0, 160px) minmax(0, 180px) max-content;
   }
 
   .summary-config-grid .field-block--wide {
     grid-column: 1 / -1;
     max-width: 520px;
+  }
+
+  .summary-bar__execution {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .summary-checks {
@@ -2905,6 +2981,10 @@ async function retryCurrentTask() {
 @media (max-width: 620px) {
   .summary-config-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .summary-bar__advanced {
+    justify-self: stretch;
   }
 
   .summary-bar__topline {
