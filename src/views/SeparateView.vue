@@ -856,7 +856,9 @@ async function retryCurrentTask() {
                   {{ option.label }}
                 </n-radio-button>
               </n-radio-group>
-              <div v-if="runMode === 'model' && downloadedModels.length" class="model-picker">
+              <transition name="run-mode-content" mode="out-in">
+                <div v-if="runMode === 'model'" key="model" class="run-mode-content">
+                  <div v-if="downloadedModels.length" class="model-picker">
                 <div class="model-picker__toolbar">
                   <n-input
                     v-model:value="modelSearch"
@@ -904,10 +906,10 @@ async function retryCurrentTask() {
                   {{ t('separate.modelSearchEmpty') }}
                 </div>
               </div>
-              <div v-if="runMode === 'model' && selectedModelName && !modelDownloaded" class="model-info-card model-info-card--warn">
+              <div v-if="selectedModelName && !modelDownloaded" class="model-info-card model-info-card--warn">
                 {{ t('separate.startHintModelMissing') }}
               </div>
-              <div v-else-if="runMode === 'model' && !downloadedModels.length" class="model-panel__empty-state" :class="{ 'model-panel__empty-state--loading': isLoading }">
+              <div v-else-if="!downloadedModels.length" class="model-panel__empty-state" :class="{ 'model-panel__empty-state--loading': isLoading }">
                 <div class="model-panel__empty-visual">
                   <n-spin v-if="isLoading" size="large" />
                   <n-icon v-else :component="CubeOutline" />
@@ -922,7 +924,9 @@ async function retryCurrentTask() {
                   </n-button>
                 </div>
               </div>
-              <div v-if="runMode === 'workflow'" class="model-picker model-picker--workflow">
+                </div>
+                <div v-else key="workflow" class="run-mode-content">
+                  <div class="model-picker model-picker--workflow">
                 <div class="model-picker__toolbar">
                   <n-input
                     v-model:value="workflowSearch"
@@ -973,6 +977,8 @@ async function retryCurrentTask() {
                   </div>
                 </div>
               </div>
+                </div>
+              </transition>
             </div>
           </div>
         </n-collapse-transition>
@@ -1142,22 +1148,26 @@ async function retryCurrentTask() {
             </div>
           </div>
 
-          <div v-if="runMode === 'model'" class="summary-stems-row">
-            <div class="summary-stems-row__head">
-              <label>{{ t('separate.outputStems') }}</label>
+          <transition name="summary-stems">
+            <div v-if="runMode === 'model'" class="summary-stems-shell">
+              <div class="summary-stems-row">
+                <div class="summary-stems-row__head">
+                  <label>{{ t('separate.outputStems') }}</label>
+                </div>
+                <div v-if="availableStemNames.length" class="stem-toggle-list">
+                  <n-checkbox-group v-model:value="checkedOutputStems">
+                    <n-checkbox
+                      v-for="stem in availableStemNames"
+                      :key="stem"
+                      :value="stem"
+                      :label="stem"
+                    />
+                  </n-checkbox-group>
+                </div>
+                <div v-else class="stem-toggle-empty">{{ t('separate.allStems') }}</div>
+              </div>
             </div>
-            <div v-if="availableStemNames.length" class="stem-toggle-list">
-              <n-checkbox-group v-model:value="checkedOutputStems">
-                <n-checkbox
-                  v-for="stem in availableStemNames"
-                  :key="stem"
-                  :value="stem"
-                  :label="stem"
-                />
-              </n-checkbox-group>
-            </div>
-            <div v-else class="stem-toggle-empty">{{ t('separate.allStems') }}</div>
-          </div>
+          </transition>
         </div>
         <div class="summary-bar__execution">
           <div class="summary-bar__output-line" :title="outputPreview">
@@ -1761,6 +1771,35 @@ async function retryCurrentTask() {
   overflow: hidden;
 }
 
+.run-mode-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.run-mode-content-enter-active {
+  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+
+.run-mode-content-leave-active {
+  transition: opacity 150ms cubic-bezier(0.4, 0, 1, 1), transform 150ms cubic-bezier(0.4, 0, 1, 1);
+  will-change: opacity, transform;
+}
+
+.run-mode-content-enter-from {
+  opacity: 0;
+  transform: translateX(10px);
+}
+
+.run-mode-content-leave-to {
+  opacity: 0;
+  transform: translateX(-8px);
+}
+
 .model-picker__toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1.3fr) minmax(180px, 0.7fr);
@@ -2250,6 +2289,32 @@ async function retryCurrentTask() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.summary-stems-shell {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.summary-stems-shell > .summary-stems-row {
+  min-height: 0;
+  transform-origin: top center;
+}
+
+.summary-stems-enter-active {
+  transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1), transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+
+.summary-stems-leave-active {
+  transition: opacity 120ms cubic-bezier(0.4, 0, 1, 1), transform 140ms cubic-bezier(0.4, 0, 1, 1);
+  will-change: opacity, transform;
+}
+
+.summary-stems-enter-from,
+.summary-stems-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 .stem-toggle-empty {
@@ -3088,7 +3153,11 @@ async function retryCurrentTask() {
   }
 
   .result-preview-enter-active,
-  .result-preview-leave-active {
+  .result-preview-leave-active,
+  .run-mode-content-enter-active,
+  .run-mode-content-leave-active,
+  .summary-stems-enter-active,
+  .summary-stems-leave-active {
     transition: none;
   }
 }
