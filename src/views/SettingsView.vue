@@ -49,7 +49,6 @@ const {
   settingsDir,
   editorProjectsDir,
   logsDir,
-  tempDir,
   defaultDevice,
   downloadSource,
   maxConcurrentSeparations,
@@ -119,7 +118,6 @@ const dataDirEntries = computed(() => [
   { key: 'settings.editorProjectsDir', value: editorProjectsDir.value, fallback: 'editor-projects' },
   { key: 'settings.settingsDir', value: settingsDir.value, fallback: 'settings' },
   { key: 'settings.logsDir', value: logsDir.value, fallback: 'logs' },
-  { key: 'settings.tempDir', value: tempDir.value, fallback: 'temp' },
 ])
 const hasActiveModelDirUsage = computed(() => {
   const hasRunningWorkerTask = activeWorkerTasks.value.length > 0
@@ -319,8 +317,8 @@ onMounted(() => {
 
     <n-grid class="settings-grid" :cols="2" :x-gap="18" :y-gap="18" responsive="screen">
       <!-- Appearance -->
-      <n-grid-item :span="1">
-        <n-card class="settings-card settings-card--compact" :bordered="true" size="small">
+      <n-grid-item class="settings-grid__top-item" :span="1">
+        <n-card class="settings-card settings-card--compact settings-card--appearance" :bordered="true" size="small">
           <template #header>
             <div class="section-title">
               <span class="section-title__icon">
@@ -450,8 +448,8 @@ onMounted(() => {
       </n-grid-item>
 
       <!-- Paths -->
-      <n-grid-item :span="1">
-        <n-card class="settings-card settings-card--feature" :bordered="true" size="small">
+      <n-grid-item class="settings-grid__top-item" :span="1">
+        <n-card class="settings-card settings-card--feature settings-card--paths" :bordered="true" size="small">
           <template #header>
             <div class="section-title">
               <span class="section-title__icon">
@@ -828,6 +826,16 @@ onMounted(() => {
   column-gap: 14px !important;
 }
 
+.settings-grid__top-item {
+  align-self: stretch;
+  display: flex;
+  min-width: 0;
+}
+
+.settings-grid__top-item > :deep(.n-card) {
+  flex: 1 1 auto;
+}
+
 .settings-card {
   border-color: color-mix(in srgb, var(--outline) 58%, transparent) !important;
   background:
@@ -1146,7 +1154,7 @@ onMounted(() => {
 .path-primary-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
 }
 
 .path-item {
@@ -1175,26 +1183,37 @@ onMounted(() => {
 
 .path-item__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
 
 .path-item__head-copy {
+  min-width: min(100%, 128px);
+  flex: 1 1 128px;
   display: grid;
   gap: 4px;
 }
 
 .path-item__head-copy strong {
   font-size: 13px;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .path-item__actions {
+  min-width: 0;
+  flex: 0 1 auto;
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.path-item__actions :deep(.n-button) {
+  max-width: 100%;
 }
 
 .path-item__value {
@@ -1437,6 +1456,10 @@ onMounted(() => {
 @media (max-width: 840px) {
   .settings-merged-layout {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-grid__top-item {
+    display: block;
   }
 
   .settings-group--soft {
