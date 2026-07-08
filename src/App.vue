@@ -30,6 +30,7 @@ const routeWarmupLoaders = [
   () => import('@/views/WorkflowsView.vue'),
   () => import('@/views/ResultsView.vue'),
   () => import('@/views/SettingsView.vue'),
+  () => import('@/views/DebugView.vue'),
 ]
 
 function scheduleIdleWork(task: () => void) {

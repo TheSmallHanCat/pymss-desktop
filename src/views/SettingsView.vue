@@ -57,8 +57,6 @@ const {
 } = storeToRefs(settings)
 const { downloadTasks } = storeToRefs(modelStore)
 const { activeWorkerTasks } = storeToRefs(task)
-const developerDiagnostics = computed(() => app.diagnostics)
-const recentWorkerEvents = computed(() => app.workerEvents.slice(0, 12))
 const deviceOptions = computed(() => settings.deviceOptions(app.envInfo))
 const themeAccentOptions = computed(() =>
   THEME_ACCENTS.map((accent) => ({
@@ -523,43 +521,6 @@ onMounted(() => {
         </n-card>
       </n-grid-item>
 
-      <n-grid-item v-if="developerMode" :span="2">
-        <n-card class="settings-card settings-card--feature" :bordered="true" size="small">
-          <template #header>
-            <div class="section-title">
-              <span class="section-title__icon">
-                <n-icon :component="TerminalOutline" size="18" />
-              </span>
-              <span>{{ t('settings.developerDiagnostics') }}</span>
-            </div>
-          </template>
-          <div class="developer-panel">
-            <div class="developer-panel__section">
-              <h3>{{ t('settings.developerEnvTitle') }}</h3>
-              <div class="developer-diagnostics">
-                <div v-for="item in developerDiagnostics" :key="item.key" class="developer-diagnostic">
-                  <span class="developer-diagnostic__label">{{ item.label }}</span>
-                  <span class="developer-diagnostic__value">{{ item.value }}</span>
-                  <small v-if="item.detail" class="developer-diagnostic__detail">{{ item.detail }}</small>
-                </div>
-              </div>
-            </div>
-            <div class="developer-panel__section">
-              <h3>{{ t('settings.developerWorkerEvents') }}</h3>
-              <div class="developer-log">
-                <div v-if="recentWorkerEvents.length">
-                  <div v-for="(event, index) in recentWorkerEvents" :key="index" class="developer-log__line">
-                    <code>{{ event.type }}</code>
-                    <span>{{ event.taskId || '-' }}</span>
-                  </div>
-                </div>
-                <div v-else class="developer-log__empty">{{ t('settings.developerNoWorkerEvents') }}</div>
-              </div>
-            </div>
-          </div>
-        </n-card>
-      </n-grid-item>
-
       <!-- Defaults & Execution -->
       <n-grid-item :span="2">
         <n-card class="settings-card" :bordered="true" size="small">
@@ -628,12 +589,16 @@ onMounted(() => {
                 </span>
                 <span>{{ t('settings.developerMode') }}</span>
               </div>
-              <div class="setting-field">
-                <label class="text-muted text-sm">{{ t('settings.developerModeTitle') }}</label>
-                <n-switch v-model:value="developerMode" />
-                <p class="text-muted text-sm setting-field__hint">
-                  {{ t('settings.developerModeHint') }}
-                </p>
+              <div class="setting-field setting-field--switch">
+                <div class="setting-switch-row">
+                  <div class="setting-switch-row__copy">
+                    <label class="text-muted text-sm">{{ t('settings.developerModeTitle') }}</label>
+                    <p class="text-muted text-sm setting-field__hint">
+                      {{ t('settings.developerModeHint') }}
+                    </p>
+                  </div>
+                  <n-switch v-model:value="developerMode" />
+                </div>
               </div>
             </section>
           </div>
@@ -1039,6 +1004,23 @@ onMounted(() => {
 .setting-field__hint {
   margin: 0;
   line-height: 1.6;
+}
+
+.setting-field--switch {
+  gap: 0;
+}
+
+.setting-switch-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+}
+
+.setting-switch-row__copy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
 }
 
 .settings-merged-layout {

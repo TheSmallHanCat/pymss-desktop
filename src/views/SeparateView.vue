@@ -1374,6 +1374,45 @@ async function retryCurrentTask() {
   gap: 12px;
 }
 
+.separate-header__brand :deep(.app-brand-mark) {
+  transform-origin: center center;
+  will-change: transform, filter;
+}
+
+.separate-header__brand:hover :deep(.app-brand-mark) {
+  animation: separate-brand-jelly 780ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.separate-header__brand:hover :deep(.app-brand-mark__image) {
+  filter:
+    drop-shadow(0 1px 1px rgba(255,255,255,0.08))
+    drop-shadow(0 10px 20px rgba(98, 126, 255, 0.18));
+}
+
+@keyframes separate-brand-jelly {
+  0% {
+    transform: translateY(0) scale3d(1, 1, 1);
+  }
+  18% {
+    transform: translateY(-1px) scale3d(1.12, 0.9, 1);
+  }
+  34% {
+    transform: translateY(0) scale3d(0.92, 1.08, 1);
+  }
+  50% {
+    transform: translateY(-0.5px) scale3d(1.04, 0.96, 1);
+  }
+  66% {
+    transform: translateY(0) scale3d(0.985, 1.02, 1);
+  }
+  82% {
+    transform: translateY(0) scale3d(1.01, 0.995, 1);
+  }
+  100% {
+    transform: translateY(0) scale3d(1, 1, 1);
+  }
+}
+
 .separate-header h1 {
   font-size: 24px;
   letter-spacing: -0.035em;
@@ -3167,6 +3206,10 @@ async function retryCurrentTask() {
   .separation-task-panel--done .task-panel-actions,
   .separation-task-panel--failed .task-panel-actions,
   .separation-task-panel--cancelled .task-panel-actions {
+    animation: none;
+  }
+
+  .separate-header__brand:hover :deep(.app-brand-mark) {
     animation: none;
   }
 
