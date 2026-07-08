@@ -121,9 +121,11 @@ jobs:
           test -x "$BIN/ffmpeg"
           test -x "$BIN/ffprobe"
           test -x "$BIN/aria2c"
+          test -f "$BIN/openssl/openssl.cnf"
+          test -f "$BIN/openssl/ossl-modules/legacy.dylib"
           "$BIN/ffmpeg" -version
           "$BIN/ffprobe" -version
-          "$BIN/aria2c" --version
+          OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" "$BIN/aria2c" --version
           test -d "$RES/python-runtime/lib/python3.12"
           if otool -L "$PY" | grep -q '/Library/Frameworks/Python.framework/Versions/'; then
             echo "Bundled app runtime unexpectedly links system Python framework: $PY"
@@ -131,9 +133,11 @@ jobs:
             exit 1
           fi
           PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl, pymss_core; print(sys.prefix); print('ssl ok'); print('pymss_core ok')"
-          PATH="$BIN:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import shutil; assert shutil.which('ffmpeg'); assert shutil.which('aria2c'); print('bundled tools ok')"
-          PATH="$BIN:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" env_info
-          PATH="$BIN:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" list_models --payload "{}"
+          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import shutil; assert shutil.which('ffmpeg'); assert shutil.which('aria2c'); print('bundled tools ok')"
+          WORKER_DIR="$(dirname "$WORKER")"
+          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys; sys.path.insert(0, '$WORKER_DIR'); import worker_download; assert worker_download._resolve_aria2c_path(); print('aria2 resolver ok')"
+          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" env_info
+          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" list_models --payload "{}"
           codesign --verify --deep --strict --verbose=4 "$APP"
 
       - name: Build DMG with hdiutil

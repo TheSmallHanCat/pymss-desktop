@@ -190,6 +190,19 @@ fn bundled_bin_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
     Ok(dirs.into_iter().filter(|dir| dir.is_dir()).collect())
 }
 
+#[cfg(target_os = "macos")]
+fn bundled_openssl_env(app: &AppHandle) -> AppResult<Option<(PathBuf, PathBuf)>> {
+    for bin_dir in bundled_bin_dirs(app)? {
+        let openssl_dir = bin_dir.join("openssl");
+        let openssl_conf = openssl_dir.join("openssl.cnf");
+        let openssl_modules = openssl_dir.join("ossl-modules");
+        if openssl_conf.is_file() && openssl_modules.is_dir() {
+            return Ok(Some((openssl_conf, openssl_modules)));
+        }
+    }
+    Ok(None)
+}
+
 fn path_separator() -> &'static str {
     if cfg!(windows) {
         ";"
@@ -276,6 +289,17 @@ fn build_worker_command(
         if let Some(runtime_root) = embedded.parent().and_then(|path| path.parent()) {
             cmd.env("PYTHONHOME", runtime_root.to_string_lossy().to_string());
         }
+    }
+    #[cfg(target_os = "macos")]
+    if let Some((openssl_conf, openssl_modules)) = bundled_openssl_env(app)? {
+        cmd.env(
+            "PYMSS_STUDIO_OPENSSL_CONF",
+            openssl_conf.to_string_lossy().to_string(),
+        );
+        cmd.env(
+            "PYMSS_STUDIO_OPENSSL_MODULES",
+            openssl_modules.to_string_lossy().to_string(),
+        );
     }
     if let Some(pymss_source) = pymss_source_path(app)? {
         if let Some(python_path) =

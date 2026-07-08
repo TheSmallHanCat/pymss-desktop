@@ -28,8 +28,45 @@ class DownloadValidationError(RuntimeError):
     pass
 
 
+def _aria2c_env() -> dict[str, str] | None:
+    env = os.environ.copy()
+    changed = False
+    openssl_conf = env.get("PYMSS_STUDIO_OPENSSL_CONF")
+    openssl_modules = env.get("PYMSS_STUDIO_OPENSSL_MODULES")
+    if openssl_conf:
+        env["OPENSSL_CONF"] = openssl_conf
+        changed = True
+    if openssl_modules:
+        env["OPENSSL_MODULES"] = openssl_modules
+        changed = True
+    return env if changed else None
+
+
+def _aria2c_is_usable(path: str) -> bool:
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=_aria2c_env(),
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def _resolve_aria2c_path() -> str | None:
-    return shutil.which("aria2c")
+    seen: set[str] = set()
+    for search_dir in os.get_exec_path():
+        candidate = shutil.which("aria2c", path=search_dir)
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        if _aria2c_is_usable(candidate):
+            return candidate
+    return None
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -315,6 +352,7 @@ def _download_file_with_progress_aria2(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            env=_aria2c_env(),
             text=True,
             encoding="utf-8",
             errors="replace",
