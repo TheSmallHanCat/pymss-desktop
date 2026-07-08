@@ -963,8 +963,8 @@ onMounted(() => {
 .model-grid {
   display: grid;
   grid-template-columns: 1fr;
+  align-content: start;
   gap: 10px;
-  min-height: 200px;
 }
 
 .pagination-row {
@@ -998,7 +998,7 @@ onMounted(() => {
     color-mix(in srgb, var(--surface-1) 64%, transparent);
   transition: box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(150px, 180px) 96px 124px;
+  grid-template-columns: minmax(0, 1fr) minmax(96px, 140px) 86px minmax(168px, 180px);
   grid-template-areas:
     "header tags size footer"
     "meta tags size footer";
@@ -1057,8 +1057,17 @@ onMounted(() => {
   flex-wrap: wrap;
   justify-content: center;
   gap: 5px;
+  min-width: 0;
 }
 
+.mc-tags :deep(.n-tag) {
+  max-width: 100%;
+}
+
+.mc-tags :deep(.n-tag__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .mc-size {
   grid-area: size;
@@ -1099,8 +1108,8 @@ onMounted(() => {
 /* Footer */
 .mc-footer {
   grid-area: footer;
-  min-width: 124px;
-  width: 124px;
+  min-width: 0;
+  width: 100%;
   margin-top: 0;
   padding-top: 0;
   border-top: 0;
@@ -1130,18 +1139,24 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  width: 100%;
+  min-width: 0;
 }
 
 .mc-dl-info {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
 }
 
 .mc-dl-status {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 1 1 auto;
   min-width: 0;
 }
 

@@ -392,6 +392,10 @@ function shortenPath(value: string) {
   return `${value.slice(0, 34)}…${value.slice(-44)}`
 }
 
+function outputFileName(value: string) {
+  return getFileName(value) || shortenPath(value)
+}
+
 function scrollToFocusedResult(id: string | null) {
   if (!id) return
   const group = resultGroups.value.find(group => group.id === id || group.items.some(item => item.id === id))
@@ -553,8 +557,12 @@ function formatTime(value: number) {
 
         <n-collapse-transition :show="isExpanded(item.id)">
           <div class="result-row__details">
-            <section v-for="result in item.items" :key="result.id" class="result-detail-card">
-              <div class="result-detail-card__head">
+            <section
+              v-for="result in item.items"
+              :key="result.id"
+              :class="['result-detail-card', { 'result-detail-card--compact': item.items.length === 1 }]"
+            >
+              <div v-if="item.items.length > 1" class="result-detail-card__head">
                 <div>
                   <strong>{{ getFileName(result.input) }}</strong>
                   <span>{{ result.outputs.length }} {{ t('results.stemUnit') }}</span>
@@ -571,9 +579,9 @@ function formatTime(value: number) {
                 </div>
               </div>
               <div class="result-detail-card__stems">
-                <div v-for="output in result.outputs" :key="output.path" class="stem-line">
-                  <span>{{ output.stem }}</span>
-                  <span class="stem-line__path">{{ output.path }}</span>
+                <div v-for="output in result.outputs" :key="output.path" class="stem-line" :title="output.path">
+                  <span class="stem-line__stem">{{ output.stem }}</span>
+                  <span class="stem-line__path">{{ outputFileName(output.path) }}</span>
                 </div>
               </div>
             </section>
@@ -790,6 +798,14 @@ function formatTime(value: number) {
   background: color-mix(in srgb, var(--surface) 28%, transparent);
 }
 
+.result-detail-card--compact {
+  gap: 8px;
+  max-width: 760px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .result-detail-card__head {
   min-width: 0;
   display: flex;
@@ -831,7 +847,7 @@ function formatTime(value: number) {
 
 .stem-line {
   display: grid;
-  grid-template-columns: 120px minmax(0, 1fr);
+  grid-template-columns: minmax(92px, 132px) minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   padding: 8px 10px;
@@ -840,9 +856,16 @@ function formatTime(value: number) {
 }
 
 .stem-line span {
-  color: var(--primary-strong);
   font-size: 12px;
-  font-weight: 600;
+}
+
+.stem-line__stem {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--primary-strong);
+  font-weight: 700;
 }
 
 .stem-line__path {
