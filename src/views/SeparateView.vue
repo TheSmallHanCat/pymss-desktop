@@ -1210,8 +1210,16 @@ async function retryCurrentTask() {
       </div>
     </section>
 
-    <n-drawer v-model:show="showSettingsDrawer" :width="520" placement="right">
-      <n-drawer-content class="settings-drawer" :title="t('separate.settingsDrawerTitle')" closable>
+    <n-modal v-model:show="showSettingsDrawer">
+      <n-card
+        class="settings-modal"
+        :title="t('separate.settingsDrawerTitle')"
+        :bordered="false"
+        closable
+        role="dialog"
+        aria-modal="true"
+        @close="showSettingsDrawer = false"
+      >
         <div class="settings-drawer__content">
           <div class="settings-group">
             <div class="settings-group__head">
@@ -1334,8 +1342,8 @@ async function retryCurrentTask() {
             <n-button type="primary" @click="showSettingsDrawer = false">{{ t('common.close') }}</n-button>
           </div>
         </template>
-      </n-drawer-content>
-    </n-drawer>
+      </n-card>
+    </n-modal>
     <n-modal v-model:show="showLogModal" style="width:min(900px, 92vw)">
       <n-card
         :title="currentTask ? `${currentTaskFileName} - ${t('tasks.logs')}` : t('tasks.logs')"
@@ -2912,30 +2920,39 @@ async function retryCurrentTask() {
   padding-bottom: 8px;
 }
 
-.settings-drawer :deep(.n-drawer-header) {
-  padding: 18px 20px 14px;
+.settings-modal {
+  width: min(760px, calc(100vw - 48px));
+  max-height: min(760px, calc(100vh - 64px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 20px;
+}
+
+.settings-modal :deep(.n-card-header) {
+  flex: 0 0 auto;
+  padding: 18px 22px 14px;
   border-bottom: 1px solid color-mix(in srgb, var(--outline) 86%, transparent);
   background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 }
 
-.settings-drawer :deep(.n-drawer-header__main) {
+.settings-modal :deep(.n-card-header__main) {
   font-size: 15px;
   font-weight: 600;
 }
 
-.settings-drawer :deep(.n-drawer-body-content-wrapper) {
-  display: flex;
-  flex-direction: column;
+.settings-modal :deep(.n-card-content),
+.settings-modal :deep(.n-card__content) {
+  flex: 1 1 auto;
   min-height: 0;
+  overflow: auto;
+  padding: 0 22px 20px;
 }
 
-.settings-drawer :deep(.n-drawer-body-content) {
-  min-height: 0;
-  padding: 0 20px 20px;
-}
-
-.settings-drawer :deep(.n-drawer-footer) {
-  padding: 14px 20px 16px;
+.settings-modal :deep(.n-card-footer),
+.settings-modal :deep(.n-card__footer) {
+  flex: 0 0 auto;
+  padding: 14px 22px 16px;
   border-top: 1px solid color-mix(in srgb, var(--outline) 86%, transparent);
   background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 }
@@ -3173,14 +3190,21 @@ async function retryCurrentTask() {
     flex: 1 1 160px;
   }
 
+  .settings-modal {
+    width: calc(100vw - 28px);
+    max-height: calc(100vh - 40px);
+  }
+
   .settings-drawer__content,
-  .settings-drawer :deep(.n-drawer-body-content) {
+  .settings-modal :deep(.n-card-content),
+  .settings-modal :deep(.n-card__content) {
     padding-left: 16px;
     padding-right: 16px;
   }
 
-  .settings-drawer :deep(.n-drawer-header),
-  .settings-drawer :deep(.n-drawer-footer) {
+  .settings-modal :deep(.n-card-header),
+  .settings-modal :deep(.n-card-footer),
+  .settings-modal :deep(.n-card__footer) {
     padding-left: 16px;
     padding-right: 16px;
   }

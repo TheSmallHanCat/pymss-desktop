@@ -260,9 +260,10 @@ function selectModel(model: ModelEntry) {
 
 function handleDetailDrawerUpdate(value: boolean) {
   showDetail.value = value
-  if (!value) {
-    selectedInfo.value = null
-  }
+}
+
+function handleDetailModalAfterLeave() {
+  if (!showDetail.value) selectedInfo.value = null
 }
 
 async function downloadModel(model: ModelEntry, event: MouseEvent) {
@@ -611,11 +612,20 @@ onMounted(() => {
       </template>
     </div>
 
-    <!-- Detail Drawer -->
-    <n-drawer :show="showDetail" :width="380" placement="right" @update:show="handleDetailDrawerUpdate">
-      <n-drawer-content :title="t('models.detail')" closable>
+    <!-- Detail Modal -->
+    <n-modal :show="showDetail" @update:show="handleDetailDrawerUpdate" @after-leave="handleDetailModalAfterLeave">
+      <n-card
+        class="model-detail-modal"
+        :title="t('models.detail')"
+        :bordered="false"
+        closable
+        role="dialog"
+        aria-modal="true"
+        @close="handleDetailDrawerUpdate(false)"
+      >
         <template v-if="selectedInfo">
-          <div class="detail-content">
+          <div class="model-detail-modal__body">
+            <div class="detail-content">
             <strong class="detail-name">{{ selectedInfo.name }}</strong>
 
             <div class="detail-badges">
@@ -662,6 +672,25 @@ onMounted(() => {
 
             <n-divider style="margin:16px 0" />
 
+            <n-collapse class="detail-path-collapse" :default-expanded-names="[]">
+              <n-collapse-item :title="t('models.path')" name="model-path">
+                <div class="detail-path-block">
+                  <code class="detail-path">{{ selectedInfo.modelPath }}</code>
+                </div>
+                <div v-if="isPartiallyAvailable(selectedInfo) && selectedInfo.missingPaths?.length" class="detail-partial-block">
+                  <div class="detail-label" style="margin-bottom:6px">{{ t('models.partialHintTitle') }}</div>
+                  <div class="text-muted">{{ t('models.partialHint') }}</div>
+                  <ul class="detail-missing-list">
+                    <li v-for="path in selectedInfo.missingPaths" :key="path">
+                      <code class="detail-path">{{ path }}</code>
+                    </li>
+                  </ul>
+                </div>
+              </n-collapse-item>
+            </n-collapse>
+
+            <n-divider style="margin:16px 0" />
+
             <div class="detail-inference">
               <div class="detail-section-head">
                 <strong>{{ t('models.inferenceDefaultsTitle') }}</strong>
@@ -693,20 +722,6 @@ onMounted(() => {
               </div>
             </div>
 
-            <n-divider style="margin:16px 0" />
-
-            <div class="text-sm">
-              <div class="detail-label" style="margin-bottom:6px">{{ t('models.path') }}</div>
-              <code class="detail-path">{{ selectedInfo.modelPath }}</code>
-            </div>
-            <div v-if="isPartiallyAvailable(selectedInfo) && selectedInfo.missingPaths?.length" class="text-sm" style="margin-top:12px">
-              <div class="detail-label" style="margin-bottom:6px">{{ t('models.partialHintTitle') }}</div>
-              <div class="text-muted">{{ t('models.partialHint') }}</div>
-              <ul class="detail-missing-list">
-                <li v-for="path in selectedInfo.missingPaths" :key="path">
-                  <code class="detail-path">{{ path }}</code>
-                </li>
-              </ul>
             </div>
           </div>
         </template>
@@ -795,8 +810,8 @@ onMounted(() => {
             </template>
           </div>
         </template>
-      </n-drawer-content>
-    </n-drawer>
+      </n-card>
+    </n-modal>
 
     <n-drawer v-model:show="showStorage" :width="760" placement="right">
       <n-drawer-content :title="t('models.storageTitle')" closable>
@@ -1274,6 +1289,59 @@ onMounted(() => {
   gap: 8px;
 }
 
+
+.model-detail-modal {
+  width: min(600px, calc(100vw - 48px));
+  height: min(620px, calc(100vh - 96px));
+  max-height: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 20px;
+}
+
+.model-detail-modal :deep(.n-card-header) {
+  flex: 0 0 auto;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--outline) 72%, transparent);
+}
+
+.model-detail-modal :deep(.n-card-content),
+.model-detail-modal :deep(.n-card__content) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.model-detail-modal__body {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 20px;
+  box-sizing: border-box;
+}
+
+.model-detail-modal :deep(.n-card-footer),
+.model-detail-modal :deep(.n-card__footer) {
+  flex: 0 0 auto;
+  padding: 12px 20px 16px;
+  border-top: 1px solid color-mix(in srgb, var(--outline) 72%, transparent);
+  background: color-mix(in srgb, var(--surface-1) 96%, transparent);
+}
+
+.model-detail-modal .drawer-footer {
+  flex-direction: row;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.model-detail-modal .drawer-footer :deep(.n-button) {
+  width: auto;
+  min-width: 112px;
+}
+
 /* ===== Skeleton ===== */
 .skel-card {
   padding: 14px;
@@ -1336,6 +1404,31 @@ onMounted(() => {
   padding: 8px 10px;
   border-radius: 8px;
   display: block;
+}
+
+.detail-path-collapse {
+  margin-top: -2px;
+}
+
+.detail-path-collapse :deep(.n-collapse-item__header) {
+  padding: 0;
+  color: var(--on-surface-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.detail-path-collapse :deep(.n-collapse-item__content-inner) {
+  padding-top: 10px;
+}
+
+.detail-path-block,
+.detail-partial-block {
+  display: grid;
+  gap: 8px;
+}
+
+.detail-partial-block {
+  margin-top: 12px;
 }
 
 .detail-section-head {
@@ -1547,4 +1640,20 @@ onMounted(() => {
     justify-self: stretch;
   }
 }
+@media (max-width: 720px) {
+  .model-detail-modal {
+    width: calc(100vw - 28px);
+    height: calc(100vh - 40px);
+    max-height: calc(100vh - 40px);
+  }
+
+  .model-detail-modal .drawer-footer {
+    flex-direction: column;
+  }
+
+  .model-detail-modal .drawer-footer :deep(.n-button) {
+    width: 100%;
+  }
+}
+
 </style>
