@@ -314,7 +314,7 @@
   "models": {
     "title": "Model Library",
     "subtitle": "Browse the model directory, download, and select models for audio separation.",
-    "search": "Search by model name, architecture, or type...",
+    "search": "Search by model name, architecture, type, or note...",
     "supportedOnly": "Supported Only",
     "downloadedOnly": "Downloaded Only",
     "load": "Load Model List",
@@ -375,7 +375,22 @@
     "storageSortNameAsc": "Name: A ? Z",
     "storageSortNameDesc": "Name: Z ? A",
     "downloadInterrupted": "Download interrupted",
-    "continueDownload": "Continue Download"
+    "continueDownload": "Continue Download",
+    "favorite": "Favorite",
+    "favorited": "Favorited",
+    "unfavorite": "Unfavorite",
+    "note": "Note",
+    "noteHint": "Notes are stored locally and can help track model usage, results, or suitable scenarios. They are searchable.",
+    "notePlaceholder": "Add a note, e.g. cleaner vocals, good for pop music...",
+    "sortDefault": "Default Sort",
+    "sortFavorite": "Favorites First",
+    "sortNameAsc": "Name: A to Z",
+    "sortNameDesc": "Name: Z to A",
+    "sortSizeDesc": "Size: Largest First",
+    "sortSizeAsc": "Size: Smallest First",
+    "sortCategory": "Sort by Category",
+    "sortType": "Sort by Type",
+    "sortDownloaded": "Downloaded First"
   },
   "results": {
     "title": "Separation Results",

@@ -60,7 +60,7 @@ const {
   high_end_process,
   selectedStems,
 } = storeToRefs(task)
-const { selectedModel, downloadedModels, isLoading, detailLoading } = storeToRefs(model)
+const { selectedModel, downloadedModels, isLoading, detailLoading, modelPreferences } = storeToRefs(model)
 const { workflows, selectedWorkflow, selectedWorkflowId } = storeToRefs(workflow)
 
 const isDragging = ref(false)
@@ -123,9 +123,11 @@ const outputLayoutOptions = computed(() => [
 const canChooseOutputLayout = computed(() => inputFiles.value.length > 1)
 const effectiveOutputLayout = computed<OutputLayout>(() => canChooseOutputLayout.value ? outputLayout.value : 'folders')
 const listedDownloadedModels = computed(() => {
-  return [...downloadedModels.value].sort((a, b) => (
-    a.name.localeCompare(b.name, locale.value === 'zh-CN' ? 'zh-CN' : 'en')
-  ))
+  return [...downloadedModels.value].sort((a, b) => {
+    const favoriteDelta = Number(Boolean(modelPreferences.value[b.name]?.favorite)) - Number(Boolean(modelPreferences.value[a.name]?.favorite))
+    if (favoriteDelta) return favoriteDelta
+    return a.name.localeCompare(b.name, locale.value === 'zh-CN' ? 'zh-CN' : 'en')
+  })
 })
 const selectedModelListItem = computed(() => listedDownloadedModels.value.find(item => item.name === selectedModelName.value) || null)
 const modelDownloaded = computed(() => Boolean(selectedModelListItem.value))

@@ -87,6 +87,12 @@ export type ModelStorageSummary = {
   residualBytes: number
 }
 
+export type ModelPreference = {
+  favorite?: boolean
+  note?: string
+  updatedAt?: number
+}
+
 export type DeleteTaskStatus = 'deleting' | 'done' | 'error' | 'cancelled'
 
 export type DeleteTask = {
@@ -136,6 +142,7 @@ type StoredModelState = {
   modelInferenceBaseDefaults?: Record<string, ModelDefaultInferenceParams>
   modelInferenceBaseKnown?: Record<string, boolean>
   modelInferenceBaseSources?: Record<string, ModelEntry['defaultInferenceParamsSource']>
+  modelPreferences?: Record<string, ModelPreference>
 }
 
 function normalizeDownloadTasks(input?: Record<string, DownloadTask>) {
@@ -157,6 +164,22 @@ function normalizeModelInferenceOverrides(input?: Record<string, ModelDefaultInf
   Object.entries(input || {}).forEach(([name, value]) => {
     const normalized = normalizeDefaultInferenceParams(value as Record<string, unknown>)
     if (normalized) next[name] = normalized
+  })
+  return next
+}
+
+function normalizeModelPreferences(input?: Record<string, ModelPreference>) {
+  const next: Record<string, ModelPreference> = {}
+  Object.entries(input || {}).forEach(([name, value]) => {
+    if (!name || !value || typeof value !== 'object') return
+    const note = typeof value.note === 'string' ? value.note.trim() : ''
+    const favorite = Boolean(value.favorite)
+    if (!favorite && !note) return
+    next[name] = {
+      favorite,
+      note,
+      updatedAt: typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now(),
+    }
   })
   return next
 }
@@ -246,6 +269,7 @@ export const useModelStore = defineStore('model', () => {
   const modelInferenceBaseDefaults = ref<Record<string, ModelDefaultInferenceParams>>({})
   const modelInferenceBaseKnown = ref<Record<string, boolean>>({})
   const modelInferenceBaseSources = ref<Record<string, ModelEntry['defaultInferenceParamsSource']>>({})
+  const modelPreferences = ref<Record<string, ModelPreference>>({})
   const downloadTaskIndex = ref<Record<string, string>>({})
   const deleteTasks = ref<Record<string, DeleteTask>>({})
   const deleteTaskIndex = ref<Record<string, string>>({})
@@ -284,6 +308,7 @@ export const useModelStore = defineStore('model', () => {
         || model.targetStem.toLowerCase().includes(q)
         || model.category.toLowerCase().includes(q)
         || model.categoryCn.toLowerCase().includes(q)
+        || (modelPreferences.value[model.name]?.note || '').toLowerCase().includes(q)
       const selectedCategory = category.value.trim().toLowerCase()
       const matchesCategory = !selectedCategory
         || model.category.toLowerCase() === selectedCategory
@@ -308,6 +333,7 @@ export const useModelStore = defineStore('model', () => {
       modelInferenceBaseDefaults: modelInferenceBaseDefaults.value,
       modelInferenceBaseKnown: modelInferenceBaseKnown.value,
       modelInferenceBaseSources: modelInferenceBaseSources.value,
+      modelPreferences: modelPreferences.value,
     } satisfies StoredModelState)
   }
 
@@ -330,6 +356,7 @@ export const useModelStore = defineStore('model', () => {
       ...Object.fromEntries(Object.keys(modelInferenceBaseDefaults.value).map((name) => [name, true])),
     }
     modelInferenceBaseSources.value = stored?.modelInferenceBaseSources || {}
+    modelPreferences.value = normalizeModelPreferences(stored?.modelPreferences)
     if (stored?.models?.length) {
       models.value = stored.models.map((model) => normalizeModelEntryWithOverrides(model, {
         rememberBase: !modelInferenceOverrides.value[model.name],
@@ -444,6 +471,50 @@ export const useModelStore = defineStore('model', () => {
 
   function getModelInferenceOverrides(name: string) {
     return modelInferenceOverrides.value[name]
+  }
+
+  function getModelPreference(name: string) {
+    return modelPreferences.value[name] || {}
+  }
+
+  function isModelFavorite(name: string) {
+    return Boolean(modelPreferences.value[name]?.favorite)
+  }
+
+  function getModelNote(name: string) {
+    return modelPreferences.value[name]?.note || ''
+  }
+
+  function setModelPreference(name: string, patch: ModelPreference) {
+    const previous = modelPreferences.value[name] || {}
+    const next: ModelPreference = {
+      ...previous,
+      ...patch,
+      note: typeof patch.note === 'string' ? patch.note.trim() : previous.note,
+      updatedAt: Date.now(),
+    }
+    if (!next.favorite && !next.note) {
+      const { [name]: _, ...rest } = modelPreferences.value
+      modelPreferences.value = rest
+    } else {
+      modelPreferences.value = {
+        ...modelPreferences.value,
+        [name]: next,
+      }
+    }
+    queuePersist()
+  }
+
+  function setModelFavorite(name: string, favorite: boolean) {
+    setModelPreference(name, { favorite })
+  }
+
+  function toggleModelFavorite(name: string) {
+    setModelFavorite(name, !isModelFavorite(name))
+  }
+
+  function setModelNote(name: string, note: string) {
+    setModelPreference(name, { note })
   }
 
   function isDeleteTaskTerminal(task?: DeleteTask | null) {
@@ -1001,6 +1072,7 @@ export const useModelStore = defineStore('model', () => {
     downloadErrors,
     downloadTasks,
     modelInferenceOverrides,
+    modelPreferences,
     deleteTasks,
     modelStorageSummary,
     storageLoading,
@@ -1016,6 +1088,12 @@ export const useModelStore = defineStore('model', () => {
     getModelInferenceOverrides,
     getModelBaseInferenceDefaults,
     hasKnownModelInferenceBase,
+    getModelPreference,
+    isModelFavorite,
+    getModelNote,
+    setModelFavorite,
+    toggleModelFavorite,
+    setModelNote,
     deleteModel,
     downloadModel,
     cancelDownload,

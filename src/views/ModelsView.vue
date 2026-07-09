@@ -13,6 +13,8 @@ import {
   TrashOutline,
   FolderOpenOutline,
   ServerOutline,
+  Star,
+  StarOutline,
 } from '@vicons/ionicons5'
 import { useModelStore, type ModelDefaultInferenceParams, type ModelEntry } from '@/stores/model'
 import { useSettingsStore } from '@/stores/settings'
@@ -31,7 +33,6 @@ const {
   selectedInfo,
   selectedModel,
   search,
-  supportedOnly,
   category,
   categories,
   categoriesCn,
@@ -42,6 +43,7 @@ const {
   deleteTasks,
   modelStorageSummary,
   storageLoading,
+  modelPreferences,
   batchDeleteState,
   residualCleanupState,
 } = storeToRefs(modelStore)
@@ -51,6 +53,8 @@ const downloadedOnly = ref(false)
 const page = ref(1)
 const pageSize = ref(24)
 const pageSizeOptions = [12, 24, 48, 96]
+type ModelSort = 'default' | 'favorite' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc' | 'category' | 'type' | 'downloaded'
+const modelSort = ref<ModelSort>('default')
 const showStorage = ref(false)
 const storageSearch = ref('')
 const storageSort = ref<'size-desc' | 'size-asc' | 'name-asc' | 'name-desc'>('size-desc')
@@ -66,11 +70,65 @@ const categoryOptions = computed(() => {
   return buildModelCategoryOptionsFromPairs(categories.value, categoriesCn.value, locale.value, t('common.all'))
 })
 
+const modelSortOptions = computed(() => [
+  { label: t('models.sortDefault'), value: 'default' },
+  { label: t('models.sortFavorite'), value: 'favorite' },
+  { label: t('models.sortNameAsc'), value: 'name-asc' },
+  { label: t('models.sortNameDesc'), value: 'name-desc' },
+  { label: t('models.sortSizeDesc'), value: 'size-desc' },
+  { label: t('models.sortSizeAsc'), value: 'size-asc' },
+  { label: t('models.sortCategory'), value: 'category' },
+  { label: t('models.sortType'), value: 'type' },
+  { label: t('models.sortDownloaded'), value: 'downloaded' },
+])
+
+function compareModelName(a: ModelEntry, b: ModelEntry) {
+  return a.name.localeCompare(b.name, locale.value === 'zh-CN' ? 'zh-CN' : 'en')
+}
+
+function isFavoriteModel(model: ModelEntry | null | undefined) {
+  return Boolean(model?.name && modelPreferences.value[model.name]?.favorite)
+}
+
+function modelNote(modelOrName: ModelEntry | string | null | undefined) {
+  const name = typeof modelOrName === 'string' ? modelOrName : modelOrName?.name
+  return name ? modelPreferences.value[name]?.note || '' : ''
+}
+
+function toggleFavorite(model: ModelEntry, event?: MouseEvent) {
+  event?.stopPropagation()
+  modelStore.toggleModelFavorite(model.name)
+}
+
+function updateSelectedModelNote(value: string) {
+  if (!selectedInfo.value) return
+  modelStore.setModelNote(selectedInfo.value.name, value)
+}
+
 const sortedModels = computed(() => {
   const list = downloadedOnly.value
     ? filteredModels.value.filter((m) => m.downloaded)
     : filteredModels.value
   return [...list].sort((a, b) => {
+    const favoriteDelta = Number(isFavoriteModel(b)) - Number(isFavoriteModel(a))
+    if (favoriteDelta) return favoriteDelta
+
+    if (modelSort.value === 'favorite') return compareModelName(a, b)
+    if (modelSort.value === 'name-asc') return compareModelName(a, b)
+    if (modelSort.value === 'name-desc') return compareModelName(b, a)
+    if (modelSort.value === 'size-desc') return b.sizeBytes - a.sizeBytes || compareModelName(a, b)
+    if (modelSort.value === 'size-asc') return a.sizeBytes - b.sizeBytes || compareModelName(a, b)
+    if (modelSort.value === 'category') {
+      return categoryLabel(a).localeCompare(categoryLabel(b), locale.value === 'zh-CN' ? 'zh-CN' : 'en') || compareModelName(a, b)
+    }
+    if (modelSort.value === 'type') {
+      return String(a.modelType || '').localeCompare(String(b.modelType || ''), locale.value === 'zh-CN' ? 'zh-CN' : 'en') || compareModelName(a, b)
+    }
+    if (modelSort.value === 'downloaded') {
+      if (a.downloaded !== b.downloaded) return a.downloaded ? -1 : 1
+      return compareModelName(a, b)
+    }
+
     if (a.downloaded !== b.downloaded) return a.downloaded ? -1 : 1
     return 0
   })
@@ -118,7 +176,7 @@ function setStorageSelected(name: string, checked: boolean) {
     : selectedStorageModels.value.filter((item) => item !== name)
 }
 
-watch([search, category, supportedOnly, downloadedOnly, pageSize], () => {
+watch([search, category, downloadedOnly, pageSize, modelSort], () => {
   page.value = 1
 })
 
@@ -389,7 +447,12 @@ onMounted(() => {
   <div class="page page--models">
     <div class="page-header-compact">
       <div>
-        <h1>{{ t('models.title') }}</h1>
+        <div class="models-title-row">
+          <h1>{{ t('models.title') }}</h1>
+          <n-tag size="small" :bordered="false" type="info" round>
+            {{ t('models.count', { count: sortedModels.length }) }}
+          </n-tag>
+        </div>
         <p>{{ t('models.subtitle') }}</p>
       </div>
       <div class="header-actions">
@@ -422,15 +485,16 @@ onMounted(() => {
           class="category-select"
           :consistent-menu-width="false"
         />
+        <n-select
+          v-model:value="modelSort"
+          :options="modelSortOptions"
+          size="small"
+          class="sort-select"
+          :consistent-menu-width="false"
+        />
         <div class="toolbar-actions">
           <n-switch v-model:value="downloadedOnly" size="small" />
           <span class="text-sm text-muted">{{ t('models.downloadedOnly') }}</span>
-          <n-divider vertical style="margin:0 4px" />
-          <n-switch v-model:value="supportedOnly" size="small" />
-          <span class="text-sm text-muted">{{ t('models.supportedOnly') }}</span>
-          <n-tag size="small" :bordered="false" type="info" round>
-            {{ sortedModels.length }}
-          </n-tag>
         </div>
       </div>
     </div>
@@ -470,7 +534,25 @@ onMounted(() => {
           >
           <!-- Card Header -->
           <div class="mc-header">
-            <span class="mc-name">{{ model.name }}</span>
+            <div class="mc-title">
+              <div class="mc-name-row">
+                <span class="mc-name">{{ model.name }}</span>
+                <n-button
+                  quaternary
+                  circle
+                  size="tiny"
+                  :type="isFavoriteModel(model) ? 'warning' : 'default'"
+                  :title="isFavoriteModel(model) ? t('models.unfavorite') : t('models.favorite')"
+                  class="mc-favorite"
+                  @click.stop="toggleFavorite(model, $event)"
+                >
+                  <template #icon>
+                    <n-icon :component="isFavoriteModel(model) ? Star : StarOutline" />
+                  </template>
+                </n-button>
+              </div>
+              <span v-if="modelNote(model)" class="mc-note">{{ modelNote(model) }}</span>
+            </div>
           </div>
           <!-- Meta Tags -->
           <div class="mc-tags">
@@ -626,7 +708,20 @@ onMounted(() => {
         <template v-if="selectedInfo">
           <div class="model-detail-modal__body">
             <div class="detail-content">
-            <strong class="detail-name">{{ selectedInfo.name }}</strong>
+            <div class="detail-title-row">
+              <strong class="detail-name">{{ selectedInfo.name }}</strong>
+              <n-button
+                secondary
+                size="small"
+                :type="isFavoriteModel(selectedInfo) ? 'warning' : 'default'"
+                @click="toggleFavorite(selectedInfo, $event)"
+              >
+                <template #icon>
+                  <n-icon :component="isFavoriteModel(selectedInfo) ? Star : StarOutline" />
+                </template>
+                {{ isFavoriteModel(selectedInfo) ? t('models.favorited') : t('models.favorite') }}
+              </n-button>
+            </div>
 
             <div class="detail-badges">
               <n-tag v-if="detailLoading" :bordered="false" size="small" type="info" round>
@@ -668,6 +763,25 @@ onMounted(() => {
                 <span class="detail-label">{{ t('models.aliases') }}</span>
                 <span class="detail-val">{{ selectedInfo.aliases.join(', ') }}</span>
               </div>
+            </div>
+
+            <n-divider style="margin:16px 0" />
+
+            <div class="detail-note-editor">
+              <div class="detail-section-head">
+                <strong>{{ t('models.note') }}</strong>
+                <span>{{ t('models.noteHint') }}</span>
+              </div>
+              <n-input
+                :value="modelNote(selectedInfo)"
+                type="textarea"
+                :autosize="{ minRows: 2, maxRows: 4 }"
+                clearable
+                :maxlength="240"
+                show-count
+                :placeholder="t('models.notePlaceholder')"
+                @update:value="updateSelectedModelNote"
+              />
             </div>
 
             <n-divider style="margin:16px 0" />
@@ -950,6 +1064,17 @@ onMounted(() => {
   max-width: 1240px;
 }
 
+.models-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.models-title-row h1 {
+  margin: 0;
+}
+
 /* ===== Toolbar ===== */
 .toolbar {
   margin-bottom: 14px;
@@ -963,7 +1088,7 @@ onMounted(() => {
 
 .toolbar-row {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) 170px auto;
+  grid-template-columns: minmax(220px, 0.92fr) 230px 180px auto;
   align-items: center;
   gap: 10px;
 }
@@ -982,7 +1107,12 @@ onMounted(() => {
 
 /* ===== Category Select ===== */
 .category-select {
-  width: 160px;
+  width: 220px;
+  flex-shrink: 0;
+}
+
+.sort-select {
+  width: 170px;
   flex-shrink: 0;
 }
 
@@ -1030,12 +1160,12 @@ onMounted(() => {
     color-mix(in srgb, var(--surface-1) 64%, transparent);
   transition: box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(96px, 140px) 86px minmax(168px, 180px);
+  grid-template-columns: minmax(0, 1fr) minmax(112px, 160px) 84px minmax(136px, 150px);
   grid-template-areas:
     "header tags size footer"
     "meta tags size footer";
   align-items: center;
-  gap: 8px 16px;
+  gap: 8px 14px;
 }
 
 .model-card:hover {
@@ -1064,7 +1194,21 @@ onMounted(() => {
 .mc-header {
   grid-area: header;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.mc-title {
+  display: grid;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mc-name-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -1072,13 +1216,37 @@ onMounted(() => {
   display: -webkit-box;
   font-size: 12.5px;
   font-weight: 600;
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
   line-height: 1.45;
   overflow: hidden;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.mc-note {
+  display: -webkit-box;
+  max-width: 100%;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
+
+.mc-favorite {
+  flex: 0 0 auto;
+  margin-top: -4px;
+  opacity: 0.62;
+}
+
+.model-card:hover .mc-favorite,
+.model-card--selected .mc-favorite {
+  opacity: 1;
 }
 
 /* Tags row */
@@ -1141,14 +1309,14 @@ onMounted(() => {
 .mc-footer {
   grid-area: footer;
   min-width: 0;
-  width: 100%;
+  width: auto;
   margin-top: 0;
   padding-top: 0;
   border-top: 0;
   justify-self: end;
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: flex-end;
 }
 
 .mc-download-button {
@@ -1357,6 +1525,13 @@ onMounted(() => {
   gap: 4px;
 }
 
+.detail-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .detail-name {
   font-size: 16px;
   font-weight: 600;
@@ -1447,6 +1622,7 @@ onMounted(() => {
   line-height: 1.5;
 }
 
+.detail-note-editor,
 .detail-inference {
   display: grid;
   gap: 10px;
@@ -1620,6 +1796,11 @@ onMounted(() => {
       "size"
       "meta"
       "footer";
+  }
+
+  .category-select,
+  .sort-select {
+    width: 100%;
   }
 
   .mc-tags {

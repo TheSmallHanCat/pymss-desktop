@@ -314,7 +314,7 @@
   "models": {
     "title": "模型库",
     "subtitle": "下载并选择适用于音频分离的模型。",
-    "search": "搜索模型名称、架构或类型…",
+    "search": "搜索模型名称、架构、类型或备注...",
     "supportedOnly": "仅显示支持推理",
     "downloadedOnly": "仅显示已下载",
     "load": "加载模型列表",
@@ -375,7 +375,22 @@
     "storageSortNameAsc": "名称：A → Z",
     "storageSortNameDesc": "名称：Z → A",
     "downloadInterrupted": "下载已中断",
-    "continueDownload": "继续下载"
+    "continueDownload": "继续下载",
+    "favorite": "收藏",
+    "favorited": "已收藏",
+    "unfavorite": "取消收藏",
+    "note": "备注",
+    "noteHint": "备注只保存在本机，可用于记录模型用途、效果或适用场景，并支持搜索。",
+    "notePlaceholder": "添加备注，例如：人声保留更干净，适合流行乐...",
+    "sortDefault": "默认排序",
+    "sortFavorite": "收藏优先",
+    "sortNameAsc": "名称：A 到 Z",
+    "sortNameDesc": "名称：Z 到 A",
+    "sortSizeDesc": "大小：从大到小",
+    "sortSizeAsc": "大小：从小到大",
+    "sortCategory": "按分类排序",
+    "sortType": "按类型排序",
+    "sortDownloaded": "下载状态优先"
   },
   "results": {
     "title": "分离结果",
