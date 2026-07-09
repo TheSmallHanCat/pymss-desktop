@@ -186,7 +186,14 @@
     "workflowCreateAction": "新建工作流",
     "noWorkflowSelected": "未选择工作流",
     "startHintNoWorkflow": "请选择工作流",
-    "outputModeWorkflow": "工作流结果目录"
+    "outputModeWorkflow": "工作流结果目录",
+    "saveAsFolder": "以文件夹形式保存结果",
+    "saveAsFolderHint": "开启后，每个输入音频的分离结果会保存到以文件名命名的子文件夹中，适合批量和多轨结果管理。",
+    "saveAsFolderEnabled": "文件夹保存",
+    "saveAsFolderDisabled": "平铺保存",
+    "saveMode": "保存方式",
+    "resultFolderPreview": "输入文件名",
+    "outputStemPreview": "输入文件名_vocals.wav"
   },
   "audio": {
     "title": "音频质量",

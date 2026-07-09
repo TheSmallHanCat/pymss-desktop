@@ -116,12 +116,13 @@ const runModeOptions = computed(() => [
   { label: t('separate.runModeModel'), value: 'model' },
   { label: t('separate.runModeWorkflow'), value: 'workflow' },
 ])
-const outputLayoutOptions = computed(() => [
-  { label: t('separate.outputLayoutFolders'), value: 'folders' },
-  { label: t('separate.outputLayoutFlat'), value: 'flat' },
-])
-const canChooseOutputLayout = computed(() => inputFiles.value.length > 1)
-const effectiveOutputLayout = computed<OutputLayout>(() => canChooseOutputLayout.value ? outputLayout.value : 'folders')
+const saveAsFolder = computed({
+  get: () => outputLayout.value === 'folders',
+  set: (value: boolean) => {
+    outputLayout.value = value ? 'folders' : 'flat'
+  },
+})
+const effectiveOutputLayout = computed<OutputLayout>(() => outputLayout.value)
 const listedDownloadedModels = computed(() => {
   return [...downloadedModels.value].sort((a, b) => {
     const favoriteDelta = Number(Boolean(modelPreferences.value[b.name]?.favorite)) - Number(Boolean(modelPreferences.value[a.name]?.favorite))
@@ -254,14 +255,14 @@ const outputPreview = computed(() => {
   const base = normalizedOutputDir.value.replace(/[\\/]$/, '')
   const separator = base.includes('\\') ? '\\' : '/'
   if (effectiveOutputLayout.value === 'flat') {
-    return `${base}${separator}${t('separate.taskIdPreview')}${separator}${t('separate.outputFilePreview')}`
+    return `${base}${separator}${t('separate.outputFilePreview')}`
   }
-  return `${base}${separator}${t('separate.taskIdPreview')}${separator}${t('separate.resultIdPreview')}${separator}${t('separate.outputFilePreview')}`
+  return `${base}${separator}${t('separate.resultFolderPreview')}${separator}${t('separate.outputStemPreview')}`
 })
 const formatLabel = computed(() => String(settings.defaultFormat || 'wav').toUpperCase())
-const outputLayoutLabel = computed(() => effectiveOutputLayout.value === 'flat'
-  ? t('separate.outputLayoutFlat')
-  : t('separate.outputLayoutFolders'))
+const outputSaveModeLabel = computed(() => saveAsFolder.value
+  ? t('separate.saveAsFolderEnabled')
+  : t('separate.saveAsFolderDisabled'))
 const outputSummaryPath = computed(() => shortenMiddle(outputPreview.value, 60))
 const canStart = computed(() => (
   inputFiles.value.length > 0
@@ -584,14 +585,6 @@ function prefetchSelectedModelAdvancedParams() {
 watch(selectedModelName, () => {
   selectedStems.value = []
 })
-
-watch(
-  canChooseOutputLayout,
-  (canChoose) => {
-    if (!canChoose) outputLayout.value = 'folders'
-  },
-  { immediate: true },
-)
 
 watch(
   availableStemNames,
@@ -1137,7 +1130,7 @@ async function retryCurrentTask() {
         </div>
         <div class="summary-bar__body">
           <div class="summary-bar__options">
-            <div class="summary-config-grid" :class="{ 'summary-config-grid--batch': canChooseOutputLayout }">
+            <div class="summary-config-grid">
               <div class="field-block field-block--wide">
                 <label>{{ t('separate.temporaryOutputDir') }}</label>
                 <n-input-group>
@@ -1149,9 +1142,15 @@ async function retryCurrentTask() {
                 <label>{{ t('settings.defaultFormat') }}</label>
                 <n-select v-model:value="settings.defaultFormat" :options="formatOptions" />
               </div>
-              <div v-if="canChooseOutputLayout" class="field-block">
-                <label>{{ t('separate.outputLayout') }}</label>
-                <n-select v-model:value="outputLayout" :options="outputLayoutOptions" />
+              <div class="field-block field-block--switch">
+                <label>{{ t('separate.saveAsFolder') }}</label>
+                <div class="output-folder-switch">
+                  <n-switch v-model:value="saveAsFolder" />
+                  <div class="output-folder-switch__text">
+                    <strong>{{ outputSaveModeLabel }}</strong>
+                    <span>{{ t('separate.saveAsFolderHint') }}</span>
+                  </div>
+                </div>
               </div>
               <n-button class="summary-bar__advanced" secondary @click="showSettingsDrawer = true">
                 <template #icon><n-icon :component="SettingsOutline" /></template>
@@ -1186,7 +1185,7 @@ async function retryCurrentTask() {
             <span class="summary-bar__path">{{ outputSummaryPath }}</span>
             <div class="summary-bar__details">
               <span>{{ t('separate.currentFormat') }} · {{ formatLabel }}</span>
-              <span>{{ t('separate.outputLayout') }} · {{ outputLayoutLabel }}</span>
+              <span>{{ t('separate.saveMode') }} · {{ outputSaveModeLabel }}</span>
               <span>{{ t('separate.outputStems') }} · {{ selectedStemDetail }}</span>
             </div>
           </div>
@@ -2256,18 +2255,45 @@ async function retryCurrentTask() {
 
 .summary-config-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 460px) minmax(104px, 132px) max-content;
+  grid-template-columns: minmax(260px, 420px) minmax(104px, 128px) minmax(220px, 280px) max-content;
   gap: 12px;
   align-items: end;
   justify-content: start;
 }
 
-.summary-config-grid--batch {
-  grid-template-columns: minmax(260px, 460px) minmax(104px, 132px) minmax(132px, 180px) max-content;
-}
-
 .summary-config-grid .field-block {
   min-width: 0;
+}
+
+.field-block--switch {
+  min-width: 220px;
+}
+
+.output-folder-switch {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.output-folder-switch__text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.output-folder-switch__text strong {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.output-folder-switch__text span {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .summary-bar__advanced {
@@ -3107,16 +3133,16 @@ async function retryCurrentTask() {
   }
 
   .summary-config-grid {
-    grid-template-columns: minmax(0, 160px) max-content;
-  }
-
-  .summary-config-grid--batch {
-    grid-template-columns: minmax(0, 160px) minmax(0, 180px) max-content;
+    grid-template-columns: minmax(0, 1fr) max-content;
   }
 
   .summary-config-grid .field-block--wide {
     grid-column: 1 / -1;
     max-width: 520px;
+  }
+
+  .summary-config-grid .field-block--switch {
+    grid-column: 1 / -1;
   }
 
   .summary-bar__execution {

@@ -186,7 +186,14 @@
     "workflowCreateAction": "Create Workflow",
     "noWorkflowSelected": "No Workflow Selected",
     "startHintNoWorkflow": "Choose a workflow",
-    "outputModeWorkflow": "Workflow result directory"
+    "outputModeWorkflow": "Workflow result directory",
+    "saveAsFolder": "Save results as folders",
+    "saveAsFolderHint": "When enabled, separated stems for each input are saved in a subfolder named after the input file. Useful for batch and multi-track results.",
+    "saveAsFolderEnabled": "Folder mode",
+    "saveAsFolderDisabled": "Flat mode",
+    "saveMode": "Save Mode",
+    "resultFolderPreview": "input-file-name",
+    "outputStemPreview": "input-file-name_vocals.wav"
   },
   "audio": {
     "title": "Audio Quality",

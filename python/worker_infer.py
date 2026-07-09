@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
-import shutil
-import tempfile
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -43,30 +40,11 @@ def collect_outputs(output_dir: str, success_files: list[str], output_format: st
     return outputs
 
 
-def sanitize_output_prefix(value: Any, input_path: str) -> str:
-    raw = str(value or "").strip() or Path(input_path).stem
-    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", raw)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
-    return cleaned[:80] or "input"
-
-
-def prefix_output_files(outputs: list[dict[str, str]], prefix: str) -> list[dict[str, str]]:
-    renamed: list[dict[str, str]] = []
-    for output in outputs:
-        stem = output.get("stem") or ""
-        path_value = output.get("path") or ""
-        path = Path(path_value)
-        if not stem or not path.exists():
-            renamed.append(output)
-            continue
-        expected_name = f"{prefix}_{stem}{path.suffix}"
-        target = path.with_name(expected_name)
-        if path.name != expected_name:
-            if target.exists():
-                target.unlink()
-            path.rename(target)
-        renamed.append({"stem": stem, "path": str(target)})
-    return renamed
+def resolve_pymss_output_dir(output_dir: str, success_files: list[str], fallback_input: str, save_as_folder: bool) -> str:
+    if not save_as_folder:
+        return str(Path(output_dir))
+    file_name = Path(success_files[0]).stem if success_files else Path(fallback_input).stem
+    return str(Path(output_dir) / file_name)
 
 def _emit_inference_error(exc: Exception, task_id: str) -> int:
     message = str(exc)
@@ -101,19 +79,6 @@ def _close_separator(separator: Any) -> None:
             separator.del_cache()
         except Exception:
             pass
-
-def _link_batch_input(source: Path, target: Path) -> None:
-    try:
-        target.symlink_to(source)
-        return
-    except Exception:
-        pass
-    try:
-        os.link(source, target)
-        return
-    except Exception:
-        pass
-    shutil.copy2(source, target)
 
 def _normalize_output_dir(value: Any) -> str:
     default_output_dir = os.environ.get("PYMSS_STUDIO_DEFAULT_OUTPUT_DIR")
@@ -378,7 +343,6 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
     output_layout = _normalize_output_layout(payload.get("outputLayout"))
     save_as_folder = output_layout == "folders"
     batch_tasks: list[dict[str, str]] = []
-    used_aliases: set[str] = set()
 
     for index, item in enumerate(raw_tasks):
         if not isinstance(item, dict):
@@ -392,23 +356,15 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
         source_path = Path(input_path)
         if not source_path.exists():
             return emit_error("INPUT_NOT_FOUND", f"Input path does not exist: {input_path}", task_id=task_id)
-        alias = sanitize_output_prefix(item.get("outputPrefix"), input_path)
-        base_alias = alias
-        suffix = 2
-        while alias.lower() in used_aliases:
-            alias = f"{base_alias}-{suffix}"
-            suffix += 1
-        used_aliases.add(alias.lower())
         batch_tasks.append({
             "taskId": task_id,
             "input": str(source_path),
-            "alias": alias,
-            "linkName": f"{alias}{source_path.suffix}",
         })
 
     logger = None
     log_handler = None
     separator = None
+    active_task_id: str | None = None
     last_reported_done: float | None = None
     last_reported_total: float | None = None
     last_progress_message = ""
@@ -430,18 +386,21 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
         last_reported_done = done_value
         last_reported_total = total_value
         last_progress_message = safe_message
-        for item in batch_tasks:
+        targets = [active_task_id] if active_task_id else [item["taskId"] for item in batch_tasks]
+        for task_id in targets:
+            if not task_id:
+                continue
             emit("task_progress", {
                 "stage": "separating",
                 "message": safe_message,
                 "done": done_value,
                 "total": total_value,
-            }, task_id=item["taskId"])
+            }, task_id=task_id)
 
     try:
         Path(output_root).mkdir(parents=True, exist_ok=True)
         for item in batch_tasks:
-            task_output = str(Path(output_root) / item["alias"]) if save_as_folder else str(Path(output_root))
+            task_output = resolve_pymss_output_dir(output_root, [], item["input"], save_as_folder)
             emit("task_started", {"model": payload.get("model"), "input": item["input"], "output": task_output}, task_id=item["taskId"])
             emit("task_stage", {"stage": "validating_input", "message": "Validating input"}, task_id=item["taskId"])
         try:
@@ -458,30 +417,23 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
             logger=logger,
         )
         for item in batch_tasks:
-            emit("task_stage", {"stage": "separating", "message": "Waiting for batch separation"}, task_id=item["taskId"])
-        with tempfile.TemporaryDirectory(prefix="pymss-studio-batch-") as temp_dir:
-            temp_path = Path(temp_dir)
-            for item in batch_tasks:
-                _link_batch_input(Path(item["input"]), temp_path / item["linkName"])
-            success_files = separator.process_folder(str(temp_path))
-        success_names = {Path(name).name for name in success_files}
-        success_stems = {Path(name).stem for name in success_files}
-        for item in batch_tasks:
             task_id = item["taskId"]
-            alias = item["alias"]
-            link_name = item["linkName"]
-            task_output = str(Path(output_root) / alias) if save_as_folder else str(Path(output_root))
-            if link_name not in success_names and alias not in success_stems:
+            active_task_id = task_id
+            emit("task_stage", {"stage": "separating", "message": "Separating"}, task_id=task_id)
+            success_files = separator.process_folder(item["input"])
+            if Path(item["input"]).name not in {Path(name).name for name in success_files}:
                 emit_error("INFERENCE_FAILED", f"Batch separation did not produce outputs for {Path(item['input']).name}", task_id=task_id)
                 continue
+            task_output = resolve_pymss_output_dir(output_root, success_files, item["input"], save_as_folder)
             emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
-            outputs = collect_outputs(task_output, [link_name], output_format)
+            outputs = collect_outputs(task_output, success_files, output_format)
             emit("task_done", {
-                "files": [Path(item["input"]).name],
+                "files": success_files,
                 "outputs": outputs,
                 "outputDir": str(Path(task_output).resolve()),
                 "outputFormat": output_format,
             }, task_id=task_id)
+        active_task_id = None
         return 0
     except Exception as exc:
         for item in batch_tasks:
@@ -522,7 +474,9 @@ def cmd_infer(payload: dict[str, Any]) -> int:
     device = payload.get("device") or "auto"
     device_ids = payload.get("deviceIds") or [0]
     output_format = payload.get("outputFormat") or "wav"
-    output_prefix = sanitize_output_prefix(payload.get("outputPrefix"), input_path)
+    output_layout = _normalize_output_layout(payload.get("outputLayout"))
+    save_as_folder = output_layout == "folders"
+    task_output = resolve_pymss_output_dir(output_dir, [], input_path, save_as_folder)
     selected_stems = _normalize_selected_stems(payload.get("selectedStems"))
     use_tta = bool(payload.get("useTta", False))
     debug = bool(payload.get("debug", False))
@@ -564,7 +518,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
     logger = None
     log_handler = None
     try:
-        emit("task_started", {"model": model_name, "input": input_path, "output": output_dir}, task_id=task_id)
+        emit("task_started", {"model": model_name, "input": input_path, "output": task_output}, task_id=task_id)
         emit("task_stage", {"stage": "validating_input", "message": "Validating input"}, task_id=task_id)
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -621,6 +575,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
             output_format=output_format,
             use_tta=use_tta,
             store_dirs=_store_dirs_for_selected_stems(output_dir, selected_stems),
+            save_as_folder=save_as_folder,
             audio_params=audio_params,
             logger=logger,
             debug=debug,
@@ -630,8 +585,9 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         emit("task_stage", {"stage": "separating", "message": "Separating"}, task_id=task_id)
         success_files = separator.process_folder(input_path)
         emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
-        outputs = prefix_output_files(collect_outputs(output_dir, success_files, output_format), output_prefix)
-        emit("task_done", {"files": success_files, "outputs": outputs, "outputDir": str(Path(output_dir).resolve()), "outputFormat": output_format}, task_id=task_id)
+        task_output = resolve_pymss_output_dir(output_dir, success_files, input_path, save_as_folder)
+        outputs = collect_outputs(task_output, success_files, output_format)
+        emit("task_done", {"files": success_files, "outputs": outputs, "outputDir": str(Path(task_output).resolve()), "outputFormat": output_format}, task_id=task_id)
         return 0
     except Exception as exc:
         message = str(exc)
