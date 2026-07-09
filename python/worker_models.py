@@ -15,6 +15,70 @@ import yaml
 from worker_protocol import WORKER_VERSION, _as_bool, _as_float, _as_int, emit, emit_error, import_available
 
 
+def package_version(distribution: str) -> str | None:
+    try:
+        from importlib.metadata import version
+        return version(distribution)
+    except Exception:
+        return None
+
+
+def _read_pyproject_version(pyproject_path: Path) -> str | None:
+    if not pyproject_path.is_file():
+        return None
+    try:
+        import tomllib
+        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        version = data.get("project", {}).get("version")
+        return str(version) if version else None
+    except Exception:
+        pass
+    try:
+        for line in pyproject_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("version") and "=" in stripped:
+                return stripped.split("=", 1)[1].strip().strip('"\'') or None
+    except Exception:
+        return None
+    return None
+
+
+def pymss_pyproject_version() -> str | None:
+    worker_dir = Path(__file__).resolve().parent
+    candidates: list[Path] = []
+    env_pymss = os.environ.get("PYMSS_STUDIO_PYMSS_PATH")
+    if env_pymss:
+        candidates.append(Path(env_pymss))
+    candidates.extend([
+        worker_dir.parent / "pymss",
+        worker_dir.parent.parent / "pymss",
+        worker_dir.parent / "resources" / "pymss",
+        worker_dir.parent.parent / "resources" / "pymss",
+    ])
+    candidates.extend(Path(item) for item in sys.path if item)
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+
+        possible_roots = [resolved]
+        if resolved.name == "pymss":
+            possible_roots.append(resolved.parent)
+        possible_roots.append(resolved / "pymss")
+
+        for root in possible_roots:
+            version = _read_pyproject_version(root / "pyproject.toml")
+            if version:
+                return version
+    return None
+
+
 @dataclass(frozen=True)
 class ModelEntry:
     name: str
@@ -196,7 +260,22 @@ def resolve_default_inference_params(entry: Any, model_path: Path, config_path: 
     defaults: dict[str, Any] = {}
 
     if not config_path or not config_path.is_file():
-        return defaults
+        if model_type == "vr":
+            return {
+                "batch_size": 2,
+                "window_size": 512,
+                "aggression": 5,
+                "enable_post_process": False,
+                "post_process_threshold": 0.2,
+                "high_end_process": False,
+                "normalize": False,
+            }
+        return {
+            "batch_size": 1,
+            "overlap_size": 0,
+            "chunk_size": 0,
+            "normalize": False,
+        }
 
     try:
         config = _load_yaml_config(config_path)
@@ -285,6 +364,8 @@ def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state:
         resolved_instruments, resolved_target = resolve_config_stems(config_path)
         config_instruments = resolved_instruments or config_instruments
         config_target_instrument = resolved_target or config_target_instrument
+    default_inference_params = resolve_default_inference_params(entry, model_path, config_path)
+    default_inference_params_source = "config" if config_path and config_path.is_file() else "runtime_fallback"
     return {
         "name": entry.name,
         "aliases": list(entry.aliases),
@@ -310,7 +391,8 @@ def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state:
         "modelPath": str(model_path),
         "configPath": str(config_path) if config_path else None,
         "auxiliaryPaths": [str(path) for path in auxiliary_paths],
-        "defaultInferenceParams": resolve_default_inference_params(entry, model_path, config_path),
+        "defaultInferenceParams": default_inference_params,
+        "defaultInferenceParamsSource": default_inference_params_source,
     }
 
 
@@ -326,6 +408,7 @@ def cmd_env_info() -> int:
         "workerVersion": WORKER_VERSION,
         "pymssAvailable": False,
         "pymssPath": None,
+        "pymssVersion": pymss_pyproject_version() or package_version("pymss"),
         "torchAvailable": False,
         "torchVersion": None,
         "cudaAvailable": False,
@@ -341,6 +424,7 @@ def cmd_env_info() -> int:
         import pymss  # type: ignore
         payload["pymssAvailable"] = True
         payload["pymssPath"] = str(Path(pymss.__file__).resolve()) if getattr(pymss, "__file__", None) else None
+        payload["pymssVersion"] = payload.get("pymssVersion") or getattr(pymss, "__version__", None)
     except Exception as exc:
         payload["pymssError"] = str(exc)
 

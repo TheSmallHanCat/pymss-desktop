@@ -31,6 +31,7 @@ export type ModelEntry = {
   auxiliaryPaths: string[]
   defaultInferenceParams?: ModelDefaultInferenceParams
   defaultInferenceParamsResolved?: boolean
+  defaultInferenceParamsSource?: 'config' | 'runtime_fallback'
 }
 
 export type ModelDefaultInferenceParams = {
@@ -132,6 +133,9 @@ type StoredModelState = {
   modelDir?: string
   downloadTasks?: Record<string, DownloadTask>
   modelInferenceOverrides?: Record<string, ModelDefaultInferenceParams>
+  modelInferenceBaseDefaults?: Record<string, ModelDefaultInferenceParams>
+  modelInferenceBaseKnown?: Record<string, boolean>
+  modelInferenceBaseSources?: Record<string, ModelEntry['defaultInferenceParamsSource']>
 }
 
 function normalizeDownloadTasks(input?: Record<string, DownloadTask>) {
@@ -217,6 +221,10 @@ function mergeDefaultInferenceParams(
   } as Record<string, unknown>)
 }
 
+type NormalizeModelEntryOptions = {
+  rememberBase?: boolean
+}
+
 export const useModelStore = defineStore('model', () => {
   const initialized = ref(false)
   const models = ref<ModelEntry[]>([])
@@ -235,6 +243,9 @@ export const useModelStore = defineStore('model', () => {
   const downloadErrors = ref<Record<string, string>>({})
   const downloadTasks = ref<Record<string, DownloadTask>>({})
   const modelInferenceOverrides = ref<Record<string, ModelDefaultInferenceParams>>({})
+  const modelInferenceBaseDefaults = ref<Record<string, ModelDefaultInferenceParams>>({})
+  const modelInferenceBaseKnown = ref<Record<string, boolean>>({})
+  const modelInferenceBaseSources = ref<Record<string, ModelEntry['defaultInferenceParamsSource']>>({})
   const downloadTaskIndex = ref<Record<string, string>>({})
   const deleteTasks = ref<Record<string, DeleteTask>>({})
   const deleteTaskIndex = ref<Record<string, string>>({})
@@ -294,6 +305,9 @@ export const useModelStore = defineStore('model', () => {
       modelDir: modelDir.value,
       downloadTasks: downloadTasks.value,
       modelInferenceOverrides: modelInferenceOverrides.value,
+      modelInferenceBaseDefaults: modelInferenceBaseDefaults.value,
+      modelInferenceBaseKnown: modelInferenceBaseKnown.value,
+      modelInferenceBaseSources: modelInferenceBaseSources.value,
     } satisfies StoredModelState)
   }
 
@@ -310,8 +324,16 @@ export const useModelStore = defineStore('model', () => {
     if (initialized.value) return
     const stored = await loadAppStore<StoredModelState>('model-state')
     modelInferenceOverrides.value = normalizeModelInferenceOverrides(stored?.modelInferenceOverrides)
+    modelInferenceBaseDefaults.value = normalizeModelInferenceOverrides(stored?.modelInferenceBaseDefaults)
+    modelInferenceBaseKnown.value = {
+      ...(stored?.modelInferenceBaseKnown || {}),
+      ...Object.fromEntries(Object.keys(modelInferenceBaseDefaults.value).map((name) => [name, true])),
+    }
+    modelInferenceBaseSources.value = stored?.modelInferenceBaseSources || {}
     if (stored?.models?.length) {
-      models.value = stored.models.map(normalizeModelEntryWithOverrides)
+      models.value = stored.models.map((model) => normalizeModelEntryWithOverrides(model, {
+        rememberBase: !modelInferenceOverrides.value[model.name],
+      }))
       categories.value = stored.categories || []
       categoriesCn.value = stored.categoriesCn || []
       modelDir.value = stored.modelDir || ''
@@ -336,13 +358,59 @@ export const useModelStore = defineStore('model', () => {
     queuePersist()
   }
 
-  function normalizeModelEntryWithOverrides(model: ModelEntry) {
+  function rememberModelInferenceBase(
+    name: string,
+    defaults: ModelDefaultInferenceParams | undefined,
+    source: ModelEntry['defaultInferenceParamsSource'],
+  ) {
+    if (!defaults && !source) return
+    const previousSource = modelInferenceBaseSources.value[name]
+    const canUpgradeFallback = previousSource === 'runtime_fallback' && source === 'config'
+    const canFillMissingDefaults = Boolean(!modelInferenceBaseDefaults.value[name] && defaults)
+    if (modelInferenceBaseKnown.value[name] && !canUpgradeFallback && !canFillMissingDefaults) return
+    modelInferenceBaseKnown.value = { ...modelInferenceBaseKnown.value, [name]: true }
+    modelInferenceBaseSources.value = { ...modelInferenceBaseSources.value, [name]: source }
+    if (defaults) {
+      modelInferenceBaseDefaults.value = { ...modelInferenceBaseDefaults.value, [name]: { ...defaults } }
+    } else if (modelInferenceBaseDefaults.value[name]) {
+      const { [name]: _, ...rest } = modelInferenceBaseDefaults.value
+      modelInferenceBaseDefaults.value = rest
+    }
+  }
+
+  function getModelBaseInferenceDefaults(name: string) {
+    return modelInferenceBaseDefaults.value[name]
+  }
+
+  function hasKnownModelInferenceBase(name: string) {
+    return Boolean(modelInferenceBaseKnown.value[name])
+  }
+
+  function getKnownModelInferenceBase(name: string, fallback: ModelDefaultInferenceParams | undefined) {
+    return modelInferenceBaseKnown.value[name] ? modelInferenceBaseDefaults.value[name] : fallback
+  }
+
+  function normalizeModelEntryWithOverrides(model: ModelEntry, options: NormalizeModelEntryOptions = {}) {
     const normalized = normalizeModelEntry(model)
+    if (options.rememberBase !== false) {
+      rememberModelInferenceBase(
+        normalized.name,
+        normalized.defaultInferenceParams,
+        normalized.defaultInferenceParamsSource,
+      )
+    }
+    const baseDefaults = getKnownModelInferenceBase(normalized.name, normalized.defaultInferenceParams)
     const overrides = modelInferenceOverrides.value[normalized.name]
-    if (!overrides) return normalized
+    if (!overrides) {
+      return {
+        ...normalized,
+        defaultInferenceParams: baseDefaults,
+        defaultInferenceParamsResolved: normalized.defaultInferenceParamsResolved || Boolean(baseDefaults),
+      }
+    }
     return {
       ...normalized,
-      defaultInferenceParams: mergeDefaultInferenceParams(normalized.defaultInferenceParams, overrides),
+      defaultInferenceParams: mergeDefaultInferenceParams(baseDefaults, overrides),
       defaultInferenceParamsResolved: true,
     }
   }
@@ -355,8 +423,8 @@ export const useModelStore = defineStore('model', () => {
       [name]: normalized,
     }
     const index = models.value.findIndex((item) => item.name === name)
-    if (index >= 0) models.value[index] = normalizeModelEntryWithOverrides(models.value[index])
-    if (selectedInfo.value?.name === name) selectedInfo.value = normalizeModelEntryWithOverrides(selectedInfo.value)
+    if (index >= 0) models.value[index] = normalizeModelEntryWithOverrides(models.value[index], { rememberBase: false })
+    if (selectedInfo.value?.name === name) selectedInfo.value = normalizeModelEntryWithOverrides(selectedInfo.value, { rememberBase: false })
     queuePersist()
   }
 
@@ -366,10 +434,10 @@ export const useModelStore = defineStore('model', () => {
     modelInferenceOverrides.value = rest
     const index = models.value.findIndex((item) => item.name === name)
     if (index >= 0) {
-      models.value[index] = normalizeModelEntry(models.value[index])
+      models.value[index] = normalizeModelEntryWithOverrides(models.value[index], { rememberBase: false })
       if (selectedInfo.value?.name === name) selectedInfo.value = models.value[index]
     } else if (selectedInfo.value?.name === name) {
-      selectedInfo.value = normalizeModelEntry(selectedInfo.value)
+      selectedInfo.value = normalizeModelEntryWithOverrides(selectedInfo.value, { rememberBase: false })
     }
     queuePersist()
   }
@@ -410,7 +478,7 @@ export const useModelStore = defineStore('model', () => {
           modelDir: settings.modelDir || null,
         },
       })
-      models.value = result.models.map(normalizeModelEntryWithOverrides)
+      models.value = result.models.map((model) => normalizeModelEntryWithOverrides(model))
       categories.value = result.categories
       categoriesCn.value = result.categoriesCn
       modelDir.value = result.modelDir
@@ -440,7 +508,9 @@ export const useModelStore = defineStore('model', () => {
       : modelOrName
     if (listEntry) selectedInfo.value = listEntry
 
-    if (listEntry?.defaultInferenceParamsResolved && String(listEntry.configInstruments || '').trim()) {
+    const hasResolvedDefaults = Boolean(listEntry?.defaultInferenceParamsResolved && listEntry.defaultInferenceParams)
+    const shouldRefreshBaseDefaults = Boolean(modelInferenceOverrides.value[name] && !modelInferenceBaseKnown.value[name])
+    if (listEntry && hasResolvedDefaults && !shouldRefreshBaseDefaults && String(listEntry.configInstruments || '').trim()) {
       detailLoading.value = false
       return Promise.resolve(listEntry)
     }
@@ -944,6 +1014,8 @@ export const useModelStore = defineStore('model', () => {
     setModelInferenceOverrides,
     resetModelInferenceOverrides,
     getModelInferenceOverrides,
+    getModelBaseInferenceDefaults,
+    hasKnownModelInferenceBase,
     deleteModel,
     downloadModel,
     cancelDownload,

@@ -4,6 +4,8 @@ import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import { open } from '@tauri-apps/plugin-shell'
+import packageMeta from '../../package.json'
+import appLogo from '@/assets/app-logo-symbol-canvas.png'
 import { SYSTEM_LOCALE, setLocale, type LocaleSetting } from '@/i18n'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
@@ -28,6 +30,10 @@ import {
   SpeedometerOutline,
   SwapHorizontalOutline,
   LogoGithub,
+  InformationCircleOutline,
+  DocumentTextOutline,
+  LinkOutline,
+  OpenOutline,
 } from '@vicons/ionicons5'
 
 const { t, locale: currentLocale } = useI18n()
@@ -36,6 +42,15 @@ const settings = useSettingsStore()
 const app = useAppStore()
 const modelStore = useModelStore()
 const task = useTaskStore()
+type SettingsSection = 'about' | 'appearance' | 'paths' | 'defaults'
+const activeSection = ref<SettingsSection>('appearance')
+const appVersion = computed(() => packageMeta.version || '0.0.0')
+const repoUrl = 'https://github.com/pymss-project/pymss-desktop'
+const coreRepoUrl = 'https://github.com/pymss-project/pymss'
+const licenseUrl = 'https://www.gnu.org/licenses/agpl-3.0.html'
+const coreLicenseUrl = 'https://github.com/pymss-project/pymss/blob/main/LICENSE'
+const desktopLicense = 'AGPL-3.0'
+const coreLicense = 'MIT'
 const {
   themeMode,
   themeAccent,
@@ -69,6 +84,29 @@ const languageOptions = computed(() => [
   { label: t('settings.languageSystem'), value: SYSTEM_LOCALE },
   { label: t('settings.languageSimplifiedChinese'), value: 'zh-CN' },
   { label: t('settings.languageEnglish'), value: 'en' },
+])
+const settingsSections = computed(() => [
+  { key: 'appearance' as const, label: t('settings.appearance'), icon: ColorPaletteOutline, hint: t('settings.appearanceNavHint') },
+  { key: 'paths' as const, label: t('settings.dataDir'), icon: FolderOpenOutline, hint: t('settings.pathsNavHint') },
+  { key: 'defaults' as const, label: t('settings.defaults'), icon: SettingsOutline, hint: t('settings.defaultsNavHint') },
+  { key: 'about' as const, label: t('settings.about'), icon: InformationCircleOutline, hint: t('settings.aboutNavHint') },
+])
+const pymssCoreVersion = computed(() => {
+  if (!app.envInfo) return t('settings.envNotChecked')
+  if (!app.envInfo.pymssAvailable) return t('common.notAvailable')
+  return app.envInfo.pymssVersion || t('common.unknown')
+})
+const workerVersion = computed(() => app.envInfo?.workerVersion || t('common.unknown'))
+const aboutVersionItems = computed(() => [
+  { label: t('settings.softwareVersion'), value: appVersion.value, meta: 'Pymss Studio' },
+  { label: t('settings.pymssCoreVersion'), value: pymssCoreVersion.value, meta: t('settings.coreRuntime') },
+  { label: t('settings.workerVersion'), value: workerVersion.value, meta: t('settings.pythonWorker') },
+])
+const aboutLinks = computed(() => [
+  { label: t('settings.desktopRepository'), url: repoUrl, icon: LogoGithub },
+  { label: t('settings.coreRepository'), url: coreRepoUrl, icon: LinkOutline },
+  { label: t('settings.licenseLink'), url: licenseUrl, icon: DocumentTextOutline },
+  { label: t('settings.coreLicenseLink'), url: coreLicenseUrl, icon: DocumentTextOutline },
 ])
 const SCALE_FACTOR_PRESET_VALUES = [0.75, 0.9, 1, 1.1, 1.25, 1.5] as const
 const scaleFactorPercent = computed(() => formatScaleFactorLabel(scaleFactor.value))
@@ -142,7 +180,6 @@ const modelDirMigrationHasConflict = computed(() => modelDirMigrationState.value
 const modelDirMigrationHasResult = computed(() => ['success', 'failed', 'aborted'].includes(modelDirMigrationState.value.status))
 const isCheckingModelDir = ref(false)
 const languageSelectWrap = ref<HTMLElement | null>(null)
-const repoUrl = 'https://github.com/pymss-project/pymss-desktop'
 
 function dirName(path: string, fallback: string) {
   const normalized = (path || '').trim().replace(/[\\/]+$/, '')
@@ -258,13 +295,14 @@ async function changeOutputDir() {
   }
 }
 
-async function openRepository() {
+async function openExternalUrl(url: string) {
   try {
-    await open(repoUrl)
+    await open(url)
   } catch (error) {
     message.error(error instanceof Error ? error.message : String(error))
   }
 }
+
 
 function closeModelDirMigrationDialog() {
   if (modelDirMigrationState.value.status === 'confirm') {
@@ -307,15 +345,94 @@ onMounted(() => {
         <h1>{{ t('settings.title') }}</h1>
         <p>{{ t('settings.subtitle') }}</p>
       </div>
-      <n-button secondary size="small" class="repo-link-button" @click="openRepository">
-        <template #icon><n-icon :component="LogoGithub" /></template>
-        {{ t('settings.repositoryLink') }}
-      </n-button>
     </div>
 
-    <n-grid class="settings-grid" :cols="2" :x-gap="18" :y-gap="18" responsive="screen">
-      <!-- Appearance -->
-      <n-grid-item class="settings-grid__top-item" :span="1">
+    <div class="settings-shell">
+      <aside class="settings-sidebar" :aria-label="t('settings.settingsNavigation')">
+        <button
+          v-for="section in settingsSections"
+          :key="section.key"
+          type="button"
+          class="settings-nav-item"
+          :class="{ active: activeSection === section.key }"
+          @click="activeSection = section.key"
+        >
+          <span class="settings-nav-item__icon"><n-icon :component="section.icon" size="18" /></span>
+          <span class="settings-nav-item__copy">
+            <strong>{{ section.label }}</strong>
+            <small>{{ section.hint }}</small>
+          </span>
+        </button>
+      </aside>
+
+      <main class="settings-content">
+        <section v-if="activeSection === 'about'" class="about-panel">
+          <article class="about-hero">
+            <div class="about-hero__main">
+              <div class="about-logo-wrap">
+                <img class="about-logo" :src="appLogo" alt="Pymss Studio" />
+              </div>
+              <div class="about-hero__copy">
+                <span class="about-eyebrow">{{ t('settings.aboutEyebrow') }}</span>
+                <h2 class="about-hero__title">Pymss Studio</h2>
+              </div>
+            </div>
+
+            <div class="about-stats" :aria-label="t('settings.about')">
+              <div v-for="item in aboutVersionItems" :key="item.label" class="about-stat">
+                <span class="about-stat__label">{{ item.label }}</span>
+                <strong class="about-stat__value">{{ item.value }}</strong>
+                <small class="about-stat__meta">{{ item.meta }}</small>
+              </div>
+            </div>
+          </article>
+
+          <div class="about-detail-grid">
+            <article class="about-info-card about-info-card--license">
+              <div class="section-title section-title--plain">
+                <span class="section-title__icon">
+                  <n-icon :component="DocumentTextOutline" size="18" />
+                </span>
+                <span>{{ t('settings.license') }}</span>
+              </div>
+              <div class="license-stack">
+                <div class="license-row">
+                  <span>{{ t('settings.desktopLicense') }}</span>
+                  <strong>{{ desktopLicense }}</strong>
+                </div>
+                <div class="license-row">
+                  <span>{{ t('settings.coreLicense') }}</span>
+                  <strong>{{ coreLicense }}</strong>
+                </div>
+              </div>
+            </article>
+
+            <article class="about-info-card about-info-card--links">
+              <div class="section-title section-title--plain">
+                <span class="section-title__icon">
+                  <n-icon :component="LinkOutline" size="18" />
+                </span>
+                <span>{{ t('settings.relatedLinks') }}</span>
+              </div>
+              <div class="about-link-list">
+                <button
+                  v-for="link in aboutLinks"
+                  :key="link.url"
+                  type="button"
+                  class="about-link-item"
+                  @click="openExternalUrl(link.url)"
+                >
+                  <span class="about-link-item__icon"><n-icon :component="link.icon" size="18" /></span>
+                  <span class="about-link-item__label">{{ link.label }}</span>
+                  <n-icon class="about-link-item__open" :component="OpenOutline" size="16" />
+                </button>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <!-- Appearance -->
+        <section v-else-if="activeSection === 'appearance'" class="settings-section-panel">
         <n-card class="settings-card settings-card--compact settings-card--appearance" :bordered="true" size="small">
           <template #header>
             <div class="section-title">
@@ -443,10 +560,10 @@ onMounted(() => {
             </div>
           </div>
         </n-card>
-      </n-grid-item>
+        </section>
 
-      <!-- Paths -->
-      <n-grid-item class="settings-grid__top-item" :span="1">
+        <!-- Paths -->
+        <section v-else-if="activeSection === 'paths'" class="settings-section-panel">
         <n-card class="settings-card settings-card--feature settings-card--paths" :bordered="true" size="small">
           <template #header>
             <div class="section-title">
@@ -519,10 +636,10 @@ onMounted(() => {
             </div>
           </div>
         </n-card>
-      </n-grid-item>
+        </section>
 
-      <!-- Defaults & Execution -->
-      <n-grid-item :span="2">
+        <!-- Defaults & Execution -->
+        <section v-else-if="activeSection === 'defaults'" class="settings-section-panel">
         <n-card class="settings-card" :bordered="true" size="small">
           <template #header>
             <div class="section-title">
@@ -603,8 +720,9 @@ onMounted(() => {
             </section>
           </div>
         </n-card>
-      </n-grid-item>
-    </n-grid>
+        </section>
+      </main>
+    </div>
 
     <n-modal
       :show="isCheckingModelDir"
@@ -780,27 +898,355 @@ onMounted(() => {
   min-width: 0;
 }
 
-.repo-link-button {
-  flex: 0 0 auto;
-  margin-top: 4px;
-}
-
-.settings-grid {
+.settings-shell {
+  display: grid;
+  grid-template-columns: minmax(200px, 220px) minmax(0, 1fr);
+  gap: 20px;
   align-items: start;
-  row-gap: 14px !important;
-  column-gap: 14px !important;
 }
 
-.settings-grid__top-item {
-  align-self: stretch;
-  display: flex;
+.settings-sidebar {
+  position: sticky;
+  top: 18px;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--outline) 50%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-1) 78%, transparent);
+}
+
+.settings-nav-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--on-surface-muted);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: color 160ms ease, background 180ms ease, border-color 180ms ease;
+}
+
+.settings-nav-item:hover {
+  color: var(--on-surface);
+  background: color-mix(in srgb, var(--surface-3) 50%, transparent);
+}
+
+.settings-nav-item.active {
+  color: color-mix(in srgb, var(--primary-strong) 86%, var(--on-surface));
+  border-color: color-mix(in srgb, var(--primary-border) 38%, transparent);
+  background: color-mix(in srgb, var(--primary-soft) 28%, var(--surface-2));
+}
+
+.settings-nav-item__icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 65%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 32%, transparent);
+}
+
+.settings-nav-item.active .settings-nav-item__icon {
+  background: color-mix(in srgb, var(--primary-soft) 48%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 42%, transparent);
+}
+
+.settings-nav-item__copy {
+  display: grid;
+  gap: 2px;
   min-width: 0;
 }
 
-.settings-grid__top-item > :deep(.n-card) {
+.settings-nav-item__copy strong {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.settings-nav-item__copy small {
+  overflow: hidden;
+  color: color-mix(in srgb, currentColor 70%, var(--on-surface-muted));
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-content {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+}
+
+.settings-section-panel {
+  display: block;
+  min-width: 0;
+}
+
+.settings-section-panel > :deep(.n-card) {
+  width: 100%;
+}
+
+.about-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.about-hero,
+.about-info-card {
+  border: 1px solid color-mix(in srgb, var(--outline) 48%, transparent);
+  background: color-mix(in srgb, var(--surface-1) 82%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+}
+
+.about-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 22px;
+  border-radius: 20px;
+}
+
+.about-hero__main {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+}
+
+.about-logo-wrap {
+  flex: 0 0 auto;
+  width: 80px;
+  height: 80px;
+  display: grid;
+  place-items: center;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 40%, transparent);
+}
+
+.about-logo {
+  width: 62px;
+  height: 62px;
+  object-fit: contain;
+}
+
+.about-hero__copy {
+  min-width: 0;
   flex: 1 1 auto;
 }
 
+.about-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--primary-strong) 88%, var(--on-surface));
+  background: color-mix(in srgb, var(--primary-soft) 42%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.about-hero__title {
+  margin: 8px 0 4px;
+  color: var(--on-surface);
+  font-size: clamp(22px, 2.6vw, 28px);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.about-hero__tagline {
+  margin: 0;
+  color: var(--on-surface-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.about-hero__tech {
+  margin: 8px 0 0;
+  color: color-mix(in srgb, var(--on-surface-muted) 92%, var(--on-surface));
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.about-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.about-stat {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 32%, transparent);
+}
+
+.about-stat__label {
+  overflow: hidden;
+  color: var(--on-surface-muted);
+  font-size: clamp(10px, 1.1vw, 11px);
+  font-weight: 600;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.about-stat__value {
+  overflow: hidden;
+  color: var(--on-surface);
+  font-size: clamp(14px, 1.6vw, 16px);
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.about-stat__meta {
+  overflow: hidden;
+  color: color-mix(in srgb, var(--on-surface-muted) 88%, var(--on-surface));
+  font-size: clamp(9px, 1vw, 10px);
+  font-weight: 600;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.about-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.about-info-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  padding: 18px 20px;
+  border-radius: 18px;
+}
+
+.about-info-card__body {
+  display: grid;
+  gap: 10px;
+  flex: 1;
+}
+
+.about-info-card__body p {
+  margin: 0;
+  color: var(--on-surface-muted);
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.section-title--plain {
+  justify-content: flex-start;
+}
+
+.license-stack {
+  display: grid;
+  gap: 8px;
+  flex: 1;
+  align-content: start;
+}
+
+.license-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 11px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 48%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 28%, transparent);
+}
+
+.license-row span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.license-row strong {
+  color: var(--on-surface);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.about-link-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.about-link-item {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  min-height: 52px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--outline) 36%, transparent);
+  border-radius: 14px;
+  color: var(--on-surface);
+  background: color-mix(in srgb, var(--surface-2) 32%, transparent);
+  cursor: pointer;
+  text-align: left;
+  transition: transform 160ms ease, border-color 180ms ease, background 180ms ease;
+}
+
+.about-link-item:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--primary-border) 50%, var(--outline));
+  background: color-mix(in srgb, var(--primary-soft) 16%, var(--surface-2));
+}
+
+.about-link-item__icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--primary-strong);
+  background: color-mix(in srgb, var(--primary-soft) 36%, transparent);
+}
+
+.about-link-item__label {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.about-link-item__open {
+  color: var(--on-surface-muted);
+  opacity: 0.7;
+}
 .settings-card {
   border-color: color-mix(in srgb, var(--outline) 58%, transparent) !important;
   background:
@@ -1403,6 +1849,14 @@ onMounted(() => {
 }
 
 @media (max-width: 1200px) {
+  .about-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .about-link-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .path-root-row {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1436,6 +1890,24 @@ onMounted(() => {
 }
 
 @media (max-width: 840px) {
+  .settings-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-sidebar {
+    position: static;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .about-hero__main {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .about-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .settings-merged-layout {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1454,13 +1926,44 @@ onMounted(() => {
 }
 
 @media (max-width: 640px) {
+  .settings-sidebar,
+  .about-link-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .about-hero {
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  .about-hero__main {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .about-stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .about-logo-wrap {
+    width: 72px;
+    height: 72px;
+    border-radius: 18px;
+  }
+
+  .about-logo {
+    width: 56px;
+    height: 56px;
+  }
+
+  .about-hero__title {
+    font-size: 24px;
+  }
+
   .page-header-compact {
     flex-direction: column;
   }
 
-  .repo-link-button {
-    margin-top: 0;
-  }
 
   .setting-row {
     grid-template-columns: 1fr;

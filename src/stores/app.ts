@@ -8,6 +8,7 @@ export type EnvInfo = {
   workerVersion?: string
   pymssAvailable?: boolean
   pymssPath?: string | null
+  pymssVersion?: string | null
   pymssError?: string
   torchAvailable?: boolean
   torchVersion?: string | null

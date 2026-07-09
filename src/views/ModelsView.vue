@@ -195,16 +195,31 @@ function inferenceValue(model: ModelEntry | null | undefined, key: keyof typeof 
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
-function syncInferenceDraft(model: ModelEntry | null | undefined) {
-  inferenceDraft.value = {
+function resolveInferenceDraft(model: ModelEntry | null | undefined) {
+  return {
     batch_size: inferenceValue(model, 'batch_size', 1),
     overlap_size: inferenceValue(model, 'overlap_size', 0),
     chunk_size: inferenceValue(model, 'chunk_size', 0),
   }
 }
 
+function syncInferenceDraft(model: ModelEntry | null | undefined) {
+  inferenceDraft.value = resolveInferenceDraft(model)
+}
+
 function hasInferenceOverride(model: ModelEntry | null | undefined) {
   return Boolean(model?.name && modelStore.getModelInferenceOverrides(model.name))
+}
+
+function hasInferenceDraftChanges(model: ModelEntry | null | undefined) {
+  const defaults = resolveInferenceDraft(model)
+  return inferenceDraft.value.batch_size !== defaults.batch_size
+    || inferenceDraft.value.overlap_size !== defaults.overlap_size
+    || inferenceDraft.value.chunk_size !== defaults.chunk_size
+}
+
+function canResetInferenceDefaults(model: ModelEntry | null | undefined) {
+  return hasInferenceOverride(model) || hasInferenceDraftChanges(model)
 }
 
 function saveInferenceDefaults() {
@@ -218,7 +233,9 @@ function saveInferenceDefaults() {
 
 function resetInferenceDefaults() {
   if (!selectedInfo.value) return
-  modelStore.resetModelInferenceOverrides(selectedInfo.value.name)
+  if (hasInferenceOverride(selectedInfo.value)) {
+    modelStore.resetModelInferenceOverrides(selectedInfo.value.name)
+  }
   syncInferenceDraft(modelStore.selectedInfo)
   if (selectedModel.value === selectedInfo.value?.name) {
     taskStore.applySelectedModelDefaults(modelStore.selectedInfo?.defaultInferenceParams, modelStore.selectedInfo?.modelType)
@@ -666,7 +683,7 @@ onMounted(() => {
               </div>
               <div class="inference-default-actions">
                 <div>
-                  <n-button size="small" secondary :disabled="!hasInferenceOverride(selectedInfo)" @click="resetInferenceDefaults">
+                  <n-button size="small" secondary :disabled="!canResetInferenceDefaults(selectedInfo)" @click="resetInferenceDefaults">
                     {{ t('models.inferenceDefaultsReset') }}
                   </n-button>
                   <n-button size="small" type="primary" @click="saveInferenceDefaults">
