@@ -48,6 +48,7 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+          pattern: "!*-stage"
       - name: Split oversized release assets
         shell: bash
         run: |
