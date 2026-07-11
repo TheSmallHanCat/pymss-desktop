@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { darkTheme } from 'naive-ui'
 import TitleBar from '@/components/TitleBar.vue'
@@ -10,24 +10,30 @@ import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { getResolvedThemeTokens, getThemeOverrides, resolvedIsDark } from '@/utils/theme'
 import { useI18n } from 'vue-i18n'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { useWorkflowStore } from '@/stores/workflow'
 
 const settings = useSettingsStore()
 const app = useAppStore()
+const workflow = useWorkflowStore()
 const route = useRoute()
 const { t } = useI18n()
 const bootReady = ref(false)
 const backgroundWarmupsStarted = ref(false)
+let unlistenNodeEditorClosed: UnlistenFn | undefined
 
 const isDark = computed(() => resolvedIsDark(settings.themeMode))
-const isEditorRoute = computed(() => route.path === '/editor')
+const isStandaloneRoute = computed(() => route.path === '/editor' || route.path === '/workflow-node-editor')
+const isWorkflowNodeEditorRoute = computed(() => route.path === '/workflow-node-editor')
 const isMacOS = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)
 const resolvedTheme = computed(() => getResolvedThemeTokens(settings.themeMode, settings.themeAccent))
-const showStartupOnboarding = computed(() => bootReady.value && !isEditorRoute.value && settings.shouldShowStartupOnboarding)
+const showStartupOnboarding = computed(() => bootReady.value && !isStandaloneRoute.value && settings.shouldShowStartupOnboarding)
 
 const routeWarmupLoaders = [
   () => import('@/views/SeparateView.vue'),
   () => import('@/views/ModelsView.vue'),
   () => import('@/views/WorkflowsView.vue'),
+  () => import('@/views/WorkflowNodeEditorView.vue'),
   () => import('@/views/ResultsView.vue'),
   () => import('@/views/SettingsView.vue'),
   () => import('@/views/DebugView.vue'),
@@ -55,10 +61,20 @@ function startBackgroundWarmups() {
   })
 }
 
-onMounted(() => {
+onMounted(async () => {
   window.setTimeout(() => {
     bootReady.value = true
   }, 120)
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    unlistenNodeEditorClosed = await listen('pymss://workflow-node-editor-closed', () => {
+      workflow.markNodeEditorClosed()
+      void workflow.reload()
+    })
+  }
+})
+
+onUnmounted(() => {
+  unlistenNodeEditorClosed?.()
 })
 
 watch([bootReady, showStartupOnboarding], () => {
@@ -73,14 +89,15 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
     <n-notification-provider>
       <n-message-provider>
         <n-dialog-provider>
-        <div class="app-shell" :class="{ 'app-shell--editor': isEditorRoute, 'app-shell--native-titlebar': isMacOS, 'no-animations': !settings.animationsEnabled }">
+        <div class="app-shell" :class="{ 'app-shell--editor': isStandaloneRoute, 'app-shell--workflow-node-editor': isWorkflowNodeEditorRoute, 'app-shell--native-titlebar': isMacOS, 'no-animations': !settings.animationsEnabled }">
           <div class="app-backdrop" />
-          <TitleBar />
+          <TitleBar v-if="!isWorkflowNodeEditorRoute" />
           <div class="app-body">
-            <SideNav v-if="!isEditorRoute" />
+            <SideNav v-if="!isStandaloneRoute" />
             <main class="app-content">
               <router-view v-slot="{ Component, route }">
-                <transition name="page" mode="out-in">
+                <component v-if="isWorkflowNodeEditorRoute" :is="Component" :key="route.fullPath" />
+                <transition v-else name="page" mode="out-in">
                   <component :is="Component" :key="route.path" />
                 </transition>
               </router-view>

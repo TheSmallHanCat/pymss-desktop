@@ -116,6 +116,14 @@ a { color: inherit; text-decoration: none; }
 .app-shell--editor .app-content {
   padding: 0;
 }
+
+.app-shell--workflow-node-editor .app-body {
+  padding-top: 0;
+}
+
+.app-shell--workflow-node-editor .app-content {
+  height: 100vh;
+}
 .app-content::-webkit-scrollbar {
   width: 6px;
 }

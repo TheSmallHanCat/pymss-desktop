@@ -8,6 +8,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from worker_graph_workflows import is_graph_workflow_definition, run_graph_workflow_task
 from worker_infer import _normalize_output_layout, collect_outputs
 from worker_protocol import emit, emit_error
 
@@ -181,6 +182,7 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
 
     failed = False
     try:
+        graph_workflow = is_graph_workflow_definition(payload.get("workflow"))
         output_root = Path(output_dir)
         output_root.mkdir(parents=True, exist_ok=True)
         for item in batch_tasks:
@@ -190,6 +192,22 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
             emit("task_started", {"workflow": payload.get("workflowName"), "input": input_path, "output": str(task_output_dir)}, task_id=task_id)
             emit("task_stage", {"stage": "validating_input", "message": "Validating workflow input", "progress": 12}, task_id=task_id)
             emit("task_stage", {"stage": "separating", "message": "Running workflow", "progress": 35}, task_id=task_id)
+            if graph_workflow:
+                try:
+                    result = run_graph_workflow_task(
+                        payload=payload,
+                        task_id=task_id,
+                        input_path=input_path,
+                        output_dir=output_dir,
+                        output_layout=output_layout,
+                    )
+                except Exception as exc:
+                    failed = True
+                    emit_error("WORKFLOW_RUN_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
+                    continue
+                emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
+                emit("task_done", result, task_id=task_id)
+                continue
             failures: list[str] = []
             completed = False
             for command in _candidate_commands(workflow_path, input_path, output_dir, payload, output_layout):
@@ -259,6 +277,20 @@ def cmd_infer_workflow(payload: dict[str, Any]) -> int:
             return emit_error("INPUT_NOT_FOUND", f"Input not found: {input_path}", task_id=task_id)
 
         emit("task_stage", {"stage": "separating", "message": "Running workflow", "progress": 35}, task_id=task_id)
+        if is_graph_workflow_definition(payload.get("workflow")):
+            try:
+                result = run_graph_workflow_task(
+                    payload=payload,
+                    task_id=task_id,
+                    input_path=input_path,
+                    output_dir=output_dir,
+                    output_layout=output_layout,
+                )
+            except Exception as exc:
+                return emit_error("WORKFLOW_RUN_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
+            emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
+            emit("task_done", result, task_id=task_id)
+            return 0
         failures: list[str] = []
         for command in _candidate_commands(workflow_path, input_path, output_dir, payload, output_layout):
             try:

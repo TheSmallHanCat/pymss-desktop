@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useDialog, useMessage } from 'naive-ui'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { invoke } from '@tauri-apps/api/core'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useTaskStore } from '@/stores/task'
@@ -29,24 +30,49 @@ const isMacOS = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platfo
 
 async function refreshMaximized() {
   if (!appWindow) { isMaximized.value = false; return }
-  try { isMaximized.value = await appWindow.isMaximized() } catch { isMaximized.value = false }
+  try {
+    isMaximized.value = await invoke<boolean>('is_current_window_maximized')
+  } catch {
+    try { isMaximized.value = await appWindow.isMaximized() } catch { isMaximized.value = false }
+  }
 }
-function minimize() { appWindow?.minimize().catch(() => {}) }
-function toggleMaximize() { appWindow?.toggleMaximize().then(refreshMaximized).catch(() => {}) }
+async function minimize() {
+  if (!appWindow) return
+  try {
+    await invoke('minimize_current_window')
+  } catch (error) {
+    console.warn('[title-bar] minimize_current_window failed', error)
+    appWindow.minimize().catch(innerError => console.warn('[title-bar] appWindow.minimize failed', innerError))
+  }
+}
+async function toggleMaximize() {
+  if (!appWindow) return
+  try {
+    isMaximized.value = await invoke<boolean>('toggle_maximize_current_window')
+  } catch (error) {
+    console.warn('[title-bar] toggle_maximize_current_window failed', error)
+    appWindow.toggleMaximize().then(refreshMaximized).catch(innerError => console.warn('[title-bar] appWindow.toggleMaximize failed', innerError))
+  }
+}
 
 async function performWindowClose() {
   if (!appWindow) return false
   allowForcedClose.value = true
   try {
-    await appWindow.destroy()
+    await invoke('close_current_window')
     return true
   } catch {
     try {
-      await appWindow.close()
+      await appWindow.destroy()
       return true
     } catch {
-      allowForcedClose.value = false
-      return false
+      try {
+        await appWindow.close()
+        return true
+      } catch {
+        allowForcedClose.value = false
+        return false
+      }
     }
   }
 }
@@ -149,8 +175,12 @@ async function close() {
   await requestClose()
 }
 function startDrag(event: MouseEvent) {
-  if (event.detail > 1) { toggleMaximize(); return }
-  appWindow?.startDragging().catch(() => {})
+  if (event.detail > 1) { void toggleMaximize(); return }
+  if (!appWindow) return
+  invoke('start_drag_current_window').catch((error) => {
+    console.warn('[title-bar] start_drag_current_window failed', error)
+    appWindow.startDragging().catch(innerError => console.warn('[title-bar] appWindow.startDragging failed', innerError))
+  })
 }
 
 let unlistenResize: (() => void) | undefined
@@ -181,14 +211,14 @@ onUnmounted(() => {
 
 <template>
   <header v-if="!isMacOS" class="title-bar">
-    <div class="title-brand" @mousedown.left="startDrag">
+    <div class="title-brand" data-tauri-drag-region @mousedown.left="startDrag">
       <AppBrandMark :size="22" variant="compact" />
       <div class="brand-copy">
         <strong>{{ t('app.name') }}</strong>
         <span>{{ pageTitle }}</span>
       </div>
     </div>
-    <div class="title-drag-space" @mousedown.left="startDrag" />
+    <div class="title-drag-space" data-tauri-drag-region @mousedown.left="startDrag" />
     <div class="window-actions" @mousedown.stop>
       <button type="button" :aria-label="t('common.minimize')" @click="minimize">
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>

@@ -1,35 +1,40 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
   AddOutline,
   CopyOutline,
+  DownloadOutline,
   GitNetworkOutline,
+  OpenOutline,
   PlayOutline,
   TrashOutline,
 } from '@vicons/ionicons5'
 import { useRouter } from 'vue-router'
+import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { storeToRefs } from 'pinia'
 import { useModelStore } from '@/stores/model'
 import { useWorkflowStore, type WorkflowEntry } from '@/stores/workflow'
+import {
+  buildWorkflowDefinition,
+  getWorkflowBatchInputConfigs,
+  getWorkflowValidationSummary,
+  hydrateWorkflowDefinition,
+  type WorkflowBatchInputConfig,
+  type WorkflowValidationSummary,
+} from '@/utils/workflowDefinition'
+import { exportComfyMssWorkflow, importComfyMssWorkflow } from '@/utils/comfyMssWorkflow'
 
-type WorkflowStepDraft = {
-  id: string
-  model: string
-  input: string
-  stems: string[]
-  overlapSize: number | null
-}
-
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
 const workflow = useWorkflowStore()
 const model = useModelStore()
-const { workflows, selectedWorkflowId, selectedWorkflow } = storeToRefs(workflow)
-const { models, downloadedModels } = storeToRefs(model)
+const { workflows, selectedWorkflowId, selectedWorkflow, nodeEditorOpenWorkflowId } = storeToRefs(workflow)
+const { downloadedModels, models } = storeToRefs(model)
 const editingId = ref('')
 const name = ref('')
 const description = ref('')
@@ -37,7 +42,10 @@ const query = ref('')
 const defaultDevice = ref('auto')
 const defaultFormat = ref('wav')
 const defaultNormalize = ref(false)
-const steps = ref<WorkflowStepDraft[]>([createStepDraft()])
+const definition = ref<Record<string, unknown>>({})
+const isCreatingNew = ref(false)
+const importFileInputRef = ref<HTMLInputElement | null>(null)
+let unlistenNodeEditorClosed: UnlistenFn | undefined
 
 const deviceOptions = [
   { label: 'Auto', value: 'auto' },
@@ -52,12 +60,6 @@ const formatOptions = [
   { label: 'MP3', value: 'mp3' },
   { label: 'M4A', value: 'm4a' },
 ]
-const modelOptions = computed(() => [...downloadedModels.value]
-  .sort((a, b) => a.name.localeCompare(b.name, locale.value === 'zh-CN' ? 'zh-CN' : 'en'))
-  .map(item => ({
-    label: item.name,
-    value: item.name,
-  })))
 const filteredWorkflows = computed(() => {
   const value = query.value.trim().toLowerCase()
   if (!value) return workflows.value
@@ -66,163 +68,239 @@ const filteredWorkflows = computed(() => {
     || item.description.toLowerCase().includes(value),
   )
 })
+const hydratedDraft = computed(() => hydrateWorkflowDefinition(definition.value))
 const generatedDefinition = computed(() => buildDefinition())
 const generatedJson = computed(() => JSON.stringify(generatedDefinition.value, null, 2))
+const validationSummary = computed(() => getWorkflowValidationSummary(generatedDefinition.value))
+
+function workflowValidationError(summary: WorkflowValidationSummary) {
+  if (summary.batchInputMultipleUnsupported) return t('workflows.batchInputMultipleUnsupported')
+  if (summary.batchInputMissingFolderCount > 0) return t('workflows.batchInputFolderRequired')
+  if (summary.utilityInputMissingCount > 0) return t('workflows.utilityInputsRequired', { count: summary.utilityInputMissingCount })
+  if (summary.danglingConnectionCount > 0) return t('workflows.workflowDanglingConnections', { count: summary.danglingConnectionCount })
+  if (summary.invalidConnectionCount > 0) return t('workflows.workflowInvalidConnections', { count: summary.invalidConnectionCount })
+  if (summary.duplicateInputConnectionCount > 0) return t('workflows.workflowDuplicateInputConnections', { count: summary.duplicateInputConnectionCount })
+  if (summary.graphCycleDetected) return t('workflows.workflowCycleDetected')
+  return ''
+}
+
+function workflowRunBlocked(summary: WorkflowValidationSummary) {
+  return Boolean(workflowValidationError(summary) || summary.noSaveOutputs)
+}
+
 const formError = computed(() => {
   if (!name.value.trim()) return t('workflows.nameRequired')
-  if (!steps.value.length) return t('workflows.stepsRequired')
+  if (!hydratedDraft.value.steps.length) return t('workflows.stepsRequired')
+  const validationError = workflowValidationError(validationSummary.value)
+  if (validationError) return validationError
   const downloaded = new Set(downloadedModels.value.map(item => item.name))
-  for (const [index, step] of steps.value.entries()) {
+  for (const [index, step] of hydratedDraft.value.steps.entries()) {
     const label = t('workflows.stepTitle', { index: index + 1 })
     if (!step.model.trim()) return t('workflows.stepModelRequired', { id: label })
     if (!downloaded.has(step.model.trim())) return t('workflows.stepModelNotDownloaded', { id: label })
     if (!step.input.trim()) return t('workflows.stepInputRequired', { id: label })
     if (!step.stems.length) return t('workflows.stepStemsRequired', { id: label })
   }
+  if (validationSummary.value.noSaveOutputs) return t('workflows.workflowNoSaveOutputs')
   return ''
 })
 const canSave = computed(() => !formError.value)
+const isNodeEditorOpen = computed(() => Boolean(nodeEditorOpenWorkflowId.value))
 
-function createStepDraft(index = 0): WorkflowStepDraft {
-  return {
-    id: `step_${index + 1}`,
-    model: '',
-    input: index ? '' : 'input',
-    stems: [],
-    overlapSize: null,
+type WorkflowCardMeta = {
+  batchInputConfigs: WorkflowBatchInputConfig[]
+  batchInputMissingCount: number
+  batchInputUnsupported: boolean
+  utilityInputMissingCount: number
+  danglingConnectionCount: number
+  invalidConnectionCount: number
+  duplicateInputConnectionCount: number
+  graphCycleDetected: boolean
+  noSaveOutputs: boolean
+  runBlocked: boolean
+}
+
+const workflowBatchTaskCounts = ref<Record<string, number | null>>({})
+let workflowBatchTaskCountToken = 0
+
+const workflowCardMetaMap = computed(() => Object.fromEntries(workflows.value.map((item) => {
+  const summary = getWorkflowValidationSummary(item.definition)
+  const meta: WorkflowCardMeta = {
+    batchInputConfigs: getWorkflowBatchInputConfigs(item.definition),
+    batchInputMissingCount: summary.batchInputMissingFolderCount,
+    batchInputUnsupported: summary.batchInputMultipleUnsupported,
+    utilityInputMissingCount: summary.utilityInputMissingCount,
+    danglingConnectionCount: summary.danglingConnectionCount,
+    invalidConnectionCount: summary.invalidConnectionCount,
+    duplicateInputConnectionCount: summary.duplicateInputConnectionCount,
+    graphCycleDetected: summary.graphCycleDetected,
+    noSaveOutputs: summary.noSaveOutputs,
+    runBlocked: workflowRunBlocked(summary),
+  }
+  return [item.id, meta]
+})))
+
+function workflowCardMeta(item: WorkflowEntry): WorkflowCardMeta {
+  return workflowCardMetaMap.value[item.id] || {
+    batchInputConfigs: [],
+    batchInputMissingCount: 0,
+    batchInputUnsupported: false,
+    utilityInputMissingCount: 0,
+    danglingConnectionCount: 0,
+    invalidConnectionCount: 0,
+    duplicateInputConnectionCount: 0,
+    graphCycleDetected: false,
+    noSaveOutputs: false,
+    runBlocked: false,
   }
 }
-function parseModelStems(value?: unknown) {
-  const seen = new Set<string>()
-  const rawItems = Array.isArray(value)
-    ? value
-    : String(value || '').split(/[,，;；/|\n]+/)
-  return rawItems
-    .map(item => String(item || '').trim().replace(/^[\s"'[\](){}]+|[\s"'[\](){}]+$/g, ''))
-    .filter((item) => {
-      if (!item) return false
-      const key = item.toLowerCase()
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
+
+function workflowBatchTaskCount(item: WorkflowEntry) {
+  const value = workflowBatchTaskCounts.value[item.id]
+  return typeof value === 'number' ? value : null
 }
-function modelStemOptions(modelName: string) {
-  const entry = models.value.find(item => item.name === modelName)
-  return parseModelStems(entry?.configInstruments || entry?.configTargetInstrument || entry?.targetStem)
-    .map(stem => ({ label: stem, value: stem }))
+
+function workflowBatchTooltipLines(item: WorkflowEntry) {
+  const meta = workflowCardMeta(item)
+  const lines: string[] = []
+  meta.batchInputConfigs.forEach((config, index) => {
+    lines.push(`${t('workflows.batchInputFolderLabel')} ${index + 1}: ${config.folder}`)
+    lines.push(`- ${t(config.recursive ? 'workflows.batchInputRecursiveOn' : 'workflows.batchInputRecursiveOff')}`)
+    lines.push(`- ${t(config.sortFiles ? 'workflows.batchInputSortOn' : 'workflows.batchInputSortOff')}`)
+  })
+  if (meta.batchInputMissingCount) {
+    lines.push(t('workflows.batchInputFolderMissing', { count: meta.batchInputMissingCount }))
+  }
+  if (meta.batchInputUnsupported) {
+    lines.push(t('workflows.batchInputMultipleUnsupported'))
+  }
+  if (meta.utilityInputMissingCount) {
+    lines.push(t('workflows.utilityInputsRequired', { count: meta.utilityInputMissingCount }))
+  }
+  if (meta.danglingConnectionCount) {
+    lines.push(t('workflows.workflowDanglingConnections', { count: meta.danglingConnectionCount }))
+  }
+  if (meta.invalidConnectionCount) {
+    lines.push(t('workflows.workflowInvalidConnections', { count: meta.invalidConnectionCount }))
+  }
+  if (meta.duplicateInputConnectionCount) {
+    lines.push(t('workflows.workflowDuplicateInputConnections', { count: meta.duplicateInputConnectionCount }))
+  }
+  if (meta.graphCycleDetected) {
+    lines.push(t('workflows.workflowCycleDetected'))
+  }
+  if (meta.noSaveOutputs) {
+    lines.push(t('workflows.workflowNoSaveOutputs'))
+  }
+  return lines
 }
-function inputOptions(index: number) {
-  const options = [{ label: t('workflows.originalInput'), value: 'input' }]
-  steps.value.slice(0, index).forEach((step) => {
-    step.stems.forEach((stem) => {
-      options.push({ label: `${step.id}.${stem}`, value: `${step.id}.${stem}` })
+
+function refreshWorkflowBatchTaskCounts() {
+  const entries = workflows.value.map(item => ({ item, meta: workflowCardMeta(item) }))
+  const next: Record<string, number | null> = {}
+  entries.forEach(({ item }) => {
+    next[item.id] = null
+  })
+  workflowBatchTaskCounts.value = next
+  const token = ++workflowBatchTaskCountToken
+  entries.forEach(({ item, meta }) => {
+    if (meta.batchInputConfigs.length !== 1 || meta.batchInputMissingCount || meta.batchInputUnsupported) return
+    const config = meta.batchInputConfigs[0]
+    void invoke<{ files: string[] }>('scan_audio_paths_with_options', {
+      paths: [config.folder],
+      recursive: config.recursive,
+      sortFiles: config.sortFiles,
+    }).then((result) => {
+      if (token !== workflowBatchTaskCountToken) return
+      workflowBatchTaskCounts.value = {
+        ...workflowBatchTaskCounts.value,
+        [item.id]: Array.isArray(result.files) ? result.files.length : 0,
+      }
+    }).catch(() => {
+      if (token !== workflowBatchTaskCountToken) return
+      workflowBatchTaskCounts.value = {
+        ...workflowBatchTaskCounts.value,
+        [item.id]: null,
+      }
     })
   })
-  return options
 }
-function reindexSteps() {
-  steps.value.forEach((step, index) => {
-    step.id = `step_${index + 1}`
-  })
+
+async function openNodeEditor() {
+  const openId = nodeEditorOpenWorkflowId.value
+  const workflowId = openId && openId !== '__new__' ? openId : editingId.value || selectedWorkflowId.value || ''
+  const isNewWorkflow = openId === '__new__' || !workflowId
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    try {
+      await invoke('open_workflow_node_editor_window', { payload: { workflowId, newWorkflow: isNewWorkflow } })
+      workflow.markNodeEditorOpen(workflowId || '__new__')
+      return
+    } catch (error) {
+      console.warn('Failed to open workflow node editor window, falling back to route navigation', error)
+    }
+  }
+  await router.push({ path: '/workflow-node-editor', query: workflowId ? { workflowId } : { new: '1' } })
 }
-function safeStemDir(stem: string) {
-  return stem.trim().replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_') || stem
+async function refreshAfterNodeEditorClosed() {
+  workflow.markNodeEditorClosed()
+  await workflow.reload()
+  const next = editingId.value
+    ? workflows.value.find(item => item.id === editingId.value)
+    : workflow.selectedWorkflow
+  if (next) {
+    editWorkflow(next)
+  } else if (workflow.selectedWorkflow) {
+    editWorkflow(workflow.selectedWorkflow)
+  }
 }
 function buildDefinition(): Record<string, unknown> {
-  return {
-    version: 1,
-    defaults: {
-      device: defaultDevice.value,
-      output_format: defaultFormat.value,
-      model_dir: null,
-      inference_params: {
-        normalize: defaultNormalize.value,
-      },
-    },
-    steps: steps.value.map((step, index) => ({
-      id: `step_${index + 1}`,
-      model: step.model.trim(),
-      input: step.input.trim(),
-      stems: [...step.stems],
-      ...(step.overlapSize ? { inference_params: { overlap_size: step.overlapSize } } : {}),
-      save: Object.fromEntries(step.stems.map(stem => [stem, safeStemDir(stem)])),
-    })),
-  }
+  return buildWorkflowDefinition({
+    defaultDevice: defaultDevice.value,
+    defaultFormat: defaultFormat.value,
+    defaultNormalize: defaultNormalize.value,
+    steps: hydratedDraft.value.steps,
+    utilityNodes: hydratedDraft.value.utilityNodes,
+    saveTargets: hydratedDraft.value.saveTargets,
+    ui: hydratedDraft.value.ui,
+  })
+}
+function createFreshDefinition() {
+  const fresh = hydrateWorkflowDefinition({})
+  return buildWorkflowDefinition({
+    defaultDevice: defaultDevice.value,
+    defaultFormat: defaultFormat.value,
+    defaultNormalize: defaultNormalize.value,
+    steps: fresh.steps,
+    utilityNodes: fresh.utilityNodes,
+    saveTargets: fresh.saveTargets,
+    ui: fresh.ui,
+  })
 }
 function hydrateFromDefinition(definition: Record<string, unknown>) {
-  const defaults = definition.defaults && typeof definition.defaults === 'object'
-    ? definition.defaults as Record<string, unknown>
-    : {}
-  defaultDevice.value = String(defaults.device || 'auto')
-  defaultFormat.value = String(defaults.output_format || 'wav')
-  const inferenceDefaults = defaults.inference_params && typeof defaults.inference_params === 'object'
-    ? defaults.inference_params as Record<string, unknown>
-    : {}
-  defaultNormalize.value = Boolean(inferenceDefaults.normalize)
-  const rawSteps = Array.isArray(definition.steps) ? definition.steps : []
-  const idMap = new Map<string, string>()
-  rawSteps.forEach((raw, index) => {
-    const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
-    if (item.id) idMap.set(String(item.id), `step_${index + 1}`)
-  })
-  steps.value = rawSteps.map((raw, index) => {
-    const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
-    const inference = item.inference_params && typeof item.inference_params === 'object'
-      ? item.inference_params as Record<string, unknown>
-      : {}
-    const save = item.save && typeof item.save === 'object' ? item.save as Record<string, unknown> : {}
-    const stems = Array.isArray(item.stems)
-      ? item.stems.map(stem => String(stem))
-      : Object.keys(save)
-    const rawInput = String(item.input || (index ? '' : 'input'))
-    const mappedInput = rawInput.includes('.')
-      ? (() => {
-          const [sourceId, stem] = rawInput.split('.', 2)
-          return idMap.has(sourceId) && stem ? `${idMap.get(sourceId)}.${stem}` : rawInput
-        })()
-      : rawInput
-    return {
-      id: `step_${index + 1}`,
-      model: String(item.model || ''),
-      input: mappedInput,
-      stems,
-      overlapSize: typeof inference.overlap_size === 'number' ? inference.overlap_size : null,
-    }
-  })
-  if (!steps.value.length) steps.value = [createStepDraft()]
-  reindexSteps()
+  const draft = hydrateWorkflowDefinition(definition)
+  defaultDevice.value = draft.defaultDevice
+  defaultFormat.value = draft.defaultFormat
+  defaultNormalize.value = draft.defaultNormalize
 }
 function resetEditor() {
+  isCreatingNew.value = true
   editingId.value = ''
   name.value = ''
   description.value = ''
   defaultDevice.value = 'auto'
   defaultFormat.value = 'wav'
   defaultNormalize.value = false
-  steps.value = [createStepDraft()]
+  definition.value = createFreshDefinition()
+  workflow.selectWorkflow('')
 }
 function editWorkflow(item: WorkflowEntry) {
+  isCreatingNew.value = false
   editingId.value = item.id
   name.value = item.name
   description.value = item.description
+  definition.value = item.definition
   hydrateFromDefinition(item.definition)
   workflow.selectWorkflow(item.id)
-}
-function addStep() {
-  const draft = createStepDraft(steps.value.length)
-  draft.input = inputOptions(steps.value.length)[0]?.value || 'input'
-  steps.value.push(draft)
-  reindexSteps()
-}
-function removeStep(index: number) {
-  if (steps.value.length <= 1) return
-  steps.value.splice(index, 1)
-  reindexSteps()
-}
-function handleModelChange(step: WorkflowStepDraft) {
-  const options = modelStemOptions(step.model).map(item => item.value)
-  step.stems = step.stems.filter(stem => options.includes(stem))
 }
 async function save() {
   if (!canSave.value) return
@@ -262,12 +340,98 @@ function deleteSelected() {
   if (selectedWorkflow.value) confirmDelete(selectedWorkflow.value)
 }
 function runWorkflow(item: WorkflowEntry) {
+  const meta = workflowCardMeta(item)
+  if (meta.runBlocked) {
+    message.warning(workflowBatchTooltipLines(item).find(Boolean) || t('workflows.workflowRunBlocked'))
+    return
+  }
   workflow.selectWorkflow(item.id)
   router.push({ path: '/', query: { mode: 'workflow' } })
 }
+
+function triggerImportComfyMss() {
+  importFileInputRef.value?.click()
+}
+
+function workflowFileBasename(fileName: string) {
+  return fileName.replace(/\.[^.]+$/u, '').trim()
+}
+
+function downloadJsonFile(fileName: string, payload: Record<string, unknown>) {
+  const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+function workflowSlug(value: string) {
+  const normalized = value.trim().replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_')
+  return normalized || 'workflow'
+}
+
+function importWarningSummary(warnings: string[]) {
+  if (!warnings.length) return ''
+  if (warnings.length === 1) return warnings[0]
+  return `${warnings[0]}（另外还有 ${warnings.length - 1} 条提示）`
+}
+
+async function handleImportComfyMss(event: Event) {
+  const input = event.target as HTMLInputElement | null
+  const file = input?.files?.[0]
+  if (!file) return
+  try {
+    const text = await file.text()
+    const parsed = JSON.parse(text) as Record<string, unknown>
+    const result = importComfyMssWorkflow(parsed, { models: models.value })
+    definition.value = result.definition
+    hydrateFromDefinition(result.definition)
+    if (!name.value.trim() || isCreatingNew.value) {
+      name.value = workflowFileBasename(file.name) || t('workflows.newWorkflow')
+    }
+    isCreatingNew.value = !editingId.value
+    message.success(t('workflows.comfyImportSuccess'))
+    if (result.warnings.length) {
+      message.warning(importWarningSummary(result.warnings))
+    }
+  } catch (error) {
+    message.error(`${t('workflows.comfyImportFailed')}: ${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    if (input) input.value = ''
+  }
+}
+
+function exportSelectedComfyMss() {
+  try {
+    const payload = exportComfyMssWorkflow(generatedDefinition.value, { models: models.value })
+    downloadJsonFile(`${workflowSlug(name.value || t('workflows.untitled'))}.comfy-mss.json`, payload)
+    message.success(t('workflows.comfyExportSuccess'))
+  } catch (error) {
+    message.error(`${t('workflows.comfyExportFailed')}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+onMounted(async () => {
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
+  unlistenNodeEditorClosed = await listen('pymss://workflow-node-editor-closed', () => {
+    void refreshAfterNodeEditorClosed()
+  })
+})
+
+onUnmounted(() => {
+  unlistenNodeEditorClosed?.()
+})
+
 watch(workflows, (items) => {
-  if (!editingId.value && items.length) editWorkflow(items[0])
-}, { immediate: true })
+  refreshWorkflowBatchTaskCounts()
+  if (!editingId.value && !isCreatingNew.value && items.length) editWorkflow(items[0])
+}, { immediate: true, deep: true })
+
+watch([defaultDevice, defaultFormat, defaultNormalize], () => {
+  definition.value = generatedDefinition.value
+})
 </script>
 
 <template>
@@ -299,10 +463,59 @@ watch(workflows, (items) => {
             <div class="workflow-card__main">
               <strong>{{ item.name }}</strong>
               <span>{{ item.description || t('workflows.noDescription') }}</span>
+              <div v-if="workflowCardMeta(item).batchInputConfigs.length || workflowCardMeta(item).batchInputMissingCount || workflowCardMeta(item).batchInputUnsupported || workflowCardMeta(item).utilityInputMissingCount || workflowCardMeta(item).danglingConnectionCount || workflowCardMeta(item).invalidConnectionCount || workflowCardMeta(item).duplicateInputConnectionCount || workflowCardMeta(item).graphCycleDetected || workflowCardMeta(item).noSaveOutputs" class="workflow-card__meta">
+                <n-tooltip v-if="workflowCardMeta(item).batchInputConfigs.length" trigger="hover">
+                  <template #trigger>
+                    <n-tag size="small" round :bordered="false">
+                      {{ t('workflows.batchInputTag') }}
+                    </n-tag>
+                  </template>
+                  <div class="workflow-card__tooltip">{{ workflowBatchTooltipLines(item).join('\n') }}</div>
+                </n-tooltip>
+                <n-tooltip v-if="workflowBatchTaskCount(item) !== null" trigger="hover">
+                  <template #trigger>
+                    <n-tag size="small" round :bordered="false" type="info">
+                      {{ t('workflows.batchInputEstimatedTasks', { count: workflowBatchTaskCount(item) }) }}
+                    </n-tag>
+                  </template>
+                  <div class="workflow-card__tooltip">{{ workflowBatchTooltipLines(item).join('\n') }}</div>
+                </n-tooltip>
+                <n-tag v-if="workflowCardMeta(item).batchInputMissingCount" size="small" round :bordered="false" type="warning">
+                  {{ t('workflows.batchInputFolderMissing', { count: workflowCardMeta(item).batchInputMissingCount }) }}
+                </n-tag>
+                <n-tag v-if="workflowCardMeta(item).batchInputUnsupported" size="small" round :bordered="false" type="warning">
+                  {{ t('workflows.batchInputMultipleUnsupportedShort') }}
+                </n-tag>
+                <n-tag v-if="workflowCardMeta(item).utilityInputMissingCount" size="small" round :bordered="false" type="warning">
+                  {{ t('workflows.utilityInputsRequired', { count: workflowCardMeta(item).utilityInputMissingCount }) }}
+                </n-tag>
+                <n-tag v-if="workflowCardMeta(item).danglingConnectionCount" size="small" round :bordered="false" type="warning">
+                  {{ t('workflows.workflowDanglingConnections', { count: workflowCardMeta(item).danglingConnectionCount }) }}
+                </n-tag>
+                <n-tag v-if="workflowCardMeta(item).invalidConnectionCount" size="small" round :bordered="false" type="warning">
+                  {{ t('workflows.workflowInvalidConnections', { count: workflowCardMeta(item).invalidConnectionCount }) }}
+                </n-tag>
+                <n-tag v-if="workflowCardMeta(item).duplicateInputConnectionCount" size="small" round :bordered="false" type="warning">
+                  {{ t('workflows.workflowDuplicateInputConnections', { count: workflowCardMeta(item).duplicateInputConnectionCount }) }}
+                </n-tag>
+                <n-tag v-if="workflowCardMeta(item).graphCycleDetected" size="small" round :bordered="false" type="warning">
+                  {{ t('workflows.workflowCycleDetected') }}
+                </n-tag>
+                <n-tag v-if="workflowCardMeta(item).noSaveOutputs" size="small" round :bordered="false" type="warning">
+                  {{ t('workflows.workflowNoSaveOutputs') }}
+                </n-tag>
+              </div>
             </div>
-            <n-button quaternary circle size="small" @click.stop="runWorkflow(item)">
-              <template #icon><n-icon :component="PlayOutline" /></template>
-            </n-button>
+            <n-tooltip trigger="hover" :disabled="!workflowCardMeta(item).runBlocked">
+              <template #trigger>
+                <span class="workflow-card__run-trigger" @click.stop>
+                  <n-button quaternary circle size="small" :disabled="workflowCardMeta(item).runBlocked" @click="runWorkflow(item)">
+                    <template #icon><n-icon :component="PlayOutline" /></template>
+                  </n-button>
+                </span>
+              </template>
+              <div class="workflow-card__tooltip">{{ workflowBatchTooltipLines(item).join('\n') || t('workflows.workflowRunBlocked') }}</div>
+            </n-tooltip>
           </article>
         </div>
         <div v-else class="empty-state">
@@ -313,12 +526,27 @@ watch(workflows, (items) => {
       </section>
 
       <section class="workflow-editor-panel">
+        <input
+          ref="importFileInputRef"
+          class="workflow-hidden-file-input"
+          type="file"
+          accept=".json,application/json"
+          @change="handleImportComfyMss"
+        >
         <div class="editor-head">
           <div>
             <div class="eyebrow">{{ editingId ? t('workflows.editing') : t('workflows.creating') }}</div>
             <h2>{{ editingId ? name || t('workflows.untitled') : t('workflows.newWorkflow') }}</h2>
           </div>
           <div class="editor-actions">
+            <n-button secondary @click="triggerImportComfyMss">
+              <template #icon><n-icon :component="OpenOutline" /></template>
+              {{ t('workflows.importComfyMss') }}
+            </n-button>
+            <n-button secondary :disabled="!canSave" @click="exportSelectedComfyMss">
+              <template #icon><n-icon :component="DownloadOutline" /></template>
+              {{ t('workflows.exportComfyMss') }}
+            </n-button>
             <n-button v-if="editingId" secondary @click="duplicateSelected">
               <template #icon><n-icon :component="CopyOutline" /></template>
               {{ t('workflows.duplicate') }}
@@ -326,6 +554,10 @@ watch(workflows, (items) => {
             <n-button v-if="editingId" secondary type="error" @click="deleteSelected">
               <template #icon><n-icon :component="TrashOutline" /></template>
               {{ t('workflows.deleteConfirm') }}
+            </n-button>
+            <n-button secondary @click="openNodeEditor">
+              <template #icon><n-icon :component="GitNetworkOutline" /></template>
+              {{ t('workflows.nodeEditor') }}
             </n-button>
             <n-button type="primary" :disabled="!canSave" @click="save">
               {{ t('common.save') }}
@@ -357,68 +589,6 @@ watch(workflows, (items) => {
             <n-input v-model:value="description" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" :placeholder="t('workflows.descriptionPlaceholder')" />
           </label>
 
-          <div class="steps-head">
-            <div>
-              <strong>{{ t('workflows.steps') }}</strong>
-              <span>{{ t('workflows.stepsHint') }}</span>
-            </div>
-            <n-button secondary @click="addStep">
-              <template #icon><n-icon :component="AddOutline" /></template>
-              {{ t('workflows.addStep') }}
-            </n-button>
-          </div>
-
-          <div class="workflow-chain">
-            <article v-for="(step, index) in steps" :key="index" class="step-card">
-              <div class="step-card__head">
-                <div class="step-card__title">
-                  <span class="step-card__index">{{ index + 1 }}</span>
-                  <strong>{{ t('workflows.stepTitle', { index: index + 1 }) }}</strong>
-                </div>
-                <n-button quaternary circle size="small" :disabled="steps.length <= 1" @click="removeStep(index)">
-                  <template #icon><n-icon :component="TrashOutline" /></template>
-                </n-button>
-              </div>
-              <div class="form-grid form-grid--step">
-                <label>
-                  <span>{{ t('workflows.stepModel') }}</span>
-                  <n-select
-                    v-model:value="step.model"
-                    filterable
-                    :options="modelOptions"
-                    :placeholder="t('workflows.stepModelPlaceholder')"
-                    @update:value="handleModelChange(step)"
-                  />
-                </label>
-                <label>
-                  <span>{{ t('workflows.stepInput') }}</span>
-                  <n-select
-                    v-model:value="step.input"
-                    filterable
-                    tag
-                    :options="inputOptions(index)"
-                    :placeholder="t('workflows.stepInputPlaceholder')"
-                  />
-                </label>
-                <label>
-                  <span>{{ t('workflows.stepOverlap') }}</span>
-                  <n-input-number v-model:value="step.overlapSize" clearable :min="0" :step="1024" style="width: 100%" />
-                </label>
-              </div>
-              <label>
-                <span>{{ t('workflows.stepStems') }}</span>
-                <n-select
-                  v-model:value="step.stems"
-                  multiple
-                  filterable
-                  tag
-                  :options="modelStemOptions(step.model)"
-                  :placeholder="t('workflows.stepStemsPlaceholder')"
-                />
-              </label>
-            </article>
-          </div>
-
           <p v-if="formError" class="json-error">{{ formError }}</p>
           <p v-else class="json-ok">{{ t('workflows.formValid') }}</p>
 
@@ -434,8 +604,17 @@ watch(workflows, (items) => {
             </n-collapse-item>
           </n-collapse>
         </div>
+        <div v-if="isNodeEditorOpen" class="workflow-editor-lock">
+          <div class="workflow-editor-lock__card">
+            <n-icon :component="GitNetworkOutline" />
+            <strong>{{ t('workflows.nodeEditorOpenedTitle') }}</strong>
+            <span>{{ t('workflows.nodeEditorOpenedHint') }}</span>
+            <n-button secondary @click="openNodeEditor">{{ t('workflows.backToNodeEditor') }}</n-button>
+          </div>
+        </div>
       </section>
     </div>
+
   </div>
 </template>
 
@@ -462,8 +641,7 @@ watch(workflows, (items) => {
 .editor-head h2 {
   margin: 4px 0 0;
 }
-.workflows-header p,
-.steps-head span {
+.workflows-header p {
   margin: 8px 0 0;
   color: var(--on-surface-muted);
 }
@@ -531,6 +709,22 @@ watch(workflows, (items) => {
   display: grid;
   gap: 3px;
 }
+.workflow-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.workflow-card__tooltip {
+  max-width: 360px;
+  white-space: pre-line;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.workflow-card__run-trigger {
+  display: inline-grid;
+  place-items: center;
+}
 .workflow-card__main strong,
 .workflow-card__main span {
   overflow: hidden;
@@ -556,11 +750,14 @@ watch(workflows, (items) => {
   color: var(--primary-strong);
 }
 .workflow-editor-panel {
+  position: relative;
   padding: 18px;
+  overflow: hidden;
 }
-.editor-head,
-.steps-head,
-.step-card__head {
+.workflow-hidden-file-input {
+  display: none;
+}
+.editor-head {
   display: flex;
   justify-content: space-between;
   gap: 18px;
@@ -583,9 +780,6 @@ watch(workflows, (items) => {
   gap: 12px;
   align-items: end;
 }
-.form-grid--step {
-  grid-template-columns: minmax(220px, 1.4fr) minmax(180px, 1fr) minmax(140px, .8fr);
-}
 .editor-form label {
   display: grid;
   gap: 8px;
@@ -595,62 +789,6 @@ watch(workflows, (items) => {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.01em;
-}
-.workflow-chain {
-  position: relative;
-  display: grid;
-  gap: 12px;
-  padding-left: 20px;
-}
-.workflow-chain::before {
-  content: '';
-  position: absolute;
-  left: 7px;
-  top: 10px;
-  bottom: 10px;
-  width: 1px;
-  background: linear-gradient(180deg, var(--primary), color-mix(in srgb, var(--outline) 58%, transparent));
-  opacity: 0.42;
-}
-.step-card {
-  position: relative;
-  display: grid;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid color-mix(in srgb, var(--outline) 54%, transparent);
-  border-radius: 16px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.024), transparent 48%),
-    color-mix(in srgb, var(--surface-2) 50%, transparent);
-}
-.step-card::before {
-  content: '';
-  position: absolute;
-  left: -18px;
-  top: 22px;
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
-  background: var(--primary);
-  box-shadow:
-    0 0 0 4px color-mix(in srgb, var(--primary-soft) 52%, var(--surface-1)),
-    0 0 18px color-mix(in srgb, var(--primary-glow) 55%, transparent);
-}
-.step-card__title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-.step-card__index {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-  color: color-mix(in srgb, var(--primary-strong) 82%, var(--on-surface));
-  background: color-mix(in srgb, var(--primary-soft) 32%, var(--surface-2));
-  font-size: 12px;
-  font-weight: 700;
 }
 .definition-input :deep(textarea) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -668,9 +806,45 @@ watch(workflows, (items) => {
 .json-ok {
   color: var(--success);
 }
+
+
+.workflow-editor-lock {
+  position: absolute;
+  inset: 74px 14px 14px;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 50% 22%, color-mix(in srgb, var(--primary-soft) 44%, transparent), transparent 42%),
+    color-mix(in srgb, var(--surface-1) 78%, transparent);
+  backdrop-filter: blur(10px) saturate(1.08);
+  border: 1px solid color-mix(in srgb, var(--outline) 50%, transparent);
+}
+.workflow-editor-lock__card {
+  width: min(360px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.12);
+}
+.workflow-editor-lock__card .n-icon {
+  font-size: 34px;
+  color: var(--primary-strong);
+}
+.workflow-editor-lock__card span {
+  color: var(--on-surface-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 @media (max-width: 1120px) {
-  .form-grid,
-  .form-grid--step {
+  .form-grid {
     grid-template-columns: 1fr 1fr;
   }
 }

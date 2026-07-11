@@ -7,6 +7,8 @@ import { useSettingsStore } from '@/stores/settings'
 import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
 import { useAppStore } from '@/stores/app'
 import type { WorkflowEntry } from '@/stores/workflow'
+import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, stripWorkflowUi, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
+import { getWorkflowDefinitionDefaults, readWorkflowGraphDefinition } from '@/utils/workflowGraph'
 
 export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
 
@@ -597,21 +599,32 @@ export const useTaskStore = defineStore('task', () => {
     const definition = workflow.definition && typeof workflow.definition === 'object'
       ? workflow.definition
       : {}
-    const defaults = definition.defaults && typeof definition.defaults === 'object'
-      ? definition.defaults as Record<string, unknown>
-      : {}
+    const normalizedDefinition = readWorkflowGraphDefinition(definition)
+    const defaults = normalizedDefinition.defaults as unknown as Record<string, unknown>
     const inferenceDefaults = defaults.inference_params && typeof defaults.inference_params === 'object'
       ? defaults.inference_params as Record<string, unknown>
       : {}
+    const hasWorkflowStandardize = Object.prototype.hasOwnProperty.call(inferenceDefaults, 'standardize')
+    const hasWorkflowNormalize = Object.prototype.hasOwnProperty.call(inferenceDefaults, 'normalize')
+    const workflowStandardize = hasWorkflowStandardize
+      ? Boolean(inferenceDefaults.standardize)
+      : hasWorkflowNormalize
+        ? Boolean(inferenceDefaults.normalize)
+        : standardize.value
+    const workflowNormalize = hasWorkflowStandardize
+      ? (hasWorkflowNormalize ? Boolean(inferenceDefaults.normalize) : false)
+      : hasWorkflowNormalize
+        ? false
+        : normalize.value
     return {
-      ...definition,
+      ...stripWorkflowUi(normalizedDefinition as unknown as Record<string, unknown>),
       defaults: {
         ...defaults,
         output_format: outputFormat,
         inference_params: {
           ...inferenceDefaults,
-          standardize: standardize.value,
-          normalize: normalize.value,
+          standardize: workflowStandardize,
+          normalize: workflowNormalize,
         },
       },
     }
@@ -620,15 +633,15 @@ export const useTaskStore = defineStore('task', () => {
     const settings = useSettingsStore()
     const app = useAppStore()
     const runtimeDevice = settings.getRuntimeDeviceConfig(app.envInfo)
-    const defaults = workflow.definition.defaults && typeof workflow.definition.defaults === 'object'
-      ? workflow.definition.defaults as Record<string, unknown>
-      : {}
+    const defaults = getWorkflowDefinitionDefaults(workflow.definition) as unknown as Record<string, unknown>
     const workflowDevice = typeof defaults.device === 'string' && defaults.device.trim()
       ? defaults.device.trim()
       : runtimeDevice.device
-    const workflowFormat = typeof settings.defaultFormat === 'string' && settings.defaultFormat.trim()
-      ? settings.defaultFormat.trim()
-      : 'wav'
+    const workflowFormat = typeof defaults.output_format === 'string' && defaults.output_format.trim()
+      ? defaults.output_format.trim()
+      : typeof settings.defaultFormat === 'string' && settings.defaultFormat.trim()
+        ? settings.defaultFormat.trim()
+        : 'wav'
     const workflowModelDir = typeof defaults.model_dir === 'string' && defaults.model_dir.trim()
       ? defaults.model_dir.trim()
       : settings.modelDir || null
@@ -726,6 +739,8 @@ export const useTaskStore = defineStore('task', () => {
     setTaskStatus(task.id, 'preparing', 'Preparing task')
     try {
       if (config.runMode === 'workflow') {
+        const validationError = workflowValidationError(getWorkflowValidationSummary(config.workflowDefinition || {}))
+        if (validationError) throw new Error(validationError)
         await invoke<{ taskId: string; started: boolean }>('start_workflow_inference', {
           payload: {
             taskId: task.id,
@@ -1314,14 +1329,45 @@ export const useTaskStore = defineStore('task', () => {
     return { succeeded: targets.length, failed: 0, total: targets.length, jobId, tasks: createdTasks }
   }
 
+  function workflowValidationError(summary: WorkflowValidationSummary) {
+    if (summary.batchInputMultipleUnsupported) return i18n.global.t('workflows.batchInputMultipleUnsupported')
+    if (summary.batchInputMissingFolderCount > 0) return i18n.global.t('workflows.batchInputFolderRequired')
+    if (summary.utilityInputMissingCount > 0) return i18n.global.t('workflows.utilityInputsRequired', { count: summary.utilityInputMissingCount })
+    if (summary.danglingConnectionCount > 0) return i18n.global.t('workflows.workflowDanglingConnections', { count: summary.danglingConnectionCount })
+    if (summary.invalidConnectionCount > 0) return i18n.global.t('workflows.workflowInvalidConnections', { count: summary.invalidConnectionCount })
+    if (summary.duplicateInputConnectionCount > 0) return i18n.global.t('workflows.workflowDuplicateInputConnections', { count: summary.duplicateInputConnectionCount })
+    if (summary.graphCycleDetected) return i18n.global.t('workflows.workflowCycleDetected')
+    if (summary.noSaveOutputs) return i18n.global.t('workflows.workflowNoSaveOutputs')
+    return ''
+  }
+
   async function startWorkflowInference(workflow: WorkflowEntry, options: { outputDir?: string; outputLayout?: OutputLayout } = {}) {
-    if (!inputFiles.value.length) {
-      throw new Error('Input file is required')
-    }
     if (!workflow?.id) {
       throw new Error('Workflow is required')
     }
-    const targets = [...inputFiles.value]
+    const validationSummary = getWorkflowValidationSummary(workflow.definition)
+    const validationError = workflowValidationError(validationSummary)
+    if (validationError) throw new Error(validationError)
+    const workflowBatchConfigs = getWorkflowBatchInputConfigs(workflow.definition)
+    if (workflowBatchConfigs.length > 1) {
+      throw new Error('当前暂不支持一个工作流同时使用多个批量输入节点')
+    }
+    let targets = [...inputFiles.value]
+    if (workflowBatchConfigs.length === 1) {
+      const batchConfig = workflowBatchConfigs[0]
+      const result = await invoke<ScanMediaPathsResult>('scan_audio_paths_with_options', {
+        paths: [batchConfig.folder],
+        recursive: batchConfig.recursive,
+        sortFiles: batchConfig.sortFiles,
+      })
+      targets = result.files || []
+      if (!targets.length) {
+        throw new Error(`批量输入目录中未找到可处理的音频文件：${batchConfig.folder}`)
+      }
+    }
+    if (!targets.length) {
+      throw new Error(i18n.global.t('separate.startHintNoInput'))
+    }
     const jobId = createRunId('job')
     const settings = useSettingsStore()
     const batchMode = targets.length > 1

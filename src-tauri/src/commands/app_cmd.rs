@@ -441,6 +441,114 @@ fn write_editor_project(app: &AppHandle, project: &Value) -> AppResult<Value> {
     Ok(project.clone())
 }
 
+
+#[tauri::command]
+pub async fn close_current_window(window: tauri::WebviewWindow) -> AppResult<()> {
+    let label = window.label().to_string();
+    if label.starts_with("workflow-node-editor") {
+        let _ = window.app_handle().emit(
+            "pymss://workflow-node-editor-closed",
+            serde_json::json!({ "label": label }),
+        );
+    }
+    window.destroy().map_err(|error| AppError::Worker(error.to_string()))
+}
+
+#[tauri::command]
+pub async fn minimize_current_window(window: tauri::WebviewWindow) -> AppResult<()> {
+    window
+        .minimize()
+        .map_err(|error| AppError::Worker(error.to_string()))
+}
+
+#[tauri::command]
+pub async fn toggle_maximize_current_window(window: tauri::WebviewWindow) -> AppResult<bool> {
+    let maximized = window
+        .is_maximized()
+        .map_err(|error| AppError::Worker(error.to_string()))?;
+    if maximized {
+        window
+            .unmaximize()
+            .map_err(|error| AppError::Worker(error.to_string()))?;
+        Ok(false)
+    } else {
+        window
+            .maximize()
+            .map_err(|error| AppError::Worker(error.to_string()))?;
+        Ok(true)
+    }
+}
+
+#[tauri::command]
+pub async fn is_current_window_maximized(window: tauri::WebviewWindow) -> AppResult<bool> {
+    window
+        .is_maximized()
+        .map_err(|error| AppError::Worker(error.to_string()))
+}
+
+#[tauri::command]
+pub async fn start_drag_current_window(window: tauri::WebviewWindow) -> AppResult<()> {
+    window
+        .start_dragging()
+        .map_err(|error| AppError::Worker(error.to_string()))
+}
+
+#[tauri::command]
+pub async fn open_workflow_node_editor_window(app: AppHandle, payload: Value) -> AppResult<Value> {
+    let workflow_id = payload
+        .get("workflowId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let new_workflow = payload
+        .get("newWorkflow")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let label = if workflow_id.trim().is_empty() {
+        "workflow-node-editor-new".to_string()
+    } else {
+        format!("workflow-node-editor-{}", safe_file_name(&workflow_id))
+    };
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.set_focus();
+        return Ok(
+            serde_json::json!({ "workflowId": workflow_id, "label": label, "opened": true, "reused": true }),
+        );
+    }
+
+    let url = if workflow_id.trim().is_empty() {
+        if new_workflow {
+            "index.html#/workflow-node-editor?new=1".to_string()
+        } else {
+            "index.html#/workflow-node-editor".to_string()
+        }
+    } else {
+        format!("index.html#/workflow-node-editor?workflowId={}", workflow_id)
+    };
+    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
+        .title("Pymss Studio Workflow Node Editor")
+        .inner_size(1440.0, 900.0)
+        .min_inner_size(1180.0, 720.0)
+        .resizable(true)
+        .minimizable(true)
+        .maximizable(true)
+        .closable(true)
+        .decorations(cfg!(target_os = "macos"))
+        .visible(false)
+        .focused(true)
+        .on_page_load(|window, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        })
+        .build()
+        .map_err(|error| AppError::Worker(error.to_string()))?;
+    Ok(
+        serde_json::json!({ "workflowId": workflow_id, "label": label, "opened": true, "reused": false }),
+    )
+}
+
 #[tauri::command]
 pub async fn open_editor_window(app: AppHandle, payload: Value) -> AppResult<Value> {
     let project_id = payload
@@ -468,6 +576,10 @@ pub async fn open_editor_window(app: AppHandle, payload: Value) -> AppResult<Val
         .title("Pymss Studio Editor")
         .inner_size(1440.0, 900.0)
         .min_inner_size(1180.0, 720.0)
+        .resizable(true)
+        .minimizable(true)
+        .maximizable(true)
+        .closable(true)
         .decorations(cfg!(target_os = "macos"))
         .visible(false)
         .focused(true)
@@ -1437,6 +1549,38 @@ fn collect_media_files(dir: &Path, results: &mut Vec<String>, warnings: &mut Vec
     }
 }
 
+fn collect_audio_files_shallow(dir: &Path, results: &mut Vec<String>, warnings: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            warnings.push(format!("{}: {}", dir.display(), error));
+            return;
+        }
+    };
+    for entry in entries {
+        match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                if path.is_file() && is_audio_file(&path) {
+                    results.push(path.to_string_lossy().to_string());
+                }
+            }
+            Err(error) => warnings.push(format!("{}: {}", dir.display(), error)),
+        }
+    }
+}
+
+fn stable_dedup(paths: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped = Vec::with_capacity(paths.len());
+    for path in paths {
+        if seen.insert(path.clone()) {
+            deduped.push(path);
+        }
+    }
+    deduped
+}
+
 #[tauri::command]
 pub async fn scan_audio_paths(paths: Vec<String>) -> AppResult<ScanAudioPathsResult> {
     let mut files = Vec::new();
@@ -1457,6 +1601,43 @@ pub async fn scan_audio_paths(paths: Vec<String>) -> AppResult<ScanAudioPathsRes
     }
     files.sort();
     files.dedup();
+    Ok(ScanAudioPathsResult { files, warnings })
+}
+
+#[tauri::command]
+pub async fn scan_audio_paths_with_options(
+    paths: Vec<String>,
+    recursive: Option<bool>,
+    sort_files: Option<bool>,
+) -> AppResult<ScanAudioPathsResult> {
+    let recursive = recursive.unwrap_or(true);
+    let sort_files = sort_files.unwrap_or(true);
+    let mut files = Vec::new();
+    let mut warnings = Vec::new();
+    for raw in paths {
+        let target = Path::new(&raw);
+        if target.is_file() {
+            if is_audio_file(target) {
+                files.push(target.to_string_lossy().to_string());
+            } else {
+                warnings.push(format!("unsupported file: {}", target.display()));
+            }
+        } else if target.is_dir() {
+            if recursive {
+                collect_audio_files(target, &mut files, &mut warnings);
+            } else {
+                collect_audio_files_shallow(target, &mut files, &mut warnings);
+            }
+        } else {
+            warnings.push(format!("path not found: {}", raw));
+        }
+    }
+    if sort_files {
+        files.sort();
+        files.dedup();
+    } else {
+        files = stable_dedup(files);
+    }
     Ok(ScanAudioPathsResult { files, warnings })
 }
 

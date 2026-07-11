@@ -25,6 +25,11 @@ fn main() {
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             commands::app_cmd::cancel_task,
+            commands::app_cmd::close_current_window,
+            commands::app_cmd::minimize_current_window,
+            commands::app_cmd::toggle_maximize_current_window,
+            commands::app_cmd::is_current_window_maximized,
+            commands::app_cmd::start_drag_current_window,
             commands::app_cmd::create_blank_editor_project,
             commands::app_cmd::create_editor_project_from_task,
             commands::app_cmd::delete_model,
@@ -47,6 +52,7 @@ fn main() {
             commands::app_cmd::load_editor_project,
             commands::app_cmd::relink_editor_sources,
             commands::app_cmd::open_editor_window,
+            commands::app_cmd::open_workflow_node_editor_window,
             commands::app_cmd::pick_media_files,
             commands::app_cmd::pick_audio_files,
             commands::app_cmd::pick_single_audio_file,
@@ -64,6 +70,7 @@ fn main() {
             commands::app_cmd::save_editor_project,
             commands::app_cmd::scan_media_paths,
             commands::app_cmd::scan_audio_paths,
+            commands::app_cmd::scan_audio_paths_with_options,
             commands::app_cmd::scan_editor_assets,
             commands::app_cmd::start_env_check,
             commands::app_cmd::start_model_dir_migration,

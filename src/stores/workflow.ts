@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
+import { normalizeWorkflowDefinition } from '@/utils/workflowGraph'
 
 export type WorkflowEntry = {
   id: string
@@ -21,9 +22,11 @@ function createId(prefix = 'workflow') {
 }
 
 function normalizeDefinition(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? { ...(value as Record<string, unknown>) }
-    : {}
+  return normalizeWorkflowDefinition(
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {},
+  )
 }
 
 function normalizeWorkflow(input: Partial<WorkflowEntry>): WorkflowEntry | null {
@@ -44,6 +47,7 @@ function normalizeWorkflow(input: Partial<WorkflowEntry>): WorkflowEntry | null 
 export const useWorkflowStore = defineStore('workflow', () => {
   const workflows = ref<WorkflowEntry[]>([])
   const selectedWorkflowId = ref('')
+  const nodeEditorOpenWorkflowId = ref('')
   const initialized = ref(false)
   const isSaving = ref(false)
   const selectedWorkflow = computed(() => workflows.value.find(item => item.id === selectedWorkflowId.value) || null)
@@ -60,8 +64,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function initialize() {
-    if (initialized.value) return
+  async function loadStoredState() {
     const stored = await loadAppStore<StoredWorkflowState>('workflow-state').catch(() => null)
     workflows.value = (stored?.workflows || [])
       .map(item => normalizeWorkflow(item))
@@ -72,6 +75,15 @@ export const useWorkflowStore = defineStore('workflow', () => {
       selectedWorkflowId.value = workflows.value[0]?.id || ''
     }
     initialized.value = true
+  }
+
+  async function initialize() {
+    if (initialized.value) return
+    await loadStoredState()
+  }
+
+  async function reload() {
+    await loadStoredState()
   }
 
   async function saveWorkflow(input: {
@@ -103,6 +115,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   async function deleteWorkflow(id: string) {
     workflows.value = workflows.value.filter(item => item.id !== id)
     if (selectedWorkflowId.value === id) selectedWorkflowId.value = workflows.value[0]?.id || ''
+    if (nodeEditorOpenWorkflowId.value === id) nodeEditorOpenWorkflowId.value = ''
     await persist()
   }
 
@@ -121,16 +134,28 @@ export const useWorkflowStore = defineStore('workflow', () => {
     void persist()
   }
 
+  function markNodeEditorOpen(workflowId: string) {
+    nodeEditorOpenWorkflowId.value = workflowId
+  }
+
+  function markNodeEditorClosed() {
+    nodeEditorOpenWorkflowId.value = ''
+  }
+
   return {
     workflows,
     selectedWorkflowId,
+    nodeEditorOpenWorkflowId,
     selectedWorkflow,
     initialized,
     isSaving,
     initialize,
+    reload,
     saveWorkflow,
     deleteWorkflow,
     duplicateWorkflow,
     selectWorkflow,
+    markNodeEditorOpen,
+    markNodeEditorClosed,
   }
 })

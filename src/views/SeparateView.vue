@@ -30,6 +30,8 @@ import { useWorkflowStore } from '@/stores/workflow'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { buildModelCategoryOptionsFromModels, getModelCategoryLabel } from '@/utils/modelCategory'
+import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
+import { getWorkflowDefinitionDefaults } from '@/utils/workflowGraph'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 
 const { t, locale } = useI18n()
@@ -209,9 +211,55 @@ const selectedStemDetail = computed(() => {
   }
   return selectedStemSummary.value
 })
+const selectedWorkflowValidation = computed(() => selectedWorkflow.value
+  ? getWorkflowValidationSummary(selectedWorkflow.value.definition)
+  : null)
+const selectedWorkflowBatchConfigs = computed(() => selectedWorkflow.value
+  ? getWorkflowBatchInputConfigs(selectedWorkflow.value.definition)
+  : [])
+const workflowUsesBatchInput = computed(() => (
+  runMode.value === 'workflow'
+  && Boolean(selectedWorkflow.value)
+  && Boolean(selectedWorkflowValidation.value?.batchInputCount)
+))
+const workflowBatchInputInvalid = computed(() => (
+  runMode.value === 'workflow'
+  && Boolean(selectedWorkflow.value)
+  && Boolean(selectedWorkflowValidation.value?.batchInputMultipleUnsupported)
+))
+const workflowBatchInputMissingFolder = computed(() => (
+  runMode.value === 'workflow'
+  && Boolean(selectedWorkflow.value)
+  && Boolean(selectedWorkflowValidation.value?.batchInputMissingFolderCount)
+))
+const workflowUtilityInputInvalid = computed(() => (
+  runMode.value === 'workflow'
+  && Boolean(selectedWorkflow.value)
+  && Boolean(selectedWorkflowValidation.value?.utilityInputMissingCount)
+))
+function workflowValidationError(summary: WorkflowValidationSummary | null | undefined) {
+  if (!summary) return ''
+  if (summary.batchInputMultipleUnsupported) return t('separate.startHintWorkflowBatchMultiple')
+  if (summary.batchInputMissingFolderCount > 0) return t('workflows.batchInputFolderRequired')
+  if (summary.utilityInputMissingCount > 0) return t('workflows.utilityInputsRequired', { count: summary.utilityInputMissingCount })
+  if (summary.danglingConnectionCount > 0) return t('workflows.workflowDanglingConnections', { count: summary.danglingConnectionCount })
+  if (summary.invalidConnectionCount > 0) return t('workflows.workflowInvalidConnections', { count: summary.invalidConnectionCount })
+  if (summary.duplicateInputConnectionCount > 0) return t('workflows.workflowDuplicateInputConnections', { count: summary.duplicateInputConnectionCount })
+  if (summary.graphCycleDetected) return t('workflows.workflowCycleDetected')
+  if (summary.noSaveOutputs) return t('workflows.workflowNoSaveOutputs')
+  return ''
+}
+const workflowStructureInvalid = computed(() => (
+  runMode.value === 'workflow'
+  && Boolean(selectedWorkflow.value)
+  && Boolean(workflowValidationError(selectedWorkflowValidation.value))
+))
 const startStatusText = computed(() => {
-  if (!inputFiles.value.length) return t('separate.startHintNoInput')
   if (runMode.value === 'workflow' && !selectedWorkflow.value) return t('separate.startHintNoWorkflow')
+  const validationError = workflowValidationError(selectedWorkflowValidation.value)
+  if (validationError) return validationError
+  if (workflowUsesBatchInput.value) return t('separate.startHintWorkflowBatchFolder')
+  if (!inputFiles.value.length) return t('separate.startHintNoInput')
   if (runMode.value === 'model' && !modelDownloaded.value) return t('separate.startHintModelMissing')
   return t('separate.readyToStart')
 })
@@ -259,13 +307,24 @@ const outputPreview = computed(() => {
   }
   return `${base}${separator}${t('separate.resultFolderPreview')}${separator}${t('separate.outputStemPreview')}`
 })
-const formatLabel = computed(() => String(settings.defaultFormat || 'wav').toUpperCase())
+const effectiveFormat = computed(() => {
+  if (runMode.value === 'workflow' && selectedWorkflow.value) {
+    const defaults = getWorkflowDefinitionDefaults(selectedWorkflow.value.definition)
+    return String(defaults.output_format || settings.defaultFormat || 'wav').trim().toLowerCase() || 'wav'
+  }
+  return String(settings.defaultFormat || 'wav').trim().toLowerCase() || 'wav'
+})
+const formatLabel = computed(() => effectiveFormat.value.toUpperCase())
 const outputSaveModeLabel = computed(() => saveAsFolder.value
   ? t('separate.saveAsFolderEnabled')
   : t('separate.saveAsFolderDisabled'))
 const outputSummaryPath = computed(() => shortenMiddle(outputPreview.value, 60))
 const canStart = computed(() => (
-  inputFiles.value.length > 0
+  (workflowUsesBatchInput.value || inputFiles.value.length > 0)
+  && !workflowBatchInputInvalid.value
+  && !workflowBatchInputMissingFolder.value
+  && !workflowUtilityInputInvalid.value
+  && !workflowStructureInvalid.value
   && (runMode.value === 'workflow' ? Boolean(selectedWorkflow.value) : modelDownloaded.value)
 ))
 const newestRunningJob = computed(() => {
@@ -313,6 +372,12 @@ const isConfigCompact = computed(() => taskPanelState.value !== 'ready')
 const inputCompactLine = computed(() => {
   if (currentBatchIsMulti.value && currentBatchTotal.value) return t('separate.batchInputCompact', { count: currentBatchTotal.value })
   if (currentTask.value) return getFileName(currentTask.value.input)
+  if (workflowUsesBatchInput.value) {
+    if (selectedWorkflowBatchConfigs.value.length > 1) {
+      return t('separate.batchInputFolderMultipleCompact', { count: selectedWorkflowBatchConfigs.value.length })
+    }
+    return t('separate.batchInputFolderCompact', { name: getFileName(selectedWorkflowBatchConfigs.value[0]?.folder || '') })
+  }
   if (!inputFiles.value.length) return t('separate.noInputSelected')
   const first = getFileName(inputFiles.value[0])
   if (inputFiles.value.length === 1) return first
@@ -686,12 +751,29 @@ async function pickTemporaryOutputDir() {
 }
 
 async function start() {
-  if (!inputFiles.value.length) {
-    message.warning(t('separate.startHintNoInput'))
-    return
-  }
   if (runMode.value === 'workflow' && !selectedWorkflow.value) {
     message.warning(t('separate.startHintNoWorkflow'))
+    return
+  }
+  if (workflowBatchInputInvalid.value) {
+    message.warning(t('separate.startHintWorkflowBatchMultiple'))
+    return
+  }
+  if (workflowBatchInputMissingFolder.value) {
+    message.warning(t('workflows.batchInputFolderRequired'))
+    return
+  }
+  if (workflowUtilityInputInvalid.value) {
+    message.warning(t('workflows.utilityInputsRequired', { count: selectedWorkflowValidation.value?.utilityInputMissingCount || 0 }))
+    return
+  }
+  const validationError = workflowValidationError(selectedWorkflowValidation.value)
+  if (validationError) {
+    message.warning(validationError)
+    return
+  }
+  if (!workflowUsesBatchInput.value && !inputFiles.value.length) {
+    message.warning(t('separate.startHintNoInput'))
     return
   }
   if (runMode.value === 'model' && !modelDownloaded.value) {
@@ -753,13 +835,22 @@ function handleCancelCurrentTask() {
 async function retryCurrentTask() {
   const item = currentTask.value
   if (!item) return
-  try {
-    const next = await task.retryTask(item.id)
-    focusedSeparationJobId.value = next?.jobId || next?.id || focusedSeparationJobId.value
-    message.success(t('toast.taskRetried'))
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : String(error))
-  }
+  dialog.warning({
+    title: t('tasks.confirmRetryTitle'),
+    content: t('tasks.confirmRetry'),
+    positiveText: t('common.retry'),
+    negativeText: t('common.cancel'),
+    negativeButtonProps: { secondary: true },
+    onPositiveClick: async () => {
+      try {
+        const next = await task.retryTask(item.id)
+        focusedSeparationJobId.value = next?.jobId || next?.id || focusedSeparationJobId.value
+        message.success(t('toast.taskRetried'))
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : String(error))
+      }
+    },
+  })
 }
 </script>
 
@@ -1115,7 +1206,7 @@ async function retryCurrentTask() {
       </section>
     </transition>
 
-    <section class="summary-bar">
+    <section v-if="taskPanelState !== 'done'" class="summary-bar">
       <div class="summary-bar__content">
         <div class="summary-bar__topline">
           <div class="summary-bar__heading">
@@ -1139,8 +1230,9 @@ async function retryCurrentTask() {
                 </n-input-group>
               </div>
               <div class="field-block">
-                <label>{{ t('settings.defaultFormat') }}</label>
-                <n-select v-model:value="settings.defaultFormat" :options="formatOptions" />
+                <label>{{ runMode === 'workflow' ? t('separate.currentFormat') : t('settings.defaultFormat') }}</label>
+                <n-select v-if="runMode === 'model'" v-model:value="settings.defaultFormat" :options="formatOptions" />
+                <div v-else class="summary-static-value">{{ formatLabel }}</div>
               </div>
               <div class="field-block field-block--switch">
                 <label>{{ t('separate.saveAsFolder') }}</label>
@@ -1239,31 +1331,31 @@ async function retryCurrentTask() {
               <span>{{ t('separate.audioQualityEditable') }}</span>
             </div>
             <n-grid :cols="2" :x-gap="16" :y-gap="16" responsive="screen">
-              <n-grid-item v-if="settings.defaultFormat === 'wav'">
+              <n-grid-item v-if="effectiveFormat === 'wav'">
                 <div class="field-block">
                   <label>{{ t('audio.wavBitDepth') }}</label>
                   <n-select v-model:value="settings.wavBitDepth" :options="wavBitDepthOptions" />
                 </div>
               </n-grid-item>
-              <n-grid-item v-if="settings.defaultFormat === 'flac'">
+              <n-grid-item v-if="effectiveFormat === 'flac'">
                 <div class="field-block">
                   <label>{{ t('audio.flacBitDepth') }}</label>
                   <n-select v-model:value="settings.flacBitDepth" :options="flacBitDepthOptions" />
                 </div>
               </n-grid-item>
-              <n-grid-item v-if="settings.defaultFormat === 'mp3'">
+              <n-grid-item v-if="effectiveFormat === 'mp3'">
                 <div class="field-block">
                   <label>{{ t('audio.mp3BitRate') }}</label>
                   <n-select v-model:value="settings.mp3BitRate" :options="bitRateOptions" />
                 </div>
               </n-grid-item>
-              <n-grid-item v-if="settings.defaultFormat === 'm4a'">
+              <n-grid-item v-if="effectiveFormat === 'm4a'">
                 <div class="field-block">
                   <label>{{ t('audio.m4aBitRate') }}</label>
                   <n-select v-model:value="settings.m4aBitRate" :options="bitRateOptions" />
                 </div>
               </n-grid-item>
-              <n-grid-item v-if="settings.defaultFormat === 'm4a'">
+              <n-grid-item v-if="effectiveFormat === 'm4a'">
                 <div class="field-block">
                   <label>{{ t('audio.m4aCodec') }}</label>
                   <n-select v-model:value="settings.m4aCodec" :options="m4aCodecOptions" />
@@ -2993,6 +3085,19 @@ async function retryCurrentTask() {
 .field-block label {
   font-size: 12px;
   color: var(--on-surface-muted);
+}
+
+.summary-static-value {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--outline) 46%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 64%, transparent);
+  color: var(--on-surface);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .field-block__hint {
