@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { AddOutline, ArrowRedoOutline, ArrowUndoOutline, CloseOutline, CopyOutline, RemoveOutline, SearchOutline, SettingsOutline, TrashOutline } from '@vicons/ionicons5'
@@ -92,6 +93,7 @@ type WorkflowValidationIssue = {
 }
 
 const { t } = useI18n()
+const message = useMessage()
 
 const graphDefinition = ref<WorkflowGraphDefinition>(readWorkflowGraphDefinition(definition.value || {}))
 let lastSyncedDefinitionJson = JSON.stringify(serializeWorkflowGraphDefinition(graphDefinition.value))
@@ -435,10 +437,14 @@ const canvasBounds = computed(() => {
       height: noteHeight(note),
     })),
   ]
-  const minX = Math.min(...blockRects.map(item => item.x)) - WORLD_PADDING
-  const minY = Math.min(...blockRects.map(item => item.y)) - WORLD_PADDING
-  const maxX = Math.max(...blockRects.map(item => item.x + item.width)) + WORLD_PADDING
-  const maxY = Math.max(...blockRects.map(item => item.y + item.height)) + WORLD_PADDING
+  const xs = blockRects.map(item => item.x).filter(Number.isFinite)
+  const ys = blockRects.map(item => item.y).filter(Number.isFinite)
+  const rights = blockRects.map(item => item.x + item.width).filter(Number.isFinite)
+  const bottoms = blockRects.map(item => item.y + item.height).filter(Number.isFinite)
+  const minX = (xs.length ? Math.min(...xs) : 0) - WORLD_PADDING
+  const minY = (ys.length ? Math.min(...ys) : 0) - WORLD_PADDING
+  const maxX = (rights.length ? Math.max(...rights) : 0) + WORLD_PADDING
+  const maxY = (bottoms.length ? Math.max(...bottoms) : 0) + WORLD_PADDING
   return {
     minX,
     minY,
@@ -2008,9 +2014,60 @@ function connectGraphInput(index: number) {
   selectGraphNode(stepSelectionKey(step.id))
 }
 
+// Resolve the node id that a connection value (`input` / `stepId.stem` /
+// `utility:id`) originates from. Returns '' for the primary input node.
+function connectionValueNodeId(value: string): string {
+  const raw = String(value || '').trim()
+  if (!raw || raw === 'input') return ''
+  if (raw.startsWith('utility:')) return raw.slice('utility:'.length)
+  const dot = raw.indexOf('.')
+  return dot > 0 ? raw.slice(0, dot) : raw
+}
+
+// Direct input references (upstream node ids) feeding a given node.
+function nodeInputSourceIds(nodeId: string): string[] {
+  const ids: string[] = []
+  const step = steps.value.find(item => item.id === nodeId)
+  if (step) {
+    const id = connectionValueNodeId(String(step.input || ''))
+    if (id) ids.push(id)
+    return ids
+  }
+  const utility = utilityNodes.value.find(item => item.id === nodeId)
+  if (utility) {
+    utilityInputPortIds(utility).forEach((portId) => {
+      const id = connectionValueNodeId(utilityInputValue(utility, portId))
+      if (id) ids.push(id)
+    })
+  }
+  return ids
+}
+
+// Would linking pendingConnection (source) into targetNodeId form a cycle?
+// A cycle exists iff the source node already (transitively) depends on target.
+function wouldPendingConnectionCreateCycle(targetNodeId: string): boolean {
+  const sourceId = connectionValueNodeId(pendingConnection.value?.value || '')
+  if (!sourceId) return false
+  if (sourceId === targetNodeId) return true
+  const visited = new Set<string>()
+  const stack = [sourceId]
+  while (stack.length) {
+    const current = stack.pop()!
+    if (current === targetNodeId) return true
+    if (visited.has(current)) continue
+    visited.add(current)
+    nodeInputSourceIds(current).forEach(id => stack.push(id))
+  }
+  return false
+}
+
 function connectPendingToStep(stepId: string) {
   const index = steps.value.findIndex(step => step.id === stepId)
   if (index < 0 || !pendingConnection.value) return false
+  if (wouldPendingConnectionCreateCycle(stepId)) {
+    message.warning(t('workflows.connectionCycleBlocked'))
+    return false
+  }
   mutateDraft((next) => {
     const target = next.steps.find(item => item.id === stepId)
     if (!target) return
@@ -2026,6 +2083,10 @@ function connectUtilityInput(nodeId: string, portId: string) {
   if (!node) return
   if (!pendingConnection.value) {
     selectGraphNode(utilitySelectionKey(nodeId))
+    return
+  }
+  if (wouldPendingConnectionCreateCycle(nodeId)) {
+    message.warning(t('workflows.connectionCycleBlocked'))
     return
   }
   mutateDraft((next) => {

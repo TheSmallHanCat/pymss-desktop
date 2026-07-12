@@ -1002,6 +1002,7 @@
     "paramOn": "On",
     "paramOff": "Off",
     "statusReady": "Ready",
-    "runWorkflowAction": "Run"
+    "runWorkflowAction": "Run",
+    "connectionCycleBlocked": "Cannot connect: this link would create a dependency cycle."
   }
 }

@@ -7,7 +7,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
 import { useAppStore } from '@/stores/app'
 import type { WorkflowEntry } from '@/stores/workflow'
-import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, stripWorkflowUi, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
+import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, stripWorkflowUi, workflowValidationErrorMessage, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
 import { getWorkflowDefinitionDefaults, readWorkflowGraphDefinition } from '@/utils/workflowGraph'
 
 export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
@@ -1330,15 +1330,7 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   function workflowValidationError(summary: WorkflowValidationSummary) {
-    if (summary.batchInputMultipleUnsupported) return i18n.global.t('workflows.batchInputMultipleUnsupported')
-    if (summary.batchInputMissingFolderCount > 0) return i18n.global.t('workflows.batchInputFolderRequired')
-    if (summary.utilityInputMissingCount > 0) return i18n.global.t('workflows.utilityInputsRequired', { count: summary.utilityInputMissingCount })
-    if (summary.danglingConnectionCount > 0) return i18n.global.t('workflows.workflowDanglingConnections', { count: summary.danglingConnectionCount })
-    if (summary.invalidConnectionCount > 0) return i18n.global.t('workflows.workflowInvalidConnections', { count: summary.invalidConnectionCount })
-    if (summary.duplicateInputConnectionCount > 0) return i18n.global.t('workflows.workflowDuplicateInputConnections', { count: summary.duplicateInputConnectionCount })
-    if (summary.graphCycleDetected) return i18n.global.t('workflows.workflowCycleDetected')
-    if (summary.noSaveOutputs) return i18n.global.t('workflows.workflowNoSaveOutputs')
-    return ''
+    return workflowValidationErrorMessage(summary, i18n.global.t)
   }
 
   async function startWorkflowInference(workflow: WorkflowEntry, options: { outputDir?: string; outputLayout?: OutputLayout } = {}) {

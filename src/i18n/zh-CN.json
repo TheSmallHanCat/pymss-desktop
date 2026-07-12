@@ -1002,6 +1002,7 @@
     "paramOn": "开启",
     "paramOff": "关闭",
     "statusReady": "配置就绪",
-    "runWorkflowAction": "运行"
+    "runWorkflowAction": "运行",
+    "connectionCycleBlocked": "无法连接：该连线会形成循环依赖。"
   }
 }

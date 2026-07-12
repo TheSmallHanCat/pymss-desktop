@@ -26,6 +26,7 @@ import {
   getWorkflowBatchInputConfigs,
   getWorkflowValidationSummary,
   hydrateWorkflowDefinition,
+  workflowValidationErrorMessage,
   type WorkflowValidationSummary,
 } from '@/utils/workflowDefinition'
 import { exportComfyMssWorkflow, importComfyMssWorkflow } from '@/utils/comfyMssWorkflow'
@@ -71,14 +72,7 @@ const filteredWorkflows = computed(() => {
 const isNodeEditorOpen = computed(() => Boolean(nodeEditorOpenWorkflowId.value))
 
 function workflowValidationError(summary: WorkflowValidationSummary) {
-  if (summary.batchInputMultipleUnsupported) return t('workflows.batchInputMultipleUnsupported')
-  if (summary.batchInputMissingFolderCount > 0) return t('workflows.batchInputFolderRequired')
-  if (summary.utilityInputMissingCount > 0) return t('workflows.utilityInputsRequired', { count: summary.utilityInputMissingCount })
-  if (summary.danglingConnectionCount > 0) return t('workflows.workflowDanglingConnections', { count: summary.danglingConnectionCount })
-  if (summary.invalidConnectionCount > 0) return t('workflows.workflowInvalidConnections', { count: summary.invalidConnectionCount })
-  if (summary.duplicateInputConnectionCount > 0) return t('workflows.workflowDuplicateInputConnections', { count: summary.duplicateInputConnectionCount })
-  if (summary.graphCycleDetected) return t('workflows.workflowCycleDetected')
-  return ''
+  return workflowValidationErrorMessage(summary, t)
 }
 
 function workflowRunBlocked(summary: WorkflowValidationSummary) {

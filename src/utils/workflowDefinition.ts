@@ -1,5 +1,4 @@
 import {
-  compileWorkflowDefinitionForRuntime,
   createWorkflowGraphEdgeId,
   createWorkflowGraphNodeId,
   readWorkflowGraphDefinition,
@@ -720,6 +719,30 @@ export function getWorkflowBatchInputConfigs(definition: Record<string, unknown>
 
 export function getWorkflowBatchInputFolders(definition: Record<string, unknown>): string[] {
   return getWorkflowBatchInputConfigs(definition).map(item => item.folder)
+}
+
+export type WorkflowValidationTranslator = (key: string, params?: Record<string, unknown>) => string
+
+/**
+ * Single source of truth mapping a validation summary to a user-facing error
+ * message. All entry points (separate page, workflows page, node editor,
+ * task store) must use this to avoid divergence. Pass the caller's translator
+ * (`useI18n().t` or `i18n.global.t`) so this stays free of i18n coupling.
+ */
+export function workflowValidationErrorMessage(
+  summary: WorkflowValidationSummary | null | undefined,
+  translate: WorkflowValidationTranslator,
+): string {
+  if (!summary) return ''
+  if (summary.batchInputMultipleUnsupported) return translate('workflows.batchInputMultipleUnsupported')
+  if (summary.batchInputMissingFolderCount > 0) return translate('workflows.batchInputFolderRequired')
+  if (summary.utilityInputMissingCount > 0) return translate('workflows.utilityInputsRequired', { count: summary.utilityInputMissingCount })
+  if (summary.danglingConnectionCount > 0) return translate('workflows.workflowDanglingConnections', { count: summary.danglingConnectionCount })
+  if (summary.invalidConnectionCount > 0) return translate('workflows.workflowInvalidConnections', { count: summary.invalidConnectionCount })
+  if (summary.duplicateInputConnectionCount > 0) return translate('workflows.workflowDuplicateInputConnections', { count: summary.duplicateInputConnectionCount })
+  if (summary.graphCycleDetected) return translate('workflows.workflowCycleDetected')
+  if (summary.noSaveOutputs) return translate('workflows.workflowNoSaveOutputs')
+  return ''
 }
 
 export function getWorkflowValidationSummary(definition: Record<string, unknown>): WorkflowValidationSummary {

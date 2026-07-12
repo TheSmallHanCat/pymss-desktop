@@ -28,7 +28,7 @@ import { useWorkflowStore } from '@/stores/workflow'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { buildModelCategoryOptionsFromModels, getModelCategoryLabel } from '@/utils/modelCategory'
-import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
+import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, workflowValidationErrorMessage, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
 import { getWorkflowDefinitionDefaults } from '@/utils/workflowGraph'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 
@@ -234,15 +234,9 @@ const workflowUtilityInputInvalid = computed(() => (
 ))
 function workflowValidationError(summary: WorkflowValidationSummary | null | undefined) {
   if (!summary) return ''
+  // Separate page has a batch-input-specific hint; everything else is shared.
   if (summary.batchInputMultipleUnsupported) return t('separate.startHintWorkflowBatchMultiple')
-  if (summary.batchInputMissingFolderCount > 0) return t('workflows.batchInputFolderRequired')
-  if (summary.utilityInputMissingCount > 0) return t('workflows.utilityInputsRequired', { count: summary.utilityInputMissingCount })
-  if (summary.danglingConnectionCount > 0) return t('workflows.workflowDanglingConnections', { count: summary.danglingConnectionCount })
-  if (summary.invalidConnectionCount > 0) return t('workflows.workflowInvalidConnections', { count: summary.invalidConnectionCount })
-  if (summary.duplicateInputConnectionCount > 0) return t('workflows.workflowDuplicateInputConnections', { count: summary.duplicateInputConnectionCount })
-  if (summary.graphCycleDetected) return t('workflows.workflowCycleDetected')
-  if (summary.noSaveOutputs) return t('workflows.workflowNoSaveOutputs')
-  return ''
+  return workflowValidationErrorMessage(summary, t)
 }
 const workflowStructureInvalid = computed(() => (
   runMode.value === 'workflow'
