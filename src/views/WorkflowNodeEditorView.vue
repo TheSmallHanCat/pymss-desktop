@@ -445,12 +445,14 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
   grid-template-columns: minmax(220px, 1fr) auto auto;
   align-items: end;
   gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
+  padding: 10px 14px;
   border-radius: 16px;
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.03), transparent 70%),
-    color-mix(in srgb, var(--surface-1) 72%, transparent);
+    linear-gradient(180deg, rgba(255,255,255,0.04), transparent 70%),
+    color-mix(in srgb, var(--surface-1) 80%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--outline) 74%, transparent),
+    0 14px 34px rgba(0, 0, 0, 0.08);
 }
 
 .workflow-node-editor-title {

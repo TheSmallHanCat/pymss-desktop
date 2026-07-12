@@ -990,6 +990,18 @@
     "audioNormalizeSummary": "仅在峰值超过 0 dBFS 时归一化。",
     "frontendOnlyNode": "桌面端工具节点",
     "utilityNodeRuntimeHint": "工具节点由桌面端图形运行时执行，并支持 comfy-mss / ComfyUI 工作流互导。",
-    "utilityInputsRequired": "请先连接 {count} 个工具节点输入。"
+    "utilityInputsRequired": "请先连接 {count} 个工具节点输入。",
+    "overviewEmptyTitle": "选择一个工作流",
+    "overviewEmptyDesc": "从左侧列表选择工作流查看管线概览，或新建一个。",
+    "metricTools": "工具节点",
+    "metricStems": "输出音轨",
+    "modelsUsed": "所用模型",
+    "noModelsConfigured": "尚未配置模型",
+    "modelNotDownloadedShort": "未下载",
+    "runParams": "运行参数",
+    "paramOn": "开启",
+    "paramOff": "关闭",
+    "statusReady": "配置就绪",
+    "runWorkflowAction": "运行"
   }
 }

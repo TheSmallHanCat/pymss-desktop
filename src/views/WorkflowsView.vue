@@ -4,25 +4,28 @@ import { useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
   AddOutline,
+  AlertCircleOutline,
+  CheckmarkCircle,
   CopyOutline,
+  CubeOutline,
   DownloadOutline,
   GitNetworkOutline,
   OpenOutline,
   PlayOutline,
+  SearchOutline,
   TrashOutline,
 } from '@vicons/ionicons5'
 import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { storeToRefs } from 'pinia'
+import AppBrandMark from '@/components/AppBrandMark.vue'
 import { useModelStore } from '@/stores/model'
 import { useWorkflowStore, type WorkflowEntry } from '@/stores/workflow'
 import {
-  buildWorkflowDefinition,
   getWorkflowBatchInputConfigs,
   getWorkflowValidationSummary,
   hydrateWorkflowDefinition,
-  type WorkflowBatchInputConfig,
   type WorkflowValidationSummary,
 } from '@/utils/workflowDefinition'
 import { exportComfyMssWorkflow, importComfyMssWorkflow } from '@/utils/comfyMssWorkflow'
@@ -39,11 +42,6 @@ const editingId = ref('')
 const name = ref('')
 const description = ref('')
 const query = ref('')
-const defaultDevice = ref('auto')
-const defaultFormat = ref('wav')
-const defaultNormalize = ref(false)
-const definition = ref<Record<string, unknown>>({})
-const isCreatingNew = ref(false)
 const importFileInputRef = ref<HTMLInputElement | null>(null)
 let unlistenNodeEditorClosed: UnlistenFn | undefined
 
@@ -60,6 +58,7 @@ const formatOptions = [
   { label: 'MP3', value: 'mp3' },
   { label: 'M4A', value: 'm4a' },
 ]
+
 const filteredWorkflows = computed(() => {
   const value = query.value.trim().toLowerCase()
   if (!value) return workflows.value
@@ -68,10 +67,8 @@ const filteredWorkflows = computed(() => {
     || item.description.toLowerCase().includes(value),
   )
 })
-const hydratedDraft = computed(() => hydrateWorkflowDefinition(definition.value))
-const generatedDefinition = computed(() => buildDefinition())
-const generatedJson = computed(() => JSON.stringify(generatedDefinition.value, null, 2))
-const validationSummary = computed(() => getWorkflowValidationSummary(generatedDefinition.value))
+
+const isNodeEditorOpen = computed(() => Boolean(nodeEditorOpenWorkflowId.value))
 
 function workflowValidationError(summary: WorkflowValidationSummary) {
   if (summary.batchInputMultipleUnsupported) return t('workflows.batchInputMultipleUnsupported')
@@ -88,124 +85,33 @@ function workflowRunBlocked(summary: WorkflowValidationSummary) {
   return Boolean(workflowValidationError(summary) || summary.noSaveOutputs)
 }
 
-const formError = computed(() => {
-  if (!name.value.trim()) return t('workflows.nameRequired')
-  if (!hydratedDraft.value.steps.length) return t('workflows.stepsRequired')
-  const validationError = workflowValidationError(validationSummary.value)
-  if (validationError) return validationError
-  const downloaded = new Set(downloadedModels.value.map(item => item.name))
-  for (const [index, step] of hydratedDraft.value.steps.entries()) {
-    const label = t('workflows.stepTitle', { index: index + 1 })
-    if (!step.model.trim()) return t('workflows.stepModelRequired', { id: label })
-    if (!downloaded.has(step.model.trim())) return t('workflows.stepModelNotDownloaded', { id: label })
-    if (!step.input.trim()) return t('workflows.stepInputRequired', { id: label })
-    if (!step.stems.length) return t('workflows.stepStemsRequired', { id: label })
-  }
-  if (validationSummary.value.noSaveOutputs) return t('workflows.workflowNoSaveOutputs')
-  return ''
-})
-const canSave = computed(() => !formError.value)
-const isNodeEditorOpen = computed(() => Boolean(nodeEditorOpenWorkflowId.value))
-
-type WorkflowCardMeta = {
-  batchInputConfigs: WorkflowBatchInputConfig[]
-  batchInputMissingCount: number
-  batchInputUnsupported: boolean
-  utilityInputMissingCount: number
-  danglingConnectionCount: number
-  invalidConnectionCount: number
-  duplicateInputConnectionCount: number
-  graphCycleDetected: boolean
-  noSaveOutputs: boolean
-  runBlocked: boolean
+// ---- Per-item lightweight status (memoized) ----
+const workflowStatusMap = computed(() => Object.fromEntries(
+  workflows.value.map(item => [item.id, workflowRunBlocked(getWorkflowValidationSummary(item.definition))]),
+))
+function isWorkflowBlocked(item: WorkflowEntry) {
+  return Boolean(workflowStatusMap.value[item.id])
 }
 
+// ---- Batch task estimate ----
 const workflowBatchTaskCounts = ref<Record<string, number | null>>({})
 let workflowBatchTaskCountToken = 0
 
-const workflowCardMetaMap = computed(() => Object.fromEntries(workflows.value.map((item) => {
-  const summary = getWorkflowValidationSummary(item.definition)
-  const meta: WorkflowCardMeta = {
-    batchInputConfigs: getWorkflowBatchInputConfigs(item.definition),
-    batchInputMissingCount: summary.batchInputMissingFolderCount,
-    batchInputUnsupported: summary.batchInputMultipleUnsupported,
-    utilityInputMissingCount: summary.utilityInputMissingCount,
-    danglingConnectionCount: summary.danglingConnectionCount,
-    invalidConnectionCount: summary.invalidConnectionCount,
-    duplicateInputConnectionCount: summary.duplicateInputConnectionCount,
-    graphCycleDetected: summary.graphCycleDetected,
-    noSaveOutputs: summary.noSaveOutputs,
-    runBlocked: workflowRunBlocked(summary),
-  }
-  return [item.id, meta]
-})))
-
-function workflowCardMeta(item: WorkflowEntry): WorkflowCardMeta {
-  return workflowCardMetaMap.value[item.id] || {
-    batchInputConfigs: [],
-    batchInputMissingCount: 0,
-    batchInputUnsupported: false,
-    utilityInputMissingCount: 0,
-    danglingConnectionCount: 0,
-    invalidConnectionCount: 0,
-    duplicateInputConnectionCount: 0,
-    graphCycleDetected: false,
-    noSaveOutputs: false,
-    runBlocked: false,
-  }
-}
-
-function workflowBatchTaskCount(item: WorkflowEntry) {
-  const value = workflowBatchTaskCounts.value[item.id]
-  return typeof value === 'number' ? value : null
-}
-
-function workflowBatchTooltipLines(item: WorkflowEntry) {
-  const meta = workflowCardMeta(item)
-  const lines: string[] = []
-  meta.batchInputConfigs.forEach((config, index) => {
-    lines.push(`${t('workflows.batchInputFolderLabel')} ${index + 1}: ${config.folder}`)
-    lines.push(`- ${t(config.recursive ? 'workflows.batchInputRecursiveOn' : 'workflows.batchInputRecursiveOff')}`)
-    lines.push(`- ${t(config.sortFiles ? 'workflows.batchInputSortOn' : 'workflows.batchInputSortOff')}`)
-  })
-  if (meta.batchInputMissingCount) {
-    lines.push(t('workflows.batchInputFolderMissing', { count: meta.batchInputMissingCount }))
-  }
-  if (meta.batchInputUnsupported) {
-    lines.push(t('workflows.batchInputMultipleUnsupported'))
-  }
-  if (meta.utilityInputMissingCount) {
-    lines.push(t('workflows.utilityInputsRequired', { count: meta.utilityInputMissingCount }))
-  }
-  if (meta.danglingConnectionCount) {
-    lines.push(t('workflows.workflowDanglingConnections', { count: meta.danglingConnectionCount }))
-  }
-  if (meta.invalidConnectionCount) {
-    lines.push(t('workflows.workflowInvalidConnections', { count: meta.invalidConnectionCount }))
-  }
-  if (meta.duplicateInputConnectionCount) {
-    lines.push(t('workflows.workflowDuplicateInputConnections', { count: meta.duplicateInputConnectionCount }))
-  }
-  if (meta.graphCycleDetected) {
-    lines.push(t('workflows.workflowCycleDetected'))
-  }
-  if (meta.noSaveOutputs) {
-    lines.push(t('workflows.workflowNoSaveOutputs'))
-  }
-  return lines
-}
-
 function refreshWorkflowBatchTaskCounts() {
-  const entries = workflows.value.map(item => ({ item, meta: workflowCardMeta(item) }))
+  const entries = workflows.value.map(item => ({
+    item,
+    configs: getWorkflowBatchInputConfigs(item.definition),
+    summary: getWorkflowValidationSummary(item.definition),
+  }))
   const next: Record<string, number | null> = {}
   entries.forEach(({ item }) => {
     next[item.id] = null
   })
   workflowBatchTaskCounts.value = next
   const token = ++workflowBatchTaskCountToken
-  entries.forEach(({ item, meta }) => {
-    if (meta.batchInputConfigs.length !== 1 || meta.batchInputMissingCount || meta.batchInputUnsupported) return
-    const config = meta.batchInputConfigs[0]
+  entries.forEach(({ item, configs, summary }) => {
+    if (configs.length !== 1 || summary.batchInputMissingFolderCount || summary.batchInputMultipleUnsupported) return
+    const config = configs[0]
     void invoke<{ files: string[] }>('scan_audio_paths_with_options', {
       paths: [config.folder],
       recursive: config.recursive,
@@ -226,129 +132,141 @@ function refreshWorkflowBatchTaskCounts() {
   })
 }
 
-async function openNodeEditor() {
-  const openId = nodeEditorOpenWorkflowId.value
-  const workflowId = openId && openId !== '__new__' ? openId : editingId.value || selectedWorkflowId.value || ''
-  const isNewWorkflow = openId === '__new__' || !workflowId
+// ---- Selected workflow overview data ----
+const selectedDraft = computed(() =>
+  selectedWorkflow.value ? hydrateWorkflowDefinition(selectedWorkflow.value.definition) : null)
+const selectedSummary = computed(() =>
+  selectedWorkflow.value ? getWorkflowValidationSummary(selectedWorkflow.value.definition) : null)
+const selectedStemCount = computed(() =>
+  selectedDraft.value ? selectedDraft.value.steps.reduce((total, step) => total + step.stems.length, 0) : 0)
+const selectedModels = computed(() => {
+  const draft = selectedDraft.value
+  if (!draft) return [] as { name: string; downloaded: boolean }[]
+  const downloaded = new Set(downloadedModels.value.map(item => item.name))
+  const seen = new Set<string>()
+  const list: { name: string; downloaded: boolean }[] = []
+  for (const step of draft.steps) {
+    const modelName = step.model.trim()
+    if (!modelName || seen.has(modelName)) continue
+    seen.add(modelName)
+    list.push({ name: modelName, downloaded: downloaded.has(modelName) })
+  }
+  return list
+})
+const selectedBatchConfigs = computed(() =>
+  selectedWorkflow.value ? getWorkflowBatchInputConfigs(selectedWorkflow.value.definition) : [])
+const selectedBatchTaskCount = computed(() => {
+  const id = selectedWorkflow.value?.id
+  if (!id) return null
+  const value = workflowBatchTaskCounts.value[id]
+  return typeof value === 'number' ? value : null
+})
+const selectedError = computed(() => {
+  const summary = selectedSummary.value
+  if (!summary) return ''
+  return workflowValidationError(summary) || (summary.noSaveOutputs ? t('workflows.workflowNoSaveOutputs') : '')
+})
+const selectedReady = computed(() => Boolean(selectedWorkflow.value) && !selectedError.value)
+
+function deviceLabel(value: string) {
+  return deviceOptions.find(option => option.value === value)?.label || value
+}
+function formatLabel(value: string) {
+  return formatOptions.find(option => option.value === value)?.label || String(value || '').toUpperCase()
+}
+
+// ---- Selection + quick meta edit ----
+function editWorkflow(item: WorkflowEntry) {
+  editingId.value = item.id
+  name.value = item.name
+  description.value = item.description
+  workflow.selectWorkflow(item.id)
+}
+
+async function saveMeta() {
+  const current = selectedWorkflow.value
+  if (!current || isNodeEditorOpen.value) return
+  const trimmedName = name.value.trim()
+  if (!trimmedName) {
+    name.value = current.name
+    return
+  }
+  if (trimmedName === current.name && description.value.trim() === current.description) return
+  const entry = await workflow.saveWorkflow({
+    id: current.id,
+    name: trimmedName,
+    description: description.value,
+    definition: current.definition,
+  })
+  editingId.value = entry.id
+  name.value = entry.name
+  description.value = entry.description
+}
+
+// ---- Node editor bridge ----
+async function openNodeEditor(options: { forceNew?: boolean } = {}) {
+  const forceNew = options.forceNew === true
+  const workflowId = forceNew ? '' : (editingId.value || selectedWorkflowId.value || '')
+  const isNewWorkflow = forceNew || !workflowId
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
     try {
       await invoke('open_workflow_node_editor_window', { payload: { workflowId, newWorkflow: isNewWorkflow } })
-      workflow.markNodeEditorOpen(workflowId || '__new__')
+      workflow.markNodeEditorOpen(isNewWorkflow ? '__new__' : workflowId)
       return
     } catch (error) {
       console.warn('Failed to open workflow node editor window, falling back to route navigation', error)
     }
   }
-  await router.push({ path: '/workflow-node-editor', query: workflowId ? { workflowId } : { new: '1' } })
+  await router.push({ path: '/workflow-node-editor', query: isNewWorkflow ? { new: '1' } : { workflowId } })
 }
+
 async function refreshAfterNodeEditorClosed() {
   workflow.markNodeEditorClosed()
   await workflow.reload()
-  const next = editingId.value
-    ? workflows.value.find(item => item.id === editingId.value)
-    : workflow.selectedWorkflow
-  if (next) {
-    editWorkflow(next)
-  } else if (workflow.selectedWorkflow) {
-    editWorkflow(workflow.selectedWorkflow)
-  }
+  const target = workflows.value.find(item => item.id === editingId.value)
+    || workflow.selectedWorkflow
+    || workflows.value[0]
+  if (target) editWorkflow(target)
 }
-function buildDefinition(): Record<string, unknown> {
-  return buildWorkflowDefinition({
-    defaultDevice: defaultDevice.value,
-    defaultFormat: defaultFormat.value,
-    defaultNormalize: defaultNormalize.value,
-    steps: hydratedDraft.value.steps,
-    utilityNodes: hydratedDraft.value.utilityNodes,
-    saveTargets: hydratedDraft.value.saveTargets,
-    ui: hydratedDraft.value.ui,
-  })
-}
-function createFreshDefinition() {
-  const fresh = hydrateWorkflowDefinition({})
-  return buildWorkflowDefinition({
-    defaultDevice: defaultDevice.value,
-    defaultFormat: defaultFormat.value,
-    defaultNormalize: defaultNormalize.value,
-    steps: fresh.steps,
-    utilityNodes: fresh.utilityNodes,
-    saveTargets: fresh.saveTargets,
-    ui: fresh.ui,
-  })
-}
-function hydrateFromDefinition(definition: Record<string, unknown>) {
-  const draft = hydrateWorkflowDefinition(definition)
-  defaultDevice.value = draft.defaultDevice
-  defaultFormat.value = draft.defaultFormat
-  defaultNormalize.value = draft.defaultNormalize
-}
-function resetEditor() {
-  isCreatingNew.value = true
-  editingId.value = ''
-  name.value = ''
-  description.value = ''
-  defaultDevice.value = 'auto'
-  defaultFormat.value = 'wav'
-  defaultNormalize.value = false
-  definition.value = createFreshDefinition()
-  workflow.selectWorkflow('')
-}
-function editWorkflow(item: WorkflowEntry) {
-  isCreatingNew.value = false
-  editingId.value = item.id
-  name.value = item.name
-  description.value = item.description
-  definition.value = item.definition
-  hydrateFromDefinition(item.definition)
-  workflow.selectWorkflow(item.id)
-}
-async function save() {
-  if (!canSave.value) return
-  const entry = await workflow.saveWorkflow({
-    id: editingId.value || undefined,
-    name: name.value,
-    description: description.value,
-    definition: generatedDefinition.value,
-  })
-  editWorkflow(entry)
-  message.success(t('workflows.saved'))
-}
-async function duplicate(item: WorkflowEntry) {
-  const entry = await workflow.duplicateWorkflow(item.id)
+
+// ---- Actions ----
+async function duplicateSelected() {
+  const current = selectedWorkflow.value
+  if (!current) return
+  const entry = await workflow.duplicateWorkflow(current.id)
   if (entry) {
     editWorkflow(entry)
     message.success(t('workflows.duplicated'))
   }
 }
-function duplicateSelected() {
-  if (selectedWorkflow.value) void duplicate(selectedWorkflow.value)
-}
-function confirmDelete(item: WorkflowEntry) {
+
+function deleteSelected() {
+  const current = selectedWorkflow.value
+  if (!current) return
   dialog.warning({
     title: t('workflows.deleteTitle'),
-    content: t('workflows.deleteHint', { name: item.name }),
+    content: t('workflows.deleteHint', { name: current.name }),
     positiveText: t('workflows.deleteConfirm'),
     negativeText: t('common.cancel'),
     onPositiveClick: async () => {
-      await workflow.deleteWorkflow(item.id)
-      if (editingId.value === item.id) resetEditor()
+      await workflow.deleteWorkflow(current.id)
       message.success(t('workflows.deleted'))
     },
   })
 }
-function deleteSelected() {
-  if (selectedWorkflow.value) confirmDelete(selectedWorkflow.value)
-}
-function runWorkflow(item: WorkflowEntry) {
-  const meta = workflowCardMeta(item)
-  if (meta.runBlocked) {
-    message.warning(workflowBatchTooltipLines(item).find(Boolean) || t('workflows.workflowRunBlocked'))
+
+function runSelected() {
+  const current = selectedWorkflow.value
+  if (!current) return
+  if (selectedError.value) {
+    message.warning(selectedError.value)
     return
   }
-  workflow.selectWorkflow(item.id)
+  workflow.selectWorkflow(current.id)
   router.push({ path: '/', query: { mode: 'workflow' } })
 }
 
+// ---- comfy-mss import / export ----
 function triggerImportComfyMss() {
   importFileInputRef.value?.click()
 }
@@ -386,12 +304,12 @@ async function handleImportComfyMss(event: Event) {
     const text = await file.text()
     const parsed = JSON.parse(text) as Record<string, unknown>
     const result = importComfyMssWorkflow(parsed, { models: models.value })
-    definition.value = result.definition
-    hydrateFromDefinition(result.definition)
-    if (!name.value.trim() || isCreatingNew.value) {
-      name.value = workflowFileBasename(file.name) || t('workflows.newWorkflow')
-    }
-    isCreatingNew.value = !editingId.value
+    const entry = await workflow.saveWorkflow({
+      name: workflowFileBasename(file.name) || t('workflows.newWorkflow'),
+      description: '',
+      definition: result.definition,
+    })
+    editWorkflow(entry)
     message.success(t('workflows.comfyImportSuccess'))
     if (result.warnings.length) {
       message.warning(importWarningSummary(result.warnings))
@@ -404,9 +322,11 @@ async function handleImportComfyMss(event: Event) {
 }
 
 function exportSelectedComfyMss() {
+  const current = selectedWorkflow.value
+  if (!current) return
   try {
-    const payload = exportComfyMssWorkflow(generatedDefinition.value, { models: models.value })
-    downloadJsonFile(`${workflowSlug(name.value || t('workflows.untitled'))}.comfy-mss.json`, payload)
+    const payload = exportComfyMssWorkflow(current.definition, { models: models.value })
+    downloadJsonFile(`${workflowSlug(current.name || t('workflows.untitled'))}.comfy-mss.json`, payload)
     message.success(t('workflows.comfyExportSuccess'))
   } catch (error) {
     message.error(`${t('workflows.comfyExportFailed')}: ${error instanceof Error ? error.message : String(error)}`)
@@ -426,318 +346,433 @@ onUnmounted(() => {
 
 watch(workflows, (items) => {
   refreshWorkflowBatchTaskCounts()
-  if (!editingId.value && !isCreatingNew.value && items.length) editWorkflow(items[0])
+  const current = items.find(item => item.id === editingId.value)
+  if (current) {
+    // keep local meta in sync with store (e.g. after node editor save / reload)
+    name.value = current.name
+    description.value = current.description
+  } else if (items.length) {
+    editWorkflow(items[0])
+  } else {
+    editingId.value = ''
+    name.value = ''
+    description.value = ''
+  }
 }, { immediate: true, deep: true })
-
-watch([defaultDevice, defaultFormat, defaultNormalize], () => {
-  definition.value = generatedDefinition.value
-})
 </script>
 
 <template>
   <div class="page workflows-page">
-    <div class="page-header-compact workflows-header">
-      <div>
-        <div class="eyebrow">{{ t('workflows.eyebrow') }}</div>
-        <h1>{{ t('workflows.title') }}</h1>
-        <p>{{ t('workflows.subtitle') }}</p>
-      </div>
-      <n-button type="primary" @click="resetEditor">
-        <template #icon><n-icon :component="AddOutline" /></template>
-        {{ t('workflows.newWorkflow') }}
-      </n-button>
-    </div>
+    <input
+      ref="importFileInputRef"
+      class="wf-hidden-file-input"
+      type="file"
+      accept=".json,application/json"
+      @change="handleImportComfyMss"
+    >
 
-    <div class="workflows-layout">
-      <section class="workflow-list-panel">
-        <n-input v-model:value="query" clearable :placeholder="t('workflows.searchPlaceholder')" />
-        <div v-if="filteredWorkflows.length" class="workflow-list">
-          <article
-            v-for="item in filteredWorkflows"
-            :key="item.id"
-            class="workflow-card"
-            :class="{ 'workflow-card--active': item.id === selectedWorkflowId }"
-            @click="editWorkflow(item)"
-          >
-            <div class="workflow-card__icon"><n-icon :component="GitNetworkOutline" /></div>
-            <div class="workflow-card__main">
-              <strong>{{ item.name }}</strong>
-              <span>{{ item.description || t('workflows.noDescription') }}</span>
-              <div v-if="workflowCardMeta(item).batchInputConfigs.length || workflowCardMeta(item).batchInputMissingCount || workflowCardMeta(item).batchInputUnsupported || workflowCardMeta(item).utilityInputMissingCount || workflowCardMeta(item).danglingConnectionCount || workflowCardMeta(item).invalidConnectionCount || workflowCardMeta(item).duplicateInputConnectionCount || workflowCardMeta(item).graphCycleDetected || workflowCardMeta(item).noSaveOutputs" class="workflow-card__meta">
-                <n-tooltip v-if="workflowCardMeta(item).batchInputConfigs.length" trigger="hover">
-                  <template #trigger>
-                    <n-tag size="small" round :bordered="false">
-                      {{ t('workflows.batchInputTag') }}
-                    </n-tag>
-                  </template>
-                  <div class="workflow-card__tooltip">{{ workflowBatchTooltipLines(item).join('\n') }}</div>
-                </n-tooltip>
-                <n-tooltip v-if="workflowBatchTaskCount(item) !== null" trigger="hover">
-                  <template #trigger>
-                    <n-tag size="small" round :bordered="false" type="info">
-                      {{ t('workflows.batchInputEstimatedTasks', { count: workflowBatchTaskCount(item) }) }}
-                    </n-tag>
-                  </template>
-                  <div class="workflow-card__tooltip">{{ workflowBatchTooltipLines(item).join('\n') }}</div>
-                </n-tooltip>
-                <n-tag v-if="workflowCardMeta(item).batchInputMissingCount" size="small" round :bordered="false" type="warning">
-                  {{ t('workflows.batchInputFolderMissing', { count: workflowCardMeta(item).batchInputMissingCount }) }}
-                </n-tag>
-                <n-tag v-if="workflowCardMeta(item).batchInputUnsupported" size="small" round :bordered="false" type="warning">
-                  {{ t('workflows.batchInputMultipleUnsupportedShort') }}
-                </n-tag>
-                <n-tag v-if="workflowCardMeta(item).utilityInputMissingCount" size="small" round :bordered="false" type="warning">
-                  {{ t('workflows.utilityInputsRequired', { count: workflowCardMeta(item).utilityInputMissingCount }) }}
-                </n-tag>
-                <n-tag v-if="workflowCardMeta(item).danglingConnectionCount" size="small" round :bordered="false" type="warning">
-                  {{ t('workflows.workflowDanglingConnections', { count: workflowCardMeta(item).danglingConnectionCount }) }}
-                </n-tag>
-                <n-tag v-if="workflowCardMeta(item).invalidConnectionCount" size="small" round :bordered="false" type="warning">
-                  {{ t('workflows.workflowInvalidConnections', { count: workflowCardMeta(item).invalidConnectionCount }) }}
-                </n-tag>
-                <n-tag v-if="workflowCardMeta(item).duplicateInputConnectionCount" size="small" round :bordered="false" type="warning">
-                  {{ t('workflows.workflowDuplicateInputConnections', { count: workflowCardMeta(item).duplicateInputConnectionCount }) }}
-                </n-tag>
-                <n-tag v-if="workflowCardMeta(item).graphCycleDetected" size="small" round :bordered="false" type="warning">
-                  {{ t('workflows.workflowCycleDetected') }}
-                </n-tag>
-                <n-tag v-if="workflowCardMeta(item).noSaveOutputs" size="small" round :bordered="false" type="warning">
-                  {{ t('workflows.workflowNoSaveOutputs') }}
-                </n-tag>
+    <header class="console-topbar">
+      <div class="console-topbar__brand">
+        <AppBrandMark :size="30" variant="compact" shadow />
+        <div class="console-topbar__title">
+          <h1>{{ t('workflows.title') }}</h1>
+          <span>{{ t('workflows.subtitle') }}</span>
+        </div>
+      </div>
+      <div class="console-topbar__controls">
+        <n-button secondary @click="triggerImportComfyMss">
+          <template #icon><n-icon :component="OpenOutline" /></template>
+          {{ t('workflows.importComfyMss') }}
+        </n-button>
+        <n-button type="primary" @click="openNodeEditor({ forceNew: true })">
+          <template #icon><n-icon :component="AddOutline" /></template>
+          {{ t('workflows.newWorkflow') }}
+        </n-button>
+      </div>
+    </header>
+
+    <div class="console">
+      <aside class="console__rail">
+        <div class="wf-list-head">
+          <n-input v-model:value="query" clearable :placeholder="t('workflows.searchPlaceholder')">
+            <template #prefix><n-icon :component="SearchOutline" /></template>
+          </n-input>
+        </div>
+        <div class="wf-list-scroll">
+          <div v-if="filteredWorkflows.length" class="wf-list">
+            <button
+              v-for="item in filteredWorkflows"
+              :key="item.id"
+              type="button"
+              class="wf-row"
+              :class="{ 'wf-row--active': item.id === selectedWorkflowId }"
+              @click="editWorkflow(item)"
+            >
+              <span class="wf-row__icon"><n-icon :component="GitNetworkOutline" /></span>
+              <span class="wf-row__main">
+                <strong>{{ item.name }}</strong>
+                <small>{{ item.description || t('workflows.noDescription') }}</small>
+              </span>
+              <span
+                class="wf-row__dot"
+                :class="isWorkflowBlocked(item) ? 'wf-row__dot--warn' : 'wf-row__dot--ok'"
+                :title="isWorkflowBlocked(item) ? t('workflows.workflowValidationTitle') : t('workflows.statusReady')"
+              />
+            </button>
+          </div>
+          <div v-else class="wf-empty">
+            <n-icon :component="GitNetworkOutline" />
+            <strong>{{ t('workflows.emptyTitle') }}</strong>
+            <span>{{ t('workflows.emptyDesc') }}</span>
+            <n-button type="primary" size="small" @click="openNodeEditor({ forceNew: true })">
+              <template #icon><n-icon :component="AddOutline" /></template>
+              {{ t('workflows.newWorkflow') }}
+            </n-button>
+          </div>
+        </div>
+      </aside>
+
+      <main class="console__stage">
+        <div v-if="!selectedWorkflow" class="wf-overview-empty">
+          <n-icon :component="GitNetworkOutline" />
+          <strong>{{ t('workflows.overviewEmptyTitle') }}</strong>
+          <span>{{ t('workflows.overviewEmptyDesc') }}</span>
+          <n-button type="primary" @click="openNodeEditor({ forceNew: true })">
+            <template #icon><n-icon :component="AddOutline" /></template>
+            {{ t('workflows.newWorkflow') }}
+          </n-button>
+        </div>
+
+        <template v-else>
+          <div class="wf-overview">
+            <div class="wf-overview__top">
+              <div class="wf-overview__heading">
+                <span class="wf-overview__icon"><n-icon :component="GitNetworkOutline" /></span>
+                <n-input
+                  v-model:value="name"
+                  class="wf-name-input"
+                  :disabled="isNodeEditorOpen"
+                  :placeholder="t('workflows.untitled')"
+                  @blur="saveMeta"
+                  @keydown.enter="(event: KeyboardEvent) => (event.target as HTMLElement)?.blur()"
+                />
+                <span
+                  class="wf-status"
+                  :class="selectedReady ? 'wf-status--ok' : 'wf-status--warn'"
+                >
+                  <n-icon :component="selectedReady ? CheckmarkCircle : AlertCircleOutline" />
+                  {{ selectedReady ? t('workflows.statusReady') : t('workflows.workflowValidationTitle') }}
+                </span>
+              </div>
+              <n-input
+                v-model:value="description"
+                class="wf-desc-input"
+                type="textarea"
+                :autosize="{ minRows: 1, maxRows: 3 }"
+                :disabled="isNodeEditorOpen"
+                :placeholder="t('workflows.descriptionPlaceholder')"
+                @blur="saveMeta"
+              />
+            </div>
+
+            <div v-if="selectedDraft && selectedSummary" class="wf-metrics">
+              <div class="wf-metric">
+                <strong>{{ selectedDraft.steps.length }}</strong>
+                <span>{{ t('workflows.graphSummarySteps') }}</span>
+              </div>
+              <div class="wf-metric">
+                <strong>{{ selectedDraft.utilityNodes.length }}</strong>
+                <span>{{ t('workflows.metricTools') }}</span>
+              </div>
+              <div class="wf-metric">
+                <strong>{{ selectedSummary.saveOutputCount }}</strong>
+                <span>{{ t('workflows.graphSummaryOutputs') }}</span>
+              </div>
+              <div class="wf-metric">
+                <strong>{{ selectedStemCount }}</strong>
+                <span>{{ t('workflows.metricStems') }}</span>
               </div>
             </div>
-            <n-tooltip trigger="hover" :disabled="!workflowCardMeta(item).runBlocked">
-              <template #trigger>
-                <span class="workflow-card__run-trigger" @click.stop>
-                  <n-button quaternary circle size="small" :disabled="workflowCardMeta(item).runBlocked" @click="runWorkflow(item)">
-                    <template #icon><n-icon :component="PlayOutline" /></template>
-                  </n-button>
+
+            <section class="wf-section">
+              <h3>{{ t('workflows.modelsUsed') }}</h3>
+              <div v-if="selectedModels.length" class="wf-chips">
+                <span
+                  v-for="item in selectedModels"
+                  :key="item.name"
+                  class="wf-chip"
+                  :class="{ 'wf-chip--warn': !item.downloaded }"
+                  :title="item.name"
+                >
+                  <n-icon :component="CubeOutline" />
+                  <span class="wf-chip__name">{{ item.name }}</span>
+                  <small v-if="!item.downloaded">{{ t('workflows.modelNotDownloadedShort') }}</small>
                 </span>
-              </template>
-              <div class="workflow-card__tooltip">{{ workflowBatchTooltipLines(item).join('\n') || t('workflows.workflowRunBlocked') }}</div>
-            </n-tooltip>
-          </article>
-        </div>
-        <div v-else class="empty-state">
-          <n-icon :component="GitNetworkOutline" />
-          <strong>{{ t('workflows.emptyTitle') }}</strong>
-          <span>{{ t('workflows.emptyDesc') }}</span>
-        </div>
-      </section>
+              </div>
+              <p v-else class="wf-muted">{{ t('workflows.noModelsConfigured') }}</p>
+            </section>
 
-      <section class="workflow-editor-panel">
-        <input
-          ref="importFileInputRef"
-          class="workflow-hidden-file-input"
-          type="file"
-          accept=".json,application/json"
-          @change="handleImportComfyMss"
-        >
-        <div class="editor-head">
-          <div>
-            <div class="eyebrow">{{ editingId ? t('workflows.editing') : t('workflows.creating') }}</div>
-            <h2>{{ editingId ? name || t('workflows.untitled') : t('workflows.newWorkflow') }}</h2>
-          </div>
-          <div class="editor-actions">
-            <n-button secondary @click="triggerImportComfyMss">
-              <template #icon><n-icon :component="OpenOutline" /></template>
-              {{ t('workflows.importComfyMss') }}
-            </n-button>
-            <n-button secondary :disabled="!canSave" @click="exportSelectedComfyMss">
-              <template #icon><n-icon :component="DownloadOutline" /></template>
-              {{ t('workflows.exportComfyMss') }}
-            </n-button>
-            <n-button v-if="editingId" secondary @click="duplicateSelected">
-              <template #icon><n-icon :component="CopyOutline" /></template>
-              {{ t('workflows.duplicate') }}
-            </n-button>
-            <n-button v-if="editingId" secondary type="error" @click="deleteSelected">
-              <template #icon><n-icon :component="TrashOutline" /></template>
-              {{ t('workflows.deleteConfirm') }}
-            </n-button>
-            <n-button secondary @click="openNodeEditor">
-              <template #icon><n-icon :component="GitNetworkOutline" /></template>
-              {{ t('workflows.nodeEditor') }}
-            </n-button>
-            <n-button type="primary" :disabled="!canSave" @click="save">
-              {{ t('common.save') }}
-            </n-button>
-          </div>
-        </div>
+            <section v-if="selectedDraft" class="wf-section">
+              <h3>{{ t('workflows.runParams') }}</h3>
+              <div class="wf-param-grid">
+                <div class="wf-param">
+                  <span>{{ t('workflows.defaultDevice') }}</span>
+                  <strong>{{ deviceLabel(selectedDraft.defaultDevice) }}</strong>
+                </div>
+                <div class="wf-param">
+                  <span>{{ t('workflows.defaultFormat') }}</span>
+                  <strong>{{ formatLabel(selectedDraft.defaultFormat) }}</strong>
+                </div>
+                <div class="wf-param">
+                  <span>{{ t('workflows.normalize') }}</span>
+                  <strong>{{ selectedDraft.defaultNormalize ? t('workflows.paramOn') : t('workflows.paramOff') }}</strong>
+                </div>
+              </div>
+            </section>
 
-        <div class="editor-form">
-          <div class="form-grid">
-            <label>
-              <span>{{ t('workflows.name') }}</span>
-              <n-input v-model:value="name" :placeholder="t('workflows.namePlaceholder')" />
-            </label>
-            <label>
-              <span>{{ t('workflows.defaultDevice') }}</span>
-              <n-select v-model:value="defaultDevice" :options="deviceOptions" />
-            </label>
-            <label>
-              <span>{{ t('workflows.defaultFormat') }}</span>
-              <n-select v-model:value="defaultFormat" :options="formatOptions" />
-            </label>
-            <label>
-              <span>{{ t('workflows.normalize') }}</span>
-              <n-switch v-model:value="defaultNormalize" />
-            </label>
-          </div>
-          <label>
-            <span>{{ t('workflows.description') }}</span>
-            <n-input v-model:value="description" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" :placeholder="t('workflows.descriptionPlaceholder')" />
-          </label>
+            <section v-if="selectedBatchConfigs.length" class="wf-section">
+              <h3>{{ t('workflows.batchInputTag') }}</h3>
+              <div class="wf-batch-list">
+                <div v-for="(config, index) in selectedBatchConfigs" :key="index" class="wf-batch">
+                  <strong>{{ config.folder || t('workflows.batchInputFolderPlaceholder') }}</strong>
+                  <span>
+                    {{ t(config.recursive ? 'workflows.batchInputRecursiveOn' : 'workflows.batchInputRecursiveOff') }}
+                    ·
+                    {{ t(config.sortFiles ? 'workflows.batchInputSortOn' : 'workflows.batchInputSortOff') }}
+                  </span>
+                </div>
+              </div>
+              <span v-if="selectedBatchTaskCount !== null" class="wf-batch-count">
+                {{ t('workflows.batchInputEstimatedTasks', { count: selectedBatchTaskCount }) }}
+              </span>
+            </section>
 
-          <p v-if="formError" class="json-error">{{ formError }}</p>
-          <p v-else class="json-ok">{{ t('workflows.formValid') }}</p>
-
-          <n-collapse>
-            <n-collapse-item :title="t('workflows.generatedJson')" name="json">
-              <n-input
-                :value="generatedJson"
-                type="textarea"
-                class="definition-input"
-                readonly
-                :autosize="{ minRows: 12, maxRows: 20 }"
-              />
-            </n-collapse-item>
-          </n-collapse>
-        </div>
-        <div v-if="isNodeEditorOpen" class="workflow-editor-lock">
-          <div class="workflow-editor-lock__card">
-            <n-icon :component="GitNetworkOutline" />
-            <strong>{{ t('workflows.nodeEditorOpenedTitle') }}</strong>
-            <span>{{ t('workflows.nodeEditorOpenedHint') }}</span>
-            <n-button secondary @click="openNodeEditor">{{ t('workflows.backToNodeEditor') }}</n-button>
+            <div v-if="selectedError" class="wf-validation">
+              <n-icon :component="AlertCircleOutline" />
+              <span>{{ selectedError }}</span>
+            </div>
           </div>
-        </div>
-      </section>
+
+          <footer class="wf-actionbar">
+            <div class="wf-actionbar__primary">
+              <n-button type="primary" size="large" @click="openNodeEditor()">
+                <template #icon><n-icon :component="GitNetworkOutline" /></template>
+                {{ t('workflows.nodeEditor') }}
+              </n-button>
+              <n-button
+                secondary
+                size="large"
+                :disabled="Boolean(selectedError)"
+                @click="runSelected"
+              >
+                <template #icon><n-icon :component="PlayOutline" /></template>
+                {{ t('workflows.runWorkflowAction') }}
+              </n-button>
+            </div>
+            <div class="wf-actionbar__more">
+              <n-button quaternary @click="duplicateSelected">
+                <template #icon><n-icon :component="CopyOutline" /></template>
+                {{ t('workflows.duplicate') }}
+              </n-button>
+              <n-button quaternary @click="exportSelectedComfyMss">
+                <template #icon><n-icon :component="DownloadOutline" /></template>
+                {{ t('workflows.exportComfyMss') }}
+              </n-button>
+              <n-button quaternary type="error" @click="deleteSelected">
+                <template #icon><n-icon :component="TrashOutline" /></template>
+                {{ t('workflows.deleteConfirm') }}
+              </n-button>
+            </div>
+          </footer>
+
+          <div v-if="isNodeEditorOpen" class="wf-lock">
+            <div class="wf-lock__card">
+              <n-icon :component="GitNetworkOutline" />
+              <strong>{{ t('workflows.nodeEditorOpenedTitle') }}</strong>
+              <span>{{ t('workflows.nodeEditorOpenedHint') }}</span>
+              <n-button secondary @click="openNodeEditor()">{{ t('workflows.backToNodeEditor') }}</n-button>
+            </div>
+          </div>
+        </template>
+      </main>
     </div>
-
   </div>
 </template>
 
 <style scoped>
 .workflows-page {
-  display: grid;
-  gap: 18px;
-  max-width: 1240px;
-}
-.workflows-header {
+  max-width: 1140px;
+  margin: 0 auto;
+  height: 100%;
+  min-height: 0;
   display: flex;
-  justify-content: space-between;
-  gap: 24px;
-  align-items: flex-start;
+  flex-direction: column;
+  gap: 16px;
 }
-.eyebrow {
-  color: color-mix(in srgb, var(--primary-strong) 82%, var(--on-surface-muted));
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+
+.wf-hidden-file-input {
+  display: none;
 }
-.workflows-header h1,
-.editor-head h2 {
-  margin: 4px 0 0;
-}
-.workflows-header p {
-  margin: 8px 0 0;
-  color: var(--on-surface-muted);
-}
-.workflows-layout {
-  display: grid;
-  grid-template-columns: minmax(270px, 340px) minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
-}
-.workflow-list-panel,
-.workflow-editor-panel {
-  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
-  border-radius: 20px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.026), transparent 48%),
-    color-mix(in srgb, var(--surface-1) 72%, transparent);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.04),
-    0 18px 46px rgba(0, 0, 0, 0.075);
-}
-.workflow-list-panel {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  padding: 14px;
-  position: sticky;
-  top: 0;
-}
-.workflow-list {
-  display: grid;
-  gap: 7px;
-}
-.workflow-card {
-  display: grid;
-  grid-template-columns: 30px 1fr auto;
-  gap: 9px;
+
+/* ============ Topbar ============ */
+.console-topbar {
+  flex: 0 0 auto;
+  display: flex;
   align-items: center;
-  padding: 10px;
-  border: 1px solid transparent;
-  border-radius: 14px;
-  cursor: pointer;
-  background: color-mix(in srgb, var(--surface-2) 42%, transparent);
-  transition: background 140ms ease, border-color 140ms ease;
+  justify-content: space-between;
+  gap: 20px;
 }
-.workflow-card:hover {
-  background: color-mix(in srgb, var(--surface-2) 62%, transparent);
-}
-.workflow-card--active {
-  border-color: color-mix(in srgb, var(--primary) 38%, var(--outline));
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 28%, transparent), transparent 72%),
-    color-mix(in srgb, var(--surface-2) 64%, transparent);
-}
-.workflow-card__icon {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 10px;
-  color: color-mix(in srgb, var(--primary-strong) 76%, var(--on-surface-muted));
-  background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface-2));
-}
-.workflow-card__main {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-.workflow-card__meta {
+
+.console-topbar__brand {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 2px;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
-.workflow-card__tooltip {
-  max-width: 360px;
-  white-space: pre-line;
+
+.console-topbar__title {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.console-topbar__title h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.console-topbar__title span {
   font-size: 12px;
-  line-height: 1.55;
-}
-.workflow-card__run-trigger {
-  display: inline-grid;
-  place-items: center;
-}
-.workflow-card__main strong,
-.workflow-card__main span {
+  color: var(--on-surface-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.workflow-card__main span,
-.empty-state span {
+
+.console-topbar__controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+/* ============ Console grid ============ */
+.console {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+/* ============ Rail (list) ============ */
+.console__rail {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 15px 14px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface-1) 78%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--outline) 80%, transparent),
+    0 18px 46px rgba(0, 0, 0, 0.06);
+}
+
+.wf-list-scroll {
+  min-height: 0;
+  overflow: auto;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+
+.wf-list {
+  display: grid;
+  gap: 6px;
+}
+
+.wf-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--surface-2) 38%, transparent);
+  color: var(--on-surface);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.wf-row:hover {
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+}
+
+.wf-row--active {
+  border-color: color-mix(in srgb, var(--primary) 40%, var(--outline));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 26%, transparent), transparent 74%),
+    color-mix(in srgb, var(--surface-2) 62%, transparent);
+}
+
+.wf-row__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: color-mix(in srgb, var(--primary-strong) 76%, var(--on-surface-muted));
+  background: color-mix(in srgb, var(--primary-soft) 32%, var(--surface-2));
+}
+
+.wf-row__main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.wf-row__main strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.wf-row__main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--on-surface-muted);
   font-size: 12px;
 }
-.empty-state {
-  min-height: 260px;
+
+.wf-row__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.wf-row__dot--ok {
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 18%, transparent);
+}
+
+.wf-row__dot--warn {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent);
+}
+
+.wf-empty {
+  min-height: 240px;
   display: grid;
   place-items: center;
   align-content: center;
@@ -745,114 +780,419 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
   text-align: center;
   color: var(--on-surface-muted);
 }
-.empty-state .n-icon {
-  font-size: 42px;
+
+.wf-empty .n-icon {
+  font-size: 40px;
   color: var(--primary-strong);
 }
-.workflow-editor-panel {
+
+.wf-empty strong {
+  color: var(--on-surface);
+  font-size: 14px;
+}
+
+.wf-empty span {
+  font-size: 12px;
+  max-width: 220px;
+  line-height: 1.5;
+}
+
+/* ============ Stage (overview) ============ */
+.console__stage {
   position: relative;
-  padding: 18px;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface-1) 78%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--outline) 80%, transparent),
+    0 18px 46px rgba(0, 0, 0, 0.06);
   overflow: hidden;
 }
-.workflow-hidden-file-input {
+
+.wf-overview-empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  padding: 32px;
+  text-align: center;
+  color: var(--on-surface-muted);
+}
+
+.wf-overview-empty .n-icon {
+  font-size: 52px;
+  color: var(--primary-strong);
+}
+
+.wf-overview-empty strong {
+  color: var(--on-surface);
+  font-size: 17px;
+}
+
+.wf-overview-empty span {
+  font-size: 13px;
+  max-width: 340px;
+  line-height: 1.55;
+}
+
+.wf-overview {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  padding: 20px 22px;
+}
+
+/* --- heading + meta edit --- */
+.wf-overview__top {
+  display: grid;
+  gap: 10px;
+}
+
+.wf-overview__heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.wf-overview__icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  border-radius: 12px;
+  font-size: 20px;
+  color: color-mix(in srgb, var(--primary-strong) 82%, var(--on-surface));
+  background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface-2));
+}
+
+.wf-name-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wf-name-input :deep(.n-input__border),
+.wf-name-input :deep(.n-input__state-border),
+.wf-desc-input :deep(.n-input__border),
+.wf-desc-input :deep(.n-input__state-border) {
   display: none;
 }
-.editor-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  align-items: flex-start;
+
+.wf-name-input :deep(.n-input) {
+  --n-color: transparent;
+  --n-color-focus: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  background: transparent;
+  border-radius: 10px;
 }
-.editor-actions {
-  display: flex;
+
+.wf-name-input :deep(.n-input:hover) {
+  background: color-mix(in srgb, var(--surface-2) 44%, transparent);
+}
+
+.wf-name-input :deep(.n-input__input-el) {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--on-surface);
+}
+
+.wf-desc-input :deep(.n-input) {
+  --n-color: transparent;
+  --n-color-focus: color-mix(in srgb, var(--surface-2) 50%, transparent);
+  background: transparent;
+}
+
+.wf-desc-input :deep(.n-input:hover) {
+  background: color-mix(in srgb, var(--surface-2) 38%, transparent);
+}
+
+.wf-desc-input :deep(.n-input__textarea-el) {
+  color: var(--on-surface-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.wf-status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.wf-status .n-icon {
+  font-size: 15px;
+}
+
+.wf-status--ok {
+  color: color-mix(in srgb, var(--success) 82%, white 6%);
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+}
+
+.wf-status--warn {
+  color: color-mix(in srgb, var(--warning) 84%, white 6%);
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
+}
+
+/* --- metrics --- */
+.wf-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
 }
-.editor-form {
-  margin-top: 16px;
+
+.wf-metric {
   display: grid;
-  gap: 14px;
+  gap: 3px;
+  padding: 14px 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-2) 46%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 66%, transparent);
 }
-.form-grid {
+
+.wf-metric strong {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.wf-metric span {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* --- sections --- */
+.wf-section {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(140px, 1fr));
-  gap: 12px;
-  align-items: end;
+  gap: 10px;
 }
-.editor-form label {
-  display: grid;
-  gap: 8px;
-}
-.editor-form label > span {
+
+.wf-section h3 {
+  margin: 0;
   color: var(--on-surface-muted);
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
-.definition-input :deep(textarea) {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+.wf-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2) 56%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 64%, transparent);
   font-size: 12px;
-  line-height: 1.55;
 }
-.json-error,
-.json-ok {
+
+.wf-chip .n-icon {
+  flex: 0 0 auto;
+  font-size: 14px;
+  color: color-mix(in srgb, var(--primary-strong) 78%, var(--on-surface-muted));
+}
+
+.wf-chip__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-chip small {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--warning) 86%, white 6%);
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.wf-chip--warn {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 40%, var(--outline));
+}
+
+.wf-chip--warn .n-icon {
+  color: color-mix(in srgb, var(--warning) 78%, var(--on-surface-muted));
+}
+
+.wf-muted {
   margin: 0;
+  color: var(--on-surface-muted);
   font-size: 12px;
 }
-.json-error {
-  color: var(--danger);
-}
-.json-ok {
-  color: var(--success);
+
+.wf-param-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 }
 
+.wf-param {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 42%, transparent);
+}
 
-.workflow-editor-lock {
+.wf-param span {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.wf-param strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.wf-batch-list {
+  display: grid;
+  gap: 8px;
+}
+
+.wf-batch {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 42%, transparent);
+}
+
+.wf-batch strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.wf-batch span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.wf-batch-count {
+  color: color-mix(in srgb, var(--primary-strong) 84%, var(--on-surface));
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.wf-validation {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 48%, var(--outline));
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  color: color-mix(in srgb, var(--warning) 84%, white 8%);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.wf-validation .n-icon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  font-size: 16px;
+}
+
+/* --- action bar --- */
+.wf-actionbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 22px;
+  border-top: 1px solid color-mix(in srgb, var(--outline) 60%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 40%, transparent);
+}
+
+.wf-actionbar__primary,
+.wf-actionbar__more {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* --- node editor lock --- */
+.wf-lock {
   position: absolute;
-  inset: 74px 14px 14px;
+  inset: 0;
   z-index: 8;
   display: grid;
   place-items: center;
   padding: 24px;
-  border-radius: 18px;
-  background:
-    radial-gradient(circle at 50% 22%, color-mix(in srgb, var(--primary-soft) 44%, transparent), transparent 42%),
-    color-mix(in srgb, var(--surface-1) 78%, transparent);
+  background: color-mix(in srgb, var(--surface-1) 74%, transparent);
   backdrop-filter: blur(10px) saturate(1.08);
-  border: 1px solid color-mix(in srgb, var(--outline) 50%, transparent);
 }
-.workflow-editor-lock__card {
+
+.wf-lock__card {
   width: min(360px, 100%);
   display: grid;
   justify-items: center;
   gap: 10px;
-  padding: 24px;
+  padding: 26px;
   text-align: center;
   border-radius: 18px;
-  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.12);
+  background: color-mix(in srgb, var(--surface-2) 84%, transparent);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.14);
 }
-.workflow-editor-lock__card .n-icon {
+
+.wf-lock__card .n-icon {
   font-size: 34px;
   color: var(--primary-strong);
 }
-.workflow-editor-lock__card span {
+
+.wf-lock__card strong {
+  font-size: 15px;
+}
+
+.wf-lock__card span {
   color: var(--on-surface-muted);
   font-size: 13px;
   line-height: 1.6;
 }
 
-@media (max-width: 1120px) {
-  .form-grid {
-    grid-template-columns: 1fr 1fr;
-  }
-}
+/* ============ Responsive ============ */
 @media (max-width: 960px) {
-  .workflows-layout,
-  .workflows-header {
+  .console {
     grid-template-columns: 1fr;
-    display: grid;
+  }
+
+  .wf-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .wf-param-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

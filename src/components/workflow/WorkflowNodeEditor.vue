@@ -3774,12 +3774,14 @@ function jumpMinimap(event: MouseEvent) {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--outline) 50%, transparent);
+  border: 0;
   border-radius: 18px;
   background:
-    radial-gradient(circle at 28% 0%, color-mix(in srgb, var(--primary-soft) 22%, transparent), transparent 34%),
-    color-mix(in srgb, var(--surface-1) 82%, transparent);
-  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.11);
+    radial-gradient(circle at 28% 0%, color-mix(in srgb, var(--primary-soft) 20%, transparent), transparent 34%),
+    color-mix(in srgb, var(--surface-1) 84%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--outline) 78%, transparent),
+    0 22px 54px rgba(0, 0, 0, 0.14);
 }
 
 .node-editor-shell {
@@ -3942,10 +3944,13 @@ function jumpMinimap(event: MouseEvent) {
   pointer-events: auto;
   position: absolute;
   z-index: 20;
-  border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
-  background: color-mix(in srgb, var(--surface-1) 84%, transparent);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.12);
-  backdrop-filter: blur(14px);
+  border: 0;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-1) 90%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--outline) 76%, transparent),
+    0 14px 34px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(18px) saturate(1.1);
 }
 
 .canvas-primary-actions {
@@ -3955,8 +3960,8 @@ function jumpMinimap(event: MouseEvent) {
   z-index: 30;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
+  gap: 6px;
+  padding: 7px;
   border-radius: 14px;
 }
 
@@ -4038,12 +4043,14 @@ function jumpMinimap(event: MouseEvent) {
   display: grid;
   gap: 10px;
   padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--outline) 62%, transparent);
+  border: 0;
   border-radius: 16px;
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.045), transparent 54%),
-    color-mix(in srgb, var(--surface-2) 88%, var(--surface-1));
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.12);
+    linear-gradient(180deg, rgba(255,255,255,0.05), transparent 52%),
+    color-mix(in srgb, var(--surface-2) 90%, var(--surface-1));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--outline) 74%, transparent),
+    0 16px 38px rgba(0, 0, 0, 0.16);
   cursor: grab;
 }
 
@@ -4069,12 +4076,23 @@ function jumpMinimap(event: MouseEvent) {
   border-color: var(--danger);
 }
 
-.graph-node:hover,
+.graph-node:hover {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--primary) 44%, var(--outline)),
+    0 16px 38px rgba(0, 0, 0, 0.18);
+}
+
 .graph-note:hover {
   border-color: color-mix(in srgb, var(--primary) 32%, var(--outline));
 }
 
-.graph-node--selected,
+.graph-node--selected {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--primary) 80%, var(--outline)),
+    0 18px 44px rgba(0, 0, 0, 0.2),
+    0 0 0 3px color-mix(in srgb, var(--primary-soft) 42%, transparent);
+}
+
 .graph-note--selected {
   border-color: color-mix(in srgb, var(--primary) 70%, var(--outline));
   box-shadow:
@@ -4083,10 +4101,10 @@ function jumpMinimap(event: MouseEvent) {
 }
 
 .graph-node--pending-target {
-  border-color: color-mix(in srgb, #22c55e 72%, var(--primary));
   box-shadow:
-    0 18px 42px rgba(0, 0, 0, 0.14),
-    0 0 0 3px rgba(34, 197, 94, 0.18);
+    inset 0 0 0 1px color-mix(in srgb, #22c55e 74%, var(--primary)),
+    0 18px 44px rgba(0, 0, 0, 0.2),
+    0 0 0 3px rgba(34, 197, 94, 0.2);
 }
 
 .graph-node__head {
@@ -4130,6 +4148,22 @@ function jumpMinimap(event: MouseEvent) {
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.graph-node--input .graph-node__head span {
+  color: color-mix(in srgb, #22c55e 78%, var(--on-surface-muted));
+}
+
+.graph-node--step .graph-node__head span {
+  color: color-mix(in srgb, var(--primary-strong) 82%, var(--on-surface-muted));
+}
+
+.graph-node--utility .graph-node__head span {
+  color: color-mix(in srgb, #60a5fa 80%, var(--on-surface-muted));
+}
+
+.graph-node--save .graph-node__head span {
+  color: color-mix(in srgb, #f2c94c 82%, var(--on-surface-muted));
 }
 
 .graph-node__head strong,
@@ -4600,13 +4634,13 @@ function jumpMinimap(event: MouseEvent) {
 
 .node-editor-footer {
   min-height: 50px;
-  padding: 8px 12px;
+  padding: 9px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  border-top: 1px solid color-mix(in srgb, var(--outline) 52%, transparent);
-  background: color-mix(in srgb, var(--surface-2) 58%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--outline) 60%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 52%, transparent);
 }
 
 .node-editor-footer > div {

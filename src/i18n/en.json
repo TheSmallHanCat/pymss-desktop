@@ -990,6 +990,18 @@
     "audioNormalizeSummary": "Normalize only when peak level exceeds 0 dBFS.",
     "frontendOnlyNode": "Desktop utility node",
     "utilityNodeRuntimeHint": "Utility nodes run in the desktop graph runtime and support comfy-mss / ComfyUI workflow import/export.",
-    "utilityInputsRequired": "Connect {count} utility node input(s) first."
+    "utilityInputsRequired": "Connect {count} utility node input(s) first.",
+    "overviewEmptyTitle": "Select a workflow",
+    "overviewEmptyDesc": "Pick a workflow from the list to view its pipeline overview, or create a new one.",
+    "metricTools": "Tools",
+    "metricStems": "Stems",
+    "modelsUsed": "Models used",
+    "noModelsConfigured": "No models configured yet",
+    "modelNotDownloadedShort": "Not downloaded",
+    "runParams": "Run parameters",
+    "paramOn": "On",
+    "paramOff": "Off",
+    "statusReady": "Ready",
+    "runWorkflowAction": "Run"
   }
 }
