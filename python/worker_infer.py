@@ -109,6 +109,45 @@ def _store_dirs_for_selected_stems(output_dir: str, selected_stems: list[str]) -
 def _normalize_output_layout(value: Any) -> str:
     return "flat" if str(value or "").strip().lower() == "flat" else "folders"
 
+
+def _normalize_device_ids(value: Any) -> list[int]:
+    raw_ids = value if isinstance(value, list) else [value]
+    device_ids: list[int] = []
+    for raw_id in raw_ids:
+        try:
+            device_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if device_id >= 0 and device_id not in device_ids:
+            device_ids.append(device_id)
+    return device_ids or [0]
+
+
+def _resolve_separator_device(device: Any, device_ids: Any) -> tuple[str, list[int], str]:
+    requested_device = str(device or "auto").strip().lower() or "auto"
+    normalized_ids = _normalize_device_ids(device_ids)
+    if requested_device != "cuda":
+        return requested_device, normalized_ids, requested_device
+
+    # pymss currently leaves an explicit `device="cuda"` unchanged. PyTorch
+    # interprets that bare value as the process default CUDA device (normally
+    # cuda:0), so the selected device id would otherwise be ignored. Let
+    # pymss's auto path resolve the indexed CUDA device from device_ids.
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("CUDA was selected, but PyTorch is not installed") from exc
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA was selected, but CUDA is not available")
+    device_count = int(torch.cuda.device_count())
+    invalid_ids = [device_id for device_id in normalized_ids if device_id >= device_count]
+    if invalid_ids:
+        raise RuntimeError(
+            f"CUDA device id(s) {invalid_ids} are unavailable; detected {device_count} CUDA device(s)"
+        )
+    return "auto", normalized_ids, f"cuda:{normalized_ids[0]}"
+
+
 def _prepare_separator(
     *,
     payload: dict[str, Any],
@@ -123,8 +162,9 @@ def _prepare_separator(
     download = bool(payload.get("download", True))
     source = payload.get("source") or "modelscope"
     endpoint = payload.get("endpoint") or None
-    device = payload.get("device") or "auto"
-    device_ids = payload.get("deviceIds") or [0]
+    device, device_ids, resolved_device_label = _resolve_separator_device(
+        payload.get("device"), payload.get("deviceIds")
+    )
     output_format = payload.get("outputFormat") or "wav"
     selected_stems = _normalize_selected_stems(payload.get("selectedStems"))
     use_tta = bool(payload.get("useTta", False))
@@ -134,6 +174,11 @@ def _prepare_separator(
         payload.get("inferenceParamsVersion"),
     )
     audio_params = normalize_audio_params(payload.get("audioParams"))
+
+    emit("task_log", {
+        "level": "info",
+        "message": f"Runtime device: {resolved_device_label} (device_ids={device_ids})",
+    }, task_id=task_id)
 
     if download:
         emit("task_stage", {"stage": "downloading_model", "message": "Checking model files"}, task_id=task_id)
@@ -471,8 +516,12 @@ def cmd_infer(payload: dict[str, Any]) -> int:
     download = bool(payload.get("download", True))
     source = payload.get("source") or "modelscope"
     endpoint = payload.get("endpoint") or None
-    device = payload.get("device") or "auto"
-    device_ids = payload.get("deviceIds") or [0]
+    try:
+        device, device_ids, resolved_device_label = _resolve_separator_device(
+            payload.get("device"), payload.get("deviceIds")
+        )
+    except Exception as exc:
+        return emit_error("DEVICE_CONFIG_INVALID", str(exc), task_id=task_id)
     output_format = payload.get("outputFormat") or "wav"
     output_layout = _normalize_output_layout(payload.get("outputLayout"))
     save_as_folder = output_layout == "folders"
@@ -485,6 +534,11 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         payload.get("inferenceParamsVersion"),
     )
     audio_params = normalize_audio_params(payload.get("audioParams"))
+
+    emit("task_log", {
+        "level": "info",
+        "message": f"Runtime device: {resolved_device_label} (device_ids={device_ids})",
+    }, task_id=task_id)
 
     last_reported_done: float | None = None
     last_reported_total: float | None = None
