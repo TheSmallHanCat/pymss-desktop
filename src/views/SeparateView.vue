@@ -4,7 +4,6 @@ import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
-import { convertFileSrc } from '@tauri-apps/api/core'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
@@ -17,7 +16,6 @@ import {
   FolderOutline,
   CloudUploadOutline,
   CloseOutline,
-  OptionsOutline,
   SettingsOutline,
   OpenOutline,
   PauseOutline,
@@ -25,7 +23,7 @@ import {
   TimeOutline,
 } from '@vicons/ionicons5'
 import { useModelStore } from '@/stores/model'
-import { useTaskStore, type OutputLayout, type SeparationTask, type StemOutput } from '@/stores/task'
+import { useTaskStore, type OutputLayout, type SeparationTask } from '@/stores/task'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
@@ -76,9 +74,6 @@ const temporaryOutputDir = ref('')
 const outputLayout = ref<OutputLayout>('folders')
 const focusedSeparationJobId = ref<string | null>(null)
 const cancellingTaskId = ref<string | null>(null)
-const audioElements = new Map<string, HTMLAudioElement>()
-const playingOutputPath = ref('')
-const outputPlayback = ref<Record<string, { currentTime: number; duration: number }>>({})
 let unlistenDragDrop: UnlistenFn | null = null
 
 const formatOptions = [
@@ -315,9 +310,6 @@ const effectiveFormat = computed(() => {
   return String(settings.defaultFormat || 'wav').trim().toLowerCase() || 'wav'
 })
 const formatLabel = computed(() => effectiveFormat.value.toUpperCase())
-const outputSaveModeLabel = computed(() => saveAsFolder.value
-  ? t('separate.saveAsFolderEnabled')
-  : t('separate.saveAsFolderDisabled'))
 const outputSummaryPath = computed(() => shortenMiddle(outputPreview.value, 60))
 const canStart = computed(() => (
   (workflowUsesBatchInput.value || inputFiles.value.length > 0)
@@ -369,6 +361,8 @@ const taskPanelState = computed<'ready' | 'running' | 'done' | 'failed' | 'cance
   return 'running'
 })
 const isConfigCompact = computed(() => taskPanelState.value !== 'ready')
+const isTerminalState = computed(() => ['done', 'failed', 'cancelled'].includes(taskPanelState.value))
+const isRunModeLocked = computed(() => taskPanelState.value === 'running')
 const inputCompactLine = computed(() => {
   if (currentBatchIsMulti.value && currentBatchTotal.value) return t('separate.batchInputCompact', { count: currentBatchTotal.value })
   if (currentTask.value) return getFileName(currentTask.value.input)
@@ -433,13 +427,6 @@ const currentBatchOutputSummary = computed(() => {
   if (!currentBatchIsMulti.value) return currentTaskOutputSummary.value
   return t('separate.batchResultSummary', { count: currentBatchDoneCount.value, total: currentBatchTotal.value })
 })
-const playableOutputGroups = computed(() => currentBatchTasks.value
-  .filter(item => item.status === 'done' && item.outputs.some(output => Boolean(output.path)))
-  .map(item => ({
-    task: item,
-    outputs: item.outputs.filter(output => Boolean(output.path)),
-  })))
-const playableOutputs = computed(() => playableOutputGroups.value.flatMap(group => group.outputs))
 
 function getFileName(path: string) {
   return path.split(/[/\\]/).filter(Boolean).pop() || path
@@ -559,84 +546,6 @@ function taskDuration(item: SeparationTask) {
   return `${minutes}m ${rest}s`
 }
 
-function formatPlaybackTime(value: number) {
-  if (!Number.isFinite(value) || value <= 0) return '00:00'
-  const total = Math.floor(value)
-  const minutes = Math.floor(total / 60)
-  const seconds = total % 60
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
-}
-
-function getOutputPlayback(path: string) {
-  return outputPlayback.value[path] || { currentTime: 0, duration: 0 }
-}
-
-function setOutputPlayback(path: string, patch: Partial<{ currentTime: number; duration: number }>) {
-  const previous = getOutputPlayback(path)
-  outputPlayback.value = {
-    ...outputPlayback.value,
-    [path]: { ...previous, ...patch },
-  }
-}
-
-function getAudio(path: string) {
-  const cached = audioElements.get(path)
-  if (cached) return cached
-  const audio = new Audio(convertFileSrc(path))
-  audio.preload = 'metadata'
-  audio.addEventListener('loadedmetadata', () => {
-    setOutputPlayback(path, { duration: audio.duration || 0 })
-  })
-  audio.addEventListener('timeupdate', () => {
-    setOutputPlayback(path, { currentTime: audio.currentTime || 0, duration: audio.duration || 0 })
-  })
-  audio.addEventListener('ended', () => {
-    if (playingOutputPath.value === path) playingOutputPath.value = ''
-    setOutputPlayback(path, { currentTime: 0, duration: audio.duration || 0 })
-  })
-  audio.addEventListener('error', () => {
-    if (playingOutputPath.value === path) playingOutputPath.value = ''
-  })
-  audioElements.set(path, audio)
-  return audio
-}
-
-async function toggleOutputPlayback(output: StemOutput) {
-  if (!output.path) return
-  const audio = getAudio(output.path)
-  if (playingOutputPath.value === output.path && !audio.paused) {
-    audio.pause()
-    playingOutputPath.value = ''
-    return
-  }
-  audioElements.forEach((item, path) => {
-    if (path !== output.path) item.pause()
-  })
-  try {
-    await audio.play()
-    playingOutputPath.value = output.path
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : t('separate.previewPlayFailed'))
-  }
-}
-
-function seekOutput(path: string, value: number) {
-  const audio = getAudio(path)
-  const next = Number(value || 0)
-  audio.currentTime = next
-  setOutputPlayback(path, { currentTime: next, duration: audio.duration || getOutputPlayback(path).duration })
-}
-
-function stopAllPreviewAudio() {
-  audioElements.forEach((audio) => {
-    audio.pause()
-    audio.removeAttribute('src')
-    audio.load()
-  })
-  audioElements.clear()
-  playingOutputPath.value = ''
-}
-
 function handleSelectModel(item: (typeof listedDownloadedModels.value)[number]) {
   model.selectModel(item).catch(() => {})
 }
@@ -729,7 +638,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (unlistenDragDrop) unlistenDragDrop()
-  stopAllPreviewAudio()
 })
 
 async function handlePickFiles() {
@@ -797,9 +705,12 @@ async function start() {
 }
 
 function resetForNextSeparation() {
-  stopAllPreviewAudio()
   showLogModal.value = false
   focusedSeparationJobId.value = null
+}
+
+function goToResults() {
+  router.push('/results')
 }
 
 function openCurrentLogs() {
@@ -856,452 +767,399 @@ async function retryCurrentTask() {
 
 <template>
   <div class="page separate-page">
-    <div class="page-header-compact separate-header">
-      <div class="separate-header__brand">
-        <AppBrandMark :size="38" variant="compact" shadow />
-        <div>
+    <header class="console-topbar">
+      <div class="console-topbar__brand">
+        <AppBrandMark :size="30" variant="compact" shadow />
+        <div class="console-topbar__title">
           <h1>Pymss-Studio</h1>
+          <span>{{ t('separate.subtitle') }}</span>
         </div>
       </div>
-    </div>
+      <div class="console-topbar__controls">
+        <n-radio-group
+          v-model:value="runMode"
+          class="mode-switch"
+          :disabled="isRunModeLocked"
+        >
+          <n-radio-button
+            v-for="option in runModeOptions"
+            :key="option.value"
+            :value="option.value"
+          >
+            {{ option.label }}
+          </n-radio-button>
+        </n-radio-group>
+        <n-button text class="console-topbar__manage" @click="router.push(runMode === 'workflow' ? '/workflows' : '/models')">
+          {{ runMode === 'workflow' ? t('separate.manageWorkflowsInline') : t('separate.manageModelsInline') }}
+        </n-button>
+      </div>
+    </header>
 
-    <div class="workspace-grid" :class="{ 'workspace-grid--compact': isConfigCompact }">
-      <section class="config-panel config-panel--input">
-        <div class="panel-heading">
-          <div class="panel-heading__icon"><n-icon :component="MusicalNotesOutline" /></div>
-          <div>
-            <h2>{{ t('separate.input') }}</h2>
-            <p :title="isConfigCompact ? inputCompactLine : t('separate.inputPanelHint')">
-              {{ isConfigCompact ? inputCompactLine : t('separate.inputPanelHint') }}
-            </p>
+    <div class="console" :class="[`console--${taskPanelState}`, { 'console--busy': isConfigCompact }]">
+      <aside class="console__rail">
+        <section class="rail-card rail-card--input">
+          <div class="rail-card__head">
+            <span class="rail-card__index">01</span>
+            <div class="rail-card__label">
+              <strong>{{ t('separate.input') }}</strong>
+              <small>{{ t('separate.candidateCount', { count: inputFiles.length }) }}</small>
+            </div>
+            <n-button
+              v-if="inputFiles.length"
+              text
+              size="tiny"
+              class="rail-card__clear"
+              :disabled="isRunModeLocked"
+              @click="task.clearInputFiles()"
+            >
+              {{ t('separate.clearAll') }}
+            </n-button>
           </div>
-        </div>
-        <n-collapse-transition :show="!isConfigCompact">
-          <div class="config-rollup-content config-rollup-content--input">
-            <div class="button-row">
-              <n-button secondary @click="handlePickFiles">
-                <template #icon><n-icon :component="MusicalNotesOutline" /></template>
-                {{ t('separate.chooseFiles') }}
-              </n-button>
-              <n-button secondary @click="handlePickFolder">
-                <template #icon><n-icon :component="FolderOutline" /></template>
-                {{ t('separate.chooseFolder') }}
-              </n-button>
+          <div class="rail-card__body">
+            <div class="picker-buttons">
+              <button type="button" class="picker-btn" :disabled="isRunModeLocked" @click="handlePickFiles">
+                <n-icon :component="MusicalNotesOutline" />
+                <span>{{ t('separate.chooseFiles') }}</span>
+              </button>
+              <button type="button" class="picker-btn" :disabled="isRunModeLocked" @click="handlePickFolder">
+                <n-icon :component="FolderOutline" />
+                <span>{{ t('separate.chooseFolder') }}</span>
+              </button>
             </div>
 
-            <div class="candidate" :class="{ 'candidate--dragging': isDragging }">
-              <div class="candidate__head">
-                <strong>{{ t('separate.candidateTitle') }}</strong>
-                <span>{{ t('separate.candidateCount', { count: inputFiles.length }) }}</span>
-                <n-button
-                  v-if="inputFiles.length"
-                  text
-                  size="small"
-                  type="error"
-                  @click="task.clearInputFiles()"
-                >
-                  {{ t('separate.clearAll') }}
-                </n-button>
-              </div>
-
-              <div v-if="inputFiles.length" class="candidate__list">
-                <div v-for="path in inputFiles" :key="path" class="candidate__item">
-                  <n-icon :component="MusicalNotesOutline" class="candidate__item-icon" />
-                  <div class="candidate__item-main">
+            <div
+              class="dropzone"
+              :class="{ 'dropzone--dragging': isDragging, 'dropzone--filled': inputFiles.length, 'dropzone--clickable': !inputFiles.length && !isRunModeLocked }"
+              @click="(!inputFiles.length && !isRunModeLocked) ? handlePickFiles() : undefined"
+            >
+              <div v-if="inputFiles.length" class="file-list">
+                <div v-for="path in inputFiles" :key="path" class="file-chip">
+                  <span class="file-chip__glyph"><n-icon :component="MusicalNotesOutline" /></span>
+                  <div class="file-chip__main">
                     <strong :title="getFileName(path)">{{ getFileName(path) }}</strong>
-                    <span class="candidate__item-kind">{{ getFileKindLabel(path) }}</span>
-                    <code :title="path">{{ shortenMiddle(path, 56) }}</code>
+                    <div class="file-chip__sub">
+                      <span class="file-chip__kind">{{ getFileKindLabel(path) }}</span>
+                      <code :title="path">{{ shortenMiddle(path, 60) }}</code>
+                    </div>
                   </div>
-                  <n-button quaternary circle size="tiny" :title="t('separate.remove')" @click="task.removeInputFile(path)">
+                  <n-button quaternary circle size="tiny" class="file-chip__remove" :title="t('separate.remove')" :disabled="isRunModeLocked" @click="task.removeInputFile(path)">
                     <template #icon><n-icon :component="CloseOutline" /></template>
                   </n-button>
                 </div>
               </div>
-
-              <div v-else class="candidate__empty">
-                <div class="candidate__empty-icon"><n-icon :component="CloudUploadOutline" /></div>
-                <span>{{ isDragging ? t('separate.dropHere') : t('separate.candidateEmpty') }}</span>
+              <div v-else class="dropzone__empty">
+                <div class="dropzone__glyph"><n-icon :component="CloudUploadOutline" /></div>
+                <strong>{{ isDragging ? t('separate.dropHere') : t('separate.candidateEmpty') }}</strong>
               </div>
             </div>
           </div>
-        </n-collapse-transition>
-      </section>
+        </section>
 
-      <section class="config-panel config-panel--model" :class="{ 'config-panel--workflow': runMode === 'workflow' }">
-        <div class="panel-heading">
-          <div class="panel-heading__icon"><n-icon :component="runMode === 'workflow' ? GitNetworkOutline : CubeOutline" /></div>
-          <div class="panel-heading__main">
-            <h2>{{ t('separate.runTarget') }}</h2>
-            <p :title="isConfigCompact ? modelCompactLine : (runMode === 'workflow' ? t('separate.workflowPanelHint') : t('separate.modelPanelHint'))">
-              {{ isConfigCompact ? modelCompactLine : (runMode === 'workflow' ? t('separate.workflowPanelHint') : t('separate.modelPanelHint')) }}
-            </p>
+        <section class="rail-card rail-card--output">
+          <div class="rail-card__head">
+            <span class="rail-card__index">02</span>
+            <div class="rail-card__label">
+              <strong>{{ t('separate.output') }}</strong>
+              <small>{{ t('separate.outputSummaryHint') }}</small>
+            </div>
+            <n-button text size="tiny" class="rail-card__more" :disabled="isRunModeLocked" @click="showSettingsDrawer = true">
+              <template #icon><n-icon :component="SettingsOutline" /></template>
+              {{ t('separate.configParams') }}
+            </n-button>
           </div>
-          <n-button text class="panel-heading__action" @click="router.push(runMode === 'workflow' ? '/workflows' : '/models')">
-            {{ runMode === 'workflow' ? t('separate.manageWorkflowsInline') : t('separate.manageModelsInline') }}
-          </n-button>
-        </div>
-        <n-collapse-transition :show="!isConfigCompact">
-          <div class="config-rollup-content config-rollup-content--model">
-            <div class="model-panel__body">
-              <n-radio-group v-model:value="runMode" class="run-mode-toggle">
-                <n-radio-button
-                  v-for="option in runModeOptions"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </n-radio-button>
-              </n-radio-group>
-              <transition name="run-mode-content" mode="out-in">
-                <div v-if="runMode === 'model'" key="model" class="run-mode-content">
-                  <div v-if="downloadedModels.length" class="model-picker">
-                <div class="model-picker__toolbar">
-                  <n-input
-                    v-model:value="modelSearch"
-                    clearable
-                    :placeholder="t('separate.modelSearchPlaceholder')"
-                  >
-                    <template #prefix>
-                      <n-icon :component="SearchOutline" />
-                    </template>
-                  </n-input>
-                  <n-select
-                    class="model-picker__category-select"
-                    v-model:value="modelCategoryFilter"
-                    :menu-props="{ class: 'model-picker__category-menu' }"
-                    :options="modelCategoryOptions"
-                  />
-                </div>
+          <div class="rail-card__body rail-card__body--output">
+            <label class="ofield">
+              <span class="ofield__label">{{ t('separate.temporaryOutputDir') }}</span>
+              <div class="dir-input">
+                <n-input v-model:value="temporaryOutputDir" size="small" :placeholder="settings.outputDir || t('separate.outputDefault')" :disabled="isRunModeLocked" clearable />
+                <n-button secondary size="small" class="dir-input__browse" :title="t('separate.chooseOutput')" :disabled="isRunModeLocked" @click="pickTemporaryOutputDir">
+                  <template #icon><n-icon :component="FolderOutline" /></template>
+                </n-button>
+              </div>
+            </label>
 
-                <div class="model-picker__divider" />
-
-                <div v-if="filteredDownloadedModels.length" class="model-picker__list" role="listbox" :aria-label="t('separate.model')">
+            <div class="ofield-row">
+              <label class="ofield">
+                <span class="ofield__label">{{ runMode === 'workflow' ? t('separate.currentFormat') : t('settings.defaultFormat') }}</span>
+                <n-select v-if="runMode === 'model'" v-model:value="settings.defaultFormat" size="small" :options="formatOptions" :disabled="isRunModeLocked" />
+                <div v-else class="ofield__static">{{ formatLabel }}</div>
+              </label>
+              <div class="ofield">
+                <span class="ofield__label">{{ t('separate.saveMode') }}</span>
+                <div class="seg" :class="{ 'seg--locked': isRunModeLocked }">
                   <button
-                    v-for="item in filteredDownloadedModels"
-                    :key="item.name"
                     type="button"
-                    role="option"
-                    :aria-selected="selectedModelName === item.name"
-                    class="model-picker__item"
-                    :class="{ 'model-picker__item--active': selectedModelName === item.name }"
-                    @click="handleSelectModel(item)"
-                  >
-                    <div class="model-picker__item-main">
-                      <div class="model-picker__item-title">
-                        <strong :title="item.name">{{ item.name }}</strong>
-                        <span class="model-picker__item-tag" :title="categoryLabel(item)">{{ categoryLabel(item) }}</span>
-                      </div>
-                      <div class="model-picker__item-sub" :title="modelMetaLine(item)">
-                        {{ modelMetaLine(item) }}
-                      </div>
-                    </div>
-                    <n-icon v-if="selectedModelName === item.name" class="model-picker__item-check" :component="CheckmarkCircle" />
-                  </button>
-                </div>
-                <div v-else class="model-picker__empty">
-                  {{ t('separate.modelSearchEmpty') }}
+                    class="seg__btn"
+                    :class="{ 'seg__btn--active': saveAsFolder }"
+                    :disabled="isRunModeLocked"
+                    @click="saveAsFolder = true"
+                  >{{ t('separate.saveModeFolderName') }}</button>
+                  <button
+                    type="button"
+                    class="seg__btn"
+                    :class="{ 'seg__btn--active': !saveAsFolder }"
+                    :disabled="isRunModeLocked"
+                    @click="saveAsFolder = false"
+                  >{{ t('separate.saveModeFlatName') }}</button>
                 </div>
               </div>
-              <div v-if="selectedModelName && !modelDownloaded" class="model-info-card model-info-card--warn">
-                {{ t('separate.startHintModelMissing') }}
+            </div>
+
+            <div v-if="runMode === 'model'" class="ofield ofield--stems">
+              <span class="ofield__label">{{ t('separate.outputStems') }}</span>
+              <div v-if="availableStemNames.length" class="stem-chips">
+                <n-checkbox-group v-model:value="checkedOutputStems" :disabled="isRunModeLocked">
+                  <n-checkbox
+                    v-for="stem in availableStemNames"
+                    :key="stem"
+                    :value="stem"
+                    :label="stem"
+                  />
+                </n-checkbox-group>
               </div>
-              <div v-else-if="!downloadedModels.length" class="model-panel__empty-state" :class="{ 'model-panel__empty-state--loading': isLoading }">
-                <div class="model-panel__empty-visual">
-                  <n-spin v-if="isLoading" size="large" />
-                  <n-icon v-else :component="CubeOutline" />
+              <div v-else class="ofield__static ofield__static--muted">{{ t('separate.allStems') }}</div>
+            </div>
+          </div>
+        </section>
+      </aside>
+
+      <main class="console__stage">
+        <transition name="stage-swap" mode="out-in">
+          <section v-if="taskPanelState === 'running' && currentTask" key="running" class="stage-view stage-view--running">
+            <div class="stage-hero">
+              <div class="stage-hero__top">
+                <span class="stage-badge stage-badge--running">
+                  <span class="stage-badge__dot"></span>
+                  {{ statusLabel(currentTask.status) }}
+                </span>
+                <n-button text size="small" :disabled="!currentTask.logs.length" @click="openCurrentLogs">
+                  <template #icon><n-icon :component="TerminalOutline" /></template>
+                  {{ t('tasks.logs') }}
+                </n-button>
+              </div>
+              <div class="stage-hero__title">
+                <h2>{{ currentBatchTitle }}</h2>
+                <p>{{ currentBatchLine }}</p>
+              </div>
+              <div class="progress-ring-block">
+                <div class="progress-ring" :style="{ '--pct': currentBatchProgress }">
+                  <div class="progress-ring__center">
+                    <strong>{{ currentBatchProgress }}</strong>
+                    <span>%</span>
+                  </div>
                 </div>
-                <div class="model-panel__empty-main">
+                <div class="progress-ring__meta">
+                  <div class="progress-meta-line">
+                    <span class="progress-meta-line__label">
+                      {{ currentBatchIsMulti ? t('separate.batchOverallProgress') : progressTitle(currentTask) }}
+                    </span>
+                    <span v-if="!currentBatchIsMulti && progressDetail(currentTask)" class="progress-meta-line__detail">{{ progressDetail(currentTask) }}</span>
+                  </div>
+                  <p v-if="taskSubMessage(currentTask)" class="progress-submessage">{{ taskSubMessage(currentTask) }}</p>
+                  <div class="progress-facts">
+                    <span><n-icon :component="TimeOutline" /> {{ currentTaskDuration }}</span>
+                    <span :title="currentTaskOutputPath">{{ t('separate.outputTo') }} {{ currentTaskOutputSummary }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="stage-actions">
+              <n-button
+                strong
+                size="large"
+                type="error"
+                secondary
+                class="stage-actions__primary"
+                :loading="cancellingTaskId === currentTask.id || cancellingTaskId === 'batch'"
+                :disabled="cancellingTaskId === currentTask.id || cancellingTaskId === 'batch'"
+                @click="handleCancelCurrentTask"
+              >
+                {{ t('tasks.cancelAction') }}
+              </n-button>
+            </div>
+          </section>
+
+          <section v-else-if="isTerminalState && currentTask" key="terminal" :class="['stage-view', 'stage-view--terminal', `stage-view--${taskPanelState}`]">
+            <div class="stage-hero stage-hero--result">
+              <div class="stage-hero__top">
+                <span class="stage-badge" :class="`stage-badge--${taskPanelState}`">
+                  <n-icon :component="taskPanelState === 'done' ? CheckmarkCircle : (taskPanelState === 'failed' ? CloseOutline : PauseOutline)" />
+                  {{ statusLabel(currentTask.status) }}
+                </span>
+                <n-button v-if="currentTask.logs.length" text size="small" @click="openCurrentLogs">
+                  <template #icon><n-icon :component="TerminalOutline" /></template>
+                  {{ t('tasks.logs') }}
+                </n-button>
+              </div>
+              <div class="stage-hero__title">
+                <h2>{{ currentBatchIsMulti ? currentBatchTitle : statusLabel(currentTask.status) }}</h2>
+                <p>
+                  {{ currentBatchLine }}
+                  <template v-if="taskPanelState === 'done' && !currentBatchIsMulti"> · {{ currentTask.outputs.length }} {{ t('separate.previewStemUnit') }} · {{ currentTaskDuration }}</template>
+                </p>
+              </div>
+              <div v-if="taskPanelState === 'done'" class="result-path" :title="currentTaskOutputPath">
+                <n-icon :component="FolderOutline" />
+                <code>{{ currentBatchOutputSummary }}</code>
+              </div>
+              <div v-else-if="taskSubMessage(currentTask)" class="result-note">{{ taskSubMessage(currentTask) }}</div>
+            </div>
+            <div class="stage-actions">
+              <n-button v-if="taskPanelState === 'done'" secondary size="large" @click="task.revealPath(currentJob?.output || currentTask.output)">
+                <template #icon><n-icon :component="OpenOutline" /></template>
+                {{ t('separate.openOutput') }}
+              </n-button>
+              <n-button secondary size="large" @click="retryCurrentTask">
+                <template #icon><n-icon :component="PlayOutline" /></template>
+                {{ t('common.retry') }}
+              </n-button>
+              <n-button secondary size="large" @click="resetForNextSeparation">
+                {{ t('separate.newSeparation') }}
+              </n-button>
+              <n-button v-if="taskPanelState === 'done'" type="primary" size="large" class="stage-actions__primary" @click="goToResults">
+                {{ t('separate.viewResults') }}
+              </n-button>
+            </div>
+          </section>
+
+          <section v-else key="ready" class="stage-view stage-view--ready">
+            <div class="stage-head">
+              <div class="stage-head__label">
+                <n-icon :component="runMode === 'workflow' ? GitNetworkOutline : CubeOutline" />
+                <div>
+                  <h2>{{ t('separate.runTarget') }}</h2>
+                  <p>{{ runMode === 'workflow' ? t('separate.workflowPanelHint') : t('separate.modelPanelHint') }}</p>
+                </div>
+              </div>
+            </div>
+
+            <transition name="stage-swap" mode="out-in">
+              <div v-if="runMode === 'model'" key="model" class="target-pane">
+                <template v-if="downloadedModels.length">
+                  <div class="target-toolbar">
+                    <n-input
+                      v-model:value="modelSearch"
+                      clearable
+                      :placeholder="t('separate.modelSearchPlaceholder')"
+                    >
+                      <template #prefix><n-icon :component="SearchOutline" /></template>
+                    </n-input>
+                    <n-select
+                      class="target-toolbar__filter"
+                      v-model:value="modelCategoryFilter"
+                      :menu-props="{ class: 'model-picker__category-menu' }"
+                      :options="modelCategoryOptions"
+                    />
+                  </div>
+                  <div v-if="filteredDownloadedModels.length" class="target-list" role="listbox" :aria-label="t('separate.model')">
+                    <button
+                      v-for="item in filteredDownloadedModels"
+                      :key="item.name"
+                      type="button"
+                      role="option"
+                      :aria-selected="selectedModelName === item.name"
+                      class="target-row"
+                      :class="{ 'target-row--active': selectedModelName === item.name }"
+                      @click="handleSelectModel(item)"
+                    >
+                      <span class="target-row__radio"></span>
+                      <span class="target-row__body">
+                        <span class="target-row__name" :title="item.name">{{ item.name }}</span>
+                        <span class="target-row__meta">
+                          <span class="target-row__tag" :title="categoryLabel(item)">{{ categoryLabel(item) }}</span>
+                          <span class="target-row__desc" :title="modelMetaLine(item)">{{ modelMetaLine(item) }}</span>
+                        </span>
+                      </span>
+                      <n-icon v-if="selectedModelName === item.name" class="target-row__check" :component="CheckmarkCircle" />
+                    </button>
+                  </div>
+                  <div v-else class="stage-empty">
+                    <div class="stage-empty__glyph"><n-icon :component="SearchOutline" /></div>
+                    <strong>{{ t('separate.modelSearchEmpty') }}</strong>
+                  </div>
+                  <div v-if="selectedModelName && !modelDownloaded" class="stage-alert">
+                    {{ t('separate.startHintModelMissing') }}
+                  </div>
+                </template>
+                <div v-else class="stage-empty" :class="{ 'stage-empty--loading': isLoading }">
+                  <div class="stage-empty__glyph">
+                    <n-spin v-if="isLoading" size="medium" />
+                    <n-icon v-else :component="CubeOutline" />
+                  </div>
                   <strong>{{ isLoading ? t('separate.modelPanelLoadingTitle') : t('separate.modelPanelEmptyTitle') }}</strong>
                   <p>{{ isLoading ? t('separate.modelPanelLoadingDesc') : t('separate.modelPanelEmptyDesc') }}</p>
-                </div>
-                <div class="model-panel__empty-actions">
                   <n-button secondary :loading="isLoading" @click="model.loadModels()">
                     {{ t('separate.modelPanelPrimaryAction') }}
                   </n-button>
                 </div>
               </div>
-                </div>
-                <div v-else key="workflow" class="run-mode-content">
-                  <div class="model-picker model-picker--workflow">
-                <div class="model-picker__toolbar">
+
+              <div v-else key="workflow" class="target-pane">
+                <div class="target-toolbar target-toolbar--single">
                   <n-input
                     v-model:value="workflowSearch"
                     clearable
                     :placeholder="t('separate.workflowSearchPlaceholder')"
                   >
-                    <template #prefix>
-                      <n-icon :component="SearchOutline" />
-                    </template>
+                    <template #prefix><n-icon :component="SearchOutline" /></template>
                   </n-input>
                 </div>
-                <div class="model-picker__divider" />
-                <div v-if="filteredWorkflows.length" class="model-picker__list" role="listbox" :aria-label="t('separate.workflow')">
+                <div v-if="filteredWorkflows.length" class="target-list" role="listbox" :aria-label="t('separate.workflow')">
                   <button
                     v-for="item in filteredWorkflows"
                     :key="item.id"
                     type="button"
                     role="option"
                     :aria-selected="selectedWorkflowId === item.id"
-                    class="model-picker__item"
-                    :class="{ 'model-picker__item--active': selectedWorkflowId === item.id }"
+                    class="target-row"
+                    :class="{ 'target-row--active': selectedWorkflowId === item.id }"
                     @click="workflow.selectWorkflow(item.id)"
                   >
-                    <div class="model-picker__item-main">
-                      <div class="model-picker__item-title">
-                        <strong :title="item.name">{{ item.name }}</strong>
-                        <span class="model-picker__item-tag">{{ t('separate.workflow') }}</span>
-                      </div>
-                      <div class="model-picker__item-sub" :title="item.description">
-                        {{ item.description || t('separate.workflowNoDescription') }}
-                      </div>
-                    </div>
-                    <n-icon v-if="selectedWorkflowId === item.id" class="model-picker__item-check" :component="CheckmarkCircle" />
+                    <span class="target-row__radio"></span>
+                    <span class="target-row__body">
+                      <span class="target-row__name" :title="item.name">{{ item.name }}</span>
+                      <span class="target-row__meta">
+                        <span class="target-row__tag">{{ t('separate.workflow') }}</span>
+                        <span class="target-row__desc" :title="item.description">{{ item.description || t('separate.workflowNoDescription') }}</span>
+                      </span>
+                    </span>
+                    <n-icon v-if="selectedWorkflowId === item.id" class="target-row__check" :component="CheckmarkCircle" />
                   </button>
                 </div>
-                <div v-else class="model-panel__empty-state">
-                  <div class="model-panel__empty-visual">
-                    <n-icon :component="GitNetworkOutline" />
-                  </div>
-                  <div class="model-panel__empty-main">
-                    <strong>{{ t('separate.workflowEmptyTitle') }}</strong>
-                    <p>{{ t('separate.workflowEmptyDesc') }}</p>
-                  </div>
-                  <div class="model-panel__empty-actions">
-                    <n-button secondary @click="router.push('/workflows')">
-                      {{ t('separate.workflowCreateAction') }}
-                    </n-button>
-                  </div>
+                <div v-else class="stage-empty">
+                  <div class="stage-empty__glyph"><n-icon :component="GitNetworkOutline" /></div>
+                  <strong>{{ t('separate.workflowEmptyTitle') }}</strong>
+                  <p>{{ t('separate.workflowEmptyDesc') }}</p>
+                  <n-button secondary @click="router.push('/workflows')">
+                    {{ t('separate.workflowCreateAction') }}
+                  </n-button>
                 </div>
               </div>
-                </div>
-              </transition>
-            </div>
-          </div>
-        </n-collapse-transition>
-      </section>
-    </div>
+            </transition>
 
-    <section
-      v-if="currentBatchTasks.length && currentTask && taskPanelState !== 'ready'"
-      class="separation-task-panel"
-      :class="`separation-task-panel--${taskPanelState}`"
-    >
-      <template v-if="taskPanelState === 'running'">
-        <div class="task-running-head">
-          <div>
-            <strong>{{ currentBatchTitle }}</strong>
-            <span>{{ currentBatchLine }}</span>
-          </div>
-          <n-tag :bordered="false" :type="statusType(currentTask.status)">{{ statusLabel(currentTask.status) }}</n-tag>
-        </div>
-        <div class="task-progress-block">
-          <div class="task-progress-head">
-            <span>
-              {{ currentBatchIsMulti ? t('separate.batchOverallProgress') : progressTitle(currentTask) }}
-              <template v-if="!currentBatchIsMulti && progressDetail(currentTask)"> · {{ progressDetail(currentTask) }}</template>
-            </span>
-            <strong>{{ currentBatchProgress }}%</strong>
-          </div>
-          <n-progress
-            type="line"
-            :percentage="currentBatchProgress"
-            :status="progressStatus(currentTask.status)"
-            processing
-            :height="9"
-            :show-indicator="false"
-          />
-          <p v-if="taskSubMessage(currentTask)" class="task-panel-message">{{ taskSubMessage(currentTask) }}</p>
-        </div>
-        <div class="task-panel-meta">
-          <span><n-icon :component="TimeOutline" /> {{ currentTaskDuration }}</span>
-          <span :title="currentTaskOutputPath">{{ t('separate.outputTo') }} {{ currentTaskOutputSummary }}</span>
-        </div>
-        <div class="task-panel-actions">
-          <n-button secondary :disabled="!currentTask.logs.length" @click="openCurrentLogs">
-            <template #icon><n-icon :component="TerminalOutline" /></template>
-            {{ t('tasks.logs') }}
-          </n-button>
-          <n-button
-            secondary
-            type="error"
-            :loading="cancellingTaskId === currentTask.id || cancellingTaskId === 'batch'"
-            :disabled="cancellingTaskId === currentTask.id || cancellingTaskId === 'batch'"
-            @click="handleCancelCurrentTask"
-          >
-            {{ t('tasks.cancelAction') }}
-          </n-button>
-        </div>
-      </template>
-      <template v-else-if="currentTask">
-        <div class="task-done-main">
-          <div>
-            <strong>{{ currentBatchIsMulti ? currentBatchTitle : statusLabel(currentTask.status) }}</strong>
-            <span>
-              {{ currentBatchLine }}
-              <template v-if="taskPanelState === 'done' && !currentBatchIsMulti"> · {{ currentTask.outputs.length }} {{ t('separate.previewStemUnit') }} · {{ currentTaskDuration }}</template>
-            </span>
-            <code v-if="taskPanelState === 'done'" :title="currentTaskOutputPath">{{ currentBatchOutputSummary }}</code>
-            <small v-else-if="taskSubMessage(currentTask)">{{ taskSubMessage(currentTask) }}</small>
-          </div>
-        </div>
-        <div class="task-panel-actions">
-          <n-button v-if="taskPanelState === 'done'" secondary @click="task.revealPath(currentJob?.output || currentTask.output)">
-            <template #icon><n-icon :component="OpenOutline" /></template>
-            {{ t('separate.openOutput') }}
-          </n-button>
-          <n-button v-if="currentTask.logs.length" secondary @click="openCurrentLogs">
-            <template #icon><n-icon :component="TerminalOutline" /></template>
-            {{ t('tasks.logs') }}
-          </n-button>
-          <n-button type="primary" secondary @click="retryCurrentTask">
-            <template #icon><n-icon :component="PlayOutline" /></template>
-            {{ t('common.retry') }}
-          </n-button>
-          <n-button v-if="taskPanelState === 'done'" type="primary" @click="resetForNextSeparation">
-            {{ t('separate.newSeparation') }}
-          </n-button>
-        </div>
-      </template>
-    </section>
-
-    <transition name="result-preview" appear>
-      <section v-if="taskPanelState === 'done' && playableOutputGroups.length" class="result-preview-panel">
-        <div class="result-preview-panel__head">
-          <strong>{{ t('separate.previewTitle') }}</strong>
-          <span>{{ playableOutputGroups.length }} {{ t('separate.previewResultUnit') }} · {{ playableOutputs.length }} {{ t('separate.previewStemUnit') }}</span>
-        </div>
-        <div class="preview-result-list">
-          <section v-for="group in playableOutputGroups" :key="group.task.id" class="preview-result-card">
-            <div class="preview-result-card__head">
-              <strong>{{ getFileName(group.task.input) }}</strong>
-              <span>{{ group.outputs.length }} {{ t('separate.previewStemUnit') }}</span>
-            </div>
-            <div class="preview-track-list">
-              <div v-for="output in group.outputs" :key="output.path" class="preview-track">
-                <div class="preview-track__title">
-                  <strong>{{ output.stem }}</strong>
-                  <small :title="output.path">{{ shortenMiddle(output.path, 68) }}</small>
+            <footer class="launch-bar" :class="`launch-bar--${canStart ? 'ready' : 'idle'}`">
+              <div class="launch-bar__status">
+                <span class="launch-bar__glyph"><n-icon :component="CheckmarkCircle" /></span>
+                <div class="launch-bar__text">
+                  <strong>{{ startStatusText }}</strong>
+                  <span :title="outputPreview">{{ outputSummaryPath }}</span>
                 </div>
-                <n-button circle secondary size="small" @click="toggleOutputPlayback(output)">
-                  <template #icon>
-                    <n-icon :component="playingOutputPath === output.path ? PauseOutline : PlayOutline" />
-                  </template>
+              </div>
+              <div class="launch-bar__actions">
+                <n-button quaternary class="launch-bar__reveal" :title="t('separate.openOutput')" @click="task.revealPath(normalizedOutputDir)">
+                  <template #icon><n-icon :component="OpenOutline" /></template>
+                  {{ t('separate.openOutput') }}
                 </n-button>
-                <n-slider
-                  class="preview-track__slider"
-                  :value="getOutputPlayback(output.path).currentTime"
-                  :min="0"
-                  :max="Math.max(getOutputPlayback(output.path).duration, 1)"
-                  :step="0.1"
-                  :tooltip="false"
-                  @update:value="(value: number) => seekOutput(output.path, value)"
-                />
-                <span class="preview-track__time">
-                  {{ formatPlaybackTime(getOutputPlayback(output.path).currentTime) }} / {{ formatPlaybackTime(getOutputPlayback(output.path).duration) }}
-                </span>
+                <n-button type="primary" size="large" class="launch-bar__go" :disabled="!canStart" @click="start">
+                  <template #icon><n-icon :component="PlayOutline" /></template>
+                  {{ t('separate.startTask') }}
+                </n-button>
               </div>
-            </div>
+            </footer>
           </section>
-        </div>
-      </section>
-    </transition>
-
-    <section v-if="taskPanelState !== 'done'" class="summary-bar">
-      <div class="summary-bar__content">
-        <div class="summary-bar__topline">
-          <div class="summary-bar__heading">
-            <span class="summary-bar__heading-icon">
-              <n-icon :component="OptionsOutline" />
-            </span>
-            <div>
-              <strong>{{ t('separate.outputSummaryTitle') }}</strong>
-              <span>{{ t('separate.outputSummaryHint') }}</span>
-            </div>
-          </div>
-        </div>
-        <div class="summary-bar__body">
-          <div class="summary-bar__options">
-            <div class="summary-config-grid">
-              <div class="field-block field-block--wide">
-                <label>{{ t('separate.temporaryOutputDir') }}</label>
-                <n-input-group>
-                  <n-input v-model:value="temporaryOutputDir" :placeholder="settings.outputDir || t('separate.outputDefault')" clearable />
-                  <n-button secondary @click="pickTemporaryOutputDir">{{ t('separate.chooseOutput') }}</n-button>
-                </n-input-group>
-              </div>
-              <div class="field-block">
-                <label>{{ runMode === 'workflow' ? t('separate.currentFormat') : t('settings.defaultFormat') }}</label>
-                <n-select v-if="runMode === 'model'" v-model:value="settings.defaultFormat" :options="formatOptions" />
-                <div v-else class="summary-static-value">{{ formatLabel }}</div>
-              </div>
-              <div class="field-block field-block--switch">
-                <label>{{ t('separate.saveAsFolder') }}</label>
-                <div class="output-folder-switch">
-                  <n-switch v-model:value="saveAsFolder" />
-                  <div class="output-folder-switch__text">
-                    <strong>{{ outputSaveModeLabel }}</strong>
-                    <span>{{ t('separate.saveAsFolderHint') }}</span>
-                  </div>
-                </div>
-              </div>
-              <n-button class="summary-bar__advanced" secondary @click="showSettingsDrawer = true">
-                <template #icon><n-icon :component="SettingsOutline" /></template>
-                {{ t('separate.configParams') }}
-              </n-button>
-            </div>
-          </div>
-
-          <transition name="summary-stems">
-            <div v-if="runMode === 'model'" class="summary-stems-shell">
-              <div class="summary-stems-row">
-                <div class="summary-stems-row__head">
-                  <label>{{ t('separate.outputStems') }}</label>
-                </div>
-                <div v-if="availableStemNames.length" class="stem-toggle-list">
-                  <n-checkbox-group v-model:value="checkedOutputStems">
-                    <n-checkbox
-                      v-for="stem in availableStemNames"
-                      :key="stem"
-                      :value="stem"
-                      :label="stem"
-                    />
-                  </n-checkbox-group>
-                </div>
-                <div v-else class="stem-toggle-empty">{{ t('separate.allStems') }}</div>
-              </div>
-            </div>
-          </transition>
-        </div>
-        <div class="summary-bar__execution">
-          <div class="summary-bar__output-line" :title="outputPreview">
-            <span class="summary-bar__path">{{ outputSummaryPath }}</span>
-            <div class="summary-bar__details">
-              <span>{{ t('separate.currentFormat') }} · {{ formatLabel }}</span>
-              <span>{{ t('separate.saveMode') }} · {{ outputSaveModeLabel }}</span>
-              <span>{{ t('separate.outputStems') }} · {{ selectedStemDetail }}</span>
-            </div>
-          </div>
-          <div class="summary-bar__footer">
-            <div class="summary-bar__status">
-              <div class="summary-bar__ready" :class="{ 'summary-bar__ready--disabled': !canStart }">
-                <n-icon :component="CheckmarkCircle" />
-                <strong>{{ startStatusText }}</strong>
-              </div>
-            </div>
-            <div class="summary-bar__actions">
-              <n-button secondary size="large" @click="task.revealPath(normalizedOutputDir)">
-                <template #icon><n-icon :component="OpenOutline" /></template>
-                {{ t('separate.openOutput') }}
-              </n-button>
-              <n-button type="primary" size="large" :disabled="!canStart" @click="start">
-                <template #icon><n-icon :component="PlayOutline" /></template>
-                {{ t('separate.startTask') }}
-              </n-button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
+        </transition>
+      </main>
+    </div>
 
     <n-modal v-model:show="showSettingsDrawer">
       <n-card
@@ -1457,1542 +1315,1021 @@ async function retryCurrentTask() {
   </div>
 </template>
 
+
 <style scoped>
+/* ============ Workstation shell ============ */
 .separate-page {
-  position: relative;
-  display: grid;
-  gap: 14px;
+  max-width: 1140px;
+  margin: 0 auto;
+  height: 100%;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.separate-header {
-  margin-bottom: 2px;
+.console-topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
 }
 
-.separate-header__brand {
+.console-topbar__brand {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
-.separate-header__brand :deep(.app-brand-mark) {
+.console-topbar__brand :deep(.app-brand-mark) {
   transform-origin: center center;
-  will-change: transform, filter;
 }
 
-.separate-header__brand:hover :deep(.app-brand-mark) {
-  animation: separate-brand-jelly 780ms cubic-bezier(0.22, 1, 0.36, 1);
+.console-topbar__title {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
 }
 
-.separate-header__brand:hover :deep(.app-brand-mark__image) {
-  filter:
-    drop-shadow(0 1px 1px rgba(255,255,255,0.08))
-    drop-shadow(0 10px 20px rgba(98, 126, 255, 0.18));
+.console-topbar__title h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
 }
 
-@keyframes separate-brand-jelly {
-  0% {
-    transform: translateY(0) scale3d(1, 1, 1);
-  }
-  18% {
-    transform: translateY(-1px) scale3d(1.12, 0.9, 1);
-  }
-  34% {
-    transform: translateY(0) scale3d(0.92, 1.08, 1);
-  }
-  50% {
-    transform: translateY(-0.5px) scale3d(1.04, 0.96, 1);
-  }
-  66% {
-    transform: translateY(0) scale3d(0.985, 1.02, 1);
-  }
-  82% {
-    transform: translateY(0) scale3d(1.01, 0.995, 1);
-  }
-  100% {
-    transform: translateY(0) scale3d(1, 1, 1);
-  }
+.console-topbar__title span {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.separate-header h1 {
-  font-size: 24px;
-  letter-spacing: -0.035em;
+.console-topbar__controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
 }
 
-.separate-page :deep(.n-button) {
+.console-topbar__manage {
+  color: color-mix(in srgb, var(--on-surface-muted) 84%, var(--on-surface));
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+/* segmented mode switch */
+.mode-switch {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 90%, transparent);
+}
+
+.mode-switch :deep(.n-radio-button) {
+  height: 30px;
+  line-height: 30px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--on-surface-muted);
+  transition: color 160ms ease, background 200ms ease, box-shadow 200ms ease;
+}
+
+.mode-switch :deep(.n-radio-group__splitor) { display: none; }
+.mode-switch :deep(.n-radio-button__state-border) { display: none; }
+
+.mode-switch :deep(.n-radio-button--checked) {
+  color: var(--on-surface);
+  background: color-mix(in srgb, var(--surface) 70%, var(--surface-1));
+  box-shadow:
+    0 1px 2px rgba(0,0,0,0.28),
+    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 40%, transparent);
+}
+
+/* ============ Console grid: rail + stage ============ */
+.console {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(420px, 480px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.console__rail {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.console__stage {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ============ Rail cards ============ */
+.rail-card {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 15px 16px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface-1) 78%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--outline) 80%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.03);
+}
+
+.rail-card--output {
+  grid-template-rows: auto auto;
+}
+
+.rail-card__head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+
+.rail-card__index {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--primary-strong);
+  background: var(--primary-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 40%, transparent);
+}
+
+.rail-card__label {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 1px;
+}
+
+.rail-card__label strong {
+  font-size: 13.5px;
+  font-weight: 600;
   letter-spacing: -0.01em;
 }
 
-.separate-page :deep(.n-button:not(.n-button--text-type)) {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
-}
-
-.separate-page :deep(.n-button--primary-type) {
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.18),
-    0 12px 28px color-mix(in srgb, var(--primary-glow) 28%, transparent);
-}
-
-.separate-page :deep(.n-input),
-.separate-page :deep(.n-base-selection) {
-  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
-}
-
-.run-mode-toggle {
-  width: fit-content;
-  display: inline-flex;
-  align-items: center;
-  padding: 3px;
-  border: 1px solid color-mix(in srgb, var(--outline) 54%, transparent);
-  border-radius: 13px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.07), transparent 52%, rgba(0,0,0,0.08)),
-    color-mix(in srgb, var(--surface) 34%, transparent);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.08),
-    inset 0 -1px 0 rgba(0,0,0,0.18),
-    0 1px 2px rgba(0,0,0,0.16);
-  overflow: hidden;
-}
-
-.run-mode-toggle :deep(.n-radio-button) {
-  height: 28px;
-  line-height: 28px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-}
-
-.run-mode-toggle :deep(.n-radio-group__splitor) {
-  display: none;
-}
-
-.run-mode-toggle :deep(.n-radio-button--checked) {
-  background: var(--n-button-color-active);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.16);
-}
-
-.run-mode-toggle :deep(.n-radio-button__state-border) {
-  display: none;
-}
-
-.workspace-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.16fr) minmax(380px, 0.84fr);
-  gap: 14px;
-  align-items: stretch;
-  height: clamp(420px, calc(330px + 20vh), 620px);
-  min-height: 0;
-}
-
-.workspace-grid--compact {
-  height: auto;
-}
-
-.config-panel {
-  display: grid;
-  gap: 12px;
-  padding: 18px;
-  border: 1px solid color-mix(in srgb, var(--outline) 64%, transparent);
-  border-radius: 22px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.035), transparent 40%),
-    color-mix(in srgb, var(--surface-1) 90%, transparent);
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.05),
-    0 18px 42px rgba(0, 0, 0, 0.055);
-  transition: box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.workspace-grid--compact .config-panel {
-  height: auto;
-  min-height: 72px;
-  padding: 14px 16px;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.04),
-    0 10px 26px rgba(0, 0, 0, 0.04);
-}
-
-.config-panel--input {
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.config-panel--model {
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.workspace-grid--compact .config-panel--input,
-.workspace-grid--compact .config-panel--model {
-  grid-template-rows: auto;
-}
-
-.config-rollup-content {
-  min-height: 0;
-  display: grid;
-  gap: 12px;
-  animation: rollup-content-enter 420ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.config-rollup-content--input {
-  height: 100%;
-  min-height: 0;
-  grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
-}
-
-.config-rollup-content--model {
-  height: 100%;
-  min-height: 0;
-  grid-template-rows: minmax(0, 1fr);
-  overflow: hidden;
-}
-
-.panel-heading {
-  min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.panel-heading > div:not(.panel-heading__icon) {
-  min-width: 0;
-}
-
-.panel-heading__main {
-  min-width: 0;
-  flex: 1;
-}
-
-.panel-heading__action {
-  min-width: 0;
-  max-width: min(210px, 34%);
-  flex: 0 1 auto;
-  margin-left: auto;
-  color: color-mix(in srgb, var(--on-surface-muted) 82%, var(--on-surface));
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.panel-heading__action :deep(.n-button__content) {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.panel-heading__icon {
-  width: 40px;
-  height: 40px;
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  border-radius: 14px;
-  font-size: 19px;
-  color: color-mix(in srgb, var(--primary-strong) 88%, var(--on-surface));
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.08), transparent 58%),
-    color-mix(in srgb, var(--primary-soft) 58%, var(--surface-2));
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 45%, transparent),
-    inset 0 1px 0 rgba(255,255,255,0.08);
-}
-
-.panel-heading h2 {
-  margin: 0;
-  font-size: 16px;
-  letter-spacing: -0.025em;
-}
-
-.panel-heading p {
-  margin: 2px 0 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.rail-card__label small {
+  font-size: 11px;
   color: var(--on-surface-muted);
-  font-size: 12px;
-  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.button-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 9px;
+.rail-card__clear {
+  color: var(--danger);
+  font-size: 11px;
 }
 
-.candidate {
-  position: relative;
-  height: 100%;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid color-mix(in srgb, var(--outline) 62%, transparent);
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 26%, transparent), transparent),
-    color-mix(in srgb, var(--surface) 42%, transparent);
-  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
-}
-
-.candidate::before {
-  content: '';
-  position: absolute;
-  inset: 58px 18px 28px;
-  opacity: 0.22;
-  pointer-events: none;
-  background:
-    linear-gradient(90deg, transparent 0 5%, color-mix(in srgb, var(--primary) 34%, transparent) 5% 5.5%, transparent 5.5% 9.5%),
-    repeating-linear-gradient(90deg, transparent 0 22px, color-mix(in srgb, var(--on-surface-muted) 18%, transparent) 22px 23px, transparent 23px 44px);
-  mask-image: linear-gradient(180deg, transparent, black 18%, black 78%, transparent);
-}
-
-.candidate--dragging {
-  border-color: color-mix(in srgb, var(--primary) 78%, var(--outline));
-  border-style: dashed;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 20%, transparent), transparent),
-    color-mix(in srgb, var(--surface-2) 44%, transparent);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--primary-border) 34%, transparent),
-    0 16px 30px color-mix(in srgb, var(--primary-glow) 10%, transparent);
-}
-
-.candidate__head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.candidate__head strong {
-  font-size: 13px;
-}
-
-.candidate__head span {
-  flex: 1;
+.rail-card__more {
   color: var(--on-surface-muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
-.candidate__list {
+.rail-card__body {
   min-height: 0;
-  height: 100%;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-start;
+  gap: 10px;
+}
+
+/* pick buttons */
+.picker-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
-  max-height: 100%;
-  overflow-y: auto;
-  padding-right: 2px;
 }
 
-.candidate__list,
-.model-picker__list {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--outline) 70%, transparent) transparent;
-}
-
-.candidate__list::-webkit-scrollbar,
-.model-picker__list::-webkit-scrollbar {
-  width: 6px;
-}
-
-.candidate__list::-webkit-scrollbar-thumb,
-.model-picker__list::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--outline) 80%, transparent);
-}
-
-.candidate__list::-webkit-scrollbar-thumb:hover,
-.model-picker__list::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--on-surface-muted) 50%, transparent);
-}
-
-.candidate__list::-webkit-scrollbar-track,
-.model-picker__list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.candidate__item {
+.picker-btn {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
-  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--surface-1) 76%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
-}
-
-.candidate__item-icon {
-  flex: 0 0 auto;
-  font-size: 16px;
-  color: var(--primary-strong);
-}
-
-.candidate__item-main {
-  min-width: 0;
-  flex: 1;
-  display: grid;
-  gap: 2px;
-}
-
-.candidate__item-kind {
-  display: inline-flex;
-  align-items: center;
-  width: fit-content;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  line-height: 1.4;
-  color: color-mix(in srgb, var(--primary-strong) 78%, var(--on-surface-muted));
-  background: color-mix(in srgb, var(--primary-soft) 22%, var(--surface-2));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 18%, transparent);
-}
-
-.candidate__item-main strong,
-.candidate__item-main code {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.candidate__item-main strong {
-  font-size: 13px;
-}
-
-.candidate__item-main code {
-  color: var(--on-surface-muted);
-  font-size: 11px;
-}
-
-.candidate__empty {
-  min-height: 100%;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 20px 16px;
-  text-align: center;
-  color: var(--on-surface-muted);
-  font-size: 12px;
-  line-height: 1.6;
+  gap: 7px;
+  height: 36px;
+  border: 0;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--surface-2) 62%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 88%, transparent);
+  color: var(--on-surface);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 150ms ease, box-shadow 150ms ease, transform 120ms ease;
 }
 
-.candidate__empty-icon {
-  width: 50px;
-  height: 50px;
-  display: grid;
-  place-items: center;
-  border-radius: 16px;
-  font-size: 24px;
-  color: var(--primary-strong);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.08), transparent 64%),
-    color-mix(in srgb, var(--primary-soft) 40%, var(--surface-2));
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 28%, transparent),
-    0 12px 24px rgba(0, 0, 0, 0.08);
+.picker-btn .n-icon { font-size: 15px; color: var(--primary-strong); }
+.picker-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary-soft) 26%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 52%, transparent);
+}
+.picker-btn:active:not(:disabled) { transform: translateY(1px); }
+.picker-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* dropzone / file list */
+.dropzone {
+  flex: 1 1 auto;
+  min-height: 0;
+  border-radius: 13px;
+  border: 1px dashed color-mix(in srgb, var(--outline) 130%, transparent);
+  background: color-mix(in srgb, var(--surface) 40%, transparent);
+  transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
+  overflow: hidden;
 }
 
-.model-panel__body {
+.dropzone--filled {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--outline) 90%, transparent);
+}
+
+.dropzone--dragging {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary-soft) 18%, var(--surface-1));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 60%, transparent);
+}
+
+.dropzone--clickable { cursor: pointer; }
+.dropzone--clickable:hover {
+  border-color: color-mix(in srgb, var(--primary) 70%, var(--outline));
+  background: color-mix(in srgb, var(--primary-soft) 12%, var(--surface));
+}
+.dropzone--clickable:hover .dropzone__glyph {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary-soft) 46%, var(--surface-2));
+}
+
+.file-list {
   height: 100%;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-  overflow: hidden;
-}
-
-.model-picker {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  overflow: hidden;
-}
-
-.run-mode-content {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  overflow: hidden;
-}
-
-.run-mode-content-enter-active {
-  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: opacity, transform;
-}
-
-.run-mode-content-leave-active {
-  transition: opacity 150ms cubic-bezier(0.4, 0, 1, 1), transform 150ms cubic-bezier(0.4, 0, 1, 1);
-  will-change: opacity, transform;
-}
-
-.run-mode-content-enter-from {
-  opacity: 0;
-  transform: translateX(10px);
-}
-
-.run-mode-content-leave-to {
-  opacity: 0;
-  transform: translateX(-8px);
-}
-
-.model-picker__toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(180px, 0.7fr);
-  gap: 10px;
-}
-.model-picker--workflow .model-picker__toolbar {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.model-picker__divider {
-  height: 1px;
-  background: color-mix(in srgb, var(--outline) 52%, transparent);
-}
-
-.model-picker__list {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: grid;
-  grid-auto-rows: max-content;
-  align-content: start;
-  gap: 5px;
   overflow-y: auto;
-  max-height: min(340px, 42vh);
-  padding: 7px;
-  padding-right: 5px;
-  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--surface) 34%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--outline) 120%, transparent) transparent;
 }
+.file-list::-webkit-scrollbar { width: 6px; }
+.file-list::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--outline) 130%, transparent); }
+.file-list::-webkit-scrollbar-track { background: transparent; }
 
-.model-picker__item {
-  min-width: 0;
-  min-height: 46px;
-  width: 100%;
-  max-width: 100%;
-  overflow: hidden;
-  position: relative;
+.file-chip {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px 8px 12px;
-  border: 1px solid transparent;
-  border-radius: 13px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 140ms ease, background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+  gap: 9px;
+  padding: 7px 8px 7px 9px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 50%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 76%, transparent);
 }
 
-.model-picker__item:hover {
-  background: color-mix(in srgb, var(--surface-2) 42%, transparent);
+.file-chip__glyph {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--primary-strong);
+  background: var(--primary-soft);
 }
 
-.model-picker__item--active {
-  border-color: color-mix(in srgb, var(--primary) 26%, transparent);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 34%, transparent), transparent 72%),
-    color-mix(in srgb, var(--surface-2) 60%, transparent);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.055),
-    0 10px 22px color-mix(in srgb, var(--primary-glow) 7%, transparent);
-}
-
-.model-picker__item-main {
+.file-chip__main {
   min-width: 0;
   flex: 1;
   display: grid;
-  gap: 2px;
+  gap: 3px;
 }
 
-.model-picker__item-title {
+.file-chip__main strong {
   min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.model-picker__item-title strong {
-  min-width: 0;
-  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
 }
 
-.model-picker__item--active .model-picker__item-title strong {
-  color: color-mix(in srgb, var(--primary-strong) 78%, var(--on-surface));
-}
-
-.model-picker__item-tag {
-  flex: 0 0 auto;
-  max-width: 42%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 2px 7px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--primary) 18%, transparent);
-  background: color-mix(in srgb, var(--primary-soft) 18%, var(--surface-2));
-  color: color-mix(in srgb, var(--primary-strong) 72%, var(--on-surface-muted));
-  font-size: 9px;
-  line-height: 1.4;
-}
-
-.model-picker__item-sub {
+.file-chip__sub {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--on-surface-muted);
-  font-size: 11px;
-}
-
-.model-picker__item--active .model-picker__item-tag {
-  background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface-2));
-  color: color-mix(in srgb, var(--primary-strong) 78%, var(--on-surface-muted));
-}
-
-.model-picker__item--active .model-picker__item-sub {
-  color: color-mix(in srgb, var(--primary-strong) 72%, var(--on-surface-muted));
-}
-
-.model-picker__item-check {
-  flex: 0 0 auto;
-  font-size: 15px;
-  color: color-mix(in srgb, var(--primary-strong) 86%, var(--primary));
-}
-@media (max-width: 1080px) {
-  .config-panel--workflow .panel-heading {
-    display: grid;
-    grid-template-columns: 38px minmax(0, 1fr);
-  }
-  .config-panel--workflow .panel-heading__action {
-    grid-column: 2;
-    justify-self: start;
-    max-width: 100%;
-    margin-left: 0;
-  }
-}
-
-.model-picker__empty {
-  padding: 14px 12px;
-  border: 1px dashed color-mix(in srgb, var(--outline) 74%, transparent);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--surface-1) 72%, transparent);
-  color: var(--on-surface-muted);
-  font-size: 12px;
-  line-height: 1.6;
-  text-align: center;
-}
-
-.model-picker__category-select {
-  min-width: 0;
-}
-
-.model-picker__category-select :deep(.n-base-selection) {
-  border-radius: 12px;
-}
-
-.model-picker__category-select :deep(.n-base-selection.n-base-selection--active) {
-  border-bottom-left-radius: 12px;
-  border-bottom-right-radius: 12px;
-}
-
-:deep(.model-picker__category-menu) {
-  margin-top: 6px;
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-.model-info-card {
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--outline) 64%, transparent);
-  border-radius: 12px;
-}
-
-.model-info-card--warn {
-  color: var(--warning);
-  border-color: color-mix(in srgb, var(--warning) 34%, var(--outline));
-  background: color-mix(in srgb, var(--warning) 8%, transparent);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.model-panel__empty-state {
-  position: relative;
-  overflow: hidden;
   display: flex;
-  flex: 1;
+  align-items: center;
+  gap: 7px;
+}
+
+.file-chip__sub code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--on-surface-muted);
+}
+
+.file-chip__kind {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  color: color-mix(in srgb, var(--primary-strong) 76%, var(--on-surface-muted));
+  background: color-mix(in srgb, var(--primary-soft) 30%, var(--surface-2));
+}
+
+.file-chip__remove { flex: 0 0 auto; color: var(--on-surface-muted); }
+
+.dropzone__empty {
+  height: 100%;
+  display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 16px;
-  min-height: 270px;
-  padding: 28px 24px;
-  border: 1px dashed color-mix(in srgb, var(--outline) 68%, var(--primary-border));
-  border-radius: 20px;
-  background:
-    radial-gradient(circle at top, color-mix(in srgb, var(--primary-soft) 7%, transparent), transparent 54%),
-    color-mix(in srgb, var(--surface) 28%, transparent);
+  gap: 6px;
+  padding: 18px;
   text-align: center;
 }
 
-.model-panel__empty-state::before {
-  content: '';
-  position: absolute;
-  inset: -30% -20%;
-  background:
-    radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--primary-soft) 11%, transparent), transparent 32%),
-    radial-gradient(circle at 72% 28%, color-mix(in srgb, var(--primary) 6%, transparent), transparent 34%);
-  opacity: 0.76;
-  pointer-events: none;
-}
-
-.model-panel__empty-state--loading::before {
-  opacity: 0.7;
-}
-
-.model-panel__empty-visual {
-  position: relative;
-  z-index: 1;
+.dropzone__glyph {
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
-  width: 68px;
-  height: 68px;
-  border: 1px solid color-mix(in srgb, var(--primary) 18%, var(--outline));
-  border-radius: 22px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.08), transparent 60%),
-    color-mix(in srgb, var(--surface-1) 82%, var(--primary-soft));
-  color: var(--primary);
-  box-shadow: 0 14px 30px color-mix(in srgb, var(--primary) 7%, transparent);
+  border-radius: 13px;
+  font-size: 21px;
+  color: var(--primary-strong);
+  background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 30%, transparent);
+  margin-bottom: 2px;
 }
 
-.model-panel__empty-visual :deep(.n-spin-body) {
-  color: var(--primary);
-}
+.dropzone__empty strong { font-size: 13px; color: var(--on-surface-muted); font-weight: 500; max-width: 240px; }
 
-.model-panel__empty-visual .n-icon {
-  font-size: 30px;
-}
+/* output fields */
+.rail-card__body--output { gap: 12px; }
 
-.model-panel__empty-main {
-  position: relative;
-  z-index: 1;
-  max-width: 340px;
-}
+.ofield { display: grid; gap: 6px; min-width: 0; }
 
-.model-panel__empty-main strong {
-  display: block;
-  font-size: 15px;
-  line-height: 1.4;
-}
-
-.model-panel__empty-main p {
-  margin-top: 8px;
-  color: var(--on-surface-muted);
-  font-size: 12px;
-  line-height: 1.75;
-}
-
-.model-panel__empty-actions {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-}
-
-.model-panel__empty-actions .n-button {
-  min-width: 130px;
-}
-
-.summary-bar {
-  padding: 16px;
-  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.032), transparent 42%),
-    color-mix(in srgb, var(--surface-1) 82%, transparent);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.045),
-    0 16px 36px rgba(0, 0, 0, 0.045);
-}
-
-.summary-bar__content {
-  min-width: 0;
-  display: grid;
-  gap: 12px;
-}
-
-.summary-bar__topline {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.summary-bar__heading {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.summary-bar__heading-icon {
-  flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
-  display: grid;
-  place-items: center;
-  border-radius: 14px;
-  font-size: 19px;
-  color: color-mix(in srgb, var(--primary-strong) 88%, var(--on-surface));
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.08), transparent 58%),
-    color-mix(in srgb, var(--primary-soft) 58%, var(--surface-2));
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 45%, transparent),
-    inset 0 1px 0 rgba(255,255,255,0.08);
-}
-
-.summary-bar__heading > div {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.summary-bar__topline strong {
-  font-size: 14px;
-  letter-spacing: -0.01em;
-}
-
-.summary-bar__heading > div > span {
-  color: var(--on-surface-muted);
-  font-size: 12px;
-}
-
-.summary-bar__body {
-  min-width: 0;
-  display: grid;
-  gap: 12px;
-}
-
-.summary-bar__options {
-  min-width: 0;
-  display: grid;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--surface-2) 36%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
-}
-
-.summary-bar__execution {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px 16px;
-  padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--surface-2) 30%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
-}
-
-.summary-bar__output-line {
-  min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 12px;
-}
-
-.summary-bar__path {
-  min-width: 0;
-  flex: 0 1 auto;
-  max-width: 520px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: color-mix(in srgb, var(--on-surface) 90%, var(--on-surface-muted));
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.summary-config-grid {
-  display: grid;
-  grid-template-columns: minmax(260px, 420px) minmax(104px, 128px) minmax(220px, 280px) max-content;
-  gap: 12px;
-  align-items: end;
-  justify-content: start;
-}
-
-.summary-config-grid .field-block {
-  min-width: 0;
-}
-
-.field-block--switch {
-  min-width: 220px;
-}
-
-.output-folder-switch {
-  min-height: 34px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.output-folder-switch__text {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.output-folder-switch__text strong {
-  font-size: 12px;
-  line-height: 1.25;
-}
-
-.output-folder-switch__text span {
-  color: var(--on-surface-muted);
+.ofield__label {
   font-size: 11px;
-  line-height: 1.35;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--on-surface-muted);
+  font-weight: 500;
 }
 
-.summary-bar__advanced {
-  justify-self: start;
-}
-
-.summary-checks {
+.ofield__static {
+  min-height: 30px;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
-  min-height: 34px;
-  padding-bottom: 2px;
+  padding: 0 11px;
+  border-radius: 9px;
+  font-size: 12.5px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--surface-2) 56%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 80%, transparent);
+}
+.ofield__static--muted { font-weight: 400; color: var(--on-surface-muted); }
+
+.ofield-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
 }
 
-.stem-toggle-list {
-  min-height: 28px;
+.dir-input {
+  display: flex;
+  gap: 8px;
+}
+.dir-input .n-input { flex: 1 1 auto; min-width: 0; }
+.dir-input__browse { flex: 0 0 auto; }
+
+/* save-mode segmented control */
+.seg {
+  display: inline-flex;
+  width: 100%;
+  padding: 2px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface-2) 46%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 82%, transparent);
+}
+.seg--locked { opacity: 0.55; pointer-events: none; }
+
+.seg__btn {
+  flex: 1 1 0;
   min-width: 0;
-  max-height: 96px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--on-surface-muted);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 140ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+.seg__btn--active {
+  color: var(--on-surface);
+  background: color-mix(in srgb, var(--surface) 72%, var(--surface-1));
+  box-shadow:
+    0 1px 2px rgba(0,0,0,0.24),
+    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 38%, transparent);
+}
+
+.ofield--stems .stem-chips {
+  max-height: 108px;
   overflow-y: auto;
-  overflow-x: hidden;
-  padding-right: 4px;
+  padding: 2px 2px 2px 0;
   overscroll-behavior: contain;
 }
 
-.stem-toggle-list :deep(.n-checkbox-group) {
+.stem-chips :deep(.n-checkbox-group) {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 7px;
 }
 
-.stem-toggle-list :deep(.n-checkbox) {
-  max-width: 190px;
-  min-height: 30px;
+.stem-chips :deep(.n-checkbox) {
+  min-height: 28px;
   align-items: center;
-  padding: 5px 10px 5px 8px;
-  border: 1px solid color-mix(in srgb, var(--outline) 62%, transparent);
-  border-radius: 12px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.04), transparent),
-    color-mix(in srgb, var(--surface-2) 58%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
-}
-
-.stem-toggle-list :deep(.n-checkbox:hover) {
-  border-color: color-mix(in srgb, var(--primary) 42%, var(--outline));
-  background: color-mix(in srgb, var(--primary) 12%, var(--surface-2));
-}
-
-.stem-toggle-list :deep(.n-checkbox--checked) {
-  border-color: color-mix(in srgb, var(--primary) 58%, var(--outline));
-  background: color-mix(in srgb, var(--primary) 16%, var(--surface-2));
-}
-
-.stem-toggle-list :deep(.n-checkbox-box-wrapper) {
-  width: 16px;
-  height: 16px;
-}
-
-.stem-toggle-list :deep(.n-checkbox-box) {
-  width: 16px;
-  height: 16px;
-  border-radius: 5px;
-  background-color: color-mix(in srgb, var(--surface-2) 82%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
-}
-
-.stem-toggle-list :deep(.n-checkbox-box__border) {
-  border: 1px solid color-mix(in srgb, var(--outline) 72%, transparent);
-}
-
-.stem-toggle-list :deep(.n-checkbox--checked .n-checkbox-box) {
-  background-color: color-mix(in srgb, var(--primary) 82%, white);
-}
-
-.stem-toggle-list :deep(.n-checkbox--checked .n-checkbox-box__border) {
-  border-color: color-mix(in srgb, var(--primary-border) 72%, transparent);
-}
-
-.stem-toggle-list :deep(.n-checkbox__label) {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.summary-stems-shell {
-  min-height: 0;
-  overflow: hidden;
-}
-
-.summary-stems-shell > .summary-stems-row {
-  min-height: 0;
-  transform-origin: top center;
-}
-
-.summary-stems-enter-active {
-  transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1), transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: opacity, transform;
-}
-
-.summary-stems-leave-active {
-  transition: opacity 120ms cubic-bezier(0.4, 0, 1, 1), transform 140ms cubic-bezier(0.4, 0, 1, 1);
-  will-change: opacity, transform;
-}
-
-.summary-stems-enter-from,
-.summary-stems-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-
-.stem-toggle-empty {
-  min-height: 34px;
-  display: flex;
-  align-items: center;
-  color: var(--on-surface-muted);
-  font-size: 13px;
-}
-
-.summary-stems-row {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  align-items: start;
-  gap: 10px 14px;
-  min-height: 26px;
-  padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--surface-2) 34%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
-}
-
-.summary-stems-row__head {
-  min-width: 0;
-  display: flex;
-  align-self: center;
-  align-items: center;
-  gap: 10px;
-}
-
-.summary-stems-row__head label {
-  color: var(--on-surface-muted);
+  padding: 4px 10px 4px 8px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface-2) 52%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 78%, transparent);
   font-size: 12px;
-  line-height: 1.4;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+.stem-chips :deep(.n-checkbox:hover) {
+  background: color-mix(in srgb, var(--primary-soft) 22%, var(--surface-2));
+}
+.stem-chips :deep(.n-checkbox--checked) {
+  background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 60%, transparent);
 }
 
-.summary-stems-row__head span {
-  color: var(--on-surface-muted);
-  font-size: 12px;
-}
-
-.summary-bar__footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.summary-bar__status {
-  min-width: 0;
-  display: grid;
-  gap: 5px;
-}
-
-.summary-bar__ready {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--success);
-}
-
-.summary-bar__ready strong {
-  color: color-mix(in srgb, var(--success) 82%, var(--on-surface));
-  font-size: 13px;
-}
-
-.summary-bar__ready--disabled,
-.summary-bar__ready--disabled strong {
-  color: var(--on-surface-muted);
-}
-
-.summary-bar__details {
-  min-width: 0;
-  flex: 1 1 360px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px 12px;
-  color: color-mix(in srgb, var(--on-surface-muted) 92%, var(--on-surface));
-  font-size: 11px;
-}
-
-.summary-bar__actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-}
-
-.summary-bar__actions :deep(.n-button--primary-type) {
-  min-width: 138px;
-}
-
-.separation-task-panel,
-.result-preview-panel {
-  border: 1px solid color-mix(in srgb, var(--outline) 64%, transparent);
-  border-radius: 22px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.03), transparent 44%),
-    color-mix(in srgb, var(--surface-1) 82%, transparent);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.04),
-    0 14px 34px rgba(0, 0, 0, 0.055);
-}
-
-:global(.light-theme) .config-panel,
-:global(.light-theme) .summary-bar,
-:global(.light-theme) .separation-task-panel,
-:global(.light-theme) .result-preview-panel {
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.76), rgba(255,255,255,0.42) 44%, rgba(255,255,255,0.18)),
-    color-mix(in srgb, var(--surface-1) 88%, transparent);
-  border-color: color-mix(in srgb, var(--outline) 72%, transparent);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.86),
-    0 18px 46px rgba(37, 49, 77, 0.08);
-}
-
-:global(.dark-theme) .config-panel,
-:global(.dark-theme) .summary-bar,
-:global(.dark-theme) .separation-task-panel,
-:global(.dark-theme) .result-preview-panel {
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.035), transparent 42%),
-    color-mix(in srgb, var(--surface-1) 84%, transparent);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.045),
-    0 18px 52px rgba(0, 0, 0, 0.18);
-}
-
-.separation-task-panel {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  min-height: 86px;
-  padding: 16px 18px;
-  animation: task-panel-pop-in 420ms cubic-bezier(0.22, 1, 0.36, 1);
-  transition:
-    min-height 520ms cubic-bezier(0.22, 1, 0.36, 1),
-    padding 520ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 420ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.separation-task-panel--running {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  min-height: 220px;
-  padding: 20px;
-}
-
-.separation-task-panel--done,
-.separation-task-panel--failed,
-.separation-task-panel--cancelled {
-  min-height: 104px;
-  padding: 16px 18px;
-  transform: translateY(-2px);
-}
-
-.task-ready-main,
-.task-done-main,
-.task-running-head,
-.task-panel-meta,
-.task-panel-actions {
-  min-width: 0;
-}
-
-.task-ready-main,
-.task-done-main {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.task-ready-main {
-  display: grid;
-  gap: 4px;
-}
-
-.task-ready-main strong,
-.task-running-head strong,
-.task-done-main strong {
-  font-size: 15px;
-  letter-spacing: -0.01em;
-}
-
-.task-ready-main span,
-.task-done-main span,
-.task-panel-meta,
-.task-panel-message {
-  color: var(--on-surface-muted);
-  font-size: 12px;
-}
-
-.task-ready-main code,
-.task-done-main code {
-  min-width: 0;
-  max-width: min(62vw, 720px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--on-surface-muted);
-  font-size: 12px;
-}
-
-.task-running-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-  grid-column: 1 / -1;
-}
-
-.task-running-head > div,
-.task-done-main > div {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.task-running-head span,
-.task-done-main small {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--on-surface-muted);
-  font-size: 12px;
-}
-
-.task-progress-block {
-  display: grid;
-  gap: 10px;
-  align-self: stretch;
-}
-
-.task-progress-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 13px;
-}
-
-.task-progress-head strong {
-  font-size: 20px;
-  letter-spacing: -0.03em;
-}
-
-.task-panel-message {
-  margin: 0;
-}
-
-.task-panel-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 16px;
-  grid-column: 1 / -1;
-}
-
-.task-panel-meta span {
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.task-panel-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.separation-task-panel--running .task-panel-actions {
-  align-self: end;
-}
-
-.separation-task-panel--done .task-done-main,
-.separation-task-panel--failed .task-done-main,
-.separation-task-panel--cancelled .task-done-main,
-.separation-task-panel--done .task-panel-actions,
-.separation-task-panel--failed .task-panel-actions,
-.separation-task-panel--cancelled .task-panel-actions {
-  animation: task-compact-content-enter 460ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-.separation-task-panel--done .task-panel-actions,
-.separation-task-panel--failed .task-panel-actions,
-.separation-task-panel--cancelled .task-panel-actions {
-  animation-delay: 80ms;
-}
-
-.result-preview-panel {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
-  max-height: clamp(260px, 38vh, 520px);
-  padding: 16px 18px;
-  overflow: hidden;
-}
-
-.result-preview-panel__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.result-preview-panel__head strong {
-  font-size: 14px;
-}
-
-.result-preview-panel__head span {
-  color: var(--on-surface-muted);
-  font-size: 12px;
-}
-
-.preview-result-list {
-  min-height: 0;
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.preview-result-card {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--outline) 70%, transparent);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--surface-2) 30%, transparent);
-}
-
-.preview-result-card__head {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.preview-result-card__head strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-}
-
-.preview-result-card__head span {
+/* ============ Launch bar (stage bottom) ============ */
+.launch-bar {
   flex: 0 0 auto;
-  color: var(--on-surface-muted);
-  font-size: 11px;
-}
-
-.preview-track-list {
-  display: grid;
-  gap: 8px;
-}
-
-.preview-track {
-  display: grid;
-  grid-template-columns: minmax(160px, 0.9fr) auto minmax(180px, 1fr) auto;
+  display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--outline) 78%, transparent);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--surface-2) 44%, transparent);
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: 15px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 12%, transparent), transparent),
+    color-mix(in srgb, var(--surface-2) 34%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--outline) 84%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.launch-bar--ready {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--success) 30%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.04);
 }
 
-.preview-track__title {
+.launch-bar__status {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.launch-bar__glyph {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  font-size: 19px;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 32%, transparent);
+}
+.launch-bar--idle .launch-bar__glyph {
+  color: var(--on-surface-muted);
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 80%, transparent);
+}
+
+.launch-bar__text {
   min-width: 0;
   display: grid;
-  gap: 2px;
+  gap: 1px;
 }
 
-.preview-track__title strong,
-.preview-track__title small {
-  min-width: 0;
+.launch-bar__text strong {
+  font-size: 13px;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.launch-bar--idle .launch-bar__text strong { color: var(--on-surface-muted); }
 
-.preview-track__title strong {
-  font-size: 13px;
-}
-
-.preview-track__title small,
-.preview-track__time {
-  color: var(--on-surface-muted);
+.launch-bar__text span {
   font-size: 11px;
-}
-
-.preview-track__slider {
-  min-width: 0;
-}
-
-.preview-track__time {
+  color: var(--on-surface-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
-.result-preview-enter-active,
-.result-preview-leave-active {
-  transition: opacity 420ms cubic-bezier(0.22, 1, 0.36, 1), transform 460ms cubic-bezier(0.22, 1, 0.36, 1);
+.launch-bar__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.result-preview-enter-from,
-.result-preview-leave-to {
-  opacity: 0;
-  transform: translateY(-14px) scale(0.985);
+.launch-bar__reveal { color: var(--on-surface-muted); }
+
+.launch-bar__go {
+  min-width: 156px;
+  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.2),
+    0 12px 28px color-mix(in srgb, var(--primary-glow) 42%, transparent);
 }
 
-.preview-track {
-  animation: panel-soft-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+/* ============ Stage ============ */
+.stage-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 20px;
+  background:
+    radial-gradient(120% 90% at 50% -10%, color-mix(in srgb, var(--primary-glow) 10%, transparent), transparent 60%),
+    color-mix(in srgb, var(--surface-1) 74%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--outline) 76%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.03);
 }
 
-.preview-track:nth-child(2) {
-  animation-delay: 55ms;
+.stage-view--running {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 48%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--primary-glow) 16%, transparent);
+}
+.stage-view--done { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 40%, transparent); }
+.stage-view--failed { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent); }
+.stage-view--cancelled { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 40%, transparent); }
+
+.stage-swap-enter-active { transition: opacity 260ms cubic-bezier(0.22,1,0.36,1), transform 300ms cubic-bezier(0.22,1,0.36,1); }
+.stage-swap-leave-active { transition: opacity 160ms ease, transform 160ms ease; }
+.stage-swap-enter-from { opacity: 0; transform: translateY(10px) scale(0.99); }
+.stage-swap-leave-to { opacity: 0; transform: translateY(-6px) scale(0.995); }
+
+/* stage: ready target selection */
+.stage-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.preview-track:nth-child(3) {
-  animation-delay: 110ms;
+.stage-head__label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
-.preview-track:nth-child(4) {
-  animation-delay: 165ms;
+.stage-head__label > .n-icon {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  font-size: 19px;
+  color: var(--primary-strong);
+  background: color-mix(in srgb, var(--primary-soft) 40%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 34%, transparent);
 }
 
-.preview-track:nth-child(n + 5) {
-  animation-delay: 220ms;
+.stage-head__label h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
-@keyframes panel-roll-enter {
-  from {
-    opacity: 0;
-    transform: translateY(-10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.stage-head__label p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  line-height: 1.4;
 }
 
-@keyframes rollup-content-enter {
-  from {
-    opacity: 0;
-    transform: translateY(-12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.target-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-@keyframes task-panel-pop-in {
-  from {
-    opacity: 0;
-    transform: translateY(18px) scale(0.99);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+.target-toolbar {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  gap: 10px;
+}
+.target-toolbar--single { grid-template-columns: minmax(0, 1fr); }
+.target-toolbar__filter { min-width: 0; }
+
+.target-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--outline) 120%, transparent) transparent;
+}
+.target-list::-webkit-scrollbar { width: 7px; }
+.target-list::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--outline) 130%, transparent); }
+.target-list::-webkit-scrollbar-track { background: transparent; }
+
+.target-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 14px;
+  border-radius: 12px;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--surface-2) 38%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 78%, transparent);
+  transition: background 150ms ease, box-shadow 150ms ease;
+  font-family: inherit;
+  color: inherit;
 }
 
-@keyframes task-compact-content-enter {
-  from {
-    opacity: 0;
-    transform: translateY(-16px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.target-row:hover {
+  background: color-mix(in srgb, var(--surface-2) 62%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 40%, transparent);
 }
 
-@keyframes panel-soft-enter {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.target-row--active {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--primary-soft) 42%, transparent), color-mix(in srgb, var(--surface-2) 52%, transparent) 60%);
+  box-shadow:
+    inset 0 0 0 1.5px color-mix(in srgb, var(--primary) 54%, transparent),
+    0 8px 22px color-mix(in srgb, var(--primary-glow) 18%, transparent);
 }
+
+.target-row__radio {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--on-surface-muted) 60%, transparent);
+  transition: box-shadow 150ms ease, background 150ms ease;
+}
+.target-row--active .target-row__radio {
+  background: var(--primary);
+  box-shadow:
+    inset 0 0 0 1.5px var(--primary),
+    inset 0 0 0 4px var(--surface-1);
+}
+
+.target-row__body {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 3px;
+}
+
+.target-row__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.target-row--active .target-row__name { color: var(--primary-strong); }
+
+.target-row__meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.target-row__tag {
+  flex: 0 0 auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  color: color-mix(in srgb, var(--primary-strong) 74%, var(--on-surface-muted));
+  background: color-mix(in srgb, var(--primary-soft) 26%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 26%, transparent);
+}
+
+.target-row__desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--on-surface-muted);
+  line-height: 1.4;
+}
+
+.target-row__check { flex: 0 0 auto; font-size: 18px; color: var(--primary); }
+
+.stage-empty {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  padding: 32px;
+}
+
+.stage-empty__glyph {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  font-size: 26px;
+  color: var(--primary-strong);
+  background: color-mix(in srgb, var(--primary-soft) 30%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 26%, transparent);
+  margin-bottom: 4px;
+}
+
+.stage-empty strong { font-size: 14px; }
+.stage-empty p { margin: 0; font-size: 12px; color: var(--on-surface-muted); line-height: 1.5; max-width: 320px; }
+.stage-empty .n-button { margin-top: 8px; }
+
+.stage-alert {
+  flex: 0 0 auto;
+  padding: 11px 13px;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--warning) 78%, var(--on-surface));
+  background: color-mix(in srgb, var(--warning) 12%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 34%, transparent);
+}
+
+/* stage: hero (running + terminal) */
+.stage-hero {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.stage-hero__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.stage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px 5px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.stage-badge .n-icon { font-size: 14px; }
+
+.stage-badge--running {
+  color: var(--primary-strong);
+  background: var(--primary-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-border) 50%, transparent);
+}
+.stage-badge--done {
+  color: color-mix(in srgb, var(--success) 84%, var(--on-surface));
+  background: color-mix(in srgb, var(--success) 14%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 40%, transparent);
+}
+.stage-badge--failed {
+  color: color-mix(in srgb, var(--danger) 84%, var(--on-surface));
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent);
+}
+.stage-badge--cancelled {
+  color: color-mix(in srgb, var(--warning) 84%, var(--on-surface));
+  background: color-mix(in srgb, var(--warning) 14%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 40%, transparent);
+}
+
+.stage-badge__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 60%, transparent);
+  animation: pulse-dot 1.6s ease-out infinite;
+}
+
+@keyframes pulse-dot {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 55%, transparent); }
+  70% { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.stage-hero__title h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.stage-hero__title p {
+  margin: 5px 0 0;
+  font-size: 13px;
+  color: var(--on-surface-muted);
+  line-height: 1.45;
+}
+
+/* progress ring */
+.progress-ring-block {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 8px 0;
+}
+
+.progress-ring {
+  --pct: 0;
+  flex: 0 0 auto;
+  width: 148px;
+  height: 148px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(closest-side, var(--surface-1) 74%, transparent 75% 100%),
+    conic-gradient(
+      var(--primary) calc(var(--pct) * 1%),
+      color-mix(in srgb, var(--outline) 130%, transparent) 0
+    );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 60%, transparent);
+  transition: background 500ms cubic-bezier(0.22,1,0.36,1);
+}
+
+.progress-ring__center {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  color: var(--on-surface);
+}
+.progress-ring__center strong {
+  font-size: 40px;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.progress-ring__center span { font-size: 16px; color: var(--on-surface-muted); }
+
+.progress-ring__meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  align-content: center;
+}
+
+.progress-meta-line {
+  display: grid;
+  gap: 2px;
+}
+.progress-meta-line__label { font-size: 13px; font-weight: 600; }
+.progress-meta-line__detail { font-size: 12px; color: var(--on-surface-muted); }
+
+.progress-submessage {
+  margin: 0;
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.progress-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--outline) 70%, transparent);
+}
+.progress-facts span {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--on-surface-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.progress-facts .n-icon { flex: 0 0 auto; }
+
+/* result path / note */
+.stage-hero--result { justify-content: flex-start; gap: 14px; }
+
+.result-path {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 14px;
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--surface-2) 40%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 80%, transparent);
+}
+.result-path .n-icon { flex: 0 0 auto; font-size: 16px; color: var(--primary-strong); }
+.result-path code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--on-surface) 88%, var(--on-surface-muted));
+}
+
+.result-note {
+  padding: 12px 14px;
+  border-radius: 13px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--on-surface-muted);
+  background: color-mix(in srgb, var(--surface-2) 34%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 76%, transparent);
+}
+
+/* stage action bar */
+.stage-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 4px;
+}
+.stage-actions__primary { min-width: 150px; font-weight: 600; }
+.stage-view--running .stage-actions { justify-content: flex-end; }
+
 
 .log-console {
   max-height: min(62vh, 520px);
@@ -3223,118 +2560,68 @@ async function retryCurrentTask() {
   gap: 10px;
 }
 
-@media (max-width: 1100px) {
-  .workspace-grid,
-  .output-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .workspace-grid {
-    height: auto;
-  }
-
-  .model-picker__toolbar {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .summary-config-grid {
-    grid-template-columns: minmax(0, 1fr) max-content;
-  }
-
-  .summary-config-grid .field-block--wide {
-    grid-column: 1 / -1;
-    max-width: 520px;
-  }
-
-  .summary-config-grid .field-block--switch {
-    grid-column: 1 / -1;
-  }
-
-  .summary-bar__execution {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .summary-checks {
-    grid-column: 1 / -1;
-  }
-
-  .summary-bar__footer {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .summary-bar__actions {
-    justify-content: flex-end;
-    flex-wrap: wrap;
-  }
-
-  .separation-task-panel,
-  .separation-task-panel--running {
-    grid-template-columns: minmax(0, 1fr);
-    align-items: stretch;
-  }
-
-  .task-panel-actions {
-    justify-content: flex-start;
-  }
-
-  .preview-track {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .preview-track__slider,
-  .preview-track__time {
-    grid-column: 1 / -1;
+/* ============ Responsive ============ */
+@media (max-width: 1180px) {
+  .console {
+    grid-template-columns: minmax(380px, 440px) minmax(0, 1fr);
   }
 }
 
-@media (max-width: 620px) {
-  .summary-config-grid {
+@media (max-width: 1000px) {
+  .separate-page {
+    height: auto;
+  }
+  .console {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .summary-bar__advanced {
-    justify-self: stretch;
+  .console__rail {
+    grid-template-rows: none;
+    grid-auto-rows: auto;
   }
+  .dropzone { min-height: 220px; }
+  .stage-view { min-height: 440px; }
+  .progress-ring-block { flex-direction: column; align-items: flex-start; gap: 18px; }
+}
 
-  .summary-bar__topline {
+@media (max-width: 640px) {
+  .console-topbar {
     flex-direction: column;
     align-items: stretch;
+    gap: 12px;
   }
-
-  .summary-bar__heading {
+  .console-topbar__controls {
     justify-content: space-between;
   }
-
-  .summary-bar__actions {
-    justify-content: stretch;
-  }
-
-  .summary-stems-row {
+  .ofield-row {
     grid-template-columns: minmax(0, 1fr);
-    gap: 6px;
   }
-
-  .summary-stems-row__head label {
-    line-height: 1.4;
+  .launch-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
   }
-
-  .summary-bar__actions .n-button {
-    flex: 1 1 160px;
+  .launch-bar__actions { justify-content: flex-end; }
+  .launch-bar__go { flex: 1 1 auto; }
+  .picker-buttons {
+    grid-template-columns: 1fr;
   }
-
+  .target-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .stage-actions { justify-content: stretch; }
+  .stage-actions .n-button { flex: 1 1 160px; }
+  .progress-ring { width: 120px; height: 120px; }
+  .progress-ring__center strong { font-size: 32px; }
   .settings-modal {
     width: calc(100vw - 28px);
     max-height: calc(100vh - 40px);
   }
-
   .settings-drawer__content,
   .settings-modal :deep(.n-card-content),
   .settings-modal :deep(.n-card__content) {
     padding-left: 16px;
     padding-right: 16px;
   }
-
   .settings-modal :deep(.n-card-header),
   .settings-modal :deep(.n-card-footer),
   .settings-modal :deep(.n-card__footer) {
@@ -3343,40 +2630,16 @@ async function retryCurrentTask() {
   }
 }
 
-@media (max-width: 720px) {
-  .candidate {
-    height: 300px;
-  }
-
-  .model-picker {
-    height: 300px;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .config-rollup-content,
-  .separation-task-panel,
-  .preview-track,
-  .separation-task-panel--done .task-done-main,
-  .separation-task-panel--failed .task-done-main,
-  .separation-task-panel--cancelled .task-done-main,
-  .separation-task-panel--done .task-panel-actions,
-  .separation-task-panel--failed .task-panel-actions,
-  .separation-task-panel--cancelled .task-panel-actions {
-    animation: none;
-  }
-
-  .separate-header__brand:hover :deep(.app-brand-mark) {
-    animation: none;
-  }
-
-  .result-preview-enter-active,
-  .result-preview-leave-active,
-  .run-mode-content-enter-active,
-  .run-mode-content-leave-active,
-  .summary-stems-enter-active,
-  .summary-stems-leave-active {
+  .stage-swap-enter-active,
+  .stage-swap-leave-active {
     transition: none;
+  }
+  .stage-badge__dot { animation: none; }
+  .progress-ring { transition: none; }
+  .console-topbar__brand:hover :deep(.app-brand-mark) {
+    animation: none;
   }
 }
 </style>
+
