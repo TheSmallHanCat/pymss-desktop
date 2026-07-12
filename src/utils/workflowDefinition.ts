@@ -768,7 +768,17 @@ export function getWorkflowUtilityNodeInputMissingCount(node: WorkflowUtilityNod
 }
 
 export function stripWorkflowUi(definition: Record<string, unknown>): Record<string, unknown> {
-  return serializeWorkflowGraphDefinition(readWorkflowGraphDefinition(definition))
+  const serialized = serializeWorkflowGraphDefinition(readWorkflowGraphDefinition(definition))
+  // `comfyMeta` is an import/export round-trip carrier only; it must never reach
+  // the Python runtime. This is the single runtime-facing cleaning point, so we
+  // strip it from every node's data here (persisted definitions keep it).
+  const graph = serialized.graph as Record<string, unknown> | undefined
+  const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : []
+  nodes.forEach((node) => {
+    const data = isRecord(node) && isRecord(node.data) ? node.data : null
+    if (data && 'comfyMeta' in data) delete data.comfyMeta
+  })
+  return serialized
 }
 
 export function buildWorkflowDefinition(draft: WorkflowDefinitionDraft): Record<string, unknown> {

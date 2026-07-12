@@ -180,6 +180,7 @@ function editWorkflow(item: WorkflowEntry) {
 async function saveMeta() {
   const current = selectedWorkflow.value
   if (!current || isNodeEditorOpen.value) return
+  const targetId = current.id
   const trimmedName = name.value.trim()
   if (!trimmedName) {
     name.value = current.name
@@ -187,11 +188,14 @@ async function saveMeta() {
   }
   if (trimmedName === current.name && description.value.trim() === current.description) return
   const entry = await workflow.saveWorkflow({
-    id: current.id,
+    id: targetId,
     name: trimmedName,
     description: description.value,
     definition: current.definition,
   })
+  // Guard against a race: if the user switched workflows while saveWorkflow was
+  // awaiting, do not clobber the newly selected workflow's displayed fields.
+  if (selectedWorkflowId.value !== targetId) return
   editingId.value = entry.id
   name.value = entry.name
   description.value = entry.description
