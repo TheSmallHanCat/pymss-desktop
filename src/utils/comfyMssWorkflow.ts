@@ -62,6 +62,31 @@ function asArray<T = unknown>(value: unknown): T[] {
   return Array.isArray(value) ? value as T[] : []
 }
 
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value ?? null)) as T
+}
+
+function patchWidgets(base: unknown[], patches: Record<number, unknown>): unknown[] {
+  const next = Array.isArray(base) ? [...base] : []
+  Object.entries(patches).forEach(([index, value]) => {
+    const slot = Number(index)
+    if (Number.isInteger(slot) && slot >= 0) next[slot] = value
+  })
+  return next
+}
+
+function readComfyMetaSection(step: WorkflowStepDraft, key: string): Record<string, unknown> | null {
+  const meta = step.comfyMeta
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null
+  const section = (meta as Record<string, unknown>)[key]
+  return isRecord(section) ? section : null
+}
+
+function readComfyMetaWidgets(section: Record<string, unknown> | null): unknown[] | null {
+  if (!section) return null
+  return Array.isArray(section.widgets) ? section.widgets : null
+}
+
 function readNodePosition(node: ComfyWorkflowNode, fallbackX: number, fallbackY: number) {
   const pos = Array.isArray(node.pos) ? node.pos : []
   const x = Number(pos[0])
@@ -483,6 +508,13 @@ export function importComfyMssWorkflow(input: unknown, options?: { models?: Mode
       modelKind: kind,
       customModelType: kind === 'custom' ? readStringWidget(node, 1, 'mel_band_roformer') : null,
     }
+    // Round-trip carrier: keep the original comfy widgets so fields pymss-studio
+    // does not manage (batch_size / chunk_size / tta / standardize / VR params /
+    // sample_rate / bit-depth ...) survive an import → edit → export cycle.
+    const comfyMeta: Record<string, unknown> = {
+      separate: { type: node.type, widgets: cloneJson(asArray(node.widgets_values)) },
+    }
+    const comfySaveMeta: Record<string, { widgets: unknown[] }> = {}
     if (!step.stems.length) {
       warnings.push(`节点 ${node.id} 未能推断输出 stems，已导入为空步骤；请在桌面端补全输出音轨。`)
     }
@@ -496,8 +528,10 @@ export function importComfyMssWorkflow(input: unknown, options?: { models?: Mode
         if (paramsNode?.type === 'pymss_mss_params') {
           step.overlapSize = parseDefaultInt(paramsNode.widgets_values?.[1])
           defaultNormalize = defaultNormalize || readBoolWidget(paramsNode, 3, false)
+          comfyMeta.params = { type: paramsNode.type, widgets: cloneJson(asArray(paramsNode.widgets_values)) }
         } else if (paramsNode?.type === 'pymss_vr_params') {
           defaultNormalize = defaultNormalize || readBoolWidget(paramsNode, 7, false)
+          comfyMeta.params = { type: paramsNode.type, widgets: cloneJson(asArray(paramsNode.widgets_values)) }
         }
       }
     }
@@ -542,6 +576,14 @@ export function importComfyMssWorkflow(input: unknown, options?: { models?: Mode
             step.save[stem] = outputDir
           }
         }
+        // Preserve the full Save Audio widgets for round-trip fidelity.
+        if (stem) {
+          comfySaveMeta[stem] = { widgets: cloneJson(asArray(targetNode.widgets_values)) }
+        } else if (isListSeparateNode(node.type)) {
+          step.stems.forEach((item) => {
+            comfySaveMeta[item] = { widgets: cloneJson(asArray(targetNode.widgets_values)) }
+          })
+        }
         const savePos = readNodePosition(targetNode, nodePos.x + 420, nodePos.y + outputIndex * 48)
         saveXValues.push(savePos.x)
         saveYValues.push(savePos.y)
@@ -549,6 +591,9 @@ export function importComfyMssWorkflow(input: unknown, options?: { models?: Mode
         if (format) defaultFormat = format
       })
     })
+
+    if (Object.keys(comfySaveMeta).length) comfyMeta.save = comfySaveMeta
+    step.comfyMeta = comfyMeta
 
     draft.steps.push(step)
     draft.ui.nodes[step.id] = nodePos
@@ -810,6 +855,32 @@ export function exportComfyMssWorkflow(
     const paramsNodeId = nextNodeId++
     const separateNodeId = nextNodeId++
 
+    // Round-trip: if this step was imported from comfy-mss, restore the original
+    // params widgets and patch only the fields pymss-studio manages.
+    const defaultParamsWidgets: unknown[] = kind === 'vr'
+      ? [1, 512, 5, false, false, false, 0.2, Boolean(draft.defaultNormalize)]
+      : [
+          1,
+          step.overlapSize == null ? 'Default' : String(step.overlapSize),
+          'Default',
+          Boolean(draft.defaultNormalize),
+          false,
+          false,
+        ]
+    const paramsMeta = readComfyMetaSection(step, 'params')
+    const paramsMetaWidgets = readComfyMetaWidgets(paramsMeta)
+    const paramsMetaMatchesKind = paramsMeta
+      ? String(paramsMeta.type || '') === paramsNodeType
+      : false
+    const paramsWidgets = paramsMetaWidgets && paramsMetaMatchesKind
+      ? patchWidgets(paramsMetaWidgets, kind === 'vr'
+          ? { 7: Boolean(draft.defaultNormalize) }
+          : {
+              1: step.overlapSize == null ? 'Default' : String(step.overlapSize),
+              3: Boolean(draft.defaultNormalize),
+            })
+      : defaultParamsWidgets
+
     const paramsNode = createNode({
       id: paramsNodeId,
       type: paramsNodeType,
@@ -841,25 +912,7 @@ export function exportComfyMssWorkflow(
         { name: kind === 'vr' ? 'vr_params' : 'mss_params', type: kind === 'vr' ? 'PYMSS_VR_PARAMS' : 'PYMSS_MSS_PARAMS' },
       ]),
       properties: { 'Node name for S&R': paramsNodeType },
-      widgets_values: kind === 'vr'
-        ? [
-            1,
-            512,
-            5,
-            false,
-            false,
-            false,
-            0.2,
-            Boolean(draft.defaultNormalize),
-          ]
-        : [
-            1,
-            step.overlapSize == null ? 'Default' : String(step.overlapSize),
-            'Default',
-            Boolean(draft.defaultNormalize),
-            false,
-            false,
-          ],
+      widgets_values: paramsWidgets,
     })
 
     const separateNodeType = kind === 'vr'
@@ -872,6 +925,22 @@ export function exportComfyMssWorkflow(
       { name: `${stem} (Audio)`, type: 'AUDIO', label: `${stem} (Audio)` },
       { name: `${stem} (String)`, type: 'STRING', label: `${stem} (String)` },
     ]))
+
+    // Round-trip: restore original separate widgets and patch managed fields
+    // (model name, model type for custom, device).
+    const defaultSeparateWidgets: unknown[] = kind === 'custom'
+      ? [step.model, customModelTypeFor(step, models), draft.defaultDevice || 'auto', '0', '0', false]
+      : [step.model, draft.defaultDevice || 'auto', true, 'modelscope', '0', '0', false]
+    const separateMeta = readComfyMetaSection(step, 'separate')
+    const separateMetaWidgets = readComfyMetaWidgets(separateMeta)
+    const separateMetaMatchesKind = separateMeta
+      ? String(separateMeta.type || '') === separateNodeType
+      : false
+    const separateWidgets = separateMetaWidgets && separateMetaMatchesKind
+      ? patchWidgets(separateMetaWidgets, kind === 'custom'
+          ? { 0: step.model, 1: customModelTypeFor(step, models), 2: draft.defaultDevice || 'auto' }
+          : { 0: step.model, 1: draft.defaultDevice || 'auto' })
+      : defaultSeparateWidgets
 
     const separateNode = createNode({
       id: separateNodeId,
@@ -903,24 +972,7 @@ export function exportComfyMssWorkflow(
           ]),
       outputs: toComfyOutputs(outputs),
       properties: { 'Node name for S&R': separateNodeType },
-      widgets_values: kind === 'custom'
-        ? [
-            step.model,
-            customModelTypeFor(step, models),
-            draft.defaultDevice || 'auto',
-            '0',
-            '0',
-            false,
-          ]
-        : [
-            step.model,
-            draft.defaultDevice || 'auto',
-            true,
-            'modelscope',
-            '0',
-            '0',
-            false,
-          ],
+      widgets_values: separateWidgets,
     })
 
     stepNodeIds.set(step.id, separateNodeId)
@@ -1030,14 +1082,18 @@ export function exportComfyMssWorkflow(
           ]),
           outputs: [],
           properties: { 'Node name for S&R': 'pymss_save_audio' },
-          widgets_values: [
-            draft.defaultFormat || 'wav',
-            step.save?.[stem] || safeWorkflowStemDir(stem),
-            '44100',
-            'FLOAT',
-            'PCM_24',
-            '320k',
-          ],
+          widgets_values: (() => {
+            const managed = {
+              0: draft.defaultFormat || 'wav',
+              1: step.save?.[stem] || safeWorkflowStemDir(stem),
+            }
+            const saveMetaSection = readComfyMetaSection(step, 'save')
+            const stemMeta = saveMetaSection && isRecord(saveMetaSection[stem]) ? saveMetaSection[stem] as Record<string, unknown> : null
+            const stemWidgets = stemMeta && Array.isArray(stemMeta.widgets) ? stemMeta.widgets : null
+            return stemWidgets
+              ? patchWidgets(stemWidgets, managed)
+              : [managed[0], managed[1], '44100', 'FLOAT', 'PCM_24', '320k']
+          })(),
         })
 
         addLink(links, nodesById, loadNode.id, 1, concatNode.id, 0, 'STRING')

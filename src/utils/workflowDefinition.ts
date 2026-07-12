@@ -45,6 +45,10 @@ export type WorkflowStepDraft = {
   overlapSize: number | null
   modelKind: string | null
   customModelType: string | null
+  // Round-trip carrier for comfy-mss fields that pymss-studio does not manage
+  // directly (full MSS/VR params, per-stem Save Audio widgets, etc.). Purely
+  // pass-through: never surfaced in the node editor UI or runtime compiler.
+  comfyMeta?: Record<string, unknown>
 }
 
 export type WorkflowSaveTargetDraft = {
@@ -119,6 +123,7 @@ function readSeparateNodeData(node: WorkflowGraphNode) {
     customModelType: typeof node.data.customModelType === 'string' && node.data.customModelType.trim()
       ? String(node.data.customModelType).trim()
       : null,
+    comfyMeta: isRecord(node.data.comfyMeta) ? clone(node.data.comfyMeta) : null,
   }
 }
 
@@ -387,6 +392,7 @@ function draftToGraph(draft: WorkflowDefinitionDraft): WorkflowGraphDefinition {
         collapsed: (ui.collapsedStepIds || []).includes(step.id),
         modelKind: step.modelKind,
         customModelType: step.customModelType,
+        ...(step.comfyMeta && isRecord(step.comfyMeta) ? { comfyMeta: clone(step.comfyMeta) } : {}),
       },
     })),
     {
@@ -486,6 +492,7 @@ function graphToDraft(definition: WorkflowGraphDefinition): WorkflowDefinitionDr
       overlapSize: data.overlapSize,
       modelKind: data.modelKind,
       customModelType: data.customModelType,
+      ...(data.comfyMeta ? { comfyMeta: data.comfyMeta } : {}),
     } satisfies WorkflowStepDraft
   })
   if (!steps.length) steps.push(createStepDraft())
