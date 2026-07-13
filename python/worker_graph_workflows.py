@@ -35,7 +35,6 @@ class AudioArtifact:
 @dataclass
 class SaveTarget:
     source_ref: str
-    output_dir: str
     output_label: str
 
 
@@ -46,10 +45,6 @@ def is_graph_workflow_definition(definition: Any) -> bool:
         and int(definition.get("version") or 0) == 2
         and isinstance(definition.get("graph"), dict)
     )
-
-
-def _is_record(value: Any) -> bool:
-    return isinstance(value, dict)
 
 
 def _safe_filename_part(value: str) -> str:
@@ -68,7 +63,7 @@ def _utility_title(node_type: str) -> str:
     }.get(node_type, node_type or "utility")
 
 
-def _read_graph(definition: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, str]]:
+def _read_graph(definition: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     graph = definition.get("graph") if isinstance(definition.get("graph"), dict) else {}
     raw_nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
     raw_edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
@@ -78,17 +73,7 @@ def _read_graph(definition: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], 
         if isinstance(node, dict) and str(node.get("id") or "").strip()
     }
     edges = [edge for edge in raw_edges if isinstance(edge, dict)]
-    save_output_map: dict[str, str] = {}
-    for save_node in (node for node in nodes.values() if str(node.get("type") or "") == "save_outputs"):
-        save_outputs = save_node.get("data", {}).get("outputs", {}) if _is_record(save_node.get("data")) else {}
-        if not isinstance(save_outputs, dict):
-            continue
-        save_output_map.update({
-            str(key): str(value or "").strip()
-            for key, value in save_outputs.items()
-            if str(key or "").strip()
-        })
-    return nodes, edges, save_output_map
+    return nodes, edges
 
 
 def _node_position(node: dict[str, Any]) -> tuple[float, float]:
@@ -486,12 +471,56 @@ def _execute_separate_node(
                 cleanup()
 
 
+def _resolve_chain_label(
+    source_ref: str,
+    nodes: dict[str, dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> str:
+    """Build a chain-aware label for a save target.
+
+    Returns the label with upstream stem prefix, e.g. ``vocals_noreverb`` when a
+    separate node consuming ``vocals`` outputs ``noreverb``.
+    """
+    if not source_ref or source_ref == "input":
+        return ""
+
+    if source_ref.startswith("utility:"):
+        node_id = source_ref.split(":", 1)[1]
+        node = nodes.get(node_id, {})
+        own_label = _utility_title(str(node.get("type") or "utility"))
+        for edge in edges:
+            target = edge.get("target") if isinstance(edge.get("target"), dict) else {}
+            if str(target.get("nodeId") or "") == node_id:
+                upstream_ref = _source_ref_for_edge(nodes, edge)
+                if upstream_ref and upstream_ref != source_ref and upstream_ref != "input":
+                    parent = _resolve_chain_label(upstream_ref, nodes, edges)
+                    return f"{parent}_{own_label}" if parent else own_label
+        return own_label
+
+    if "." in source_ref:
+        node_id, stem = source_ref.split(".", 1)
+        node = nodes.get(node_id)
+        if node and str(node.get("type") or "") == "separate":
+            for edge in edges:
+                target = edge.get("target") if isinstance(edge.get("target"), dict) else {}
+                if str(target.get("nodeId") or "") == node_id and str(target.get("portId") or "") == "input":
+                    upstream_ref = _source_ref_for_edge(nodes, edge)
+                    if upstream_ref and upstream_ref != "input":
+                        parent = _resolve_chain_label(upstream_ref, nodes, edges)
+                        return f"{parent}_{stem}" if parent else stem
+                    return stem
+            return stem
+        return stem
+
+    return source_ref
+
+
 def _save_targets_for_graph(
     nodes: dict[str, dict[str, Any]],
     edges: list[dict[str, Any]],
-    save_output_map: dict[str, str],
 ) -> list[SaveTarget]:
     targets: list[SaveTarget] = []
+    seen_labels: set[str] = set()
     save_node_ids = {
         node_id
         for node_id, node in nodes.items()
@@ -504,19 +533,17 @@ def _save_targets_for_graph(
         source_ref = _source_ref_for_edge(nodes, edge)
         if not source_ref:
             continue
-        output_dir = save_output_map.get(source_ref) or source_ref.replace("utility:", "")
-        if source_ref.startswith("utility:"):
-            source_node_id = source_ref.split(":", 1)[1]
-            source_node = nodes.get(source_node_id, {})
-            fallback_label = _utility_title(str(source_node.get("type") or "utility"))
-        else:
-            fallback_label = source_ref.split(".", 1)[1] if "." in source_ref else source_ref
-        folder_name = Path(str(output_dir).rstrip("\\/")).name if str(output_dir).strip() else ""
-        output_label = _safe_filename_part(folder_name or fallback_label)
+        chain_label = _resolve_chain_label(source_ref, nodes, edges)
+        if not chain_label:
+            continue
+        output_label = _safe_filename_part(chain_label)
+        # Guard against duplicate labels caused by duplicate save edges.
+        if output_label.lower() in seen_labels:
+            continue
+        seen_labels.add(output_label.lower())
         targets.append(
             SaveTarget(
                 source_ref=source_ref,
-                output_dir=str(output_dir).strip() or fallback_label,
                 output_label=output_label,
             )
         )
@@ -539,10 +566,10 @@ def run_graph_workflow_task(
         raise ValueError("Unsupported workflow definition for graph runtime.")
 
     workflow_defaults = definition.get("defaults") if isinstance(definition.get("defaults"), dict) else {}
-    nodes, edges, save_output_map = _read_graph(definition)
+    nodes, edges = _read_graph(definition)
     _validate_graph_definition(nodes, edges)
     execution_order = _build_execution_order(nodes, edges)
-    save_targets = _save_targets_for_graph(nodes, edges, save_output_map)
+    save_targets = _save_targets_for_graph(nodes, edges)
     source_path = Path(input_path)
     if not source_path.exists():
         raise FileNotFoundError(f"Input not found: {input_path}")
@@ -600,10 +627,8 @@ def run_graph_workflow_task(
 
         for target in save_targets:
             artifact = _resolve_artifact(artifacts, target.source_ref)
-            folder = task_output_dir / target.output_dir
-            folder.mkdir(parents=True, exist_ok=True)
             file_name = f"{_safe_filename_part(track_name)}_{target.output_label}.{output_format}"
-            output_path = folder / file_name
+            output_path = task_output_dir / file_name
             save_audio(str(output_path), _to_save_audio(artifact.audio), artifact.sample_rate, output_format, audio_params)
             outputs.append({
                 "stem": target.output_label,
