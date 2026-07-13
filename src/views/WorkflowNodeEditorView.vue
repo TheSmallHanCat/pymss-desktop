@@ -286,6 +286,7 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
       <div class="workflow-window-chrome__drag" data-tauri-drag-region @mousedown.left="startWindowDrag">
         <div class="workflow-window-chrome__copy">
           <strong>{{ t('app.name') }}</strong>
+          <span class="workflow-window-chrome__divider">·</span>
           <span>{{ t('workflows.nodeEditor') }}</span>
         </div>
       </div>
@@ -305,7 +306,6 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
 
     <section class="workflow-node-editor-topbar">
       <div class="workflow-node-editor-title">
-        <div class="eyebrow">{{ t('workflows.nodeEditor') }}</div>
         <button v-if="!editingName" type="button" class="workflow-name-trigger" @click="beginNameEdit">
           {{ name || t('workflows.untitled') }}
         </button>
@@ -336,11 +336,6 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
           <n-switch v-model:value="defaultNormalize" size="small" />
         </label>
       </div>
-
-      <details class="description-drawer">
-        <summary>{{ t('workflows.description') }}</summary>
-        <n-input v-model:value="description" type="textarea" :autosize="{ minRows: 1, maxRows: 3 }" :placeholder="t('workflows.descriptionPlaceholder')" />
-      </details>
     </section>
 
     <WorkflowNodeEditor
@@ -393,8 +388,9 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
 }
 
 .workflow-window-chrome__copy {
-  display: grid;
-  gap: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .workflow-window-chrome__copy strong {
@@ -404,8 +400,13 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
 
 .workflow-window-chrome__copy span {
   color: var(--on-surface-muted);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.1;
+}
+
+.workflow-window-chrome__divider {
+  font-size: 11px;
+  opacity: 0.7;
 }
 
 .workflow-window-chrome__actions {
@@ -436,9 +437,9 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
 .workflow-node-editor-topbar {
   min-height: 58px;
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto auto;
-  align-items: end;
-  gap: 12px;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 16px;
   padding: 10px 14px;
   border-radius: 16px;
   background:
@@ -453,14 +454,6 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
   min-width: 0;
   display: grid;
   gap: 6px;
-}
-
-.eyebrow {
-  color: color-mix(in srgb, var(--primary-strong) 82%, var(--on-surface-muted));
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .workflow-name-trigger {
@@ -517,43 +510,6 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
   justify-items: start;
 }
 
-.description-drawer {
-  min-width: 132px;
-  align-self: end;
-  position: relative;
-}
-
-.description-drawer summary {
-  height: 28px;
-  display: grid;
-  place-items: center;
-  padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--outline) 45%, transparent);
-  border-radius: 10px;
-  color: var(--on-surface-muted);
-  background: color-mix(in srgb, var(--surface-2) 62%, transparent);
-  cursor: pointer;
-  font-size: 12px;
-  list-style: none;
-}
-
-.description-drawer summary::-webkit-details-marker {
-  display: none;
-}
-
-.description-drawer[open] {
-  position: relative;
-}
-
-.description-drawer[open] :deep(.n-input) {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 8px);
-  z-index: 20;
-  width: min(420px, 70vw);
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.16);
-}
-
 @media (max-width: 1100px) {
   .workflow-node-editor-topbar {
     grid-template-columns: 1fr;
@@ -562,12 +518,6 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
 
   .config-grid {
     grid-template-columns: 1fr 1fr;
-  }
-
-  .description-drawer[open] :deep(.n-input) {
-    position: static;
-    width: 100%;
-    margin-top: 8px;
   }
 }
 </style>

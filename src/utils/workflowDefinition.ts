@@ -18,6 +18,8 @@ export type WorkflowNoteDraft = WorkflowCanvasPoint & {
   title: string
   content: string
   color: string
+  fontSize?: number
+  fontFamily?: string
 }
 
 export type WorkflowUtilityNodeKind = 'load_audio_batch' | 'audio_ensemble' | 'audio_invert_phase' | 'audio_normalize'
@@ -414,6 +416,8 @@ function draftToGraph(draft: WorkflowDefinitionDraft): WorkflowGraphDefinition {
         title: note.title,
         content: note.content,
         color: note.color,
+        ...(note.fontSize !== undefined ? { fontSize: note.fontSize } : {}),
+        ...(note.fontFamily !== undefined ? { fontFamily: note.fontFamily } : {}),
       },
     })),
   ]
@@ -509,14 +513,19 @@ function graphToDraft(definition: WorkflowGraphDefinition): WorkflowDefinitionDr
 
   const notes = definition.graph.nodes
     .filter(node => node.type === 'note')
-    .map((node) => ({
-      id: node.id,
-      x: node.position.x,
-      y: node.position.y,
-      title: String(node.data.title || ''),
-      content: String(node.data.content || ''),
-      color: String(node.data.color || 'amber'),
-    }))
+    .map((node) => {
+      const fontSize = Number(node.data.fontSize)
+      return {
+        id: node.id,
+        x: node.position.x,
+        y: node.position.y,
+        title: String(node.data.title || ''),
+        content: String(node.data.content || ''),
+        color: String(node.data.color || 'amber'),
+        ...(Number.isFinite(fontSize) && fontSize > 0 ? { fontSize } : {}),
+        ...(typeof node.data.fontFamily === 'string' && node.data.fontFamily ? { fontFamily: node.data.fontFamily } : {}),
+      }
+    })
 
   const utilityNodes = definition.graph.nodes
     .filter(node => ['load_audio_batch', 'audio_ensemble', 'audio_invert_phase', 'audio_normalize'].includes(node.type))

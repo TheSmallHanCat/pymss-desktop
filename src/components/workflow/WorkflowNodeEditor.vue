@@ -109,8 +109,8 @@ const GRAPH_TOP_Y = 118
 const GRAPH_INPUT_X = 72
 const GRAPH_SAVE_GAP = 420
 const NOTE_WIDTH = 244
-const NOTE_MIN_HEIGHT = 120
-const NOTE_MAX_HEIGHT = 240
+const NOTE_MIN_HEIGHT = 72
+const NOTE_MAX_HEIGHT = 320
 const MIN_ZOOM = 0.25
 const MAX_ZOOM = 2.5
 const ZOOM_STEP = 1.14
@@ -209,6 +209,38 @@ const noteColorOptions = [
   { label: computed(() => t('workflows.noteColorGreen')), value: 'green' },
   { label: computed(() => t('workflows.noteColorRose')), value: 'rose' },
 ]
+
+// Inline note editing (click-to-edit, mirrors the workflow name field pattern):
+// double-click a note's title/content to edit it in place instead of a panel.
+const editingNoteField = ref<{ noteId: string; field: 'title' | 'content' } | null>(null)
+const noteEditInputRef = ref<HTMLInputElement | HTMLTextAreaElement | Array<HTMLInputElement | HTMLTextAreaElement> | null>(null)
+
+const NOTE_DEFAULT_FONT_SIZE = 13
+const noteFontSizeOptions = [12, 13, 14, 16, 18, 20, 24]
+const noteFontFamilyOptions = [
+  { label: computed(() => t('workflows.noteFontDefault')), value: '' },
+  { label: computed(() => t('workflows.noteFontSans')), value: 'sans' },
+  { label: computed(() => t('workflows.noteFontSerif')), value: 'serif' },
+  { label: computed(() => t('workflows.noteFontMono')), value: 'mono' },
+]
+const NOTE_FONT_FAMILY_STACKS: Record<string, string> = {
+  sans: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+  serif: 'Georgia, "Times New Roman", serif',
+  mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+}
+function noteFontFamilyStack(value?: string) {
+  return value && NOTE_FONT_FAMILY_STACKS[value] ? NOTE_FONT_FAMILY_STACKS[value] : ''
+}
+function noteFontSize(note: WorkflowNoteDraft) {
+  return note.fontSize && note.fontSize > 0 ? note.fontSize : NOTE_DEFAULT_FONT_SIZE
+}
+function noteTextStyle(note: WorkflowNoteDraft) {
+  const family = noteFontFamilyStack(note.fontFamily)
+  return {
+    fontSize: `${noteFontSize(note)}px`,
+    ...(family ? { fontFamily: family } : {}),
+  }
+}
 
 const utilityNodes = computed<WorkflowUtilityNodeDraft[]>(() => draftState.value.utilityNodes || [])
 const consumedValueSet = computed(() => buildWorkflowConsumedValueSetForDraft(steps.value, utilityNodes.value))
@@ -1071,9 +1103,10 @@ function inputNodeHeight() {
 }
 
 function noteHeight(note: WorkflowNoteDraft) {
-  if (selectedGraphNode.value === noteSelectionKey(note.id)) return 312
+  // minHeight only: the inline textarea autosizes and grows the card naturally,
+  // so the resting size just tracks content instead of forcing extra height.
   const lines = `${note.title}\n${note.content}`.split(/\r?\n/).filter(Boolean).length
-  return Math.max(NOTE_MIN_HEIGHT, Math.min(NOTE_MAX_HEIGHT, 92 + lines * 18))
+  return Math.max(NOTE_MIN_HEIGHT, Math.min(NOTE_MAX_HEIGHT, 56 + lines * 18))
 }
 
 function utilityNodeWidth(kind: WorkflowUtilityNodeKind) {
@@ -2606,6 +2639,8 @@ function updateSelectedNote(patch: Partial<WorkflowNoteDraft>) {
                 ...(patch.title !== undefined ? { title: patch.title } : {}),
                 ...(patch.content !== undefined ? { content: patch.content } : {}),
                 ...(patch.color !== undefined ? { color: patch.color } : {}),
+                ...(patch.fontSize !== undefined ? { fontSize: patch.fontSize } : {}),
+                ...(patch.fontFamily !== undefined ? { fontFamily: patch.fontFamily } : {}),
               },
             }
           : node),
@@ -2618,6 +2653,39 @@ function updateSelectedNote(patch: Partial<WorkflowNoteDraft>) {
       ? { ...note, ...patch }
       : note)
   })
+}
+
+function isEditingNoteField(noteId: string, field: 'title' | 'content') {
+  return editingNoteField.value?.noteId === noteId && editingNoteField.value?.field === field
+}
+
+function beginNoteEdit(noteId: string, field: 'title' | 'content') {
+  selectGraphNode(noteSelectionKey(noteId))
+  editingNoteField.value = { noteId, field }
+  void nextTick(() => {
+    const ref = noteEditInputRef.value
+    const el = Array.isArray(ref) ? ref[0] : ref
+    if (!el) return
+    el.focus()
+    const length = el.value.length
+    el.setSelectionRange?.(length, length)
+    if (el instanceof HTMLTextAreaElement) autoGrowNoteInput(el)
+  })
+}
+
+function autoGrowNoteInput(el: HTMLTextAreaElement) {
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
+}
+
+function onNoteContentInput(event: Event) {
+  const el = event.target as HTMLTextAreaElement
+  updateSelectedNote({ content: el.value })
+  autoGrowNoteInput(el)
+}
+
+function finishNoteEdit() {
+  editingNoteField.value = null
 }
 
 function canvasCenterWorldPoint() {
@@ -3306,45 +3374,87 @@ function jumpMinimap(event: MouseEvent) {
               @pointerdown="beginNoteDrag(note, $event)"
               @click="selectGraphNode(noteSelectionKey(note.id), { append: $event.ctrlKey || $event.metaKey })"
             >
-              <div class="graph-note__head">
-                <span>{{ t('workflows.noteNode') }}</span>
-                <button type="button" class="graph-note__delete" :title="t('workflows.deleteNote')" @click.stop="removeGraphNote(note.id)">×</button>
+              <div class="graph-note__actions-float">
+                <button type="button" class="graph-note__delete" :title="t('workflows.deleteNote')" @click.stop="removeGraphNote(note.id)" @pointerdown.stop>×</button>
               </div>
-              <strong>{{ note.title || t('workflows.noteTitlePlaceholder') }}</strong>
-              <p>{{ note.content || t('workflows.noteContentPlaceholder') }}</p>
-              <div v-if="selectedGraphNode === noteSelectionKey(note.id)" class="graph-note__detail">
-                <label>
-                  <span>{{ t('workflows.noteTitle') }}</span>
-                  <n-input
-                    :value="note.title"
-                    size="small"
-                    :placeholder="t('workflows.noteTitlePlaceholder')"
-                    @update:value="(value: string) => updateSelectedNote({ title: value })"
-                    @click.stop
+
+              <input
+                v-if="isEditingNoteField(note.id, 'title')"
+                ref="noteEditInputRef"
+                :value="note.title"
+                class="graph-note__title graph-note__field"
+                :style="noteTextStyle(note)"
+                :placeholder="t('workflows.noteTitlePlaceholder')"
+                @input="(event) => updateSelectedNote({ title: (event.target as HTMLInputElement).value })"
+                @blur="finishNoteEdit"
+                @keydown.enter.prevent="finishNoteEdit"
+                @keydown.esc.prevent="finishNoteEdit"
+                @click.stop
+                @pointerdown.stop
+              >
+              <strong
+                v-else
+                class="graph-note__title graph-note__editable"
+                :class="{ 'graph-note__title--empty': !note.title }"
+                :style="noteTextStyle(note)"
+                @dblclick.stop="beginNoteEdit(note.id, 'title')"
+                @pointerdown.stop="beginNoteDrag(note, $event)"
+              >{{ note.title || t('workflows.noteTitlePlaceholder') }}</strong>
+
+              <textarea
+                v-if="isEditingNoteField(note.id, 'content')"
+                ref="noteEditInputRef"
+                :value="note.content"
+                rows="1"
+                class="graph-note__body graph-note__field"
+                :style="noteTextStyle(note)"
+                :placeholder="t('workflows.noteContentPlaceholder')"
+                @input="onNoteContentInput"
+                @blur="finishNoteEdit"
+                @keydown.esc.prevent="finishNoteEdit"
+                @click.stop
+                @pointerdown.stop
+              />
+              <p
+                v-else
+                class="graph-note__body graph-note__editable"
+                :class="{ 'graph-note__body--empty': !note.content }"
+                :style="noteTextStyle(note)"
+                @dblclick.stop="beginNoteEdit(note.id, 'content')"
+                @pointerdown.stop="beginNoteDrag(note, $event)"
+              >{{ note.content || t('workflows.noteContentPlaceholder') }}</p>
+
+              <div
+                v-if="isGraphNodeSelected(noteSelectionKey(note.id))"
+                class="graph-note__toolbar"
+                @pointerdown.stop
+                @click.stop
+              >
+                <div class="graph-note__swatches">
+                  <button
+                    v-for="option in noteColorOptions"
+                    :key="option.value"
+                    type="button"
+                    class="graph-note__swatch"
+                    :class="[`graph-note__color-dot--${option.value}`, { 'graph-note__swatch--active': note.color === option.value }]"
+                    :title="option.label.value"
+                    @click="updateSelectedNote({ color: option.value })"
                   />
-                </label>
-                <label>
-                  <span>{{ t('workflows.noteContent') }}</span>
-                  <n-input
-                    type="textarea"
-                    size="small"
-                    :value="note.content"
-                    :autosize="{ minRows: 4, maxRows: 8 }"
-                    :placeholder="t('workflows.noteContentPlaceholder')"
-                    @update:value="(value: string) => updateSelectedNote({ content: value })"
-                    @click.stop
-                  />
-                </label>
-                <label>
-                  <span>{{ t('workflows.noteColor') }}</span>
-                  <n-select
-                    :value="note.color"
-                    size="small"
-                    :options="noteColorOptions.map(item => ({ label: item.label.value, value: item.value }))"
-                    @update:value="(value: string) => updateSelectedNote({ color: value })"
-                    @click.stop
-                  />
-                </label>
+                </div>
+                <n-select
+                  :value="noteFontSize(note)"
+                  size="tiny"
+                  class="graph-note__font-size"
+                  :options="noteFontSizeOptions.map(size => ({ label: `${size}`, value: size }))"
+                  @update:value="(value: number) => updateSelectedNote({ fontSize: value })"
+                />
+                <n-select
+                  :value="note.fontFamily || ''"
+                  size="tiny"
+                  class="graph-note__font-family"
+                  :options="noteFontFamilyOptions.map(item => ({ label: item.label.value, value: item.value }))"
+                  @update:value="(value: string) => updateSelectedNote({ fontFamily: value })"
+                />
               </div>
             </article>
 
@@ -3506,10 +3616,6 @@ function jumpMinimap(event: MouseEvent) {
           <n-button size="tiny" quaternary :disabled="!canDistributeSelection" @click="distributeSelectedNodes('y')">{{ t('workflows.distributeVertically') }}</n-button>
         </div>
 
-        <div class="canvas-help canvas-floating">
-          <strong>{{ t('workflows.canvasHelpTitle') }}</strong>
-          <span>{{ t('workflows.canvasHelpBody') }}</span>
-        </div>
 
         <div ref="minimapRef" class="canvas-minimap canvas-floating" @click="jumpMinimap">
           <svg :viewBox="`${canvasBounds.minX} ${canvasBounds.minY} ${canvasBounds.width} ${canvasBounds.height}`" preserveAspectRatio="none">
@@ -3852,8 +3958,7 @@ function jumpMinimap(event: MouseEvent) {
   overflow: hidden;
 }
 
-.graph-node__detail label > span,
-.graph-note__detail label > span {
+.graph-node__detail label > span {
   font-size: 13px;
 }
 
@@ -3901,7 +4006,7 @@ function jumpMinimap(event: MouseEvent) {
 
 .workflow-warning-banner {
   position: absolute;
-  top: 14px;
+  top: 68px;
   left: 14px;
   z-index: 11;
   display: grid;
@@ -4116,8 +4221,8 @@ function jumpMinimap(event: MouseEvent) {
 }
 
 .graph-note__delete {
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   border: 1px solid color-mix(in srgb, var(--danger) 24%, transparent);
   border-radius: 999px;
   display: grid;
@@ -4127,7 +4232,7 @@ function jumpMinimap(event: MouseEvent) {
   box-shadow: 0 8px 18px rgba(0, 0, 0, 0.12);
   cursor: pointer;
   font: inherit;
-  font-size: 16px;
+  font-size: 14px;
   line-height: 1;
 }
 
@@ -4202,8 +4307,7 @@ function jumpMinimap(event: MouseEvent) {
   place-items: center;
 }
 
-.graph-node__head span,
-.graph-note__head span {
+.graph-node__head span {
   color: var(--on-surface-muted);
   font-size: 10px;
   font-weight: 800;
@@ -4347,29 +4451,25 @@ function jumpMinimap(event: MouseEvent) {
   padding-right: 2px;
 }
 
-.graph-node__detail,
-.graph-note__detail {
+.graph-node__detail {
   display: grid;
   gap: 8px;
   padding-top: 6px;
   border-top: 1px solid color-mix(in srgb, var(--outline) 44%, transparent);
 }
 
-.graph-node__detail--form,
-.graph-note__detail {
+.graph-node__detail--form {
   max-height: 214px;
   overflow: auto;
   padding-right: 2px;
 }
 
-.graph-node__detail label,
-.graph-note__detail label {
+.graph-node__detail label {
   display: grid;
   gap: 6px;
 }
 
-.graph-node__detail label > span,
-.graph-note__detail label > span {
+.graph-node__detail label > span {
   color: var(--on-surface-muted);
   font-size: 11px;
   font-weight: 700;
@@ -4498,31 +4598,33 @@ function jumpMinimap(event: MouseEvent) {
 }
 
 .graph-note {
+  position: relative;
   display: grid;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 18px;
-  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.12);
+  gap: 4px;
+  align-content: start;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 14px;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.1);
   cursor: grab;
 }
 
-.graph-note__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.graph-note strong {
-  font-size: 13px;
-}
-
-.graph-note p {
+.graph-note__title {
   margin: 0;
-  color: color-mix(in srgb, var(--on-surface) 74%, var(--on-surface-muted));
+  padding-right: 22px;
+  color: var(--on-surface);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.graph-note__body {
+  margin: 0;
+  color: color-mix(in srgb, var(--on-surface) 84%, var(--on-surface-muted));
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -4541,6 +4643,110 @@ function jumpMinimap(event: MouseEvent) {
 
 .graph-note--rose {
   background: linear-gradient(180deg, rgba(255,255,255,0.12), transparent 40%), rgba(244, 63, 94, 0.16);
+}
+
+.graph-note__actions-float {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 3;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.graph-note:hover .graph-note__actions-float,
+.graph-note--selected .graph-note__actions-float {
+  opacity: 1;
+}
+
+.graph-note__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.graph-note__swatches {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.graph-note__swatch {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.graph-note__swatch:hover {
+  transform: scale(1.12);
+}
+
+.graph-note__swatch--active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--on-surface) 62%, transparent);
+}
+
+.graph-note__font-size {
+  width: 60px;
+}
+
+.graph-note__font-family {
+  flex: 1;
+  min-width: 88px;
+}
+
+.graph-note__color-dot--amber { background: rgb(245, 158, 11); }
+.graph-note__color-dot--blue { background: rgb(59, 130, 246); }
+.graph-note__color-dot--green { background: rgb(16, 185, 129); }
+.graph-note__color-dot--rose { background: rgb(244, 63, 94); }
+
+.graph-note__editable {
+  cursor: text;
+  border-radius: 6px;
+  transition: background 120ms ease;
+}
+
+.graph-note__editable:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.graph-note__title--empty,
+.graph-note__body--empty {
+  color: color-mix(in srgb, var(--on-surface) 40%, transparent);
+  font-weight: 500;
+}
+
+/* Inline editing fields are visually identical to the static text:
+   fully transparent, borderless, no padding — cursor sits on the note. */
+.graph-note__field {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  resize: none;
+  overflow: hidden;
+}
+
+.graph-note__field::placeholder {
+  color: color-mix(in srgb, var(--on-surface) 40%, transparent);
+}
+
+textarea.graph-note__field {
+  display: block;
+  min-height: 1.5em;
 }
 
 .node-context-menu {
@@ -4615,28 +4821,6 @@ function jumpMinimap(event: MouseEvent) {
 .canvas-selection-controls span {
   font-size: 12px;
   color: var(--on-surface-muted);
-}
-
-.canvas-help {
-  position: absolute;
-  right: 14px;
-  top: 14px;
-  z-index: 9;
-  width: min(300px, calc(100% - 28px));
-  display: grid;
-  gap: 4px;
-  padding: 10px 12px;
-  border-radius: 16px;
-}
-
-.canvas-help strong {
-  font-size: 12px;
-}
-
-.canvas-help span {
-  color: var(--on-surface-muted);
-  font-size: 12px;
-  line-height: 1.45;
 }
 
 .canvas-minimap {
@@ -4980,7 +5164,6 @@ function jumpMinimap(event: MouseEvent) {
 }
 
 @media (max-width: 960px) {
-  .canvas-help,
   .canvas-minimap {
     display: none;
   }
