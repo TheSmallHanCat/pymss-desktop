@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from worker_graph_workflows import is_graph_workflow_definition, run_graph_workflow_task
-from worker_infer import _normalize_output_layout, collect_outputs
+from worker_infer import _normalize_output_layout, _resolve_separator_device, collect_outputs
 from worker_protocol import emit, emit_error
 
 
@@ -72,8 +72,17 @@ def _candidate_commands(workflow_path: Path, input_path: str, output_dir: str, p
     endpoint = str(payload.get("endpoint") or "").strip()
     if endpoint:
         run_args.extend(["--endpoint", endpoint])
-    device = str(payload.get("device") or "").strip()
-    if device and device != "auto":
+    requested_device = str(payload.get("device") or "auto").strip().lower() or "auto"
+    device, device_ids, _resolved_device_label = _resolve_separator_device(
+        requested_device, payload.get("deviceIds")
+    )
+    if requested_device == "cuda":
+        # pymss's explicit `cuda` path currently loses the selected index,
+        # while `auto` plus device_ids resolves to cuda:<id> correctly.
+        run_args.extend(["--device", device])
+        for device_id in device_ids:
+            run_args.extend(["--device-id", str(device_id)])
+    elif device and device != "auto":
         run_args.extend(["--device", device])
     if payload.get("useTta"):
         run_args.append("--tta")

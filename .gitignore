@@ -8,10 +8,19 @@ dist/
 # Tauri / Rust build
 src-tauri/target/
 src-tauri/target/**
+src-tauri/gen/schemas/linux-schema.json
 
 # Python cache
 __pycache__/
 *.py[cod]
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 .python-version
 .venv/
 venv/
