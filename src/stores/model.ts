@@ -172,9 +172,9 @@ function normalizeModelPreferences(input?: Record<string, ModelPreference>) {
   const next: Record<string, ModelPreference> = {}
   Object.entries(input || {}).forEach(([name, value]) => {
     if (!name || !value || typeof value !== 'object') return
-    const note = typeof value.note === 'string' ? value.note.trim() : ''
+    const note = typeof value.note === 'string' ? value.note : ''
     const favorite = Boolean(value.favorite)
-    if (!favorite && !note) return
+    if (!favorite && !note.trim()) return
     next[name] = {
       favorite,
       note,
@@ -487,13 +487,16 @@ export const useModelStore = defineStore('model', () => {
 
   function setModelPreference(name: string, patch: ModelPreference) {
     const previous = modelPreferences.value[name] || {}
+    // Keep the note verbatim (including newlines) so the controlled textarea
+    // does not fight the caret; only use a trimmed copy to decide emptiness.
+    const note = typeof patch.note === 'string' ? patch.note : previous.note
     const next: ModelPreference = {
       ...previous,
       ...patch,
-      note: typeof patch.note === 'string' ? patch.note.trim() : previous.note,
+      note,
       updatedAt: Date.now(),
     }
-    if (!next.favorite && !next.note) {
+    if (!next.favorite && !(next.note || '').trim()) {
       const { [name]: _, ...rest } = modelPreferences.value
       modelPreferences.value = rest
     } else {

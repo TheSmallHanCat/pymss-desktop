@@ -1435,6 +1435,36 @@ pub async fn pick_output_folder(app: AppHandle) -> AppResult<Option<String>> {
         .map(|p| p.to_string()))
 }
 
+/// Opens a "Save As" dialog seeded with `default_name` and writes `content` to
+/// the chosen path. Returns the saved path, or `None` if the user cancelled.
+#[tauri::command]
+pub async fn save_text_file_dialog(
+    app: AppHandle,
+    default_name: String,
+    content: String,
+) -> AppResult<Option<String>> {
+    let mut builder = app.dialog().file();
+    if !default_name.trim().is_empty() {
+        builder = builder.set_file_name(&default_name);
+        if let Some(ext) = std::path::Path::new(&default_name)
+            .extension()
+            .and_then(|value| value.to_str())
+        {
+            builder = builder.add_filter(ext.to_uppercase(), &[ext]);
+        }
+    }
+    let Some(path) = builder.blocking_save_file() else {
+        return Ok(None);
+    };
+    let path_string = path.to_string();
+    let path_buf = PathBuf::from(&path_string);
+    if let Some(parent) = path_buf.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path_buf, content.as_bytes())?;
+    Ok(Some(path_string))
+}
+
 #[tauri::command]
 pub async fn prepare_model_dir_change(
     app: AppHandle,

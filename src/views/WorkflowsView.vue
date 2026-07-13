@@ -319,12 +319,23 @@ async function handleImportComfyMss(event: Event) {
   }
 }
 
-function exportSelectedComfyMss() {
+async function exportSelectedComfyMss() {
   const current = selectedWorkflow.value
   if (!current) return
   try {
     const payload = exportComfyMssWorkflow(current.definition, { models: models.value })
-    downloadJsonFile(`${workflowSlug(current.name || t('workflows.untitled'))}.comfy-mss.json`, payload)
+    const fileName = `${workflowSlug(current.name || t('workflows.untitled'))}.comfy-mss.json`
+    const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+    if (isTauri) {
+      const content = `${JSON.stringify(payload, null, 2)}\n`
+      const savedPath = await invoke<string | null>('save_text_file_dialog', {
+        defaultName: fileName,
+        content,
+      })
+      if (!savedPath) return
+    } else {
+      downloadJsonFile(fileName, payload)
+    }
     message.success(t('workflows.comfyExportSuccess'))
   } catch (error) {
     message.error(`${t('workflows.comfyExportFailed')}: ${error instanceof Error ? error.message : String(error)}`)
