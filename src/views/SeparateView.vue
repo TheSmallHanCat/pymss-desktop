@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
@@ -23,13 +24,14 @@ import {
   TimeOutline,
 } from '@vicons/ionicons5'
 import { useModelStore } from '@/stores/model'
-import { useTaskStore, type OutputLayout, type SeparationTask } from '@/stores/task'
+import { useTaskStore, type OutputLayout, type SeparationTask, type StemOutput } from '@/stores/task'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { buildModelCategoryOptionsFromModels, getModelCategoryLabel } from '@/utils/modelCategory'
 import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, workflowValidationErrorMessage, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
 import { getWorkflowDefinitionDefaults } from '@/utils/workflowGraph'
+import { sortStemOutputsByOrder } from '@/utils/stemOrder'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 
 const { t, locale } = useI18n()
@@ -60,7 +62,7 @@ const {
   high_end_process,
   selectedStems,
 } = storeToRefs(task)
-const { selectedModel, downloadedModels, isLoading, detailLoading, modelPreferences } = storeToRefs(model)
+const { selectedModel, downloadedModels, models: modelEntries, isLoading, detailLoading, modelPreferences } = storeToRefs(model)
 const { workflows, selectedWorkflow, selectedWorkflowId } = storeToRefs(workflow)
 
 const isDragging = ref(false)
@@ -74,6 +76,9 @@ const temporaryOutputDir = ref('')
 const outputLayout = ref<OutputLayout>('folders')
 const focusedSeparationJobId = ref<string | null>(null)
 const cancellingTaskId = ref<string | null>(null)
+const audioElements = new Map<string, HTMLAudioElement>()
+const playingOutputPath = ref('')
+const outputPlayback = ref<Record<string, { currentTime: number; duration: number }>>({})
 let unlistenDragDrop: UnlistenFn | null = null
 
 const formatOptions = [
@@ -382,6 +387,35 @@ const currentTaskFileName = computed(() => currentTask.value ? getFileName(curre
 const currentTaskOutputPath = computed(() => currentJob.value?.output || currentTask.value?.output || normalizedOutputDir.value)
 const currentTaskOutputSummary = computed(() => shortenMiddle(currentTaskOutputPath.value, 72))
 const currentTaskDuration = computed(() => currentTask.value ? taskDuration(currentTask.value) : '')
+
+function configuredStemOrder(item: SeparationTask) {
+  if (item.runConfig?.runMode === 'workflow') return []
+  const modelEntry = modelEntries.value.find(modelItem => modelItem.name === item.model)
+  const configured = parseModelInstruments(modelEntry?.configInstruments)
+  const selected = item.runConfig?.selectedStems || []
+  if (!configured.length) return selected
+  if (!selected.length) return configured
+
+  const selectedKeys = new Set(selected.map(stem => stem.toLowerCase()))
+  const configuredKeys = new Set(configured.map(stem => stem.toLowerCase()))
+  return [
+    ...configured.filter(stem => selectedKeys.has(stem.toLowerCase())),
+    ...selected.filter(stem => !configuredKeys.has(stem.toLowerCase())),
+  ]
+}
+
+const playableOutputGroups = computed(() => currentBatchTasks.value
+  .filter(item => item.status === 'done')
+  .map(item => ({
+    taskId: item.id,
+    input: item.input,
+    outputs: sortStemOutputsByOrder(
+      item.outputs.filter(output => Boolean(output.path)),
+      configuredStemOrder(item),
+    ),
+  }))
+  .filter(group => group.outputs.length > 0))
+const playableOutputs = computed(() => playableOutputGroups.value.flatMap(group => group.outputs))
 const currentBatchProgress = computed(() => {
   const items = currentBatchTasks.value
   if (!items.length) return 0
@@ -421,6 +455,87 @@ const currentBatchOutputSummary = computed(() => {
   if (!currentBatchIsMulti.value) return currentTaskOutputSummary.value
   return t('separate.batchResultSummary', { count: currentBatchDoneCount.value, total: currentBatchTotal.value })
 })
+
+function formatPlaybackTime(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '00:00'
+  const total = Math.floor(value)
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
+function getOutputPlayback(path: string) {
+  return outputPlayback.value[path] || { currentTime: 0, duration: 0 }
+}
+
+function setOutputPlayback(path: string, patch: Partial<{ currentTime: number; duration: number }>) {
+  const previous = getOutputPlayback(path)
+  outputPlayback.value = {
+    ...outputPlayback.value,
+    [path]: { ...previous, ...patch },
+  }
+}
+
+function getAudio(path: string) {
+  const cached = audioElements.get(path)
+  if (cached) return cached
+
+  const audio = new Audio(convertFileSrc(path))
+  audio.preload = 'metadata'
+  audio.addEventListener('loadedmetadata', () => {
+    setOutputPlayback(path, { duration: audio.duration || 0 })
+  })
+  audio.addEventListener('timeupdate', () => {
+    setOutputPlayback(path, { currentTime: audio.currentTime || 0, duration: audio.duration || 0 })
+  })
+  audio.addEventListener('ended', () => {
+    if (playingOutputPath.value === path) playingOutputPath.value = ''
+    setOutputPlayback(path, { currentTime: 0, duration: audio.duration || 0 })
+  })
+  audio.addEventListener('error', () => {
+    if (playingOutputPath.value === path) playingOutputPath.value = ''
+  })
+  audioElements.set(path, audio)
+  return audio
+}
+
+async function toggleOutputPlayback(output: StemOutput) {
+  if (!output.path) return
+  const audio = getAudio(output.path)
+  if (playingOutputPath.value === output.path && !audio.paused) {
+    audio.pause()
+    playingOutputPath.value = ''
+    return
+  }
+
+  audioElements.forEach((item, path) => {
+    if (path !== output.path) item.pause()
+  })
+  try {
+    await audio.play()
+    playingOutputPath.value = output.path
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('separate.previewPlayFailed'))
+  }
+}
+
+function seekOutput(path: string, value: number) {
+  const audio = getAudio(path)
+  const next = Number(value || 0)
+  audio.currentTime = next
+  setOutputPlayback(path, { currentTime: next, duration: audio.duration || getOutputPlayback(path).duration })
+}
+
+function stopAllPreviewAudio() {
+  audioElements.forEach((audio) => {
+    audio.pause()
+    audio.removeAttribute('src')
+    audio.load()
+  })
+  audioElements.clear()
+  playingOutputPath.value = ''
+  outputPlayback.value = {}
+}
 
 function getFileName(path: string) {
   return path.split(/[/\\]/).filter(Boolean).pop() || path
@@ -607,6 +722,10 @@ watch(
 )
 
 onMounted(async () => {
+  if (import.meta.env.DEV && route.query.preview === 'results') {
+    const previewJob = [...task.resultJobs].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+    if (previewJob) focusedSeparationJobId.value = previewJob.id
+  }
   if (!app.envInfo && !app.envLoading) {
     app.checkEnvInBackground().catch(() => {})
   }
@@ -632,6 +751,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (unlistenDragDrop) unlistenDragDrop()
+  stopAllPreviewAudio()
 })
 
 async function handlePickFiles() {
@@ -699,6 +819,7 @@ async function start() {
 }
 
 function resetForNextSeparation() {
+  stopAllPreviewAudio()
   showLogModal.value = false
   focusedSeparationJobId.value = null
 }
@@ -747,6 +868,7 @@ async function retryCurrentTask() {
     negativeText: t('common.cancel'),
     negativeButtonProps: { secondary: true },
     onPositiveClick: async () => {
+      stopAllPreviewAudio()
       try {
         const next = await task.retryTask(item.id)
         focusedSeparationJobId.value = next?.jobId || next?.id || focusedSeparationJobId.value
@@ -997,6 +1119,45 @@ async function retryCurrentTask() {
                 <code>{{ currentBatchOutputSummary }}</code>
               </div>
               <div v-else-if="taskSubMessage(currentTask)" class="result-note">{{ taskSubMessage(currentTask) }}</div>
+              <section v-if="taskPanelState === 'done' && playableOutputs.length" class="result-preview-panel">
+                <div class="result-preview-panel__head">
+                  <strong>{{ t('separate.previewTitle') }}</strong>
+                  <span>{{ playableOutputs.length }} {{ t('separate.previewStemUnit') }}</span>
+                </div>
+                <div class="preview-output-groups">
+                  <div v-for="group in playableOutputGroups" :key="group.taskId" class="preview-output-group">
+                    <div v-if="currentBatchIsMulti" class="preview-output-group__head">
+                      <strong :title="group.input">{{ getFileName(group.input) }}</strong>
+                      <span>{{ group.outputs.length }} {{ t('separate.previewStemUnit') }}</span>
+                    </div>
+                    <div class="preview-track-list">
+                      <div v-for="output in group.outputs" :key="`${group.taskId}:${output.path}`" class="preview-track">
+                        <div class="preview-track__title">
+                          <strong>{{ output.stem }}</strong>
+                          <small :title="output.path">{{ shortenMiddle(output.path, 68) }}</small>
+                        </div>
+                        <n-button circle secondary size="small" @click="toggleOutputPlayback(output)">
+                          <template #icon>
+                            <n-icon :component="playingOutputPath === output.path ? PauseOutline : PlayOutline" />
+                          </template>
+                        </n-button>
+                        <n-slider
+                          class="preview-track__slider"
+                          :value="getOutputPlayback(output.path).currentTime"
+                          :min="0"
+                          :max="Math.max(getOutputPlayback(output.path).duration, 1)"
+                          :step="0.1"
+                          :tooltip="false"
+                          @update:value="(value: number) => seekOutput(output.path, value)"
+                        />
+                        <span class="preview-track__time">
+                          {{ formatPlaybackTime(getOutputPlayback(output.path).currentTime) }} / {{ formatPlaybackTime(getOutputPlayback(output.path).duration) }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
             </div>
             <div class="stage-actions">
               <n-button v-if="taskPanelState === 'done'" secondary size="large" @click="task.revealPath(currentJob?.output || currentTask.output)">
@@ -2311,6 +2472,120 @@ async function retryCurrentTask() {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 76%, transparent);
 }
 
+.result-preview-panel {
+  flex: 0 1 auto;
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  max-height: 360px;
+  padding: 12px 14px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--outline) 80%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-2) 32%, transparent);
+}
+
+.result-preview-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.result-preview-panel__head strong {
+  font-size: 14px;
+}
+
+.result-preview-panel__head span,
+.preview-track__title small,
+.preview-track__time {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+}
+
+.preview-output-groups {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.preview-output-group {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.preview-output-group__head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px;
+}
+
+.preview-output-group__head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.preview-output-group__head span {
+  flex: 0 0 auto;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+}
+
+.preview-track-list {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.preview-track {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.9fr) auto minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--outline) 78%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-2) 44%, transparent);
+}
+
+.preview-track__title {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.preview-track__title strong,
+.preview-track__title small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-track__title strong {
+  font-size: 13px;
+}
+
+.preview-track__slider {
+  min-width: 0;
+}
+
+.preview-track__time {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 /* stage action bar */
 .stage-actions {
   flex: 0 0 auto;
@@ -2604,6 +2879,9 @@ async function retryCurrentTask() {
   }
   .stage-actions { justify-content: stretch; }
   .stage-actions .n-button { flex: 1 1 160px; }
+  .preview-track { grid-template-columns: minmax(0, 1fr) auto; }
+  .preview-track__slider,
+  .preview-track__time { grid-column: 1 / -1; }
   .progress-ring { width: 120px; height: 120px; }
   .progress-ring__center strong { font-size: 32px; }
   .settings-modal {
@@ -2636,4 +2914,3 @@ async function retryCurrentTask() {
   }
 }
 </style>
-
