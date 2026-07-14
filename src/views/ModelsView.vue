@@ -21,6 +21,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useTaskStore } from '@/stores/task'
 import { formatBytes } from '@/utils/format'
 import { buildModelCategoryOptionsFromPairs, getModelCategoryLabel } from '@/utils/modelCategory'
+import ModelProgressBlock from '@/components/ModelProgressBlock.vue'
 
 const { t, locale } = useI18n()
 const message = useMessage()
@@ -82,8 +83,10 @@ const modelSortOptions = computed(() => [
   { label: t('models.sortDownloaded'), value: 'downloaded' },
 ])
 
+const collator = computed(() => new Intl.Collator(locale.value === 'zh-CN' ? 'zh-CN' : 'en', { numeric: true, sensitivity: 'base' }))
+
 function compareModelName(a: ModelEntry, b: ModelEntry) {
-  return a.name.localeCompare(b.name, locale.value === 'zh-CN' ? 'zh-CN' : 'en')
+  return collator.value.compare(a.name, b.name)
 }
 
 function isFavoriteModel(model: ModelEntry | null | undefined) {
@@ -109,29 +112,44 @@ const sortedModels = computed(() => {
   const list = downloadedOnly.value
     ? filteredModels.value.filter((m) => m.downloaded)
     : filteredModels.value
-  return [...list].sort((a, b) => {
-    const favoriteDelta = Number(isFavoriteModel(b)) - Number(isFavoriteModel(a))
-    if (favoriteDelta) return favoriteDelta
-
-    if (modelSort.value === 'favorite') return compareModelName(a, b)
-    if (modelSort.value === 'name-asc') return compareModelName(a, b)
-    if (modelSort.value === 'name-desc') return compareModelName(b, a)
-    if (modelSort.value === 'size-desc') return b.sizeBytes - a.sizeBytes || compareModelName(a, b)
-    if (modelSort.value === 'size-asc') return a.sizeBytes - b.sizeBytes || compareModelName(a, b)
-    if (modelSort.value === 'category') {
-      return categoryLabel(a).localeCompare(categoryLabel(b), locale.value === 'zh-CN' ? 'zh-CN' : 'en') || compareModelName(a, b)
+  const sort = modelSort.value
+  // 收藏置顶仅在默认/收藏排序下生效，其余排序纯按维度排列
+  const pinFavorite = sort === 'default' || sort === 'favorite'
+  // 预计算排序键，避免比较器内重复调用 isFavoriteModel/categoryLabel（O(n log n) 放大）
+  const decorated = list.map((model) => ({
+    model,
+    favorite: isFavoriteModel(model),
+    categoryKey: sort === 'category' ? categoryLabel(model) : '',
+    typeKey: sort === 'type' ? String(model.modelType || '') : '',
+  }))
+  decorated.sort((a, b) => {
+    if (pinFavorite) {
+      const favoriteDelta = Number(b.favorite) - Number(a.favorite)
+      if (favoriteDelta) return favoriteDelta
     }
-    if (modelSort.value === 'type') {
-      return String(a.modelType || '').localeCompare(String(b.modelType || ''), locale.value === 'zh-CN' ? 'zh-CN' : 'en') || compareModelName(a, b)
+    switch (sort) {
+      case 'name-desc':
+        return compareModelName(b.model, a.model)
+      case 'size-desc':
+        return b.model.sizeBytes - a.model.sizeBytes || compareModelName(a.model, b.model)
+      case 'size-asc':
+        return a.model.sizeBytes - b.model.sizeBytes || compareModelName(a.model, b.model)
+      case 'category':
+        return collator.value.compare(a.categoryKey, b.categoryKey) || compareModelName(a.model, b.model)
+      case 'type':
+        return collator.value.compare(a.typeKey, b.typeKey) || compareModelName(a.model, b.model)
+      case 'downloaded':
+        if (a.model.downloaded !== b.model.downloaded) return a.model.downloaded ? -1 : 1
+        return compareModelName(a.model, b.model)
+      case 'favorite':
+      case 'name-asc':
+        return compareModelName(a.model, b.model)
+      default:
+        if (a.model.downloaded !== b.model.downloaded) return a.model.downloaded ? -1 : 1
+        return compareModelName(a.model, b.model)
     }
-    if (modelSort.value === 'downloaded') {
-      if (a.downloaded !== b.downloaded) return a.downloaded ? -1 : 1
-      return compareModelName(a, b)
-    }
-
-    if (a.downloaded !== b.downloaded) return a.downloaded ? -1 : 1
-    return 0
   })
+  return decorated.map((d) => d.model)
 })
 const pagedModels = computed(() => {
   const start = (page.value - 1) * pageSize.value
@@ -147,8 +165,8 @@ const storageModels = computed(() => {
     .sort((a, b) => {
       if (storageSort.value === 'size-desc') return b.sizeBytes - a.sizeBytes
       if (storageSort.value === 'size-asc') return a.sizeBytes - b.sizeBytes
-      if (storageSort.value === 'name-desc') return b.name.localeCompare(a.name)
-      return a.name.localeCompare(b.name)
+      if (storageSort.value === 'name-desc') return collator.value.compare(b.name, a.name)
+      return collator.value.compare(a.name, b.name)
     })
 })
 
@@ -236,6 +254,12 @@ function downloadStatusMessage(modelName: string) {
   if (!task) return ''
   if (task.status === 'interrupted') return t('models.downloadInterrupted')
   return task.message || task.status
+}
+
+function downloadProgressColor(status: string) {
+  if (status === 'error') return 'var(--danger)'
+  if (status === 'interrupted') return 'var(--warning)'
+  return 'var(--primary)'
 }
 
 function deleteStatusMessage(modelName: string) {
@@ -530,13 +554,18 @@ onMounted(() => {
               'model-card--selected': selectedModel === model.name,
               'model-card--unsupported': !model.supported
             }]"
+            tabindex="0"
+            :aria-label="t('models.viewDetailAria', { name: model.name })"
+            :aria-current="selectedModel === model.name ? 'true' : undefined"
             @click="selectModel(model)"
+            @keydown.enter.self.prevent="selectModel(model)"
+            @keydown.space.self.prevent="selectModel(model)"
           >
           <!-- Card Header -->
           <div class="mc-header">
             <div class="mc-title">
               <div class="mc-name-row">
-                <span class="mc-name">{{ model.name }}</span>
+                <span class="mc-name" :title="model.name">{{ model.name }}</span>
                 <n-button
                   quaternary
                   circle
@@ -551,7 +580,7 @@ onMounted(() => {
                   </template>
                 </n-button>
               </div>
-              <span v-if="modelNote(model)" class="mc-note">{{ modelNote(model) }}</span>
+              <span v-if="modelNote(model)" class="mc-note" :title="modelNote(model)">{{ modelNote(model) }}</span>
             </div>
           </div>
           <!-- Meta Tags -->
@@ -579,26 +608,13 @@ onMounted(() => {
 
           <!-- Footer -->
           <div class="mc-footer">
-            <div v-if="isDeletingModel(model.name)" class="mc-dl">
-              <div class="mc-dl-info">
-                <div class="mc-dl-status">
-                  <span class="mc-dl-dot mc-dl-dot--downloading" />
-                  <span class="mc-dl-msg">{{ deleteStatusMessage(model.name) || t('models.deleting') }}</span>
-                </div>
-                <span class="mc-dl-pct">{{ deleteTasks[model.name]?.progress || 0 }}%</span>
-              </div>
-              <n-progress
-                :percentage="deleteTasks[model.name]?.progress || 0"
-                :show-indicator="false"
-                :height="8"
-                :border-radius="4"
-                type="line"
-                :rail-color="'var(--surface-3)'"
-              />
-              <div class="mc-dl-files">
-                {{ t('models.deleteProgress', { completed: deleteTasks[model.name]?.completedFiles || 0, total: deleteTasks[model.name]?.totalFiles || 0 }) }}
-              </div>
-            </div>
+            <ModelProgressBlock
+              v-if="isDeletingModel(model.name)"
+              status="downloading"
+              :message="deleteStatusMessage(model.name) || t('models.deleting')"
+              :progress="deleteTasks[model.name]?.progress || 0"
+              :files-text="t('models.deleteProgress', { completed: deleteTasks[model.name]?.completedFiles || 0, total: deleteTasks[model.name]?.totalFiles || 0 })"
+            />
             <!-- Download button -->
             <n-button
               v-else-if="model.supported && !model.downloaded && (!downloadTasks[model.name] || downloadTasks[model.name].status === 'done')"
@@ -612,27 +628,15 @@ onMounted(() => {
             </n-button>
 
             <!-- Download progress -->
-            <div v-else-if="!model.downloaded && downloadTasks[model.name] && downloadTasks[model.name].status !== 'done'" class="mc-dl">
-              <div class="mc-dl-info">
-                <div class="mc-dl-status">
-                  <span :class="['mc-dl-dot', `mc-dl-dot--${downloadTasks[model.name].status}`]" />
-                  <span class="mc-dl-msg">{{ downloadStatusMessage(model.name) }}</span>
-                </div>
-                <span class="mc-dl-pct">{{ downloadTasks[model.name].progress }}%</span>
-              </div>
-              <n-progress
-                :percentage="downloadTasks[model.name].progress"
-                :show-indicator="false"
-                :height="8"
-                :border-radius="4"
-                type="line"
-                :color="downloadTasks[model.name].status === 'error' ? 'var(--danger)' : downloadTasks[model.name].status === 'interrupted' ? 'var(--warning)' : 'var(--primary)'"
-                :rail-color="'var(--surface-3)'"
-              />
-              <div v-if="downloadTasks[model.name].totalFiles > 1" class="mc-dl-files">
-                {{ t('models.fileProgress', { completed: downloadTasks[model.name].completedFiles, total: downloadTasks[model.name].totalFiles }) }}
-              </div>
-              <div class="mc-dl-actions">
+            <ModelProgressBlock
+              v-else-if="!model.downloaded && downloadTasks[model.name] && downloadTasks[model.name].status !== 'done'"
+              :status="downloadTasks[model.name].status"
+              :message="downloadStatusMessage(model.name)"
+              :progress="downloadTasks[model.name].progress"
+              :files-text="downloadTasks[model.name].totalFiles > 1 ? t('models.fileProgress', { completed: downloadTasks[model.name].completedFiles, total: downloadTasks[model.name].totalFiles }) : ''"
+              :color="downloadProgressColor(downloadTasks[model.name].status)"
+            >
+              <template #actions>
                 <n-button
                   v-if="downloadTasks[model.name].status === 'downloading'"
                   block
@@ -660,8 +664,8 @@ onMounted(() => {
                     <template #icon><n-icon :component="TrashOutline" /></template>
                   </n-button>
                 </template>
-              </div>
-            </div>
+              </template>
+            </ModelProgressBlock>
 
             <!-- Already downloaded -->
             <div v-else-if="model.downloaded" class="mc-done-row">
@@ -842,73 +846,63 @@ onMounted(() => {
 
         <template #footer>
           <div class="drawer-footer" v-if="selectedInfo">
-            <!-- Not downloaded, no active task: show download -->
-            <n-button
-              v-if="selectedInfo.supported && !selectedInfo.downloaded && (!downloadTasks[selectedInfo.name] || downloadTasks[selectedInfo.name]?.status === 'done')"
-              block
-              type="primary"
-              @click="downloadModel(selectedInfo!, $event)"
+            <!-- 删除中：进度块 -->
+            <ModelProgressBlock
+              v-if="isDeletingModel(selectedInfo.name)"
+              status="downloading"
+              :message="deleteStatusMessage(selectedInfo.name) || t('models.deleting')"
+              :progress="deleteTasks[selectedInfo.name]?.progress || 0"
+              :files-text="t('models.deleteProgress', { completed: deleteTasks[selectedInfo.name]?.completedFiles || 0, total: deleteTasks[selectedInfo.name]?.totalFiles || 0 })"
+            />
+
+            <!-- 下载中：进度块 + 取消 -->
+            <ModelProgressBlock
+              v-else-if="downloadTasks[selectedInfo.name]?.status === 'downloading'"
+              :status="downloadTasks[selectedInfo.name]!.status"
+              :message="downloadStatusMessage(selectedInfo.name)"
+              :progress="downloadTasks[selectedInfo.name]!.progress"
+              :files-text="downloadTasks[selectedInfo.name]!.totalFiles > 1 ? t('models.fileProgress', { completed: downloadTasks[selectedInfo.name]!.completedFiles, total: downloadTasks[selectedInfo.name]!.totalFiles }) : ''"
+              :color="downloadProgressColor(downloadTasks[selectedInfo.name]!.status)"
             >
-              <template #icon><n-icon :component="CloudDownloadOutline" /></template>
-              {{ t('common.download') }}
-            </n-button>
-            <!-- Downloading: show cancel -->
-            <n-button
-              v-if="downloadTasks[selectedInfo.name]?.status === 'downloading'"
-              block
-              secondary
-              @click="cancelDownloadModel(selectedInfo!, $event)"
-            >
-              {{ t('common.cancel') }}
-            </n-button>
-            <!-- Paused/Cancelled/Error: show resume + delete -->
-            <template v-if="!selectedInfo.downloaded && downloadTasks[selectedInfo.name] && ['paused','cancelled','error','interrupted'].includes(downloadTasks[selectedInfo.name]!.status)">
-              <n-button
-                block
-                type="primary"
-                @click="downloadModel(selectedInfo!, $event)"
-              >
-                {{ selectedInfo && downloadTasks[selectedInfo.name]?.status === 'interrupted' ? t('models.continueDownload') : t('common.resume') }}
-              </n-button>
-              <n-button
-                block
-                type="error"
-                secondary
-                @click="confirmDeleteModel(selectedInfo!)"
-              >
-                <template #icon><n-icon :component="TrashOutline" /></template>
-                {{ t('models.delete') }}
-              </n-button>
-            </template>
-            <!-- Downloaded: show status + delete -->
-            <template v-if="isDeletingModel(selectedInfo.name)">
-              <div class="mc-dl">
-                <div class="mc-dl-info">
-                  <div class="mc-dl-status">
-                    <span class="mc-dl-dot mc-dl-dot--downloading" />
-                    <span class="mc-dl-msg">{{ deleteStatusMessage(selectedInfo.name) || t('models.deleting') }}</span>
-                  </div>
-                  <span class="mc-dl-pct">{{ deleteTasks[selectedInfo.name]?.progress || 0 }}%</span>
-                </div>
-                <n-progress
-                  :percentage="deleteTasks[selectedInfo.name]?.progress || 0"
-                  :show-indicator="false"
-                  :height="8"
-                  :border-radius="4"
-                  type="line"
-                  :rail-color="'var(--surface-3)'"
-                />
-                <div class="mc-dl-files">
-                  {{ t('models.deleteProgress', { completed: deleteTasks[selectedInfo.name]?.completedFiles || 0, total: deleteTasks[selectedInfo.name]?.totalFiles || 0 }) }}
-                </div>
+              <template #actions>
+                <n-button block secondary @click="cancelDownloadModel(selectedInfo!, $event)">
+                  {{ t('common.cancel') }}
+                </n-button>
+              </template>
+            </ModelProgressBlock>
+
+            <!-- 暂停/取消/错误/中断：进度块 + 继续 + 删除 -->
+            <template v-else-if="!selectedInfo.downloaded && downloadTasks[selectedInfo.name] && ['paused','cancelled','error','interrupted'].includes(downloadTasks[selectedInfo.name]!.status)">
+              <ModelProgressBlock
+                :status="downloadTasks[selectedInfo.name]!.status"
+                :message="downloadStatusMessage(selectedInfo.name)"
+                :progress="downloadTasks[selectedInfo.name]!.progress"
+                :files-text="downloadTasks[selectedInfo.name]!.totalFiles > 1 ? t('models.fileProgress', { completed: downloadTasks[selectedInfo.name]!.completedFiles, total: downloadTasks[selectedInfo.name]!.totalFiles }) : ''"
+                :color="downloadProgressColor(downloadTasks[selectedInfo.name]!.status)"
+              />
+              <div class="drawer-footer-actions">
+                <n-button
+                  block
+                  type="primary"
+                  @click="downloadModel(selectedInfo!, $event)"
+                >
+                  {{ downloadTasks[selectedInfo.name]?.status === 'interrupted' ? t('models.continueDownload') : t('common.resume') }}
+                </n-button>
+                <n-button
+                  block
+                  type="error"
+                  secondary
+                  @click="confirmDeleteModel(selectedInfo!)"
+                >
+                  <template #icon><n-icon :component="TrashOutline" /></template>
+                  {{ t('models.delete') }}
+                </n-button>
               </div>
             </template>
-            <template v-else-if="selectedInfo.downloaded && (!downloadTasks[selectedInfo.name] || downloadTasks[selectedInfo.name]?.status === 'done')">
-              <n-button
-                block
-                secondary
-                disabled
-              >
+
+            <!-- 已下载：状态 + 删除 -->
+            <template v-else-if="selectedInfo.downloaded">
+              <n-button block secondary disabled>
                 <template #icon><n-icon :component="CheckmarkCircleOutline" /></template>
                 {{ t('models.downloaded') }}
               </n-button>
@@ -922,6 +916,17 @@ onMounted(() => {
                 {{ t('models.delete') }}
               </n-button>
             </template>
+
+            <!-- 未下载且无任务：下载（含不支持则不显示） -->
+            <n-button
+              v-else-if="selectedInfo.supported && !selectedInfo.downloaded"
+              block
+              type="primary"
+              @click="downloadModel(selectedInfo!, $event)"
+            >
+              <template #icon><n-icon :component="CloudDownloadOutline" /></template>
+              {{ t('common.download') }}
+            </n-button>
           </div>
         </template>
       </n-card>
@@ -1176,6 +1181,12 @@ onMounted(() => {
     color-mix(in srgb, var(--surface-1) 78%, transparent);
 }
 
+.model-card:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 70%, transparent);
+  outline-offset: 2px;
+  border-color: color-mix(in srgb, var(--primary) 40%, var(--outline));
+}
+
 .model-card--selected {
   border-color: color-mix(in srgb, var(--primary) 48%, var(--outline)) !important;
   background:
@@ -1224,6 +1235,7 @@ onMounted(() => {
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .mc-note {
@@ -1236,6 +1248,7 @@ onMounted(() => {
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 1;
+  line-clamp: 1;
 }
 
 .mc-favorite {
@@ -1335,91 +1348,11 @@ onMounted(() => {
 }
 
 /* Download progress */
-.mc-dl {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 100%;
-  min-width: 0;
-}
-
-.mc-dl-info {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  min-width: 0;
-}
-
-.mc-dl-status {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.mc-dl-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--primary);
-  animation: pulse 1.5s infinite;
-}
-
-.mc-dl-dot--downloading {
-  background: var(--primary);
-}
-
-.mc-dl-dot--error {
-  background: var(--danger);
-  animation: none;
-}
-
-.mc-dl-dot--paused,
-.mc-dl-dot--cancelled,
-.mc-dl-dot--interrupted {
-  background: var(--warning);
-  animation: none;
-}
-
-.mc-dl-dot--done {
-  background: var(--success);
-  animation: none;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-
-.mc-dl-msg {
-  font-size: 11px;
-  color: var(--on-surface-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mc-dl-pct {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--on-surface);
-  flex-shrink: 0;
-  margin-left: 8px;
-}
-
+/* 下载/删除进度块样式已迁移至 ModelProgressBlock 组件；
+   此处仅保留存储抽屉批量删除卡片仍引用的文件进度文本样式 */
 .mc-dl-files {
   font-size: 11px;
   color: var(--on-surface-muted);
-}
-
-.mc-dl-actions {
-  display: flex;
-  gap: 6px;
-  align-items: center;
 }
 
 .mc-done {
@@ -1436,7 +1369,7 @@ onMounted(() => {
 .mc-done-row {
   width: 100%;
   display: grid;
-  grid-template-columns: 72px 1fr 24px;
+  grid-template-columns: minmax(72px, auto) 1fr auto;
   align-items: center;
   min-height: 30px;
 }
@@ -1508,6 +1441,24 @@ onMounted(() => {
 .model-detail-modal .drawer-footer :deep(.n-button) {
   width: auto;
   min-width: 112px;
+}
+
+/* 进度块在 modal footer 中占满整行，其后的操作按钮另起一行 */
+.model-detail-modal .drawer-footer > .mc-dl {
+  flex: 1 1 100%;
+  width: 100%;
+}
+
+.drawer-footer-actions {
+  display: flex;
+  gap: 8px;
+  flex: 1 1 100%;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.model-detail-modal .drawer-footer-actions :deep(.n-button) {
+  flex: 1 1 auto;
 }
 
 /* ===== Skeleton ===== */

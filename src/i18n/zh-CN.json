@@ -394,6 +394,7 @@
     "favorite": "收藏",
     "favorited": "已收藏",
     "unfavorite": "取消收藏",
+    "viewDetailAria": "查看模型 {name} 的详情",
     "note": "备注",
     "noteHint": "备注只保存在本机，可用于记录模型用途、效果或适用场景，并支持搜索。",
     "notePlaceholder": "添加备注，例如：人声保留更干净，适合流行乐...",

@@ -394,6 +394,7 @@
     "favorite": "Favorite",
     "favorited": "Favorited",
     "unfavorite": "Unfavorite",
+    "viewDetailAria": "View details for model {name}",
     "note": "Note",
     "noteHint": "Notes are stored locally and can help track model usage, results, or suitable scenarios. They are searchable.",
     "notePlaceholder": "Add a note, e.g. cleaner vocals, good for pop music...",

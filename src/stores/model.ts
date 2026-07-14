@@ -248,6 +248,16 @@ type NormalizeModelEntryOptions = {
   rememberBase?: boolean
 }
 
+/**
+ * 后端 worker 事件信封。payload 字段随 type 高度多变（下载/删除/清理各阶段），
+ * 故保持宽松结构，仅收敛顶层信封以移除隐式 any。
+ */
+export type WorkerEvent = {
+  type?: string
+  taskId?: string
+  payload?: Record<string, any>
+}
+
 export const useModelStore = defineStore('model', () => {
   const initialized = ref(false)
   const models = ref<ModelEntry[]>([])
@@ -607,7 +617,7 @@ export const useModelStore = defineStore('model', () => {
     })
   }
 
-  function handleWorkerEvent(event: any) {
+  function handleWorkerEvent(event: WorkerEvent) {
     const taskId = event?.taskId as string | undefined
     const payload = event.payload || {}
 
@@ -656,6 +666,19 @@ export const useModelStore = defineStore('model', () => {
         if (payload.modelInfo) upsertModel(payload.modelInfo)
         if (payload.modelDir) modelDir.value = payload.modelDir
         downloadStates.value = { ...downloadStates.value, [modelName]: 'done' }
+        // 模型已成功落盘后，卡片改由 model.downloaded 渲染“已下载”状态，
+        // 此处清理常驻的 done 任务，避免内存与持久化冗余。
+        // 若 modelInfo 缺失导致仍未标记下载，则保留任务以维持“下载/重试”入口。
+        const markedDownloaded = models.value.find((item) => item.name === modelName)?.downloaded
+        if (markedDownloaded) {
+          if (downloadTasks.value[modelName]) {
+            const { [modelName]: _removed, ...restTasks } = downloadTasks.value
+            downloadTasks.value = restTasks
+          }
+          const { [taskId]: _removedIndex, ...restIndex } = downloadTaskIndex.value
+          downloadTaskIndex.value = restIndex
+          return
+        }
       } else if (event.type === 'task_cancelled') {
         next.status = 'cancelled'
         next.message = 'Cancelled'

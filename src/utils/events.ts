@@ -2,7 +2,7 @@ import { listen } from '@tauri-apps/api/event'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useTaskStore } from '@/stores/task'
-import { useModelStore } from '@/stores/model'
+import { useModelStore, type WorkerEvent } from '@/stores/model'
 
 let registered = false
 const hasTauriEventApi = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -15,9 +15,10 @@ export function registerWorkerEvents() {
     const settings = useSettingsStore()
     const tasks = useTaskStore()
     const models = useModelStore()
-    app.pushWorkerEvent(event.payload)
-    void settings.handleWorkerEvent(event.payload)
-    tasks.handleWorkerEvent(event.payload)
-    models.handleWorkerEvent(event.payload)
+    const workerEvent = event.payload as WorkerEvent
+    app.pushWorkerEvent(workerEvent)
+    void settings.handleWorkerEvent(workerEvent)
+    tasks.handleWorkerEvent(workerEvent)
+    models.handleWorkerEvent(workerEvent)
   }).catch(() => {})
 }
