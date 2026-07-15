@@ -19,9 +19,14 @@ import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { storeToRefs } from 'pinia'
-import AppBrandMark from '@/components/AppBrandMark.vue'
+import WorkflowRevisionConflictModal from '@/components/workflow/WorkflowRevisionConflictModal.vue'
+import WorkflowSimpleCreator from '@/components/workflow/WorkflowSimpleCreator.vue'
 import { useModelStore } from '@/stores/model'
-import { useWorkflowStore, type WorkflowEntry } from '@/stores/workflow'
+import {
+  useWorkflowStore,
+  WorkflowRevisionConflictError,
+  type WorkflowEntry,
+} from '@/stores/workflow'
 import {
   getWorkflowBatchInputConfigs,
   getWorkflowValidationSummary,
@@ -30,6 +35,16 @@ import {
   type WorkflowValidationSummary,
 } from '@/utils/workflowDefinition'
 import { exportComfyMssWorkflow, importComfyMssWorkflow } from '@/utils/comfyMssWorkflow'
+import {
+  analyzeSimpleWorkflow,
+  resolveWorkflowOpenMode,
+  type SimpleWorkflowReasonCode,
+  type SimpleWorkflowSavePayload,
+} from '@/utils/workflowSimple'
+import {
+  isWorkflowEditorSurfaceLocked,
+  isWorkflowLockedByNodeEditor,
+} from '@/utils/workflowEditorState'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -44,6 +59,15 @@ const name = ref('')
 const description = ref('')
 const query = ref('')
 const importFileInputRef = ref<HTMLInputElement | null>(null)
+const simpleEditorOpen = ref(false)
+const simpleEditorWorkflow = ref<WorkflowEntry | null>(null)
+type SimpleSaveContinuation = 'stay' | 'advanced' | 'run'
+const pendingSimpleSave = ref<{
+  payload: SimpleWorkflowSavePayload
+  continuation: SimpleSaveContinuation
+} | null>(null)
+const showRevisionConflict = ref(false)
+const newSimpleAdvancedBaselineIds = ref<string[] | null>(null)
 let unlistenNodeEditorClosed: UnlistenFn | undefined
 
 const deviceOptions = [
@@ -69,7 +93,11 @@ const filteredWorkflows = computed(() => {
   )
 })
 
-const isNodeEditorOpen = computed(() => Boolean(nodeEditorOpenWorkflowId.value))
+const isNodeEditorOpen = computed(() => isWorkflowEditorSurfaceLocked(
+  nodeEditorOpenWorkflowId.value,
+  selectedWorkflowId.value,
+  simpleEditorOpen.value && !simpleEditorWorkflow.value,
+))
 
 function workflowValidationError(summary: WorkflowValidationSummary) {
   return workflowValidationErrorMessage(summary, t)
@@ -161,6 +189,23 @@ const selectedError = computed(() => {
   return workflowValidationError(summary) || (summary.noSaveOutputs ? t('workflows.workflowNoSaveOutputs') : '')
 })
 const selectedReady = computed(() => Boolean(selectedWorkflow.value) && !selectedError.value)
+const selectedSimpleAnalysis = computed(() => selectedWorkflow.value
+  ? analyzeSimpleWorkflow(selectedWorkflow.value.definition)
+  : null)
+const selectedSimpleReasons = computed(() => selectedSimpleAnalysis.value?.reasonCodes || [])
+
+const simpleReasonKeys: Record<SimpleWorkflowReasonCode, string> = {
+  utility_nodes: 'workflows.simpleReasonUtilityNodes',
+  unsupported_nodes: 'workflows.simpleReasonUnsupportedNodes',
+  custom_model_type: 'workflows.simpleReasonCustomModel',
+  comfy_metadata: 'workflows.simpleReasonComfyMetadata',
+  invalid_graph: 'workflows.simpleReasonInvalidGraph',
+  custom_save_behavior: 'workflows.simpleReasonCustomSave',
+}
+
+function simpleReasonLabel(reason: SimpleWorkflowReasonCode) {
+  return t(simpleReasonKeys[reason])
+}
 
 function deviceLabel(value: string) {
   return deviceOptions.find(option => option.value === value)?.label || value
@@ -201,10 +246,149 @@ async function saveMeta() {
   description.value = entry.description
 }
 
+function cloneWorkflowEntry(item: WorkflowEntry) {
+  return JSON.parse(JSON.stringify(item)) as WorkflowEntry
+}
+
+function createSimpleWorkflow() {
+  editingId.value = ''
+  name.value = ''
+  description.value = ''
+  workflow.selectWorkflow('')
+  simpleEditorWorkflow.value = null
+  simpleEditorOpen.value = true
+}
+
+function editSimpleWorkflow(item: WorkflowEntry) {
+  if (!analyzeSimpleWorkflow(item.definition).editable) return
+  simpleEditorWorkflow.value = cloneWorkflowEntry(item)
+  simpleEditorOpen.value = true
+}
+
+function openWorkflowFromList(item: WorkflowEntry) {
+  editWorkflow(item)
+  const openMode = resolveWorkflowOpenMode(item.definition)
+  if (isWorkflowLockedByNodeEditor(nodeEditorOpenWorkflowId.value, item.id)) {
+    if (openMode === 'simple') {
+      if (!simpleEditorOpen.value || simpleEditorWorkflow.value?.id !== item.id) {
+        editSimpleWorkflow(item)
+      }
+    } else {
+      closeSimpleWorkflow()
+    }
+    return
+  }
+  if (openMode === 'simple') {
+    editSimpleWorkflow(item)
+    return
+  }
+  closeSimpleWorkflow()
+}
+
+function closeSimpleWorkflow() {
+  simpleEditorOpen.value = false
+  simpleEditorWorkflow.value = null
+}
+
+function cancelSimpleWorkflow() {
+  closeSimpleWorkflow()
+  editingId.value = ''
+  name.value = ''
+  description.value = ''
+  workflow.selectWorkflow('')
+}
+
+async function openAdvancedFromSimple(payload: SimpleWorkflowSavePayload, persistDraft: boolean) {
+  if (persistDraft) {
+    await saveSimpleWorkflow(payload, { continuation: 'advanced' })
+    return
+  }
+  const workflowId = simpleEditorWorkflow.value?.id
+  newSimpleAdvancedBaselineIds.value = workflowId
+    ? null
+    : workflows.value.map(item => item.id)
+  await openNodeEditor(workflowId ? { workflowId } : { forceNew: true })
+}
+
+async function saveSimpleWorkflow(
+  payload: SimpleWorkflowSavePayload,
+  options: {
+    continuation?: SimpleSaveContinuation
+    force?: boolean
+    saveCopy?: boolean
+  } = {},
+) {
+  const continuation = options.continuation || 'stay'
+  try {
+    const entry = await workflow.saveWorkflow({
+      ...payload,
+      id: options.saveCopy ? undefined : payload.id,
+      name: options.saveCopy ? `${payload.name} Copy` : payload.name,
+      expectedUpdatedAt: options.saveCopy ? undefined : payload.expectedUpdatedAt,
+      force: options.force,
+    })
+    pendingSimpleSave.value = null
+    showRevisionConflict.value = false
+    editWorkflow(entry)
+    if (continuation === 'advanced') {
+      simpleEditorWorkflow.value = cloneWorkflowEntry(entry)
+      simpleEditorOpen.value = true
+      newSimpleAdvancedBaselineIds.value = null
+      await openNodeEditor({ workflowId: entry.id })
+    } else if (continuation === 'run') {
+      closeSimpleWorkflow()
+      workflow.selectWorkflow(entry.id)
+      await router.push({ path: '/', query: { mode: 'workflow' } })
+    } else {
+      simpleEditorWorkflow.value = cloneWorkflowEntry(entry)
+      message.success(t('workflows.saved'))
+    }
+  } catch (error) {
+    if (error instanceof WorkflowRevisionConflictError) {
+      pendingSimpleSave.value = { payload, continuation }
+      showRevisionConflict.value = true
+      return
+    }
+    message.error(error instanceof Error ? error.message : String(error))
+  }
+}
+
+async function reloadSimpleConflict() {
+  const pending = pendingSimpleSave.value
+  if (!pending?.payload.id) return
+  await workflow.reload()
+  const latest = workflows.value.find(item => item.id === pending.payload.id)
+  if (latest) {
+    editWorkflow(latest)
+    simpleEditorWorkflow.value = cloneWorkflowEntry(latest)
+  }
+  pendingSimpleSave.value = null
+}
+
+function saveSimpleConflictCopy() {
+  const pending = pendingSimpleSave.value
+  if (!pending) return
+  void saveSimpleWorkflow(pending.payload, { continuation: pending.continuation, saveCopy: true })
+}
+
+function overwriteSimpleConflict() {
+  const pending = pendingSimpleSave.value
+  if (!pending) return
+  void saveSimpleWorkflow(pending.payload, { continuation: pending.continuation, force: true })
+}
+
+function runSimpleWorkflow(payload: SimpleWorkflowSavePayload) {
+  void saveSimpleWorkflow(payload, { continuation: 'run' })
+}
+
+function duplicateSimpleWorkflow(payload: SimpleWorkflowSavePayload) {
+  void saveSimpleWorkflow(payload, { saveCopy: true })
+}
+
 // ---- Node editor bridge ----
-async function openNodeEditor(options: { forceNew?: boolean } = {}) {
+async function openNodeEditor(options: { forceNew?: boolean; workflowId?: string } = {}) {
   const forceNew = options.forceNew === true
-  const workflowId = forceNew ? '' : (editingId.value || selectedWorkflowId.value || '')
+  const workflowId = forceNew ? '' : (options.workflowId || editingId.value || selectedWorkflowId.value || '')
   const isNewWorkflow = forceNew || !workflowId
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
     try {
@@ -219,12 +403,33 @@ async function openNodeEditor(options: { forceNew?: boolean } = {}) {
 }
 
 async function refreshAfterNodeEditorClosed() {
+  const baselineIds = newSimpleAdvancedBaselineIds.value
+  const restoreNewSimpleDraft = Boolean(
+    baselineIds
+    && simpleEditorOpen.value
+    && !simpleEditorWorkflow.value,
+  )
   workflow.markNodeEditorClosed()
   await workflow.reload()
+  if (restoreNewSimpleDraft && baselineIds) {
+    const baseline = new Set(baselineIds)
+    const created = workflows.value.find(item =>
+      item.id === selectedWorkflowId.value && !baseline.has(item.id))
+      || workflows.value.find(item => !baseline.has(item.id))
+    newSimpleAdvancedBaselineIds.value = null
+    if (created) {
+      openWorkflowFromList(created)
+    } else {
+      editingId.value = ''
+      workflow.selectWorkflow('')
+    }
+    return
+  }
+  newSimpleAdvancedBaselineIds.value = null
   const target = workflows.value.find(item => item.id === editingId.value)
     || workflow.selectedWorkflow
     || workflows.value[0]
-  if (target) editWorkflow(target)
+  if (target) openWorkflowFromList(target)
 }
 
 // ---- Actions ----
@@ -247,7 +452,9 @@ function deleteSelected() {
     positiveText: t('workflows.deleteConfirm'),
     negativeText: t('common.cancel'),
     onPositiveClick: async () => {
+      const deletedId = current.id
       await workflow.deleteWorkflow(current.id)
+      if (simpleEditorWorkflow.value?.id === deletedId) closeSimpleWorkflow()
       message.success(t('workflows.deleted'))
     },
   })
@@ -319,12 +526,13 @@ async function handleImportComfyMss(event: Event) {
   }
 }
 
-async function exportSelectedComfyMss() {
-  const current = selectedWorkflow.value
-  if (!current) return
+async function exportWorkflowComfyMss(
+  workflowName: string,
+  definition: Record<string, unknown>,
+) {
   try {
-    const payload = exportComfyMssWorkflow(current.definition, { models: models.value })
-    const fileName = `${workflowSlug(current.name || t('workflows.untitled'))}.comfy-mss.json`
+    const payload = exportComfyMssWorkflow(definition, { models: models.value })
+    const fileName = `${workflowSlug(workflowName || t('workflows.untitled'))}.comfy-mss.json`
     const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
     if (isTauri) {
       const content = `${JSON.stringify(payload, null, 2)}\n`
@@ -342,6 +550,16 @@ async function exportSelectedComfyMss() {
   }
 }
 
+async function exportSelectedComfyMss() {
+  const current = selectedWorkflow.value
+  if (!current) return
+  await exportWorkflowComfyMss(current.name, current.definition)
+}
+
+function exportSimpleWorkflow(payload: SimpleWorkflowSavePayload) {
+  void exportWorkflowComfyMss(payload.name, payload.definition)
+}
+
 onMounted(async () => {
   if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
   unlistenNodeEditorClosed = await listen('pymss://workflow-node-editor-closed', () => {
@@ -355,13 +573,19 @@ onUnmounted(() => {
 
 watch(workflows, (items) => {
   refreshWorkflowBatchTaskCounts()
+  if (
+    newSimpleAdvancedBaselineIds.value
+    && simpleEditorOpen.value
+    && !simpleEditorWorkflow.value
+  ) return
   const current = items.find(item => item.id === editingId.value)
   if (current) {
     // keep local meta in sync with store (e.g. after node editor save / reload)
     name.value = current.name
     description.value = current.description
   } else if (items.length) {
-    editWorkflow(items[0])
+    const preferred = items.find(item => item.id === selectedWorkflowId.value) || items[0]
+    openWorkflowFromList(preferred)
   } else {
     editingId.value = ''
     name.value = ''
@@ -380,20 +604,17 @@ watch(workflows, (items) => {
       @change="handleImportComfyMss"
     >
 
-    <header class="console-topbar">
-      <div class="console-topbar__brand">
-        <AppBrandMark :size="30" variant="compact" shadow />
-        <div class="console-topbar__title">
-          <h1>{{ t('workflows.title') }}</h1>
-          <span>{{ t('workflows.subtitle') }}</span>
-        </div>
+    <header class="page-header-compact">
+      <div>
+        <h1>{{ t('workflows.title') }}</h1>
+        <p>{{ t('workflows.subtitle') }}</p>
       </div>
-      <div class="console-topbar__controls">
+      <div class="workflows-page__header-actions">
         <n-button secondary @click="triggerImportComfyMss">
           <template #icon><n-icon :component="OpenOutline" /></template>
           {{ t('workflows.importComfyMss') }}
         </n-button>
-        <n-button type="primary" @click="openNodeEditor({ forceNew: true })">
+        <n-button type="primary" @click="createSimpleWorkflow">
           <template #icon><n-icon :component="AddOutline" /></template>
           {{ t('workflows.newWorkflow') }}
         </n-button>
@@ -415,7 +636,7 @@ watch(workflows, (items) => {
               type="button"
               class="wf-row"
               :class="{ 'wf-row--active': item.id === selectedWorkflowId }"
-              @click="editWorkflow(item)"
+              @click="openWorkflowFromList(item)"
             >
               <span class="wf-row__icon"><n-icon :component="GitNetworkOutline" /></span>
               <span class="wf-row__main">
@@ -433,7 +654,7 @@ watch(workflows, (items) => {
             <n-icon :component="GitNetworkOutline" />
             <strong>{{ t('workflows.emptyTitle') }}</strong>
             <span>{{ t('workflows.emptyDesc') }}</span>
-            <n-button type="primary" size="small" @click="openNodeEditor({ forceNew: true })">
+            <n-button type="primary" size="small" @click="createSimpleWorkflow">
               <template #icon><n-icon :component="AddOutline" /></template>
               {{ t('workflows.newWorkflow') }}
             </n-button>
@@ -442,11 +663,26 @@ watch(workflows, (items) => {
       </aside>
 
       <main class="console__stage">
-        <div v-if="!selectedWorkflow" class="wf-overview-empty">
+        <WorkflowSimpleCreator
+          v-if="simpleEditorOpen"
+          :key="simpleEditorWorkflow ? `${simpleEditorWorkflow.id}:${simpleEditorWorkflow.updatedAt}` : 'new'"
+          :workflow="simpleEditorWorkflow"
+          :models="downloadedModels"
+          :saving="workflow.isSaving"
+          @save="saveSimpleWorkflow"
+          @open-advanced="openAdvancedFromSimple"
+          @run="runSimpleWorkflow"
+          @duplicate="duplicateSimpleWorkflow"
+          @export="exportSimpleWorkflow"
+          @delete="deleteSelected"
+          @cancel="cancelSimpleWorkflow"
+        />
+
+        <div v-else-if="!selectedWorkflow || selectedSimpleAnalysis?.editable" class="wf-overview-empty">
           <n-icon :component="GitNetworkOutline" />
           <strong>{{ t('workflows.overviewEmptyTitle') }}</strong>
           <span>{{ t('workflows.overviewEmptyDesc') }}</span>
-          <n-button type="primary" @click="openNodeEditor({ forceNew: true })">
+          <n-button type="primary" @click="createSimpleWorkflow">
             <template #icon><n-icon :component="AddOutline" /></template>
             {{ t('workflows.newWorkflow') }}
           </n-button>
@@ -560,13 +796,29 @@ watch(workflows, (items) => {
               <n-icon :component="AlertCircleOutline" />
               <span>{{ selectedError }}</span>
             </div>
+
+            <section v-if="selectedSimpleAnalysis && !selectedSimpleAnalysis.editable" class="wf-simple-blockers">
+              <strong>{{ t('workflows.advancedModeRequired') }}</strong>
+              <ul>
+                <li v-for="reason in selectedSimpleReasons" :key="reason">{{ simpleReasonLabel(reason) }}</li>
+              </ul>
+            </section>
           </div>
 
           <footer class="wf-actionbar">
             <div class="wf-actionbar__primary">
-              <n-button type="primary" size="large" @click="openNodeEditor()">
+              <n-button
+                v-if="selectedSimpleAnalysis?.editable"
+                type="primary"
+                size="large"
+                @click="editSimpleWorkflow(selectedWorkflow)"
+              >
                 <template #icon><n-icon :component="GitNetworkOutline" /></template>
-                {{ t('workflows.nodeEditor') }}
+                {{ t('workflows.simpleMode') }}
+              </n-button>
+              <n-button secondary size="large" @click="openNodeEditor()">
+                <template #icon><n-icon :component="GitNetworkOutline" /></template>
+                {{ t('workflows.openAdvancedEditor') }}
               </n-button>
               <n-button
                 secondary
@@ -594,17 +846,26 @@ watch(workflows, (items) => {
             </div>
           </footer>
 
-          <div v-if="isNodeEditorOpen" class="wf-lock">
-            <div class="wf-lock__card">
-              <n-icon :component="GitNetworkOutline" />
-              <strong>{{ t('workflows.nodeEditorOpenedTitle') }}</strong>
-              <span>{{ t('workflows.nodeEditorOpenedHint') }}</span>
-              <n-button secondary @click="openNodeEditor()">{{ t('workflows.backToNodeEditor') }}</n-button>
-            </div>
-          </div>
         </template>
+
+        <div v-if="isNodeEditorOpen" class="wf-lock">
+          <div class="wf-lock__card">
+            <n-icon :component="GitNetworkOutline" />
+            <strong>{{ t('workflows.nodeEditorOpenedTitle') }}</strong>
+            <span>{{ t('workflows.nodeEditorOpenedHint') }}</span>
+            <n-button secondary @click="openNodeEditor()">{{ t('workflows.backToNodeEditor') }}</n-button>
+          </div>
+        </div>
       </main>
     </div>
+
+    <WorkflowRevisionConflictModal
+      v-model:show="showRevisionConflict"
+      :workflow-name="pendingSimpleSave?.payload.name || simpleEditorWorkflow?.name || ''"
+      @reload="reloadSimpleConflict"
+      @save-copy="saveSimpleConflictCopy"
+      @overwrite="overwriteSimpleConflict"
+    />
   </div>
 </template>
 
@@ -616,52 +877,14 @@ watch(workflows, (items) => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 0;
 }
 
 .wf-hidden-file-input {
   display: none;
 }
 
-/* ============ Topbar ============ */
-.console-topbar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.console-topbar__brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.console-topbar__title {
-  display: grid;
-  gap: 1px;
-  min-width: 0;
-}
-
-.console-topbar__title h1 {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-  line-height: 1.15;
-}
-
-.console-topbar__title span {
-  font-size: 12px;
-  color: var(--on-surface-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.console-topbar__controls {
+.workflows-page__header-actions {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1128,6 +1351,29 @@ watch(workflows, (items) => {
   flex: 0 0 auto;
   margin-top: 1px;
   font-size: 16px;
+}
+
+.wf-simple-blockers {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--outline) 88%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 42%, transparent);
+}
+
+.wf-simple-blockers strong {
+  font-size: 12px;
+}
+
+.wf-simple-blockers ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 /* --- action bar --- */

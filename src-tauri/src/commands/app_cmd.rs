@@ -445,13 +445,18 @@ fn write_editor_project(app: &AppHandle, project: &Value) -> AppResult<Value> {
 #[tauri::command]
 pub async fn close_current_window(window: tauri::WebviewWindow) -> AppResult<()> {
     let label = window.label().to_string();
+    let app_handle = window.app_handle().clone();
+    window
+        .destroy()
+        .map_err(|error| AppError::Worker(error.to_string()))?;
     if label.starts_with("workflow-node-editor") {
-        let _ = window.app_handle().emit(
+        let _ = app_handle.emit_to(
+            "main",
             "pymss://workflow-node-editor-closed",
             serde_json::json!({ "label": label }),
         );
     }
-    window.destroy().map_err(|error| AppError::Worker(error.to_string()))
+    Ok(())
 }
 
 #[tauri::command]

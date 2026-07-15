@@ -8,6 +8,7 @@ mod state;
 mod storage;
 
 use state::AppState;
+use tauri::{Emitter, Manager};
 
 fn main() {
     tauri::Builder::default()
@@ -18,6 +19,17 @@ fn main() {
             }
             let _ = window.show();
             let _ = window.set_focus();
+        })
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed)
+                && window.label().starts_with("workflow-node-editor")
+            {
+                let _ = window.app_handle().emit_to(
+                    "main",
+                    "pymss://workflow-node-editor-closed",
+                    serde_json::json!({ "label": window.label() }),
+                );
+            }
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())

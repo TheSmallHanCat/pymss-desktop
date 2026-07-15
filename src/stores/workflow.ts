@@ -12,6 +12,28 @@ export type WorkflowEntry = {
   updatedAt: number
 }
 
+export class WorkflowRevisionConflictError extends Error {
+  readonly code = 'WORKFLOW_REVISION_CONFLICT'
+
+  constructor(
+    readonly workflowId: string,
+    readonly expectedUpdatedAt: number,
+    readonly actualUpdatedAt: number,
+  ) {
+    super('Workflow was modified by another editor')
+    this.name = 'WorkflowRevisionConflictError'
+  }
+}
+
+export type SaveWorkflowInput = {
+  id?: string
+  name: string
+  description?: string
+  definition: Record<string, unknown>
+  expectedUpdatedAt?: number
+  force?: boolean
+}
+
 type StoredWorkflowState = {
   workflows?: Partial<WorkflowEntry>[]
   selectedWorkflowId?: string
@@ -51,17 +73,22 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const initialized = ref(false)
   const isSaving = ref(false)
   const selectedWorkflow = computed(() => workflows.value.find(item => item.id === selectedWorkflowId.value) || null)
+  let persistQueue = Promise.resolve()
+  let pendingPersistCount = 0
 
-  async function persist() {
+  function persist() {
+    const snapshot = JSON.parse(JSON.stringify({
+      workflows: workflows.value,
+      selectedWorkflowId: selectedWorkflowId.value,
+    })) as StoredWorkflowState
+    pendingPersistCount += 1
     isSaving.value = true
-    try {
-      await saveAppStore('workflow-state', {
-        workflows: workflows.value,
-        selectedWorkflowId: selectedWorkflowId.value,
-      })
-    } finally {
-      isSaving.value = false
-    }
+    const run = persistQueue.then(() => saveAppStore('workflow-state', snapshot))
+    persistQueue = run.catch(() => undefined)
+    return run.finally(() => {
+      pendingPersistCount -= 1
+      isSaving.value = pendingPersistCount > 0
+    })
   }
 
   async function loadStoredState() {
@@ -86,14 +113,20 @@ export const useWorkflowStore = defineStore('workflow', () => {
     await loadStoredState()
   }
 
-  async function saveWorkflow(input: {
-    id?: string
-    name: string
-    description?: string
-    definition: Record<string, unknown>
-  }) {
-    const now = Date.now()
+  async function saveWorkflow(input: SaveWorkflowInput) {
     const existing = input.id ? workflows.value.find(item => item.id === input.id) : null
+    if (input.id && input.expectedUpdatedAt !== undefined && !existing && !input.force) {
+      throw new WorkflowRevisionConflictError(input.id, input.expectedUpdatedAt, 0)
+    }
+    if (
+      existing
+      && input.expectedUpdatedAt !== undefined
+      && input.expectedUpdatedAt !== existing.updatedAt
+      && !input.force
+    ) {
+      throw new WorkflowRevisionConflictError(existing.id, input.expectedUpdatedAt, existing.updatedAt)
+    }
+    const now = Math.max(Date.now(), (existing?.updatedAt || 0) + 1)
     const entry: WorkflowEntry = {
       id: existing?.id || input.id || createId(),
       name: input.name.trim(),

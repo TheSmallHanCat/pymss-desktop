@@ -7,8 +7,13 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { storeToRefs } from 'pinia'
 import WorkflowNodeEditor from '@/components/workflow/WorkflowNodeEditor.vue'
+import WorkflowRevisionConflictModal from '@/components/workflow/WorkflowRevisionConflictModal.vue'
 import { useModelStore } from '@/stores/model'
-import { useWorkflowStore, type WorkflowEntry } from '@/stores/workflow'
+import {
+  useWorkflowStore,
+  WorkflowRevisionConflictError,
+  type WorkflowEntry,
+} from '@/stores/workflow'
 import {
   buildWorkflowDefinition,
   getWorkflowValidationSummary,
@@ -41,10 +46,15 @@ const loaded = ref(false)
 const editingName = ref(false)
 const nameBeforeEdit = ref('')
 const nameInputRef = ref<InputInst | null>(null)
+const loadedUpdatedAt = ref<number | undefined>()
+const showRevisionConflict = ref(false)
+const pendingDefinition = ref<Record<string, unknown> | null>(null)
 
 const hasTauriWindow = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 const currentWindow = hasTauriWindow ? getCurrentWindow() : null
 const isStandaloneWindow = computed(() => Boolean(currentWindow && currentWindow.label !== 'main'))
+const isMacOS = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)
+const showCustomWindowChrome = computed(() => isStandaloneWindow.value && !isMacOS)
 const isMaximized = ref(false)
 
 const deviceOptions = [
@@ -123,12 +133,14 @@ function loadWorkflow(item?: WorkflowEntry | null) {
     defaultFormat.value = 'wav'
     defaultNormalize.value = false
     definition.value = createFreshDefinition()
+    loadedUpdatedAt.value = undefined
     return
   }
   editingId.value = item.id
   name.value = item.name
   description.value = item.description
   definition.value = item.definition
+  loadedUpdatedAt.value = item.updatedAt
   const draft = hydrateWorkflowDefinition(item.definition)
   defaultDevice.value = draft.defaultDevice
   defaultFormat.value = draft.defaultFormat
@@ -136,37 +148,69 @@ function loadWorkflow(item?: WorkflowEntry | null) {
   workflow.selectWorkflow(item.id)
 }
 
-async function save(currentDefinition?: Record<string, unknown>) {
-  if (!canSave.value) return
+async function persistDefinition(
+  definitionToSave: Record<string, unknown>,
+  options: { force?: boolean; saveCopy?: boolean } = {},
+) {
   try {
-    const definitionSource = currentDefinition && typeof currentDefinition === 'object'
-      ? currentDefinition
-      : generatedDefinition.value
-    const graphDefinition = readWorkflowGraphDefinition(definitionSource)
-    const definitionToSave = serializeWorkflowGraphDefinition({
-      ...graphDefinition,
-      defaults: {
-        ...graphDefinition.defaults,
-        device: defaultDevice.value || 'auto',
-        output_format: defaultFormat.value || 'wav',
-        inference_params: {
-          ...(graphDefinition.defaults.inference_params || {}),
-          normalize: Boolean(defaultNormalize.value),
-        },
-      },
-    })
     const entry = await workflow.saveWorkflow({
-      id: editingId.value || undefined,
-      name: name.value,
+      id: options.saveCopy ? undefined : (editingId.value || undefined),
+      name: options.saveCopy ? `${name.value} Copy` : name.value,
       description: description.value,
       definition: definitionToSave,
+      expectedUpdatedAt: options.saveCopy ? undefined : loadedUpdatedAt.value,
+      force: options.force,
     })
+    pendingDefinition.value = null
+    showRevisionConflict.value = false
     loadWorkflow(entry)
     message.success(t('workflows.saved'))
   } catch (error) {
+    if (error instanceof WorkflowRevisionConflictError) {
+      pendingDefinition.value = definitionToSave
+      showRevisionConflict.value = true
+      return
+    }
     console.error('[workflow-node-editor-view] save failed', error)
     message.error(error instanceof Error ? error.message : 'Save failed')
   }
+}
+
+async function save(currentDefinition?: Record<string, unknown>) {
+  if (!canSave.value) return
+  const definitionSource = currentDefinition && typeof currentDefinition === 'object'
+    ? currentDefinition
+    : generatedDefinition.value
+  const graphDefinition = readWorkflowGraphDefinition(definitionSource)
+  const definitionToSave = serializeWorkflowGraphDefinition({
+    ...graphDefinition,
+    defaults: {
+      ...graphDefinition.defaults,
+      device: defaultDevice.value || 'auto',
+      output_format: defaultFormat.value || 'wav',
+      inference_params: {
+        ...(graphDefinition.defaults.inference_params || {}),
+        normalize: Boolean(defaultNormalize.value),
+      },
+    },
+  })
+  await persistDefinition(definitionToSave)
+}
+
+async function reloadRevisionConflict() {
+  if (!editingId.value) return
+  await workflow.reload()
+  const latest = workflows.value.find(item => item.id === editingId.value)
+  if (latest) loadWorkflow(latest)
+  pendingDefinition.value = null
+}
+
+function saveRevisionConflictCopy() {
+  if (pendingDefinition.value) void persistDefinition(pendingDefinition.value, { saveCopy: true })
+}
+
+function overwriteRevisionConflict() {
+  if (pendingDefinition.value) void persistDefinition(pendingDefinition.value, { force: true })
 }
 
 async function closeEditor() {
@@ -281,8 +325,11 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
 </script>
 
 <template>
-  <div class="workflow-node-editor-page">
-    <header v-if="isStandaloneWindow" class="workflow-window-chrome">
+  <div
+    class="workflow-node-editor-page"
+    :class="{ 'workflow-node-editor-page--custom-chrome': showCustomWindowChrome }"
+  >
+    <header v-if="showCustomWindowChrome" class="workflow-window-chrome">
       <div class="workflow-window-chrome__drag" data-tauri-drag-region @mousedown.left="startWindowDrag">
         <div class="workflow-window-chrome__copy">
           <strong>{{ t('app.name') }}</strong>
@@ -348,6 +395,14 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
       @save="save"
       @close="closeEditor"
     />
+
+    <WorkflowRevisionConflictModal
+      v-model:show="showRevisionConflict"
+      :workflow-name="name"
+      @reload="reloadRevisionConflict"
+      @save-copy="saveRevisionConflictCopy"
+      @overwrite="overwriteRevisionConflict"
+    />
   </div>
 </template>
 
@@ -357,9 +412,13 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
   min-height: 0;
   padding: 0 12px 12px;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
   -webkit-app-region: no-drag;
+}
+
+.workflow-node-editor-page--custom-chrome {
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .workflow-node-editor-page *,
