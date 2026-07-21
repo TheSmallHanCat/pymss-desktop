@@ -55,8 +55,12 @@ def load_payload(payload_arg: str | None) -> dict[str, Any]:
         return {}
     path = Path(payload_arg)
     if path.is_file():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return json.loads(payload_arg)
+        result = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        result = json.loads(payload_arg)
+    if not isinstance(result, dict):
+        raise ValueError(f"Payload must be a JSON object, got {type(result).__name__}")
+    return result
 
 
 def _as_int(value: Any) -> int | None:

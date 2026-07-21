@@ -1,21 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Any
 
 from worker_graph_workflows import is_graph_workflow_definition, run_graph_workflow_task
-from worker_infer import _normalize_output_layout, _resolve_separator_device, collect_outputs
+from worker_infer import _normalize_output_dir, _normalize_output_layout, _resolve_separator_device, collect_outputs
 from worker_protocol import emit, emit_error
-
-
-def _normalize_output_dir(value: Any) -> str:
-    text = str(value or "").strip()
-    return text or "results"
 
 
 def _write_workflow_definition(payload: dict[str, Any], task_id: str) -> Path:
@@ -65,6 +63,8 @@ def _candidate_commands(workflow_path: Path, input_path: str, output_dir: str, p
         str(audio_params.get("m4a_bit_rate") or "512k"),
         "--m4a-codec",
         str(audio_params.get("m4a_codec") or "aac"),
+        "--m4a-aac-at-quality",
+        str(audio_params.get("m4a_aac_at_quality") or 2),
     ]
     model_dir = str(payload.get("modelDir") or "").strip()
     if model_dir:
@@ -93,6 +93,13 @@ def _candidate_commands(workflow_path: Path, input_path: str, output_dir: str, p
     ]
 
 
+def _terminate_process(process: subprocess.Popen[bytes], task_id: str) -> None:
+    try:
+        process.kill()
+    except Exception as exc:
+        emit("task_log", {"level": "warning", "message": f"Failed to terminate workflow process for {task_id}: {exc}"}, task_id=task_id)
+
+
 def _run_workflow_cli(command: list[str], task_id: str) -> tuple[int, str]:
     emit("task_log", {"level": "info", "message": " ".join(command)}, task_id=task_id)
     process = subprocess.Popen(
@@ -105,20 +112,25 @@ def _run_workflow_cli(command: list[str], task_id: str) -> tuple[int, str]:
     )
     lines: list[str] = []
     assert process.stdout is not None
-    for line in process.stdout:
-        text = line.rstrip()
-        if not text:
-            continue
-        lines.append(text)
-        try:
-            event = json.loads(text)
-            if isinstance(event, dict) and isinstance(event.get("type"), str):
-                emit(event["type"], event.get("payload") if isinstance(event.get("payload"), dict) else {}, task_id=task_id)
+    timer = threading.Timer(6 * 3600, _terminate_process, args=(process, task_id))
+    timer.start()
+    try:
+        for line in process.stdout:
+            text = line.rstrip()
+            if not text:
                 continue
-        except Exception:
-            pass
-        emit("task_log", {"level": "info", "message": text}, task_id=task_id)
-    return process.wait(), "\n".join(lines[-40:])
+            lines.append(text)
+            try:
+                event = json.loads(text)
+                if isinstance(event, dict) and isinstance(event.get("type"), str):
+                    emit(event["type"], event.get("payload") if isinstance(event.get("payload"), dict) else {}, task_id=task_id)
+                    continue
+            except Exception:
+                pass
+            emit("task_log", {"level": "info", "message": text}, task_id=task_id)
+        return process.wait(), "\n".join(lines[-40:])
+    finally:
+        timer.cancel()
 
 
 def _workflow_task_output_dir(output_dir: str, input_path: str, output_layout: str) -> Path:
@@ -190,10 +202,12 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
         return _emit_workflow_batch_error(raw_tasks, root_task_id, "WORKFLOW_MISSING", "Workflow definition is required")
 
     failed = False
+    succeeded_task_ids: set[str] = set()
     try:
         graph_workflow = is_graph_workflow_definition(payload.get("workflow"))
         output_root = Path(output_dir)
         output_root.mkdir(parents=True, exist_ok=True)
+        batch_start_time = time.time()
         for item in batch_tasks:
             task_id = item["taskId"]
             input_path = item["input"]
@@ -216,6 +230,7 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
                     continue
                 emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
                 emit("task_done", result, task_id=task_id)
+                succeeded_task_ids.add(task_id)
                 continue
             failures: list[str] = []
             completed = False
@@ -230,16 +245,22 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
                     continue
 
                 emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
-                outputs = collect_outputs(str(task_output_dir), [Path(input_path).name], output_format)
+                outputs = collect_outputs(str(task_output_dir), [Path(input_path).name], output_format, min_mtime=batch_start_time)
                 files = [output["path"] for output in outputs]
                 if not files and task_output_dir.exists():
-                    files = [str(path) for path in task_output_dir.rglob("*") if path.is_file()]
+                    files = [str(path) for path in task_output_dir.rglob(f"*.{output_format}") if path.is_file() and path.stat().st_mtime >= batch_start_time]
+                    outputs = []
+                    for path in files:
+                        p = Path(path)
+                        stem = p.stem.split("_")[-1] if "_" in p.stem else p.stem
+                        outputs.append({"stem": stem, "path": path})
                 emit("task_done", {
                     "files": files,
                     "outputs": outputs,
                     "outputDir": str(task_output_dir.resolve()),
                     "outputFormat": output_format,
                 }, task_id=task_id)
+                succeeded_task_ids.add(task_id)
                 completed = True
                 break
             if not completed:
@@ -254,7 +275,8 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
     except Exception as exc:
         detail = traceback.format_exc()
         for item in batch_tasks:
-            emit_error("WORKFLOW_RUN_FAILED", str(exc), detail, task_id=item["taskId"])
+            if item["taskId"] not in succeeded_task_ids:
+                emit_error("WORKFLOW_RUN_FAILED", str(exc), detail, task_id=item["taskId"])
         return 1
 
 
@@ -277,6 +299,7 @@ def cmd_infer_workflow(payload: dict[str, Any]) -> int:
         return emit_error("WORKFLOW_MISSING", "Workflow definition is required", task_id=task_id)
 
     try:
+        workflow_start_time = time.time()
         source_path = Path(input_path)
         task_output_dir = _workflow_task_output_dir(output_dir, input_path, output_layout)
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -309,10 +332,15 @@ def cmd_infer_workflow(payload: dict[str, Any]) -> int:
                 continue
             if code == 0:
                 emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
-                outputs = collect_outputs(str(task_output_dir), [source_path.name], output_format)
+                outputs = collect_outputs(str(task_output_dir), [source_path.name], output_format, min_mtime=workflow_start_time)
                 files = [item["path"] for item in outputs]
                 if not files:
-                    files = [str(path) for path in task_output_dir.rglob("*") if path.is_file()]
+                    files = [str(path) for path in task_output_dir.rglob(f"*.{output_format}") if path.is_file() and path.stat().st_mtime >= workflow_start_time]
+                    outputs = []
+                    for path in files:
+                        p = Path(path)
+                        stem = p.stem.split("_")[-1] if "_" in p.stem else p.stem
+                        outputs.append({"stem": stem, "path": path})
                 emit("task_done", {
                     "files": files,
                     "outputs": outputs,

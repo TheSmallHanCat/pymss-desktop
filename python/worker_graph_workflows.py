@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from worker_infer import JsonLogHandler, _prepare_separator, normalize_audio_params, resolve_pymss_output_dir
+from worker_infer import JsonLogHandler, _close_separator, _prepare_separator, normalize_audio_params, resolve_pymss_output_dir
 from worker_protocol import emit
 
 
@@ -444,7 +444,8 @@ def _execute_separate_node(
         logger=logger,
     )
     try:
-        sample_rate = int(separator.config.audio.get("sample_rate", source.sample_rate))
+        audio_config = getattr(getattr(separator, "config", {}), "audio", {}) or {}
+        sample_rate = int(audio_config.get("sample_rate", source.sample_rate))
         from pymss.workflow import _ensure_sample_rate
 
         model_audio = _to_model_audio(_ensure_sample_rate(_normalize_artifact_audio(source.audio), source.sample_rate, sample_rate))
@@ -462,13 +463,7 @@ def _execute_separate_node(
             )
         return selected
     finally:
-        close = getattr(separator, "close", None)
-        if callable(close):
-            close()
-        else:
-            cleanup = getattr(separator, "del_cache", None)
-            if callable(cleanup):
-                cleanup()
+        _close_separator(separator)
 
 
 def _resolve_chain_label(

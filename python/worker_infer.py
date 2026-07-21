@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import os
 import traceback
 from datetime import datetime
@@ -26,13 +27,17 @@ class JsonLogHandler:
         return True
 
 
-def collect_outputs(output_dir: str, success_files: list[str], output_format: str) -> list[dict[str, str]]:
+def collect_outputs(output_dir: str, success_files: list[str], output_format: str, min_mtime: float = 0) -> list[dict[str, str]]:
     base = Path(output_dir)
     outputs: list[dict[str, str]] = []
     if not base.exists():
         return outputs
-    success_stems = {Path(name).stem for name in success_files}
+    success_stems = sorted({Path(name).stem for name in success_files}, key=len, reverse=True)
     for path in base.rglob(f"*.{output_format.lower()}"):
+        if not path.is_file():
+            continue
+        if min_mtime > 0 and path.stat().st_mtime < min_mtime:
+            continue
         if success_stems and not any(path.stem.startswith(stem + "_") or path.stem == stem for stem in success_stems):
             continue
         stem = path.stem.split("_")[-1] if "_" in path.stem else path.stem
@@ -65,6 +70,18 @@ def _emit_inference_error(exc: Exception, task_id: str) -> int:
         )
     return emit_error("INFERENCE_FAILED", message, traceback.format_exc(), task_id=task_id)
 
+def _purge_cuda() -> None:
+    try:
+        gc.collect()
+        import torch
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.reset_accumulated_memory_stats()
+    except Exception:
+        pass
+
+
 def _close_separator(separator: Any) -> None:
     if separator is None:
         return
@@ -79,13 +96,14 @@ def _close_separator(separator: Any) -> None:
             separator.del_cache()
         except Exception:
             pass
+    _purge_cuda()
 
 def _normalize_output_dir(value: Any) -> str:
     default_output_dir = os.environ.get("PYMSS_STUDIO_DEFAULT_OUTPUT_DIR")
     output_dir = value or default_output_dir or "results"
     output_path = Path(str(output_dir))
     if not output_path.is_absolute() and default_output_dir:
-        return str(Path(default_output_dir).parent / output_path)
+        return str(Path(default_output_dir).resolve().parent / output_path)
     return str(output_dir)
 
 def _normalize_selected_stems(value: Any) -> list[str]:
@@ -373,7 +391,8 @@ def normalize_audio_params(payload_audio_params: Any) -> dict[str, Any]:
         **defaults,
         **payload_audio_params,
     }
-    normalized["m4a_codec"] = "aac" if str(normalized.get("m4a_codec") or "").strip().lower() == "aac" else "aac"
+    codec = str(normalized.get("m4a_codec") or "").strip().lower()
+    normalized["m4a_codec"] = codec if codec in ("aac", "aac_at") else "aac"
     return normalized
 
 
@@ -383,6 +402,14 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
         return emit_error("INPUT_NOT_FOUND", "Missing batch tasks", task_id=payload.get("taskId") or None)
 
     root_task_id = str(payload.get("taskId") or raw_tasks[0].get("taskId") or f"sep_{int(datetime.now().timestamp())}")
+    model_name = payload.get("model")
+    if not model_name:
+        return emit_error("MODEL_NOT_FOUND", "Missing model name", task_id=root_task_id)
+    try:
+        _resolve_separator_device(payload.get("device"), payload.get("deviceIds"))
+    except Exception as exc:
+        return emit_error("DEVICE_CONFIG_INVALID", str(exc), task_id=root_task_id)
+
     output_root = _normalize_output_dir(payload.get("output"))
     output_format = payload.get("outputFormat") or "wav"
     output_layout = _normalize_output_layout(payload.get("outputLayout"))
@@ -431,16 +458,14 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
         last_reported_done = done_value
         last_reported_total = total_value
         last_progress_message = safe_message
-        targets = [active_task_id] if active_task_id else [item["taskId"] for item in batch_tasks]
-        for task_id in targets:
-            if not task_id:
-                continue
-            emit("task_progress", {
-                "stage": "separating",
-                "message": safe_message,
-                "done": done_value,
-                "total": total_value,
-            }, task_id=task_id)
+        if not active_task_id:
+            return
+        emit("task_progress", {
+            "stage": "separating",
+            "message": safe_message,
+            "done": done_value,
+            "total": total_value,
+        }, task_id=active_task_id)
 
     try:
         Path(output_root).mkdir(parents=True, exist_ok=True)
@@ -461,6 +486,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
             progress_callback=emit_batch_progress,
             logger=logger,
         )
+        failed = False
         for item in batch_tasks:
             task_id = item["taskId"]
             active_task_id = task_id
@@ -468,6 +494,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
             success_files = separator.process_folder(item["input"])
             if Path(item["input"]).name not in {Path(name).name for name in success_files}:
                 emit_error("INFERENCE_FAILED", f"Batch separation did not produce outputs for {Path(item['input']).name}", task_id=task_id)
+                failed = True
                 continue
             task_output = resolve_pymss_output_dir(output_root, success_files, item["input"], save_as_folder)
             emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
@@ -479,10 +506,19 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
                 "outputFormat": output_format,
             }, task_id=task_id)
         active_task_id = None
-        return 0
+        return 1 if failed else 0
     except Exception as exc:
+        msg = str(exc)
+        detail = traceback.format_exc()
+        lowered = msg.lower()
+        if "download" in lowered:
+            code = "MODEL_DOWNLOAD_FAILED"
+        elif "model" in lowered:
+            code = "MODEL_NOT_FOUND"
+        else:
+            code = "INFERENCE_FAILED"
         for item in batch_tasks:
-            _emit_inference_error(exc, item["taskId"])
+            emit_error(code, msg, detail, task_id=item["taskId"])
         return 1
     finally:
         if logger is not None and log_handler is not None:
@@ -500,11 +536,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
     task_id = payload.get("taskId") or f"sep_{int(datetime.now().timestamp())}"
     model_name = payload.get("model")
     input_path = payload.get("input")
-    default_output_dir = os.environ.get("PYMSS_STUDIO_DEFAULT_OUTPUT_DIR")
-    output_dir = payload.get("output") or default_output_dir or "results"
-    output_path = Path(output_dir)
-    if not output_path.is_absolute() and default_output_dir:
-        output_dir = str(Path(default_output_dir).parent / output_path)
+    output_dir = _normalize_output_dir(payload.get("output"))
     if not model_name:
         return emit_error("MODEL_NOT_FOUND", "Missing model name", task_id=task_id)
     if not input_path:
@@ -644,38 +676,11 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         emit("task_done", {"files": success_files, "outputs": outputs, "outputDir": str(Path(task_output).resolve()), "outputFormat": output_format}, task_id=task_id)
         return 0
     except Exception as exc:
-        message = str(exc)
-        lowered = message.lower()
-        if "no audio stream found" in lowered:
-            return emit_error(
-                "INPUT_AUDIO_STREAM_MISSING",
-                message,
-                traceback.format_exc(),
-                task_id=task_id,
-            )
-        if "invalid data found" in lowered or "could not open input" in lowered:
-            return emit_error(
-                "INPUT_MEDIA_UNSUPPORTED",
-                message,
-                traceback.format_exc(),
-                task_id=task_id,
-            )
-        return emit_error("INFERENCE_FAILED", message, traceback.format_exc(), task_id=task_id)
+        return _emit_inference_error(exc, task_id)
     finally:
         if logger is not None and log_handler is not None:
             try:
                 logger.removeHandler(log_handler)
             except Exception:
                 pass
-        if separator is not None:
-            close = getattr(separator, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    pass
-            else:
-                try:
-                    separator.del_cache()
-                except Exception:
-                    pass
+        _close_separator(separator)
