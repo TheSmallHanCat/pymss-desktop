@@ -23,12 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout pymss core
-        uses: actions/checkout@v4
-        with:
-          repository: pymss-project/pymss
-          path: pymss-core
-
       - uses: ./.github/actions/setup-release-env
 
       - name: Resolve package metadata
@@ -44,7 +38,7 @@ jobs:
 
       - name: Prepare embedded CUDA Python runtime
         shell: pwsh
-        run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL -PymssSourceDir pymss-core
+        run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL
 
       - name: Sync build version metadata
         shell: pwsh
@@ -100,15 +94,11 @@ jobs:
           Copy-Item "python" "$stage/python" -Recurse
           Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
           Copy-Item "release/bin" "$stage/bin" -Recurse
-          $pymssSource = (Resolve-Path "pymss-core").Path
-          robocopy $pymssSource "$stage\pymss" /E /XD .git .github .claude .omc .spec-workflow __pycache__ /XF *.pyc | Out-Host
-          if ($LASTEXITCODE -gt 7) { throw "robocopy pymss-core failed with exit code $LASTEXITCODE" }
-          $global:LASTEXITCODE = 0
           @"
           Pymss Studio $version Windows x64 CUDA
           Author: TheSmallHanCat
 
-          This installer includes Python runtime, CUDA PyTorch, worker.py, and pymss source code.
+          This installer includes Python runtime, CUDA PyTorch, worker.py, and the PyPI pymss package.
           NVIDIA driver is required for GPU acceleration.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
           & "$stage\python-runtime\python.exe" "$stage\python\worker.py" env_info
@@ -211,12 +201,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout pymss core
-        uses: actions/checkout@v4
-        with:
-          repository: pymss-project/pymss
-          path: pymss-core
-
       - uses: ./.github/actions/setup-release-env
 
       - name: Resolve package metadata
@@ -232,7 +216,7 @@ jobs:
 
       - name: Prepare embedded CPU Python runtime
         shell: pwsh
-        run: ./scripts/prepare-python-runtime.ps1 -Variant default -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL -PymssSourceDir pymss-core
+        run: ./scripts/prepare-python-runtime.ps1 -Variant default -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL
 
       - name: Sync build version metadata
         shell: pwsh
@@ -288,15 +272,11 @@ jobs:
           Copy-Item "python" "$stage/python" -Recurse
           Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
           Copy-Item "release/bin" "$stage/bin" -Recurse
-          $pymssSource = (Resolve-Path "pymss-core").Path
-          robocopy $pymssSource "$stage\pymss" /E /XD .git .github .claude .omc .spec-workflow __pycache__ /XF *.pyc | Out-Host
-          if ($LASTEXITCODE -gt 7) { throw "robocopy pymss-core failed with exit code $LASTEXITCODE" }
-          $global:LASTEXITCODE = 0
           @"
           Pymss Studio $version Windows x64 CPU
           Author: TheSmallHanCat
 
-          This portable package includes Python runtime, CPU PyTorch, worker.py, and pymss source code.
+          This portable package includes Python runtime, CPU PyTorch, worker.py, and the PyPI pymss package.
           It is intended for users without NVIDIA CUDA GPUs.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
           & "$stage\python-runtime\python.exe" "$stage\python\worker.py" env_info

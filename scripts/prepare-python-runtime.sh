@@ -2,7 +2,6 @@
 set -euo pipefail
 
 VARIANT="${1:-cuda}"
-PYMSS_SOURCE_DIR="${2:-${PYMSS_SOURCE_DIR:-}}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 RUNTIME_DIR="${RUNTIME_DIR:-python-runtime}"
 RUNTIME_HOME="$(cd "$(dirname "$RUNTIME_DIR")" && pwd)/$(basename "$RUNTIME_DIR")"
@@ -47,18 +46,16 @@ PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir av librosa numpy 
 if [[ "$VARIANT" == "mlx" || "$VARIANT" == "mps" ]]; then
   PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir mlx
 fi
-if [[ -n "$PYMSS_SOURCE_DIR" ]]; then
-  PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir "$PYMSS_SOURCE_DIR"
-fi
+PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir pymss
 
 bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR"
 PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RUNTIME_HOME" "$PY" - <<'PY'
 import importlib.util
-import torch, librosa, av, yaml, tqdm
+import pymss, torch, librosa, av, yaml, tqdm
+print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__)
 print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available())
 print('librosa', librosa.__version__)
 print('av', av.__version__)
 print('mlx', importlib.util.find_spec('mlx') is not None)
-print('pymss_core', importlib.util.find_spec('pymss_core') is not None)
 PY
 bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR"

@@ -31,22 +31,14 @@ Always run `pnpm build` before committing frontend changes to catch type errors.
 
 ## Python Worker Layout
 
-`python/worker.py` expects `pymss` core package at specific locations:
-
-**Development layout** (repo siblings):
-```
-<workspace>/pymss-desktop/python/worker.py
-<workspace>/pymss/...
-```
+`python/worker.py` imports the published `pymss` package from the active Python environment.
+Install it for local development with `python -m pip install pymss`.
 
 **Portable/release layout**:
 ```
 <root>/python/worker.py
-<root>/pymss/...
 <root>/python-runtime/python.exe  (embedded interpreter)
 ```
-
-Override via `PYMSS_STUDIO_PYMSS_PATH` env var. Worker bootstraps `sys.path` on startup.
 
 ## Release Process
 
@@ -55,7 +47,7 @@ Windows builds come in two variants: **CUDA** and **CPU** (different PyTorch bui
 Build stages:
 1. **Prepare**: Run `scripts/prepare-python-runtime.ps1` to embed Python + deps → `python-runtime/`
 2. **Build**: `pnpm tauri build --no-bundle` produces exe
-3. **Stage**: Assemble portable directory with exe, worker, pymss source, tools (ffmpeg, VC redist)
+3. **Stage**: Assemble portable directory with exe, worker, embedded Python runtime, and tools (ffmpeg, VC redist)
 4. **Package**: Create 7z archive or Inno Setup installer
 
 CI splits jobs: `prepare` → `7z` / `exe` for each variant to parallelize compression.
@@ -75,7 +67,6 @@ GitHub releases may split files >2GB using `split` (workflow auto-handles). See 
 ## Environment Variables
 
 - `PYMSS_STUDIO_PYTHON`: Python interpreter path (defaults to `python`)
-- `PYMSS_STUDIO_PYMSS_PATH`: Override pymss package location
 - `PYMSS_STUDIO_DEFAULT_OUTPUT_DIR`: Default separation output directory
 
 ## Important Files

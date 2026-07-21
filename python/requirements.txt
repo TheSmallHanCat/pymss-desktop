@@ -1,9 +1,6 @@
 # Development requirements for the desktop worker wrapper.
-# In local development the worker imports pymss from the sibling source tree:
-# D:/pymss/pymss-desktop/python/worker.py -> D:/pymss/pymss
-#
-# Prefer installing the core package in editable mode:
-#   python -m pip install -e ../pymss
+# The core separation engine is distributed as the PyPI package `pymss`.
+# Install it with: python -m pip install pymss
 #
 # This file documents the runtime modules the worker expects to be available
 # in the Python interpreter selected by PYMSS_STUDIO_PYTHON or by "python".
@@ -14,3 +11,4 @@ numpy>=1.26
 pyyaml>=6.0.1
 torch>=2.7.1
 tqdm>=4.60
+pymss
