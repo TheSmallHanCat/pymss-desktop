@@ -103,16 +103,11 @@ Pymss Studio 的目标是让更多设备获得更顺畅的桌面分离体验：
 - Node.js 与 `pnpm@10.33.2`
 - Rust 与 Cargo，用于 Tauri 开发
 - Python，用于 worker 开发和本地调试
-- 本地 `pymss` 仓库，或通过 `PYMSS_STUDIO_PYMSS_PATH` 指向可用的 `pymss`
+- 已发布的 `pymss` 包：`python -m pip install pymss`
 - `pymss` 核心包所需的平台相关媒体、模型和推理依赖
 
-Python worker 会按以下顺序寻找 `pymss`：
-
-```text
-PYMSS_STUDIO_PYMSS_PATH
-<workspace>/pymss-desktop 与 <workspace>/pymss 作为兄弟仓库
-发布包中的 <portable-root>/pymss
-```
+Python worker 会从当前 Python 环境导入 `pymss`。发布包会将其安装到内置的
+Python runtime 中。
 
 ## 开发
 
@@ -162,7 +157,6 @@ pnpm tauri build
 | --- | --- | --- |
 | `PYMSS_STUDIO_DATA_ROOT` | 见上方说明 | 设置、模型、输出、工程、日志和临时文件的数据根目录。 |
 | `PYMSS_STUDIO_PYTHON` | `python` | Tauri 后端启动 worker 时使用的 Python 解释器。 |
-| `PYMSS_STUDIO_PYMSS_PATH` | 自动探测 | 外部 `pymss` 核心仓库或包路径。 |
 | `PYMSS_STUDIO_DEFAULT_OUTPUT_DIR` | 应用默认值 | 分离结果的默认输出目录。 |
 
 ## 项目结构

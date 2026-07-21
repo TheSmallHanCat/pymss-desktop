@@ -19,15 +19,6 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 static PAYLOAD_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn pymss_sys_path_candidate(path: &std::path::Path) -> Option<PathBuf> {
-    if path.join("pymss").join("__init__.py").is_file() {
-        return Some(path.to_path_buf());
-    }
-    if path.join("__init__.py").is_file() && path.join("separator.py").is_file() {
-        return path.parent().map(PathBuf::from);
-    }
-    None
-}
 fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
     if let Ok(resource) = app.path().resource_dir() {
         let candidates = [
@@ -75,71 +66,6 @@ fn dev_workspace_root() -> PathBuf {
 
 fn dev_worker_path() -> PathBuf {
     dev_workspace_root().join("python").join("worker.py")
-}
-
-fn dev_pymss_source_path() -> AppResult<Option<PathBuf>> {
-    let desktop_root = dev_workspace_root();
-    let sibling = desktop_root.parent().and_then(pymss_sys_path_candidate);
-    if sibling.is_some() {
-        return Ok(sibling);
-    }
-
-    let cwd = std::env::current_dir()?;
-    let candidates = [
-        cwd.join(".."),
-        cwd.clone(),
-        cwd.join("..").join(".."),
-        cwd.join("..").join("pymss"),
-        cwd.join("pymss"),
-        cwd.join("..").join("..").join("pymss"),
-    ];
-    Ok(candidates
-        .into_iter()
-        .find_map(|path| pymss_sys_path_candidate(&path)))
-}
-
-fn production_pymss_source_path(app: &AppHandle) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Ok(resource) = app.path().resource_dir() {
-        candidates.push(resource.clone());
-        candidates.push(resource.join("pymss"));
-        candidates.push(resource.join("_up_"));
-        candidates.push(resource.join("_up_").join("pymss"));
-        candidates.push(resource.join("resources"));
-        candidates.push(resource.join("resources").join("pymss"));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            candidates.push(exe_dir.to_path_buf());
-            candidates.push(exe_dir.join("pymss"));
-        }
-    }
-    candidates
-        .into_iter()
-        .find_map(|candidate| pymss_sys_path_candidate(&candidate))
-}
-
-fn pymss_source_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
-    if let Ok(path) = std::env::var("PYMSS_STUDIO_PYMSS_PATH") {
-        let path = PathBuf::from(path);
-        if let Some(resolved) = pymss_sys_path_candidate(&path) {
-            return Ok(Some(resolved));
-        }
-        return Err(AppError::Worker(format!(
-            "PYMSS_STUDIO_PYMSS_PATH does not point to a pymss source tree: {}",
-            path.display()
-        )));
-    }
-
-    if let Some(path) = production_pymss_source_path(app) {
-        return Ok(Some(path));
-    }
-
-    if cfg!(debug_assertions) {
-        return dev_pymss_source_path();
-    }
-
-    Ok(None)
 }
 
 fn embedded_python_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
@@ -300,13 +226,6 @@ fn build_worker_command(
             "PYMSS_STUDIO_OPENSSL_MODULES",
             openssl_modules.to_string_lossy().to_string(),
         );
-    }
-    if let Some(pymss_source) = pymss_source_path(app)? {
-        if let Some(python_path) =
-            prepend_path(std::env::var("PYTHONPATH").ok(), vec![pymss_source])
-        {
-            cmd.env("PYTHONPATH", python_path);
-        }
     }
     if let Ok(models_dir) = storage::models_dir(app) {
         cmd.env("PYMSS_MODEL_DIR", models_dir.to_string_lossy().to_string());

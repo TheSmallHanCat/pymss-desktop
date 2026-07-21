@@ -23,12 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout pymss core
-        uses: actions/checkout@v4
-        with:
-          repository: pymss-project/pymss
-          path: pymss-core
-
       - uses: ./.github/actions/setup-release-env
 
       - name: Prepare embedded Python runtime with PyTorch + MLX support
@@ -36,7 +30,7 @@ jobs:
         env:
           TORCH_VERSION: "2.7.1"
           TORCH_INDEX_URL: ""
-        run: bash scripts/prepare-python-runtime.sh mlx pymss-core
+        run: bash scripts/prepare-python-runtime.sh mlx
 
       - name: Verify prepared macOS runtime
         run: |
@@ -47,7 +41,7 @@ jobs:
             otool -L python-runtime/bin/python3
             exit 1
           fi
-          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import sys, ssl, pymss_core; print(sys.prefix); print('ssl ok'); print('pymss_core ok')"
+          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import sys, ssl, pymss; print(sys.prefix); print('ssl ok'); print('pymss ok')"
 
       - name: Install macOS bundled tools
         run: brew install ffmpeg aria2
@@ -55,12 +49,10 @@ jobs:
       - name: Copy clean resources for Tauri bundling
         run: |
           mkdir -p src-tauri/resources
-          rm -rf src-tauri/resources/python src-tauri/resources/python-runtime src-tauri/resources/pymss src-tauri/resources/bin
+          rm -rf src-tauri/resources/python src-tauri/resources/python-runtime src-tauri/resources/bin
           mkdir -p src-tauri/resources/python
           rsync -a --exclude '__pycache__' --exclude '*.pyc' python/ src-tauri/resources/python/
           cp -R python-runtime src-tauri/resources/python-runtime
-          mkdir -p src-tauri/resources/pymss
-          rsync -a --exclude '.git' --exclude '.github' --exclude '.claude' --exclude '.omc' --exclude '.spec-workflow' --exclude '__pycache__' --exclude '*.pyc' pymss-core/ src-tauri/resources/pymss/
           bash scripts/prepare-macos-bundled-tools.sh src-tauri/resources/bin
 
       - name: Build Tauri app bundle
@@ -76,7 +68,6 @@ jobs:
                   "resources": {
                       str((root / "src-tauri" / "resources" / "python").resolve()): "python",
                       str((root / "src-tauri" / "resources" / "python-runtime").resolve()): "python-runtime",
-                      str((root / "src-tauri" / "resources" / "pymss").resolve()): "pymss",
                       str((root / "src-tauri" / "resources" / "bin").resolve()): "bin",
                   }
               }
@@ -104,7 +95,6 @@ jobs:
           RES="$APP/Contents/Resources"
           test -f "$RES/python/worker.py" || test -f "$RES/resources/python/worker.py"
           test -d "$RES/python-runtime" || test -d "$RES/resources/python-runtime"
-          test -f "$RES/pymss/__init__.py" || test -f "$RES/pymss/pymss/__init__.py" || test -f "$RES/resources/pymss/__init__.py" || test -f "$RES/resources/pymss/pymss/__init__.py"
           test -x "$RES/bin/ffmpeg" || test -x "$RES/resources/bin/ffmpeg"
           test -x "$RES/bin/aria2c" || test -x "$RES/resources/bin/aria2c"
           PY="$RES/python-runtime/bin/python3"
@@ -132,7 +122,7 @@ jobs:
             otool -L "$PY"
             exit 1
           fi
-          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl, pymss_core; print(sys.prefix); print('ssl ok'); print('pymss_core ok')"
+          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl, pymss; print(sys.prefix); print('ssl ok'); print('pymss ok')"
           PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import shutil; assert shutil.which('ffmpeg'); assert shutil.which('aria2c'); print('bundled tools ok')"
           WORKER_DIR="$(dirname "$WORKER")"
           PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys; sys.path.insert(0, '$WORKER_DIR'); import worker_download; assert worker_download._resolve_aria2c_path(); print('aria2 resolver ok')"

@@ -23,62 +23,6 @@ def package_version(distribution: str) -> str | None:
         return None
 
 
-def _read_pyproject_version(pyproject_path: Path) -> str | None:
-    if not pyproject_path.is_file():
-        return None
-    try:
-        import tomllib
-        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-        version = data.get("project", {}).get("version")
-        return str(version) if version else None
-    except Exception:
-        pass
-    try:
-        for line in pyproject_path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("version") and "=" in stripped:
-                return stripped.split("=", 1)[1].strip().strip('"\'') or None
-    except Exception:
-        return None
-    return None
-
-
-def pymss_pyproject_version() -> str | None:
-    worker_dir = Path(__file__).resolve().parent
-    candidates: list[Path] = []
-    env_pymss = os.environ.get("PYMSS_STUDIO_PYMSS_PATH")
-    if env_pymss:
-        candidates.append(Path(env_pymss))
-    candidates.extend([
-        worker_dir.parent / "pymss",
-        worker_dir.parent.parent / "pymss",
-        worker_dir.parent / "resources" / "pymss",
-        worker_dir.parent.parent / "resources" / "pymss",
-    ])
-    candidates.extend(Path(item) for item in sys.path if item)
-
-    seen: set[Path] = set()
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve()
-        except Exception:
-            resolved = candidate
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-
-        possible_roots = [resolved]
-        if resolved.name == "pymss":
-            possible_roots.append(resolved.parent)
-        possible_roots.append(resolved / "pymss")
-
-        for root in possible_roots:
-            version = _read_pyproject_version(root / "pyproject.toml")
-            if version:
-                return version
-    return None
-
-
 @dataclass(frozen=True)
 class ModelEntry:
     name: str
@@ -136,30 +80,16 @@ class ModelEntry:
         )
 
 
-def _package_root() -> Path:
-    return Path(__file__).resolve().parent.parent
-
-
 def _model_catalog_path() -> Path:
-    candidates: list[Path] = []
-    env_pymss = os.environ.get("PYMSS_STUDIO_PYMSS_PATH")
-    if env_pymss:
-        candidates.append(Path(env_pymss))
-    worker_dir = Path(__file__).resolve().parent
-    candidates.extend([
-        _package_root() / "src-tauri" / "resources" / "pymss",
-        worker_dir.parent / "pymss",
-        worker_dir.parent / "resources" / "pymss",
-        worker_dir.parent.parent / "resources" / "pymss",
-    ])
-    candidates.extend(Path(item) for item in sys.path if item)
-    for candidate in candidates:
-        direct = candidate / "resources" / "model_catalog.json"
-        if direct.is_file():
-            return direct
-        nested = candidate / "pymss" / "resources" / "model_catalog.json"
-        if nested.is_file():
-            return nested
+    try:
+        import pymss  # type: ignore
+    except ImportError as exc:
+        raise FileNotFoundError("Unable to import the installed pymss package") from exc
+
+    package_dir = Path(pymss.__file__).resolve().parent
+    direct = package_dir / "resources" / "model_catalog.json"
+    if direct.is_file():
+        return direct
     raise FileNotFoundError("Unable to locate pymss/resources/model_catalog.json")
 
 
@@ -408,7 +338,7 @@ def cmd_env_info() -> int:
         "workerVersion": WORKER_VERSION,
         "pymssAvailable": False,
         "pymssPath": None,
-        "pymssVersion": pymss_pyproject_version() or package_version("pymss"),
+        "pymssVersion": package_version("pymss"),
         "torchAvailable": False,
         "torchVersion": None,
         "cudaAvailable": False,

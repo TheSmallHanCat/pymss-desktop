@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import importlib.util
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,46 +14,6 @@ try:
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
-
-def bootstrap_pymss_path() -> None:
-    def resolve_sys_path(candidate: Path) -> Path | None:
-        if (candidate / "pymss" / "__init__.py").is_file():
-            return candidate
-        if (candidate / "__init__.py").is_file() and (candidate / "separator.py").is_file():
-            return candidate.parent
-        return None
-
-    worker_path = Path(__file__).resolve()
-    worker_dir = worker_path.parent
-    candidates: list[Path] = []
-
-    env_pymss = os.environ.get("PYMSS_STUDIO_PYMSS_PATH")
-    if env_pymss:
-        candidates.append(Path(env_pymss))
-
-    # Portable / staged layout:
-    #   <root>/python/worker.py
-    #   <root>/pymss/...
-    candidates.append(worker_dir.parent / "pymss")
-
-    # Development layout:
-    #   <workspace>/pymss-desktop/python/worker.py
-    #   <workspace>/pymss/...
-    candidates.append(worker_dir.parent.parent / "pymss")
-
-    # Tauri bundled resources sometimes place the worker deeper in resources.
-    candidates.append(worker_dir.parent / "resources" / "pymss")
-    candidates.append(worker_dir.parent.parent / "resources" / "pymss")
-
-    for candidate in candidates:
-        resolved = resolve_sys_path(candidate)
-        if resolved is not None:
-            sys.path.insert(0, str(resolved))
-            return
-
-
-bootstrap_pymss_path()
-
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()

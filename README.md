@@ -105,16 +105,11 @@ Long-term work:
 - Node.js with `pnpm@10.33.2`
 - Rust and Cargo for Tauri development
 - Python for worker development
-- A local `pymss` checkout or `PYMSS_STUDIO_PYMSS_PATH` pointing to one
+- The published `pymss` package: `python -m pip install pymss`
 - Platform-specific media/model dependencies required by the `pymss` core package
 
-The worker resolves `pymss` in this order:
-
-```text
-PYMSS_STUDIO_PYMSS_PATH
-<workspace>/pymss-desktop + <workspace>/pymss as sibling repositories
-<portable-root>/pymss in release builds
-```
+The worker imports `pymss` from the active Python environment. Release bundles
+install it into the embedded Python runtime.
 
 ## Development
 
@@ -165,7 +160,6 @@ Data root selection order:
 | --- | --- | --- |
 | `PYMSS_STUDIO_DATA_ROOT` | see above | Explicit root directory for settings, models, outputs, projects, logs, and temp files. |
 | `PYMSS_STUDIO_PYTHON` | `python` | Python interpreter used by the Tauri backend to launch the worker. |
-| `PYMSS_STUDIO_PYMSS_PATH` | auto-detected | Explicit path to the external `pymss` core repository/package. |
 | `PYMSS_STUDIO_DEFAULT_OUTPUT_DIR` | app default | Default directory for separation outputs. |
 
 ## Project layout
