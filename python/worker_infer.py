@@ -466,6 +466,8 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
             "total": total_value,
         }, task_id=active_task_id)
 
+    failed = False
+    succeeded_task_ids: set[str] = set()
     try:
         Path(output_root).mkdir(parents=True, exist_ok=True)
         for item in batch_tasks:
@@ -485,8 +487,6 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
             progress_callback=emit_batch_progress,
             logger=logger,
         )
-        failed = False
-        succeeded_task_ids: set[str] = set()
         for item in batch_tasks:
             task_id = item["taskId"]
             active_task_id = task_id
