@@ -487,6 +487,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
             logger=logger,
         )
         failed = False
+        succeeded_task_ids: set[str] = set()
         for item in batch_tasks:
             task_id = item["taskId"]
             active_task_id = task_id
@@ -505,6 +506,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
                 "outputDir": str(Path(task_output).resolve()),
                 "outputFormat": output_format,
             }, task_id=task_id)
+            succeeded_task_ids.add(task_id)
         active_task_id = None
         return 1 if failed else 0
     except Exception as exc:
