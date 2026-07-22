@@ -97,6 +97,10 @@ def _terminate_process(process: subprocess.Popen[bytes], task_id: str) -> None:
         process.kill()
     except Exception as exc:
         emit("task_log", {"level": "warning", "message": f"Failed to terminate workflow process for {task_id}: {exc}"}, task_id=task_id)
+    try:
+        process.wait(timeout=5)
+    except Exception:
+        pass
 
 
 def _run_workflow_cli(command: list[str], task_id: str) -> tuple[int, str]:
@@ -110,7 +114,8 @@ def _run_workflow_cli(command: list[str], task_id: str) -> tuple[int, str]:
         errors="replace",
     )
     lines: list[str] = []
-    assert process.stdout is not None
+    if process.stdout is None:
+        raise RuntimeError("Workflow process stdout is not available")
     timer = threading.Timer(6 * 3600, _terminate_process, args=(process, task_id))
     timer.start()
     try:
@@ -130,6 +135,10 @@ def _run_workflow_cli(command: list[str], task_id: str) -> tuple[int, str]:
         return process.wait(), "\n".join(lines[-40:])
     finally:
         timer.cancel()
+        try:
+            process.wait(timeout=5)
+        except Exception:
+            pass
 
 
 def _workflow_task_output_dir(output_dir: str, input_path: str, output_layout: str) -> Path:
