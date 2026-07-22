@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Emitter, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
 #[cfg(windows)]
