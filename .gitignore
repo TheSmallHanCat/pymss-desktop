@@ -61,6 +61,7 @@ release/
 python-runtime/
 src-tauri/resources/
 src-tauri/tauri.bundle.resources.json
+run-dev.bat
 *.zip
 *.tar.zst
 *.dmg
