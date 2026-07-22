@@ -518,7 +518,8 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
         else:
             code = "INFERENCE_FAILED"
         for item in batch_tasks:
-            emit_error(code, msg, detail, task_id=item["taskId"])
+            if item["taskId"] not in succeeded_task_ids:
+                emit_error(code, msg, detail, task_id=item["taskId"])
         return 1
     finally:
         if logger is not None and log_handler is not None:

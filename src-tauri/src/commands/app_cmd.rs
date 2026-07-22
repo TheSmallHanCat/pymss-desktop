@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
 #[cfg(windows)]
@@ -444,18 +444,9 @@ fn write_editor_project(app: &AppHandle, project: &Value) -> AppResult<Value> {
 
 #[tauri::command]
 pub async fn close_current_window(window: tauri::WebviewWindow) -> AppResult<()> {
-    let label = window.label().to_string();
-    let app_handle = window.app_handle().clone();
     window
         .destroy()
         .map_err(|error| AppError::Worker(error.to_string()))?;
-    if label.starts_with("workflow-node-editor") {
-        let _ = app_handle.emit_to(
-            "main",
-            "pymss://workflow-node-editor-closed",
-            serde_json::json!({ "label": label }),
-        );
-    }
     Ok(())
 }
 
