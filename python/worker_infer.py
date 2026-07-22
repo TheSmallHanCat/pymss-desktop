@@ -468,6 +468,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
 
     failed = False
     succeeded_task_ids: set[str] = set()
+    failed_task_ids: set[str] = set()
     try:
         Path(output_root).mkdir(parents=True, exist_ok=True)
         for item in batch_tasks:
@@ -495,6 +496,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
             if Path(item["input"]).name not in {Path(name).name for name in success_files}:
                 emit_error("INFERENCE_FAILED", f"Batch separation did not produce outputs for {Path(item['input']).name}", task_id=task_id)
                 failed = True
+                failed_task_ids.add(task_id)
                 continue
             task_output = resolve_pymss_output_dir(output_root, success_files, item["input"], save_as_folder)
             emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
@@ -509,6 +511,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
         active_task_id = None
         return 1 if failed else 0
     except Exception as exc:
+        active_task_id = None
         msg = str(exc)
         detail = traceback.format_exc()
         lowered = msg.lower()
@@ -519,7 +522,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
         else:
             code = "INFERENCE_FAILED"
         for item in batch_tasks:
-            if item["taskId"] not in succeeded_task_ids:
+            if item["taskId"] not in succeeded_task_ids and item["taskId"] not in failed_task_ids:
                 emit_error(code, msg, detail, task_id=item["taskId"])
         return 1
     finally:

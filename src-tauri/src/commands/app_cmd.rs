@@ -271,6 +271,22 @@ fn safe_file_name(value: &str) -> String {
     }
 }
 
+fn percent_encode_query(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len() * 3);
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push('%');
+                encoded.push_str(&format!("{:02X}", byte));
+            }
+        }
+    }
+    encoded
+}
+
 fn editor_project_dir(app: &AppHandle, project_id: &str) -> AppResult<PathBuf> {
     Ok(editor_projects_root(app)?.join(safe_file_name(project_id)))
 }
@@ -519,7 +535,10 @@ pub async fn open_workflow_node_editor_window(app: AppHandle, payload: Value) ->
             "index.html#/workflow-node-editor".to_string()
         }
     } else {
-        format!("index.html#/workflow-node-editor?workflowId={}", workflow_id)
+        format!(
+            "index.html#/workflow-node-editor?workflowId={}",
+            percent_encode_query(&workflow_id)
+        )
     };
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
         .title("Pymss Studio Workflow Node Editor")

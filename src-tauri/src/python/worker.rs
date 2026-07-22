@@ -382,7 +382,15 @@ pub fn run_worker_with_payload(
         None => None,
     };
     let mut cmd = build_worker_command(app, command, payload_file.as_ref())?;
-    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(path) = payload_file.as_ref() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error.into());
+        }
+    };
 
     let stdout = child
         .stdout
@@ -503,7 +511,13 @@ pub fn spawn_worker_background(
     let command_name = command.to_string();
     let payload_file = make_payload_file(command, Some(&task_id), payload)?;
     let mut cmd = build_worker_command(&app, command, Some(&payload_file))?;
-    let mut child: Child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut child: Child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = std::fs::remove_file(&payload_file);
+            return Err(error.into());
+        }
+    };
     let stdout = child
         .stdout
         .take()
