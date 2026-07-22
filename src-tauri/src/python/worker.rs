@@ -382,7 +382,15 @@ pub fn run_worker_with_payload(
         None => None,
     };
     let mut cmd = build_worker_command(app, command, payload_file.as_ref())?;
-    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(path) = payload_file.as_ref() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error.into());
+        }
+    };
 
     let stdout = child
         .stdout
@@ -448,7 +456,15 @@ pub fn run_worker_with_payload(
         return Err(err);
     }
 
-    let status = child.wait()?;
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(error) => {
+            if let Some(path) = payload_file.as_ref() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error.into());
+        }
+    };
     if let Some(handle) = stderr_handle {
         let _ = handle.join();
     }
@@ -503,24 +519,28 @@ pub fn spawn_worker_background(
     let command_name = command.to_string();
     let payload_file = make_payload_file(command, Some(&task_id), payload)?;
     let mut cmd = build_worker_command(&app, command, Some(&payload_file))?;
-    let mut child: Child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut child: Child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = std::fs::remove_file(&payload_file);
+            return Err(error.into());
+        }
+    };
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| AppError::Worker("missing worker stdout".into()))?;
     let stderr = child.stderr.take();
     let stderr_app = app.clone();
-    let stderr_task_ids = registered_task_ids.clone();
+    let stderr_task_id = task_id.clone();
     #[cfg(debug_assertions)]
     let stderr_command = command_name.clone();
     let stderr_handle = stderr.map(|stderr| {
         std::thread::spawn(move || {
             read_lossy_lines(stderr, |line| {
-                for stderr_task_id in &stderr_task_ids {
-                    #[cfg(debug_assertions)]
-                    debug_log_worker_stderr(&stderr_command, Some(stderr_task_id), &line);
-                    emit_task_log(&stderr_app, stderr_task_id, "warning", line.clone());
-                }
+                #[cfg(debug_assertions)]
+                debug_log_worker_stderr(&stderr_command, Some(&stderr_task_id), &line);
+                emit_task_log(&stderr_app, &stderr_task_id, "warning", line.clone());
             });
         })
     });
@@ -582,23 +602,18 @@ pub fn spawn_worker_background(
             .cloned()
             .collect::<Vec<_>>();
         if !missing_terminal_task_ids.is_empty() {
-            match exit_status {
+            let message = match exit_status {
                 Some(status) if !status.success() => {
-                    emit_task_error_to_all(
-                        &app,
-                        &missing_terminal_task_ids,
-                        format!("worker exited with {status}"),
-                    );
+                    format!("worker exited with {status}")
                 }
                 None => {
-                    emit_task_error_to_all(
-                        &app,
-                        &missing_terminal_task_ids,
-                        "worker exited unexpectedly".to_string(),
-                    );
+                    "worker exited unexpectedly".to_string()
                 }
-                _ => {}
-            }
+                _ => {
+                    "worker exited without reporting results".to_string()
+                }
+            };
+            emit_task_error_to_all(&app, &missing_terminal_task_ids, message);
         }
         if let Some(handle) = stderr_handle {
             let _ = handle.join();

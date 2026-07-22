@@ -318,7 +318,8 @@ def cmd_export_editor_mix(payload: dict[str, Any]) -> int:
                     continue
 
                 segment = audio[:, offset:offset + duration_samples].copy()
-                volume = track_volume * float(clip.get("volume", 1.0) or 0)
+                raw_clip_volume = clip.get("volume")
+                volume = track_volume * (float(raw_clip_volume) if raw_clip_volume is not None else 1.0)
                 if volume <= 0:
                     continue
                 segment *= volume
@@ -349,10 +350,12 @@ def cmd_export_editor_mix(payload: dict[str, Any]) -> int:
                 segment = np.concatenate([segment, pad], axis=0)
             mix[:, start:start + segment.shape[-1]] += segment[:channels]
 
-        master_volume = float(project.get("masterVolume", 1.0) or 0)
+        raw_master_volume = project.get("masterVolume")
+        master_volume = float(raw_master_volume) if raw_master_volume is not None else 1.0
         if master_volume != 1.0:
             mix *= master_volume
-        master_pan = float(project.get("masterPan", 0.0) or 0.0)
+        raw_master_pan = project.get("masterPan")
+        master_pan = float(raw_master_pan) if raw_master_pan is not None else 0.0
         mix = _apply_stereo_pan(mix, master_pan)
 
         peak = float(np.max(np.abs(mix))) if mix.size else 0.0

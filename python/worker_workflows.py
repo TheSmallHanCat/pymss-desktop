@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -98,6 +97,10 @@ def _terminate_process(process: subprocess.Popen[bytes], task_id: str) -> None:
         process.kill()
     except Exception as exc:
         emit("task_log", {"level": "warning", "message": f"Failed to terminate workflow process for {task_id}: {exc}"}, task_id=task_id)
+    try:
+        process.wait(timeout=5)
+    except Exception:
+        pass
 
 
 def _run_workflow_cli(command: list[str], task_id: str) -> tuple[int, str]:
@@ -111,7 +114,8 @@ def _run_workflow_cli(command: list[str], task_id: str) -> tuple[int, str]:
         errors="replace",
     )
     lines: list[str] = []
-    assert process.stdout is not None
+    if process.stdout is None:
+        raise RuntimeError("Workflow process stdout is not available")
     timer = threading.Timer(6 * 3600, _terminate_process, args=(process, task_id))
     timer.start()
     try:
@@ -131,6 +135,10 @@ def _run_workflow_cli(command: list[str], task_id: str) -> tuple[int, str]:
         return process.wait(), "\n".join(lines[-40:])
     finally:
         timer.cancel()
+        try:
+            process.wait(timeout=5)
+        except Exception:
+            pass
 
 
 def _workflow_task_output_dir(output_dir: str, input_path: str, output_layout: str) -> Path:
@@ -203,6 +211,7 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
 
     failed = False
     succeeded_task_ids: set[str] = set()
+    failed_task_ids: set[str] = set()
     try:
         graph_workflow = is_graph_workflow_definition(payload.get("workflow"))
         output_root = Path(output_dir)
@@ -226,6 +235,7 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
                     )
                 except Exception as exc:
                     failed = True
+                    failed_task_ids.add(task_id)
                     emit_error("WORKFLOW_RUN_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
                     continue
                 emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
@@ -265,6 +275,7 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
                 break
             if not completed:
                 failed = True
+                failed_task_ids.add(task_id)
                 emit_error(
                     "WORKFLOW_RUN_FAILED",
                     "Unable to run workflow with the installed pymss package.",
@@ -275,7 +286,7 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
     except Exception as exc:
         detail = traceback.format_exc()
         for item in batch_tasks:
-            if item["taskId"] not in succeeded_task_ids:
+            if item["taskId"] not in succeeded_task_ids and item["taskId"] not in failed_task_ids:
                 emit_error("WORKFLOW_RUN_FAILED", str(exc), detail, task_id=item["taskId"])
         return 1
 
