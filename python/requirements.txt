@@ -8,6 +8,8 @@
 av>=14
 librosa>=0.10.2
 numpy>=1.26
+pysocks>=1.7.1
+requests>=2.32
 pyyaml>=6.0.1
 torch>=2.7.1
 tqdm>=4.60

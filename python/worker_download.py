@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -9,12 +10,27 @@ import threading
 import time
 import traceback
 import urllib.error
-import urllib.request
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any
 
 from worker_models import model_to_dict
 from worker_protocol import emit, emit_error
+from worker_proxy import (
+    ProxyConfigError,
+    aria2_proxy_args,
+    load_proxy_config,
+    parse_proxy_config,
+    proxy_urlopen,
+    redacted_proxy,
+)
+
+
+def _emit_download_log(task_id: str | None, level: str, message: str, **extra: Any) -> None:
+    payload: dict[str, Any] = {"level": level, "message": message}
+    payload.update(extra)
+    emit("download_log", payload, task_id=task_id)
+
 
 _ARIA2_PROGRESS_PATTERN = re.compile(
     r"\[#.*?\s+(?P<downloaded>[\d.]+\s*[KMGTPE]?i?B|[\d.]+\s*B)/"
@@ -164,7 +180,7 @@ def _download_file_with_progress_urllib(
     tmp = dest.with_name(dest.name + ".part")
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with proxy_urlopen(url, timeout) as response:
             total_bytes = _safe_int(response.headers.get("content-length")) or (expected_size or 0)
             downloaded_bytes = 0
             _emit_download_progress_payload(
@@ -287,6 +303,7 @@ def _download_file_with_progress_aria2(
         tmp.name,
         url,
     ]
+    cmd[-1:-1] = aria2_proxy_args(load_proxy_config())
     process = None
     existing_partial_size = int(tmp.stat().st_size) if tmp.is_file() else 0
     last_downloaded = existing_partial_size
@@ -421,23 +438,46 @@ def _download_model_with_observed_progress(
     force: bool,
     timeout: int,
     progress_callback: Any,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     from pymss.model_download import (  # type: ignore
         DownloadError,
         _already_valid,
         _expected_size_and_hash,
-        fetch_modelscope_file_index,
         files_for_model,
         remote_url,
     )
 
-    aria2c_path = _resolve_aria2c_path()
+    proxy_config = load_proxy_config()
+    # Keep system mode on urllib so OS proxy discovery is not lost in aria2c.
+    proxy_parts = urlsplit(proxy_config.url)
+    has_proxy_credentials = bool(proxy_parts.username or proxy_parts.password)
+    aria2c_path = (
+        None
+        if proxy_config.mode == "system" or has_proxy_credentials
+        else _resolve_aria2c_path()
+    )
     _, files = files_for_model(entry.name, model_dir)
     total_files = max(1, len(files))
-    source_index = fetch_modelscope_file_index(timeout=timeout) if endpoint is None else None
+    source_index = _fetch_file_index(timeout) if endpoint is None else None
     downloaded: list[str] = []
     skipped: list[str] = []
     completed_files = 0
+
+    proxy_summary = redacted_proxy(proxy_config)
+    _emit_download_log(
+        task_id,
+        "info",
+        f"Proxy: {proxy_summary}",
+        stage="resolving",
+    )
+    _emit_download_log(
+        task_id,
+        "info",
+        f"Resolving {total_files} file(s) for model {entry.name} (source={source})",
+        stage="resolving",
+        totalFiles=total_files,
+    )
 
     for file_index, (relpath, dest) in enumerate(files, start=1):
         expected_size, expected_sha256 = _expected_size_and_hash(relpath, source_index)
@@ -454,12 +494,29 @@ def _download_model_with_observed_progress(
                 downloaded_bytes=size_bytes,
                 total_bytes=size_bytes,
             )
+            _emit_download_log(
+                task_id,
+                "info",
+                f"[{file_index}/{total_files}] Skipped {relpath} (already valid)",
+                stage="downloading",
+                fileIndex=file_index,
+                totalFiles=total_files,
+            )
             skipped.append(str(dest))
             continue
 
         url = remote_url(relpath, source=source, endpoint=endpoint)
         tmp = dest.with_name(dest.name + ".part")
         last_error: Exception | None = None
+        size_text = f", {expected_size / 1024 / 1024:.1f} MB" if expected_size else ""
+        _emit_download_log(
+            task_id,
+            "info",
+            f"[{file_index}/{total_files}] Downloading {relpath}{size_text}",
+            stage="downloading",
+            fileIndex=file_index,
+            totalFiles=total_files,
+        )
         for attempt in range(3):
             try:
                 if aria2c_path:
@@ -504,13 +561,59 @@ def _download_model_with_observed_progress(
                 if (not aria2c_path) or isinstance(exc, DownloadValidationError):
                     _cleanup_partial_download(tmp)
                 if attempt < 2:
+                    _emit_download_log(
+                        task_id,
+                        "warn",
+                        f"[{file_index}/{total_files}] Attempt {attempt + 1} failed: {exc}; retrying in {1.0 + attempt:.0f}s",
+                        stage="downloading",
+                        fileIndex=file_index,
+                        totalFiles=total_files,
+                    )
                     time.sleep(1.0 + attempt)
+                else:
+                    _emit_download_log(
+                        task_id,
+                        "error",
+                        f"[{file_index}/{total_files}] Failed after 3 attempts: {exc}",
+                        stage="downloading",
+                        fileIndex=file_index,
+                        totalFiles=total_files,
+                    )
         if last_error is not None:
-            raise DownloadError(f"failed to download {url}: {last_error}")
+            _emit_download_log(
+                task_id,
+                "error",
+                f"Download aborted at file {file_index}/{total_files}: {relpath}",
+                stage="downloading",
+            )
+            raise DownloadError(_format_download_error(url, last_error))
         completed_files += 1
         downloaded.append(str(dest))
+        _emit_download_log(
+            task_id,
+            "info",
+            f"[{file_index}/{total_files}] Done {relpath}",
+            stage="downloading",
+            fileIndex=file_index,
+            totalFiles=total_files,
+        )
 
+    _emit_download_log(
+        task_id,
+        "info",
+        f"Download complete: {completed_files} file(s), {len(skipped)} skipped",
+        stage="done",
+    )
     return {"entry": entry, "downloaded": downloaded, "skipped": skipped}
+
+
+def _fetch_file_index(timeout: int) -> dict[str, Any]:
+    from pymss.model_download import MS_FILES_API  # type: ignore
+
+    with proxy_urlopen(MS_FILES_API, timeout) as response:
+        data = json.load(response)
+    files = data.get("Data", {}).get("Files", []) if isinstance(data, dict) else []
+    return {item["Path"]: item for item in files if item.get("Type") == "blob"}
 
 
 def cmd_download_model(payload: dict[str, Any]) -> int:
@@ -644,6 +747,7 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
             force=force,
             timeout=timeout,
             progress_callback=emit_download_progress,
+            task_id=task_id,
         )
         files = [(file_path, "skipped") for file_path in result.get("skipped", [])]
         files.extend((file_path, "downloaded") for file_path in result.get("downloaded", []))
@@ -661,3 +765,99 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
         return emit_error("MODEL_NOT_FOUND", str(exc), task_id=task_id)
     except Exception as exc:
         return emit_error("MODEL_DOWNLOAD_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
+
+
+def _format_download_error(url: str, exc: Exception) -> str:
+    exc_str = str(exc)
+    if "getaddrinfo failed" in exc_str or "Name or service not known" in exc_str:
+        return (
+            f"DNS resolution failed for {url}: {exc_str}. "
+            "This usually means the network is unreachable or a proxy is required. "
+            "Check Settings > Network Proxy."
+        )
+    if "timed out" in exc_str.lower():
+        return f"Connection timed out for {url}: {exc_str}. Check network or proxy settings."
+    return f"Failed to download {url}:\n  {exc_str}"
+
+
+def _test_url_for_source(source: str) -> str:
+    urls = {
+        "modelscope": "https://www.modelscope.cn/api/v1/models/baicai1145/pymss/repo/files?Revision=master&Recursive=true",
+        "huggingface": "https://huggingface.co/api/models/baicai1145/pymss",
+        "hf-mirror": "https://hf-mirror.com/api/models/baicai1145/pymss",
+    }
+    return urls.get(source, urls["modelscope"])
+
+
+def cmd_test_connection(payload: dict[str, Any]) -> int:
+    mode = str(payload.get("mode") or "system").strip()
+    raw_url = str(payload.get("url") or "")
+    bypass = payload.get("bypass") or ""
+    source = str(payload.get("source") or "modelscope").strip()
+    timeout = _safe_int(payload.get("timeout"), 15) or 15
+    try:
+        config = parse_proxy_config({"mode": mode, "url": raw_url, "bypass": bypass})
+    except ProxyConfigError as exc:
+        emit("test_connection_result", {
+            "ok": False,
+            "code": exc.code,
+            "error": str(exc),
+            "elapsedMs": 0,
+            "mode": mode,
+            "proxy": raw_url,
+        })
+        return 0
+    try:
+        # The test payload is authoritative even if the debounced settings sync
+        # has not reached Rust yet.
+        from worker_proxy import configure_process_proxy
+        configure_process_proxy(config)
+    except ProxyConfigError as exc:
+        emit("test_connection_result", {
+            "ok": False,
+            "code": exc.code,
+            "error": str(exc),
+            "elapsedMs": 0,
+            "mode": mode,
+            "proxy": raw_url,
+        })
+        return 0
+    test_url = _test_url_for_source(source)
+    started = time.time()
+    try:
+        with proxy_urlopen(test_url, timeout, config) as response:
+            import json as _json
+            status_code = getattr(response, "status", 200)
+            raw = response.read().decode("utf-8", errors="replace")
+            elapsed = time.time() - started
+            ip_addr = ""
+            try:
+                ip_addr = response.fp.raw._sock.getpeername()[0] if hasattr(response, "fp") else ""
+            except Exception:
+                pass
+            data = {}
+            try:
+                data = _json.loads(raw) if raw else {}
+            except Exception:
+                pass
+            files_count = len(data.get("Data", {}).get("Files", [])) if isinstance(data, dict) else 0
+            emit("test_connection_result", {
+                "ok": True,
+                "status": int(status_code),
+                "ip": ip_addr,
+                "filesCount": files_count,
+                "elapsedMs": int(elapsed * 1000),
+                "mode": mode,
+                "proxy": redacted_proxy(config),
+            })
+            return 0
+    except Exception as exc:
+        elapsed = time.time() - started
+        emit("test_connection_result", {
+            "ok": False,
+            "error": str(exc),
+            "elapsedMs": int(elapsed * 1000),
+            "mode": mode,
+            "proxy": redacted_proxy(config),
+        })
+        return 0

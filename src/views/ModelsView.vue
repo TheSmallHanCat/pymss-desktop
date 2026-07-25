@@ -22,6 +22,7 @@ import { useTaskStore } from '@/stores/task'
 import { formatBytes } from '@/utils/format'
 import { buildModelCategoryOptionsFromPairs, getModelCategoryLabel } from '@/utils/modelCategory'
 import ModelProgressBlock from '@/components/ModelProgressBlock.vue'
+import DownloadDetailModal from '@/components/DownloadDetailModal.vue'
 
 const { t, locale } = useI18n()
 const message = useMessage()
@@ -50,6 +51,8 @@ const {
 } = storeToRefs(modelStore)
 
 const showDetail = ref(false)
+const showDownloadDetail = ref(false)
+const downloadDetailModel = ref<string>('')
 const downloadedOnly = ref(false)
 const page = ref(1)
 const pageSize = ref(24)
@@ -256,6 +259,29 @@ function downloadStatusMessage(modelName: string) {
   return task.message || task.status
 }
 
+function cardDownloadMessage(modelName: string) {
+  const task = downloadTasks.value[modelName]
+  if (!task) return ''
+  switch (task.status) {
+    case 'downloading':
+      return task.totalFiles > 1
+        ? t('models.cardDownloadingFiles', { completed: task.completedFiles, total: task.totalFiles })
+        : t('models.cardDownloading')
+    case 'error':
+      return t('models.cardDownloadError')
+    case 'paused':
+      return t('models.cardDownloadPaused')
+    case 'cancelled':
+      return t('models.cardDownloadCancelled')
+    case 'interrupted':
+      return t('models.cardDownloadInterrupted')
+    case 'done':
+      return t('models.downloaded')
+    default:
+      return task.status
+  }
+}
+
 function downloadProgressColor(status: string) {
   if (status === 'error') return 'var(--danger)'
   if (status === 'interrupted') return 'var(--warning)'
@@ -348,8 +374,8 @@ function handleDetailModalAfterLeave() {
   if (!showDetail.value) selectedInfo.value = null
 }
 
-async function downloadModel(model: ModelEntry, event: MouseEvent) {
-  event.stopPropagation()
+async function downloadModel(model: ModelEntry, event?: MouseEvent) {
+  event?.stopPropagation()
   try {
     await modelStore.downloadModel(model.name)
     message.success(t('models.downloadStarted'))
@@ -358,10 +384,59 @@ async function downloadModel(model: ModelEntry, event: MouseEvent) {
   }
 }
 
-async function cancelDownloadModel(model: ModelEntry, event: MouseEvent) {
-  event.stopPropagation()
+async function cancelDownloadModel(model: ModelEntry, event?: MouseEvent) {
+  event?.stopPropagation()
   await modelStore.cancelDownload(model.name)
 }
+
+function openDownloadDetail(modelName: string) {
+  downloadDetailModel.value = modelName
+  showDownloadDetail.value = true
+  modelStore.markDownloadTaskSeen(modelName)
+}
+
+function closeDownloadDetail() {
+  showDownloadDetail.value = false
+  if (downloadDetailModel.value) {
+    modelStore.markDownloadTaskSeen(downloadDetailModel.value)
+  }
+}
+
+function onDownloadDetailCancel() {
+  if (!downloadDetailModel.value) return
+  void modelStore.cancelDownload(downloadDetailModel.value)
+}
+
+function onDownloadDetailResume() {
+  const name = downloadDetailModel.value
+  if (!name) return
+  const model = modelStore.models.find((m) => m.name === name)
+  if (!model) return
+  void downloadModel(model)
+}
+
+function onDownloadDetailDelete() {
+  const name = downloadDetailModel.value
+  if (!name) return
+  const model = modelStore.models.find((m) => m.name === name)
+  if (!model) return
+  confirmDeleteModel(model)
+}
+
+const downloadDetailTask = computed(() => {
+  if (!downloadDetailModel.value) return null
+  return downloadTasks.value[downloadDetailModel.value] || null
+})
+
+watch(downloadTasks, (value) => {
+  Object.values(value).forEach((task) => {
+    if (task.status === 'error' && !task.seen) {
+      if (!showDownloadDetail.value) {
+        openDownloadDetail(task.model)
+      }
+    }
+  })
+}, { deep: true })
 
 function confirmDeleteModel(model: ModelEntry, event?: MouseEvent) {
   event?.stopPropagation()
@@ -631,39 +706,36 @@ onMounted(() => {
             <ModelProgressBlock
               v-else-if="!model.downloaded && downloadTasks[model.name] && downloadTasks[model.name].status !== 'done'"
               :status="downloadTasks[model.name].status"
-              :message="downloadStatusMessage(model.name)"
+              :message="cardDownloadMessage(model.name)"
               :progress="downloadTasks[model.name].progress"
-              :files-text="downloadTasks[model.name].totalFiles > 1 ? t('models.fileProgress', { completed: downloadTasks[model.name].completedFiles, total: downloadTasks[model.name].totalFiles }) : ''"
+              :files-text="''"
               :color="downloadProgressColor(downloadTasks[model.name].status)"
             >
               <template #actions>
                 <n-button
                   v-if="downloadTasks[model.name].status === 'downloading'"
-                  block
                   size="tiny"
                   secondary
-                  @click="cancelDownloadModel(model, $event)"
+                  @click.stop="cancelDownloadModel(model, $event)"
                 >
                   {{ t('common.cancel') }}
                 </n-button>
-                <template v-else-if="['paused','cancelled','error','interrupted'].includes(downloadTasks[model.name].status)">
-                  <n-button
-                    size="tiny"
-                    type="primary"
-                    style="flex:1"
-                    @click="downloadModel(model, $event)"
-                  >
-                    {{ downloadTasks[model.name]?.status === 'interrupted' ? t('models.continueDownload') : t('common.resume') }}
-                  </n-button>
-                  <n-button
-                    size="tiny"
-                    type="error"
-                    secondary
-                    @click="confirmDeleteModel(model, $event)"
-                  >
-                    <template #icon><n-icon :component="TrashOutline" /></template>
-                  </n-button>
-                </template>
+                <n-button
+                  v-else-if="['paused','cancelled','error','interrupted'].includes(downloadTasks[model.name].status)"
+                  size="tiny"
+                  type="primary"
+                  secondary
+                  @click.stop="downloadModel(model, $event)"
+                >
+                  {{ downloadTasks[model.name]?.status === 'interrupted' ? t('models.continueDownload') : t('common.resume') }}
+                </n-button>
+                <n-button
+                  size="tiny"
+                  quaternary
+                  @click.stop="openDownloadDetail(model.name)"
+                >
+                  {{ t('models.downloadDetail') }}
+                </n-button>
               </template>
             </ModelProgressBlock>
 
@@ -1061,6 +1133,16 @@ onMounted(() => {
         </div>
       </n-drawer-content>
     </n-drawer>
+
+    <DownloadDetailModal
+      v-model:show="showDownloadDetail"
+      :task="downloadDetailTask"
+      :model-name="downloadDetailModel"
+      @cancel="onDownloadDetailCancel"
+      @resume="onDownloadDetailResume"
+      @delete="onDownloadDetailDelete"
+      @close="closeDownloadDetail"
+    />
   </div>
 </template>
 

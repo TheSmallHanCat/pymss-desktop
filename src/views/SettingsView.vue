@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
+import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-shell'
 import packageMeta from '../../package.json'
 import appLogo from '@/assets/app-logo-symbol-canvas.png'
@@ -34,6 +35,8 @@ import {
   DocumentTextOutline,
   LinkOutline,
   OpenOutline,
+  AlertCircleOutline,
+  CheckmarkCircleOutline,
 } from '@vicons/ionicons5'
 
 const { t, locale: currentLocale } = useI18n()
@@ -69,6 +72,9 @@ const {
   maxConcurrentSeparations,
   modelDirMigrationState,
   isModelDirMigrating,
+  proxyMode,
+  proxyUrl,
+  proxyBypass,
 } = storeToRefs(settings)
 const { downloadTasks } = storeToRefs(modelStore)
 const { activeWorkerTasks } = storeToRefs(task)
@@ -85,6 +91,125 @@ const languageOptions = computed(() => [
   { label: t('settings.languageSimplifiedChinese'), value: 'zh-CN' },
   { label: t('settings.languageEnglish'), value: 'en' },
 ])
+
+type ProxyTestStatus = 'idle' | 'testing' | 'success' | 'error'
+const proxyTestStatus = ref<ProxyTestStatus>('idle')
+const proxyTestMessage = ref('')
+const proxyTestSuggestion = ref('')
+const proxyTestElapsed = ref(0)
+const proxyTestLoading = computed(() => proxyTestStatus.value === 'testing')
+
+const proxyModeOptions = computed(() => [
+  { value: 'none' as const, label: t('settings.proxyModeNone') },
+  { value: 'system' as const, label: t('settings.proxyModeSystem') },
+  { value: 'custom' as const, label: t('settings.proxyModeCustom') },
+])
+
+function buildProxyTestSuggestion(error: string, mode: string): string {
+  const lower = error.toLowerCase()
+  if (lower.includes('invalid_proxy_url')) {
+    return t('settings.proxySuggestionBadScheme')
+  }
+  if (lower.includes('invalid_proxy_port')) {
+    return t('settings.proxySuggestionBadScheme')
+  }
+  if (lower.includes('unsupported_proxy_scheme')) {
+    return t('settings.proxySuggestionBadScheme')
+  }
+  if (lower.includes('unsupported proxy scheme')) {
+    return t('settings.proxySuggestionBadScheme')
+  }
+  if (lower.includes('pysocks')) {
+    return t('settings.proxySuggestionPySocks')
+  }
+  if (lower.includes('getaddrinfo') || lower.includes('name or service not known') || lower.includes('nodename nor servname')) {
+    if (mode === 'none') {
+      return t('settings.proxySuggestionDnsNone')
+    }
+    if (mode === 'system') {
+      return t('settings.proxySuggestionDnsSystem')
+    }
+    return t('settings.proxySuggestionDnsCustom')
+  }
+  if (lower.includes('timed out') || lower.includes('timeout')) {
+    return t('settings.proxySuggestionTimeout')
+  }
+  if (lower.includes('proxyerror') || lower.includes('407') || lower.includes('proxy')) {
+    return t('settings.proxySuggestionProxyError')
+  }
+  if (lower.includes('connection refused') || lower.includes('connection reset')) {
+    return mode === 'custom'
+      ? t('settings.proxySuggestionRefusedCustom')
+      : t('settings.proxySuggestionRefused')
+  }
+  return ''
+}
+
+async function testProxyConnection() {
+  proxyTestStatus.value = 'testing'
+  proxyTestMessage.value = t('settings.proxyTesting')
+  proxyTestSuggestion.value = ''
+  proxyTestElapsed.value = 0
+  try {
+    const result = await invoke<{
+      ok: boolean
+      status?: number
+      ip?: string
+      filesCount?: number
+      error?: string
+      elapsedMs: number
+      mode: string
+      proxy?: string
+    }>('test_proxy_connection', {
+      payload: {
+        mode: proxyMode.value,
+        url: proxyUrl.value,
+        bypass: proxyBypass.value,
+        source: downloadSource.value,
+        timeout: 15,
+      },
+    })
+    proxyTestElapsed.value = result.elapsedMs
+    if (result.ok) {
+      proxyTestStatus.value = 'success'
+      proxyTestMessage.value = formatConnectionInfo(result)
+      proxyTestSuggestion.value = ''
+    } else {
+      proxyTestStatus.value = 'error'
+      const error = result.error || t('settings.proxyTestUnknownError')
+      proxyTestMessage.value = error
+      proxyTestSuggestion.value = buildProxyTestSuggestion(error, result.mode || proxyMode.value)
+    }
+  } catch (err) {
+    proxyTestStatus.value = 'error'
+    const error = err instanceof Error ? err.message : String(err)
+    proxyTestMessage.value = error
+    proxyTestSuggestion.value = buildProxyTestSuggestion(error, proxyMode.value)
+  }
+}
+
+function formatConnectionInfo(info: {
+  status?: number
+  ip?: string
+  filesCount?: number
+  elapsedMs?: number
+}): string {
+  const parts: string[] = []
+  if (info.status) parts.push(`HTTP ${info.status}`)
+  if (info.ip) parts.push(info.ip)
+  if (typeof info.filesCount === 'number' && info.filesCount > 0) {
+    parts.push(t('settings.proxyTestFiles', { count: info.filesCount }))
+  }
+  if (info.elapsedMs) parts.push(`${info.elapsedMs}ms`)
+  return parts.join('  ·  ')
+}
+
+function resetProxyTest() {
+  proxyTestStatus.value = 'idle'
+  proxyTestMessage.value = ''
+  proxyTestSuggestion.value = ''
+  proxyTestElapsed.value = 0
+}
 const settingsSections = computed(() => [
   { key: 'appearance' as const, label: t('settings.appearance'), icon: ColorPaletteOutline, hint: t('settings.appearanceNavHint') },
   { key: 'paths' as const, label: t('settings.dataDir'), icon: FolderOpenOutline, hint: t('settings.pathsNavHint') },
@@ -672,6 +797,75 @@ onMounted(() => {
                     { label: 'HF Mirror', value: 'hf-mirror' },
                   ]"
                 />
+              </div>
+            </section>
+
+            <section class="settings-group">
+              <div class="setting-field">
+                <label class="text-muted text-sm">{{ t('settings.proxyMode') }}</label>
+                <n-select
+                  v-model:value="proxyMode"
+                  :options="proxyModeOptions"
+                  @update:value="resetProxyTest"
+                />
+                <p class="text-muted text-sm setting-field__hint">{{ t('settings.proxyModeHint') }}</p>
+              </div>
+              <div v-if="proxyMode === 'custom'" class="proxy-custom-grid">
+                <div class="setting-field">
+                  <label class="text-muted text-sm">{{ t('settings.proxyUrl') }}</label>
+                  <n-input
+                    v-model:value="proxyUrl"
+                    :placeholder="t('settings.proxyUrlPlaceholder')"
+                    clearable
+                    size="small"
+                    @update:value="resetProxyTest"
+                  />
+                </div>
+                <div class="setting-field">
+                  <label class="text-muted text-sm">{{ t('settings.proxyBypass') }}</label>
+                  <n-input
+                    v-model:value="proxyBypass"
+                    :placeholder="t('settings.proxyBypassPlaceholder')"
+                    size="small"
+                  />
+                </div>
+              </div>
+              <div class="setting-field">
+                <label class="text-muted text-sm">{{ t('settings.proxyTest') }}</label>
+                <div class="proxy-test-row">
+                  <n-button
+                    size="small"
+                    secondary
+                    :loading="proxyTestLoading"
+                    :disabled="proxyMode === 'custom' && !proxyUrl.trim()"
+                    @click="testProxyConnection"
+                  >
+                    {{ t('settings.proxyTest') }}
+                  </n-button>
+                  <span v-if="proxyTestStatus === 'success'" class="proxy-test-info">
+                    <n-icon :component="CheckmarkCircleOutline" size="14" color="var(--success)" />
+                    <span class="proxy-test-info__text">{{ proxyTestMessage }}</span>
+                  </span>
+                  <n-tag
+                    v-else-if="proxyTestStatus === 'error'"
+                    size="small"
+                    type="error"
+                    round
+                    :bordered="false"
+                  >{{ t('settings.proxyTestFailed') }}</n-tag>
+                  <n-tag
+                    v-else-if="proxyTestStatus === 'testing'"
+                    size="small"
+                    :bordered="false"
+                  >{{ t('settings.proxyTesting') }}</n-tag>
+                </div>
+                <div v-if="proxyTestStatus === 'error' && proxyTestMessage" class="proxy-test-error">
+                  <div class="proxy-test-error__head">
+                    <n-icon :component="AlertCircleOutline" size="14" color="var(--danger)" />
+                    <span>{{ proxyTestMessage }}</span>
+                  </div>
+                  <p v-if="proxyTestSuggestion" class="proxy-test-error__tip">{{ proxyTestSuggestion }}</p>
+                </div>
               </div>
             </section>
 
@@ -1450,6 +1644,66 @@ onMounted(() => {
 .setting-field__hint {
   margin: 0;
   line-height: 1.6;
+}
+
+.proxy-test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.proxy-custom-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .proxy-custom-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.proxy-test-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.proxy-test-info__text {
+  font-size: 12px;
+  color: var(--on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proxy-test-error {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+}
+
+.proxy-test-error__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--danger);
+  word-break: break-all;
+}
+
+.proxy-test-error__tip {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--on-surface-muted);
 }
 
 .setting-field--switch {

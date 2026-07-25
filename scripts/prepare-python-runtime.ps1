@@ -34,7 +34,7 @@ if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) {
 } else {
     & $runtimePython -m pip install --no-cache-dir $torchRequirement --index-url $TorchIndexUrl
 }
-& $runtimePython -m pip install --no-cache-dir av librosa numpy pyyaml tqdm
+& $runtimePython -m pip install --no-cache-dir av librosa numpy pysocks requests pyyaml tqdm
 if ($Variant -in @("mps", "mlx")) {
     & $runtimePython -m pip install --no-cache-dir mlx
 }

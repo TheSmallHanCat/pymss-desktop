@@ -5,7 +5,7 @@ use crate::model_dir_migration::{
     StartModelDirMigrationRequest,
 };
 use crate::python::worker::{run_worker_once, run_worker_with_payload, spawn_worker_background};
-use crate::state::AppState;
+use crate::state::{AppState, ProxySettings};
 use crate::storage;
 use serde::Serialize;
 use serde_json::Value;
@@ -194,6 +194,92 @@ pub async fn start_model_download(
     }
     spawn_worker_background(app, state, "download_model", task_id.clone(), payload)?;
     Ok(serde_json::json!({ "taskId": task_id, "started": true }))
+}
+
+#[tauri::command]
+pub async fn update_proxy_settings(
+    state: State<'_, AppState>,
+    payload: Value,
+) -> AppResult<Value> {
+    let mode = payload
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("system")
+        .to_string();
+    let url = payload
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let bypass = payload
+        .get("bypass")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    validate_proxy_settings(&mode, &url)?;
+    let next = ProxySettings { mode, url, bypass };
+    {
+        let mut guard = state
+            .proxy_settings
+            .lock()
+            .map_err(|_| AppError::Worker("proxy_settings lock poisoned".into()))?;
+        *guard = next.clone();
+    }
+    Ok(serde_json::json!({ "ok": true, "mode": next.mode }))
+}
+
+fn validate_proxy_settings(mode: &str, url: &str) -> AppResult<()> {
+    if !matches!(mode, "system" | "none" | "custom") {
+        return Err(AppError::Worker("INVALID_PROXY_MODE: unsupported proxy mode".into()));
+    }
+    if mode != "custom" {
+        return Ok(());
+    }
+    let normalized = if url.contains("://") {
+        url.trim().to_string()
+    } else if url.trim().is_empty() {
+        String::new()
+    } else {
+        format!("http://{}", url.trim())
+    };
+    let (scheme, authority) = normalized
+        .split_once("://")
+        .ok_or_else(|| AppError::Worker("INVALID_PROXY_URL: missing proxy scheme".into()))?;
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https" | "socks5" | "socks5h") {
+        return Err(AppError::Worker("UNSUPPORTED_PROXY_SCHEME: unsupported proxy scheme".into()));
+    }
+    let authority = authority.split('/').next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or("");
+    let (host, port) = if host_port.starts_with('[') {
+        let end = host_port
+            .find(']')
+            .ok_or_else(|| AppError::Worker("INVALID_PROXY_URL: invalid IPv6 host".into()))?;
+        let port = host_port
+            .get(end + 1..)
+            .unwrap_or("")
+            .strip_prefix(':')
+            .unwrap_or("");
+        (&host_port[1..end], port)
+    } else {
+        host_port
+            .rsplit_once(':')
+            .ok_or_else(|| AppError::Worker("INVALID_PROXY_PORT: proxy port is required".into()))?
+    };
+    if host.is_empty() {
+        return Err(AppError::Worker("INVALID_PROXY_URL: proxy host is missing".into()));
+    }
+    let port = port
+        .parse::<u16>()
+        .map_err(|_| AppError::Worker("INVALID_PROXY_PORT: proxy port is invalid".into()))?;
+    if port == 0 {
+        return Err(AppError::Worker("INVALID_PROXY_PORT: proxy port is invalid".into()));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn test_proxy_connection(app: AppHandle, payload: Value) -> AppResult<Value> {
+    run_worker_with_payload(&app, "test_connection", Some(payload))
 }
 
 fn chrono_like_timestamp() -> u128 {

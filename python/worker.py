@@ -4,7 +4,7 @@ import argparse
 import sys
 
 from worker_audio import cmd_audio_metadata, cmd_export_editor_mix, cmd_waveform_peaks
-from worker_download import cmd_download_model
+from worker_download import cmd_download_model, cmd_test_connection
 from worker_infer import cmd_infer
 from worker_models import (
     cmd_cleanup_model_residual_files,
@@ -17,6 +17,7 @@ from worker_models import (
 )
 from worker_workflows import cmd_infer_workflow
 from worker_protocol import emit_error, load_payload
+from worker_proxy import ProxyConfigError, configure_process_proxy, load_proxy_config, parse_proxy_config
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -30,6 +31,14 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
         payload = load_payload(args.payload)
+        if args.command == "test_connection":
+            configure_process_proxy(parse_proxy_config({
+                "mode": payload.get("mode"),
+                "url": payload.get("url"),
+                "bypass": payload.get("bypass"),
+            }))
+        else:
+            configure_process_proxy(load_proxy_config())
         if args.command == "health":
             return cmd_health()
         if args.command == "env_info":
@@ -46,6 +55,8 @@ def main(argv: list[str]) -> int:
             return cmd_cleanup_model_residual_files(payload)
         if args.command == "download_model":
             return cmd_download_model(payload)
+        if args.command == "test_connection":
+            return cmd_test_connection(payload)
         if args.command == "audio_metadata":
             return cmd_audio_metadata(payload)
         if args.command == "waveform_peaks":
@@ -57,6 +68,8 @@ def main(argv: list[str]) -> int:
         if args.command == "infer_workflow":
             return cmd_infer_workflow(payload)
         return emit_error("UNKNOWN_COMMAND", f"Unknown command: {args.command}")
+    except ProxyConfigError as exc:
+        return emit_error(exc.code, str(exc))
     except Exception as exc:
         import traceback
         return emit_error("UNKNOWN_ERROR", str(exc), traceback.format_exc())

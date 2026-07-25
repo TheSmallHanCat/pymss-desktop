@@ -96,7 +96,12 @@ type StoredSettings = {
   m4aCodec?: string
   startupOnboardingSeen?: boolean
   startupOnboardingSeenVersion?: string
+  proxyMode?: ProxyMode
+  proxyUrl?: string
+  proxyBypass?: string
 }
+
+export type ProxyMode = 'system' | 'none' | 'custom'
 
 const DEFAULT_LOCALE: LocaleSetting = 'system'
 const DEFAULT_DOWNLOAD_SOURCE = 'modelscope'
@@ -104,6 +109,8 @@ const DEFAULT_DEFAULT_DEVICE = 'auto'
 const DEFAULT_DEFAULT_FORMAT = 'wav'
 const DEFAULT_CONCURRENT_SEPARATIONS = 1
 const MAX_CONCURRENT_SEPARATIONS = 16
+const DEFAULT_PROXY_MODE: ProxyMode = 'system'
+const DEFAULT_PROXY_URL = ''
 
 function displayModelDirPath(path: unknown): string {
   const value = String(path || '').trim()
@@ -196,6 +203,9 @@ export const useSettingsStore = defineStore('settings', () => {
   const mp3BitRate = ref(DEFAULT_MP3_BIT_RATE)
   const m4aBitRate = ref(DEFAULT_M4A_BIT_RATE)
   const m4aCodec = ref(DEFAULT_M4A_CODEC)
+  const proxyMode = ref<ProxyMode>(DEFAULT_PROXY_MODE)
+  const proxyUrl = ref(DEFAULT_PROXY_URL)
+  const proxyBypass = ref('')
   const startupOnboardingSeen = ref(false)
   const modelDirMigrationState = ref<ModelDirMigrationState>(createEmptyModelDirMigrationState())
 
@@ -226,6 +236,9 @@ export const useSettingsStore = defineStore('settings', () => {
     m4aBitRate: m4aBitRate.value,
     m4aCodec: m4aCodec.value,
     startupOnboardingSeen: startupOnboardingSeen.value,
+    proxyMode: proxyMode.value,
+    proxyUrl: proxyUrl.value,
+    proxyBypass: proxyBypass.value,
   }))
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -277,6 +290,11 @@ export const useSettingsStore = defineStore('settings', () => {
     mp3BitRate.value = stored?.mp3BitRate || DEFAULT_MP3_BIT_RATE
     m4aBitRate.value = stored?.m4aBitRate || DEFAULT_M4A_BIT_RATE
     m4aCodec.value = normalizeM4aCodec(stored?.m4aCodec)
+    proxyMode.value = (stored?.proxyMode && ['system', 'none', 'custom'].includes(stored.proxyMode))
+      ? stored.proxyMode
+      : DEFAULT_PROXY_MODE
+    proxyUrl.value = stored?.proxyUrl || DEFAULT_PROXY_URL
+    proxyBypass.value = stored?.proxyBypass || ''
     startupOnboardingSeen.value = stored?.startupOnboardingSeen === true
       || String(stored?.startupOnboardingSeenVersion || '').trim().length > 0
     const shouldPersistNormalizedOnboarding =
@@ -289,6 +307,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setLocale(locale.value)
     initialized.value = true
     if (shouldPersistNormalizedOnboarding) queuePersist()
+    void syncProxyToBackend().catch((error) => console.warn('Failed to sync proxy settings', error))
   }
 
   watch(themeMode, (value) => {
@@ -326,10 +345,31 @@ export const useSettingsStore = defineStore('settings', () => {
       m4aBitRate,
       m4aCodec,
       developerMode,
+      proxyMode,
+      proxyUrl,
+      proxyBypass,
     ],
     () => queuePersist(),
     { deep: true },
   )
+
+  watch(
+    [proxyMode, proxyUrl, proxyBypass],
+    () => {
+      void syncProxyToBackend().catch((error) => console.warn('Failed to sync proxy settings', error))
+    },
+  )
+
+  async function syncProxyToBackend() {
+    if (!initialized.value) return
+    await invoke('update_proxy_settings', {
+      payload: {
+        mode: proxyMode.value,
+        url: proxyUrl.value,
+        bypass: proxyBypass.value,
+      },
+    })
+  }
 
   function deviceOptions(env?: EnvInfo | null): DeviceOption[] {
     const options: DeviceOption[] = [
@@ -748,6 +788,9 @@ export const useSettingsStore = defineStore('settings', () => {
     mp3BitRate,
     m4aBitRate,
     m4aCodec,
+    proxyMode,
+    proxyUrl,
+    proxyBypass,
     startupOnboardingSeen,
     modelDirMigrationState,
     initialize,

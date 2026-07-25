@@ -90,6 +90,8 @@ fn main() {
             commands::app_cmd::start_model_download,
             commands::app_cmd::start_separation,
             commands::app_cmd::start_workflow_inference,
+            commands::app_cmd::test_proxy_connection,
+            commands::app_cmd::update_proxy_settings,
             commands::app_cmd::worker_health,
         ])
         .run(tauri::generate_context!())

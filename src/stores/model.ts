@@ -58,6 +58,17 @@ type ModelsPayload = {
 
 type DownloadStatus = 'idle' | 'downloading' | 'done' | 'error' | 'cancelled' | 'paused' | 'interrupted'
 
+export type DownloadLogLevel = 'info' | 'warn' | 'error'
+
+export type DownloadLogEntry = {
+  ts: number
+  level: DownloadLogLevel
+  message: string
+  fileIndex?: number
+  totalFiles?: number
+  stage?: string
+}
+
 export type DownloadTask = {
   taskId: string
   model: string
@@ -67,6 +78,9 @@ export type DownloadTask = {
   completedFiles: number
   totalFiles: number
   updatedAt: number
+  logs: DownloadLogEntry[]
+  errorMessage?: string
+  seen?: boolean
 }
 
 export type ModelStorageFile = { path: string; sizeBytes: number; exists?: boolean }
@@ -130,6 +144,12 @@ export type ResidualCleanupState = {
 
 const DELETE_TASK_TIMEOUT_MS = 5 * 60 * 1000
 const STORAGE_SUMMARY_CACHE_TTL_MS = 30 * 1000
+const DOWNLOAD_LOG_LIMIT = 200
+
+function appendLog(logs: DownloadLogEntry[], entry: DownloadLogEntry): DownloadLogEntry[] {
+  const next = [...logs, entry]
+  return next.length > DOWNLOAD_LOG_LIMIT ? next.slice(next.length - DOWNLOAD_LOG_LIMIT) : next
+}
 
 type StoredModelState = {
   models?: ModelEntry[]
@@ -154,6 +174,8 @@ function normalizeDownloadTasks(input?: Record<string, DownloadTask>) {
       status: task.status === 'downloading' ? 'interrupted' : task.status,
       message: task.status === 'downloading' ? '下载已中断' : task.message,
       updatedAt: Date.now(),
+      logs: Array.isArray(task.logs) ? task.logs : [],
+      seen: true,
     }
   })
   return next
@@ -633,8 +655,10 @@ export const useModelStore = defineStore('model', () => {
         completedFiles: 0,
         totalFiles: 1,
         updatedAt: Date.now(),
+        logs: [],
+        seen: true,
       }
-      const next: DownloadTask = { ...previous, taskId, updatedAt: Date.now() }
+      const next: DownloadTask = { ...previous, taskId, updatedAt: Date.now(), logs: previous.logs || [] }
       if (event.type === 'download_started') {
         next.status = 'downloading'
         next.progress = payload.progress ?? 0
@@ -690,8 +714,31 @@ export const useModelStore = defineStore('model', () => {
         }
         next.status = 'error'
         next.message = payload.message || 'Failed'
+        next.errorMessage = payload.message || 'Failed'
+        next.seen = false
         downloadStates.value = { ...downloadStates.value, [modelName]: 'error' }
         downloadErrors.value = { ...downloadErrors.value, [modelName]: next.message }
+        if (payload.message) {
+          next.logs = appendLog(next.logs, {
+            ts: Date.now(),
+            level: 'error',
+            message: payload.message,
+          })
+        }
+      } else if (event.type === 'download_log') {
+        const level = (payload.level === 'warn' || payload.level === 'error' ? payload.level : 'info') as DownloadLogLevel
+        const message = String(payload.message || '')
+        next.logs = appendLog(next.logs, {
+          ts: Date.now(),
+          level,
+          message,
+          fileIndex: payload.fileIndex,
+          totalFiles: payload.totalFiles,
+          stage: payload.stage,
+        })
+        if (level === 'info' && message) {
+          next.message = message.length > 80 ? message.slice(0, 77) + '...' : message
+        }
       }
       downloadTasks.value = { ...downloadTasks.value, [modelName]: next }
       return
@@ -817,7 +864,7 @@ export const useModelStore = defineStore('model', () => {
 
   async function downloadModel(name: string, force = false) {
     const settings = useSettingsStore()
-    const taskId = `download_${Date.now()}`
+    const taskId = `download_${crypto.randomUUID()}`
     downloadStates.value = { ...downloadStates.value, [name]: 'downloading' }
     downloadErrors.value = { ...downloadErrors.value, [name]: '' }
     downloadTasks.value = {
@@ -831,6 +878,8 @@ export const useModelStore = defineStore('model', () => {
         completedFiles: 0,
         totalFiles: 1,
         updatedAt: Date.now(),
+        logs: [],
+        seen: true,
       },
     }
     downloadTaskIndex.value = { ...downloadTaskIndex.value, [taskId]: name }
@@ -851,7 +900,18 @@ export const useModelStore = defineStore('model', () => {
       downloadErrors.value = { ...downloadErrors.value, [name]: message }
       const previous = downloadTasks.value[name]
       if (previous) {
-        downloadTasks.value = { ...downloadTasks.value, [name]: { ...previous, status: 'error', message, updatedAt: Date.now() } }
+        downloadTasks.value = {
+          ...downloadTasks.value,
+          [name]: {
+            ...previous,
+            status: 'error',
+            message,
+            errorMessage: message,
+            seen: false,
+            logs: appendLog(previous.logs || [], { ts: Date.now(), level: 'error', message }),
+            updatedAt: Date.now(),
+          },
+        }
       }
       throw err
     }
@@ -1057,6 +1117,36 @@ export const useModelStore = defineStore('model', () => {
     }
   }
 
+  function clearDownloadError(name: string) {
+    if (downloadErrors.value[name]) {
+      const { [name]: _, ...rest } = downloadErrors.value
+      downloadErrors.value = rest
+    }
+  }
+
+  function markDownloadTaskSeen(name: string) {
+    const task = downloadTasks.value[name]
+    if (task && !task.seen) {
+      downloadTasks.value = {
+        ...downloadTasks.value,
+        [name]: { ...task, seen: true },
+      }
+    }
+  }
+
+  function clearDownloadTask(name: string) {
+    const task = downloadTasks.value[name]
+    if (task) {
+      const { [name]: _, ...rest } = downloadTasks.value
+      downloadTasks.value = rest
+      if (downloadTaskIndex.value[task.taskId]) {
+        const { [task.taskId]: _idx, ...restIdx } = downloadTaskIndex.value
+        downloadTaskIndex.value = restIdx
+      }
+    }
+    clearDownloadError(name)
+  }
+
   function clearDeleteTask(name: string) {
     const task = deleteTasks.value[name]
     if (task) {
@@ -1127,6 +1217,8 @@ export const useModelStore = defineStore('model', () => {
     loadModelStorageSummary,
     cleanupModelResidualFiles,
     clearDeleteTask,
+    clearDownloadTask,
+    markDownloadTaskSeen,
     resetResidualCleanupState,
     handleWorkerEvent,
   }

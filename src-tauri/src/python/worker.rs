@@ -207,6 +207,7 @@ fn build_worker_command(
             "PYMSS_STUDIO_DEFAULT_OUTPUT_DIR",
             default_output_dir(app)?.to_string_lossy().to_string(),
         );
+    apply_proxy_env(app, &mut cmd);
     if let Some(path) = prepend_path(std::env::var("PATH").ok(), bundled_bin_dirs(app)?) {
         cmd.env("PATH", path);
     }
@@ -234,6 +235,62 @@ fn build_worker_command(
         cmd.arg("--payload").arg(path);
     }
     Ok(cmd)
+}
+
+fn normalize_proxy_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.contains("://") {
+        return trimmed.to_string();
+    }
+    format!("http://{}", trimmed)
+}
+
+fn apply_proxy_env(app: &AppHandle, cmd: &mut Command) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let Ok(proxy) = state.proxy_settings.lock() else {
+        return;
+    };
+    let config = serde_json::json!({
+        "mode": proxy.mode,
+        "url": proxy.url,
+        "bypass": proxy.bypass,
+    });
+    cmd.env("PYMSS_STUDIO_PROXY_CONFIG", config.to_string());
+    match proxy.mode.as_str() {
+        "none" => {
+            cmd.env("PYMSS_STUDIO_PROXY_MODE", "none")
+                .env("NO_PROXY", "*")
+                .env("HTTP_PROXY", "")
+                .env("HTTPS_PROXY", "")
+                .env("http_proxy", "")
+                .env("https_proxy", "");
+        }
+        "custom" => {
+            let url = normalize_proxy_url(proxy.url.trim());
+            if !url.is_empty() {
+                cmd.env("HTTP_PROXY", &url)
+                    .env("HTTPS_PROXY", &url)
+                    .env("http_proxy", &url)
+                    .env("https_proxy", &url)
+                    .env("PYMSS_STUDIO_PROXY_MODE", "custom");
+            }
+            let bypass = proxy.bypass.trim();
+            if !bypass.is_empty() {
+                cmd.env("NO_PROXY", bypass).env("no_proxy", bypass);
+            }
+        }
+        "system" => {
+            cmd.env("PYMSS_STUDIO_PROXY_MODE", "system");
+        }
+        _ => {
+            cmd.env("PYMSS_STUDIO_PROXY_MODE", "system");
+        }
+    }
 }
 
 fn emit_worker_stderr(app: &AppHandle, line: String) {
