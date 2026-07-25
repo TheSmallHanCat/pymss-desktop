@@ -688,7 +688,7 @@ export function buildWorkflowRuntimeIdMap(steps: WorkflowStepDraft[]) {
 }
 
 export function safeWorkflowStemDir(stem: string) {
-  return stem.trim().replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_') || stem
+  return stem.trim().replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_') || 'stem'
 }
 
 export function buildWorkflowConsumedStemSet(steps: WorkflowStepDraft[]) {

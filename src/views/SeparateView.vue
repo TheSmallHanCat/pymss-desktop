@@ -79,6 +79,8 @@ const cancellingTaskId = ref<string | null>(null)
 const audioElements = new Map<string, HTMLAudioElement>()
 const playingOutputPath = ref('')
 const outputPlayback = ref<Record<string, { currentTime: number; duration: number }>>({})
+const durationTick = ref(0)
+let durationInterval: ReturnType<typeof setInterval> | null = null
 let unlistenDragDrop: UnlistenFn | null = null
 
 const formatOptions = [
@@ -386,7 +388,7 @@ const modelCompactLine = computed(() => {
 const currentTaskFileName = computed(() => currentTask.value ? getFileName(currentTask.value.input) : '')
 const currentTaskOutputPath = computed(() => currentJob.value?.output || currentTask.value?.output || normalizedOutputDir.value)
 const currentTaskOutputSummary = computed(() => shortenMiddle(currentTaskOutputPath.value, 72))
-const currentTaskDuration = computed(() => currentTask.value ? taskDuration(currentTask.value) : '')
+const currentTaskDuration = computed(() => currentTask.value ? taskDuration(currentTask.value, durationTick.value || undefined) : '')
 
 function configuredStemOrder(item: SeparationTask) {
   if (item.runConfig?.runMode === 'workflow') return []
@@ -647,11 +649,11 @@ function taskSubMessage(item: SeparationTask) {
   return normalizeProgressMessage(item.progressDetail || item.message)
 }
 
-function taskDuration(item: SeparationTask) {
-  const seconds = Math.max(0, Math.round((item.updatedAt - item.createdAt) / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const rest = seconds % 60
+function taskDuration(item: SeparationTask, now?: number) {
+  const elapsed = Math.max(0, Math.round(((now || Date.now()) - item.createdAt) / 1000))
+  if (elapsed < 60) return `${elapsed}s`
+  const minutes = Math.floor(elapsed / 60)
+  const rest = elapsed % 60
   return `${minutes}m ${rest}s`
 }
 
@@ -722,6 +724,7 @@ watch(
 )
 
 onMounted(async () => {
+  durationInterval = setInterval(() => { durationTick.value = Date.now() }, 1000)
   if (import.meta.env.DEV && route.query.preview === 'results') {
     const previewJob = [...task.resultJobs].sort((a, b) => b.updatedAt - a.updatedAt)[0]
     if (previewJob) focusedSeparationJobId.value = previewJob.id
@@ -750,6 +753,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  if (durationInterval) { clearInterval(durationInterval); durationInterval = null }
   if (unlistenDragDrop) unlistenDragDrop()
   stopAllPreviewAudio()
 })

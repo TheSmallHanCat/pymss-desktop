@@ -1,7 +1,6 @@
 # Dependencies
 node_modules/
 .pnpm-store/
-pnpm-workspace.yaml
 
 # Frontend build
 dist/
@@ -9,7 +8,7 @@ dist/
 # Tauri / Rust build
 src-tauri/target/
 src-tauri/target/**
-src-tauri/gen/
+src-tauri/gen/schemas/linux-schema.json
 
 # Python cache
 __pycache__/
@@ -61,7 +60,6 @@ release/
 python-runtime/
 src-tauri/resources/
 src-tauri/tauri.bundle.resources.json
-run-dev.bat
 *.zip
 *.tar.zst
 *.dmg

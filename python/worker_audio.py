@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import subprocess
+import tempfile
 import traceback
 from pathlib import Path
 from typing import Any
@@ -125,8 +127,9 @@ def _apply_stereo_pan(audio: Any, pan: float) -> Any:
     if audio.shape[0] == 1:
         audio = np.repeat(audio, 2, axis=0)
 
-    left_gain = 1.0 if normalized <= 0 else 1.0 - normalized
-    right_gain = 1.0 if normalized >= 0 else 1.0 + normalized
+    angle = (normalized + 1.0) / 2.0
+    left_gain = math.cos(angle * math.pi / 2.0)
+    right_gain = math.sin(angle * math.pi / 2.0)
 
     output = audio.copy()
     output[0] *= left_gain
@@ -373,15 +376,34 @@ def cmd_export_editor_mix(payload: dict[str, Any]) -> int:
             requested = str(audio_params.get("flac_bit_depth") or audio_params.get("flacBitDepth") or "PCM_24").upper()
             subtype = requested if requested in {"PCM_16", "PCM_24"} else "PCM_24"
         elif output_format in {"mp3", "m4a"}:
-            output_path = output_path.with_suffix(".wav")
-            output_format = "wav"
-            requested = str(audio_params.get("wav_bit_depth") or audio_params.get("wavBitDepth") or "PCM_24").upper()
-            subtype = requested if requested in {"PCM_16", "PCM_24", "FLOAT"} else "PCM_24"
+            if output_format == "mp3":
+                bit_rate = str(audio_params.get("mp3_bit_rate") or audio_params.get("mp3BitRate") or "320k")
+            else:
+                bit_rate = str(audio_params.get("m4a_bit_rate") or audio_params.get("m4aBitRate") or "512k")
 
         write_kwargs: dict[str, Any] = {}
         if subtype:
             write_kwargs["subtype"] = subtype
-        sf.write(str(output_path), mix.T, target_rate, **write_kwargs)
+
+        if output_format in {"mp3", "m4a"}:
+            import soundfile as sf  # type: ignore
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp_wav = tmp.name
+            try:
+                sf.write(tmp_wav, mix.T, target_rate, **write_kwargs)
+                codec = ["-codec:a", "libmp3lame", "-b:a", bit_rate] if output_format == "mp3" else ["-codec:a", "aac", "-b:a", bit_rate]
+                cmd = ["ffmpeg", "-y", "-i", tmp_wav] + codec + [str(output_path)]
+                proc = subprocess.run(cmd, capture_output=True, timeout=300)
+                if proc.returncode != 0:
+                    stderr_msg = proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
+                    raise RuntimeError(f"ffmpeg encoding failed (exit {proc.returncode}): {stderr_msg[:500]}")
+            finally:
+                try:
+                    Path(tmp_wav).unlink(missing_ok=True)
+                except Exception:
+                    pass
+        else:
+            sf.write(str(output_path), mix.T, target_rate, **write_kwargs)
         emit("editor_mix_exported", {
             "path": str(output_path),
             "duration": total_samples / target_rate,

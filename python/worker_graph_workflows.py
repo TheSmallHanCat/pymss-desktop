@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from worker_infer import JsonLogHandler, _close_separator, _prepare_separator, normalize_audio_params, resolve_pymss_output_dir
+from worker_infer import JsonLogHandler, _close_separator, _prepare_separator, _purge_cuda, normalize_audio_params, resolve_pymss_output_dir
 from worker_protocol import emit
 
 
@@ -431,18 +431,23 @@ def _execute_separate_node(
             task_id=task_id,
         )
 
-    separator = _prepare_separator(
-        payload={
-            **payload,
-            "model": model_name,
-            "selectedStems": stems,
-            "inferenceParams": inference_params,
-            "output": payload.get("output") or "results",
-        },
-        task_id=task_id,
-        progress_callback=emit_node_progress,
-        logger=logger,
-    )
+    _purge_cuda()
+    try:
+        separator = _prepare_separator(
+            payload={
+                **payload,
+                "model": model_name,
+                "selectedStems": stems,
+                "inferenceParams": inference_params,
+                "output": payload.get("output") or "results",
+            },
+            task_id=task_id,
+            progress_callback=emit_node_progress,
+            logger=logger,
+        )
+    except Exception:
+        _purge_cuda()
+        raise
     try:
         audio_config = getattr(getattr(separator, "config", {}), "audio", {}) or {}
         sample_rate = int(audio_config.get("sample_rate", source.sample_rate))
