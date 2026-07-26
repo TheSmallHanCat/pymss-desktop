@@ -34,6 +34,21 @@ import {
   serializeWorkflowGraphDefinition,
   type WorkflowGraphDefinition,
 } from '@/utils/workflowGraph'
+import {
+  clampZoom,
+  connectionPath,
+  marqueeRect,
+  noteSelectionKey,
+  parseSelectionKey,
+  rectsIntersect,
+  screenToWorldPoint,
+  stepSelectionKey,
+  utilityInputPortIds as utilityInputPortIdsForKind,
+  utilityInputPortToken,
+  utilityOutputPortToken,
+  utilitySelectionKey,
+  zoomAroundPoint,
+} from '@/utils/workflowCanvas'
 
 const definition = defineModel<Record<string, unknown>>('definition', { required: true })
 const props = defineProps<{
@@ -429,7 +444,7 @@ const viewport = computed({
         viewport: {
           x: Math.round(value.x),
           y: Math.round(value.y),
-          k: clampZoom(value.k),
+          k: clampZoom(value.k, MIN_ZOOM, MAX_ZOOM),
         },
       },
     }
@@ -506,12 +521,7 @@ const zoomLayerStyle = computed(() => ({
 }))
 const zoomPercent = computed(() => Math.round(viewport.value.k * 100))
 function utilityInputPortIds(node: WorkflowUtilityNodeDraft) {
-  if (node.kind === 'audio_ensemble') {
-    const count = Math.max(2, Math.min(10, Number(node.data.inputCount) || 2))
-    return Array.from({ length: count }, (_value, index) => `input:${index}`)
-  }
-  if (node.kind === 'audio_invert_phase' || node.kind === 'audio_normalize') return ['input']
-  return []
+  return utilityInputPortIdsForKind(node.kind, node.data.inputCount)
 }
 
 function utilityOutputValue(nodeId: string) {
@@ -538,14 +548,6 @@ function utilityInputLabel(node: WorkflowUtilityNodeDraft, portId: string) {
     return `Input ${Number.isFinite(index) ? index + 1 : ''}`.trim()
   }
   return t('workflows.stepInput')
-}
-
-function utilityInputPortToken(nodeId: string, portId: string) {
-  return `in:utility:${nodeId}:${portId}`
-}
-
-function utilityOutputPortToken(nodeId: string) {
-  return `out:utility:${nodeId}`
 }
 
 function utilityInputPort(node: WorkflowUtilityNodeDraft, portId: string): GraphPoint | null {
@@ -958,7 +960,7 @@ function ensureUiState() {
     next.ui.viewport = {
       x: Number.isFinite(next.ui.viewport?.x) ? next.ui.viewport.x : 0,
       y: Number.isFinite(next.ui.viewport?.y) ? next.ui.viewport.y : 0,
-      k: clampZoom(Number.isFinite(next.ui.viewport?.k) ? next.ui.viewport.k : 1),
+      k: clampZoom(Number.isFinite(next.ui.viewport?.k) ? next.ui.viewport.k : 1, MIN_ZOOM, MAX_ZOOM),
     }
     const nextNodes: Record<string, WorkflowCanvasPoint> = {}
     ;['input', ...next.steps.map(step => step.id), 'save'].forEach((key) => {
@@ -1030,18 +1032,6 @@ function stepStemLabelByIndex(index: number, stem: string) {
   return `${stepDisplayId(index)}.${stem}`
 }
 
-function stepSelectionKey(stepId: string) {
-  return `step:${stepId}`
-}
-
-function noteSelectionKey(noteId: string) {
-  return `note:${noteId}`
-}
-
-function utilitySelectionKey(nodeId: string) {
-  return `utility:${nodeId}`
-}
-
 function nodePosition(key: string): WorkflowCanvasPoint {
   const graphNode = graphNodeById(key)
   if (graphNode) return graphNode.position
@@ -1065,29 +1055,6 @@ function updateGraphNodePosition(nodeId: string, point: WorkflowCanvasPoint) {
   return true
 }
 
-function setNodePosition(key: string, point: WorkflowCanvasPoint) {
-  if (updateGraphNodePosition(key, point)) return
-  mutateDraft((next) => {
-    next.ui.nodes = {
-      ...next.ui.nodes,
-      [key]: {
-        x: Math.round(point.x),
-        y: Math.round(point.y),
-      },
-    }
-  })
-  schedulePortMeasure()
-}
-
-function updateNotePosition(id: string, point: WorkflowCanvasPoint) {
-  if (updateGraphNodePosition(id, point)) return
-  mutateDraft((next) => {
-    next.ui.notes = next.ui.notes.map(note => note.id === id
-      ? { ...note, x: Math.round(point.x), y: Math.round(point.y) }
-      : note)
-  })
-  schedulePortMeasure()
-}
 
 function stepNodeHeight(step: WorkflowStepDraft) {
   if (isStepCollapsed(step.id)) return 168
@@ -1214,10 +1181,6 @@ function noteColorClass(color: string) {
   return `graph-note--${['amber', 'blue', 'green', 'rose'].includes(color) ? color : 'amber'}`
 }
 
-function connectionPath(source: GraphPoint, target: GraphPoint) {
-  const dx = Math.max(80, Math.abs(target.x - source.x) * 0.42)
-  return `M ${source.x} ${source.y} C ${source.x + dx} ${source.y}, ${target.x - dx} ${target.y}, ${target.x} ${target.y}`
-}
 
 function shiftedConnectionPath(path: string) {
   let isX = true
@@ -1606,16 +1569,11 @@ function nodeSelectionPoint(key: string): WorkflowCanvasPoint | null {
 }
 
 function setSelectionKeyPosition(key: string, point: WorkflowCanvasPoint) {
-  if (key.startsWith('note:')) {
-    updateNotePosition(key.slice('note:'.length), point)
-    return
-  }
-  const nodeKey = key.startsWith('step:')
-    ? key.slice('step:'.length)
-    : key.startsWith('utility:')
-      ? key.slice('utility:'.length)
-      : key
-  setNodePosition(nodeKey, point)
+  // Every selection kind maps to a graph node id, and every one of those is positioned the same
+  // way — the prefix only says which list the id came from.
+  const selection = parseSelectionKey(key)
+  if (!selection) return
+  updateGraphNodePosition(selection.id, point)
 }
 
 function nodeBoundsBySelectionKey(key: string) {
@@ -1682,7 +1640,7 @@ function nudgeSelectedGraphNode(dx: number, dy: number) {
     return true
   }
   if (selectedGraphNote.value) {
-    updateNotePosition(selectedGraphNote.value.id, {
+    updateGraphNodePosition(selectedGraphNote.value.id, {
       x: selectedGraphNote.value.x + dx,
       y: selectedGraphNote.value.y + dy,
     })
@@ -1691,7 +1649,7 @@ function nudgeSelectedGraphNode(dx: number, dy: number) {
   const key = selectedMovableNodeKey()
   if (!key) return false
   const point = nodePosition(key)
-  setNodePosition(key, {
+  updateGraphNodePosition(key, {
     x: point.x + dx,
     y: point.y + dy,
   })
@@ -1896,7 +1854,7 @@ function refreshSaveNodePosition() {
   const candidates = steps.value.map(step => nodePosition(step.id).x + GRAPH_SAVE_GAP)
   const fallbackX = saveNodeX.value
   const current = nodePosition('save')
-  setNodePosition('save', {
+  updateGraphNodePosition('save', {
     x: Math.max(fallbackX, ...candidates),
     y: current.y,
   })
@@ -2907,9 +2865,6 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   }
 }
 
-function clampZoom(value: number) {
-  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value))
-}
 
 function screenToWorld(clientX: number, clientY: number): WorkflowCanvasPoint | null {
   const rect = canvasViewportRef.value?.getBoundingClientRect()
@@ -2923,7 +2878,7 @@ function screenToWorld(clientX: number, clientY: number): WorkflowCanvasPoint | 
 function zoomAt(clientX: number, clientY: number, nextScale: number) {
   const rect = canvasViewportRef.value?.getBoundingClientRect()
   if (!rect) return
-  const scale = clampZoom(nextScale)
+  const scale = clampZoom(nextScale, MIN_ZOOM, MAX_ZOOM)
   const mouseX = clientX - rect.left
   const mouseY = clientY - rect.top
   const worldX = (mouseX - viewport.value.x) / viewport.value.k
@@ -3122,10 +3077,10 @@ function handleGlobalPointerMove(event: PointerEvent) {
         y: dragState.initialPoint.y + (current.clientY - dragState.startClientY) / viewport.value.k,
       }
       if (dragState.type === 'node' && dragState.nodeKey) {
-        setNodePosition(dragState.nodeKey, nextPoint)
+        updateGraphNodePosition(dragState.nodeKey, nextPoint)
       }
       if (dragState.type === 'note' && dragState.noteId) {
-        updateNotePosition(dragState.noteId, nextPoint)
+        updateGraphNodePosition(dragState.noteId, nextPoint)
       }
     }
   })
@@ -3161,7 +3116,7 @@ async function fitView() {
   if (!rect) return
   const width = Math.max(1, canvasBounds.value.width - WORLD_PADDING * 1.05)
   const height = Math.max(1, canvasBounds.value.height - WORLD_PADDING * 1.05)
-  const scale = clampZoom(Math.min((rect.width - 96) / width, (rect.height - 96) / height, 1.1))
+  const scale = clampZoom(Math.min((rect.width - 96) / width, (rect.height - 96) / height, 1.1), MIN_ZOOM, MAX_ZOOM)
   viewport.value = {
     x: Math.round((rect.width - width * scale) / 2 - (canvasBounds.value.minX + WORLD_PADDING * 0.52) * scale),
     y: Math.round((rect.height - height * scale) / 2 - (canvasBounds.value.minY + WORLD_PADDING * 0.52) * scale),
