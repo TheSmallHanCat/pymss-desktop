@@ -29,6 +29,7 @@ import { useWorkflowStore } from '@/stores/workflow'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { buildModelCategoryOptionsFromModels, getModelCategoryLabel } from '@/utils/modelCategory'
+import { matchesModelQuery } from '@/utils/modelSearch'
 import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, workflowValidationErrorMessage, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
 import { getWorkflowDefinitionDefaults } from '@/utils/workflowGraph'
 import { sortStemOutputsByOrder } from '@/utils/stemOrder'
@@ -265,16 +266,9 @@ const filteredDownloadedModels = computed(() => {
   const query = modelSearch.value.trim().toLowerCase()
   const selectedCategory = modelCategoryFilter.value.trim().toLowerCase()
   return listedDownloadedModels.value.filter((item) => {
-    const matchesQuery = !query
-      || item.name.toLowerCase().includes(query)
-      || item.aliases.some(alias => alias.toLowerCase().includes(query))
-      || item.architecture.toLowerCase().includes(query)
-      || item.modelType?.toLowerCase().includes(query)
-      || item.targetStem.toLowerCase().includes(query)
-      || item.configTargetInstrument.toLowerCase().includes(query)
-      || item.category.toLowerCase().includes(query)
-      || item.categoryCn.toLowerCase().includes(query)
-      || item.classificationBasis.toLowerCase().includes(query)
+    // Notes are searchable here too: picking a model to run is exactly when "the one that was
+    // good for vocals" is how someone remembers it.
+    const matchesQuery = matchesModelQuery(item, query, modelNote(item.name))
     const matchesCategory = !selectedCategory
       || item.category.toLowerCase() === selectedCategory
       || item.primaryCategory.toLowerCase() === selectedCategory
@@ -557,6 +551,11 @@ function modelArchitectureLabel(item: {
   modelType?: string | null
 } | null | undefined) {
   return item?.architecture || item?.modelType || t('common.notSet')
+}
+
+/** The user's own note for a model, kept beside the catalog entry rather than in it. */
+function modelNote(name: string) {
+  return modelPreferences.value[name]?.note || ''
 }
 
 function modelMetaLine(item: {
@@ -1224,6 +1223,13 @@ async function retryCurrentTask() {
                           <span class="target-row__tag" :title="categoryLabel(item)">{{ categoryLabel(item) }}</span>
                           <span class="target-row__desc" :title="modelMetaLine(item)">{{ modelMetaLine(item) }}</span>
                         </span>
+                        <!-- Shown because it is searchable: matching on text the user cannot see
+                             would make the result list look wrong. -->
+                        <span
+                          v-if="modelNote(item.name)"
+                          class="target-row__note"
+                          :title="modelNote(item.name)"
+                        >{{ modelNote(item.name) }}</span>
                       </span>
                       <n-icon v-if="selectedModelName === item.name" class="target-row__check" :component="CheckmarkCircle" />
                     </button>
@@ -2228,6 +2234,23 @@ async function retryCurrentTask() {
   font-size: 11px;
   color: var(--on-surface-muted);
   line-height: 1.4;
+}
+
+/* The user's own note. Distinguished from the generated meta line by the accent bar, so a row
+   with a note reads as annotated rather than as having an extra field. */
+.target-row__note {
+  display: block;
+  min-width: 0;
+  margin-top: 3px;
+  padding-left: 6px;
+  border-left: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.4;
+  color: color-mix(in srgb, var(--on-surface) 72%, transparent);
+  text-align: left;
 }
 
 .target-row__check { flex: 0 0 auto; font-size: 18px; color: var(--primary); }

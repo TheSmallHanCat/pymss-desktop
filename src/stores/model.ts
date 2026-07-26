@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
+import { matchesModelQuery } from '@/utils/modelSearch'
 import { useSettingsStore } from '@/stores/settings'
 
 export type ModelEntry = {
@@ -332,15 +333,7 @@ export const useModelStore = defineStore('model', () => {
   const filteredModels = computed(() => {
     const q = search.value.trim().toLowerCase()
     return models.value.filter((model) => {
-      const matchesQuery = !q
-        || model.name.toLowerCase().includes(q)
-        || model.aliases.some(alias => alias.toLowerCase().includes(q))
-        || model.architecture.toLowerCase().includes(q)
-        || model.modelType?.toLowerCase().includes(q)
-        || model.targetStem.toLowerCase().includes(q)
-        || model.category.toLowerCase().includes(q)
-        || model.categoryCn.toLowerCase().includes(q)
-        || (modelPreferences.value[model.name]?.note || '').toLowerCase().includes(q)
+      const matchesQuery = matchesModelQuery(model, q, modelPreferences.value[model.name]?.note || '')
       const selectedCategory = category.value.trim().toLowerCase()
       const matchesCategory = !selectedCategory
         || model.category.toLowerCase() === selectedCategory
