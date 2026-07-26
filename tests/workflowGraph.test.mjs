@@ -43,11 +43,16 @@ function buildDraftDefinition({ steps = 1, utilities = [], notes = 0 } = {}) {
   stepDrafts.forEach((step, index) => {
     step.input = index === 0 ? 'input' : `${stepDrafts[index - 1].id}.vocals`
   })
+  // Save whatever the last step produces. The mapping lives on the step itself — saveTargets
+  // only carries the per-source output directory.
   const last = stepDrafts[stepDrafts.length - 1]
+  last.save = { vocals: 'vocals' }
   return buildWorkflowDefinition({
-    defaults: { device: 'auto', output_format: 'wav', model_dir: null, inference_params: { normalize: false } },
+    defaultDevice: 'auto',
+    defaultFormat: 'wav',
+    defaultNormalize: false,
     steps: stepDrafts,
-    save: [{ source: `${last.id}.vocals`, outputDir: 'vocals' }],
+    saveTargets: [{ source: `${last.id}.vocals`, outputDir: 'vocals' }],
     utilityNodes: utilities.map(kind => createWorkflowUtilityNodeDraft(kind, { x: 600, y: 400 })),
     ui: {
       ...createDefaultWorkflowNodeEditorUi(stepDrafts),

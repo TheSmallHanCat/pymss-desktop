@@ -221,6 +221,32 @@ class PortRuleTests(unittest.TestCase):
         self.assertFalse(gw._target_port_is_valid(ensemble, "input:3"))
 
 
+class DispatchTests(unittest.TestCase):
+    """Which engine a workflow runs on.
+
+    worker_workflows.py picks between the in-process graph engine and the legacy `pymss` CLI on
+    this predicate alone, so a false negative would silently send a graph definition to a CLI that
+    cannot read it."""
+
+    def test_what_the_app_sends_always_routes_to_the_graph_engine(self):
+        # The desktop app normalises every definition through readWorkflowGraphDefinition() before
+        # it reaches the worker — including on re-run of a task restored from history — so the
+        # payload always carries kind and version 2.
+        corpus = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
+        for case in corpus["cases"]:
+            with self.subTest(case=case["name"]):
+                self.assertTrue(gw.is_graph_workflow_definition(case["definition"]))
+
+    def test_a_pre_graph_definition_routes_to_the_cli(self):
+        # The only remaining way to reach the CLI fallback: invoking this worker directly with an
+        # old workflow file. Pinned so removing that path is a deliberate decision.
+        self.assertFalse(gw.is_graph_workflow_definition({
+            "version": 1,
+            "steps": [{"id": "step_1", "model": "a.ckpt", "input": "input", "stems": ["vocals"]}],
+            "save": [],
+        }))
+
+
 class SharedValidationCorpusTests(unittest.TestCase):
     """The editor and the runtime must reach the same verdict for the same graph.
 
