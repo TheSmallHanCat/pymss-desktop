@@ -376,7 +376,11 @@
     "customAliasNoSpace": "Aliases must not contain spaces",
     "customImportCancelled": "Import cancelled",
     "customRemoveContentCopy": "Remove {name}? The files copied into the model library will be deleted with it.",
-    "customRemoveContentReference": "Remove {name}? It is only unregistered — your original file is not deleted."
+    "customRemoveContentReference": "Remove {name}? It is only unregistered — your original file is not deleted.",
+    "viewMode": "View mode",
+    "viewList": "List",
+    "viewCard": "Cards",
+    "downloadLogsFollow": "Follow latest"
   },
   "results": {
     "title": "Separation Results",

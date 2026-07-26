@@ -3,12 +3,14 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import {
+  ArrowDownOutline,
   CloseOutline,
   CopyOutline,
   RefreshOutline,
   TrashOutline,
 } from '@vicons/ionicons5'
 import type { DownloadLogEntry, DownloadTask } from '@/stores/model'
+import { formatBytes, formatSpeedMBps } from '@/utils/format'
 
 const props = defineProps<{
   show: boolean
@@ -70,6 +72,20 @@ const filesText = computed(() => {
   return ''
 })
 
+/** What the worker last reported, or the status itself before it has said anything. */
+const progressMessage = computed(() => props.task?.message?.trim() || statusLabel.value)
+
+const speedText = computed(() => {
+  if (props.task?.status !== 'downloading') return ''
+  return formatSpeedMBps(props.task?.speedBytesPerSecond)
+})
+
+const bytesText = computed(() => {
+  const task = props.task
+  if (!task?.downloadedBytes || !task.totalBytes) return ''
+  return `${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}`
+})
+
 const canCancel = computed(() => props.task?.status === 'downloading')
 const canResume = computed(() =>
   props.task && ['paused', 'cancelled', 'error', 'interrupted'].includes(props.task.status),
@@ -101,6 +117,11 @@ watch(() => logs.value.length, () => void scrollToBottom())
 watch(() => props.show, (v) => {
   if (v) void scrollToBottom()
 })
+
+function resumeAutoScroll() {
+  autoScroll.value = true
+  void scrollToBottom()
+}
 
 function onScroll(e: Event) {
   const el = e.target as HTMLElement
@@ -167,14 +188,16 @@ function handleClose() {
         <div class="ddm-progress">
           <div class="ddm-progress-info">
             <span class="ddm-progress-pct">{{ task.progress }}%</span>
+            <span v-if="bytesText" class="ddm-progress-bytes">{{ bytesText }}</span>
+            <span v-if="speedText" class="ddm-progress-speed">{{ speedText }}</span>
             <span v-if="filesText" class="ddm-progress-files">{{ filesText }}</span>
-            <span class="ddm-progress-msg" :title="task.message">{{ task.message }}</span>
+            <span class="ddm-progress-msg" :title="progressMessage">{{ progressMessage }}</span>
           </div>
           <n-progress
             :percentage="task.progress"
             :show-indicator="false"
-            :height="10"
-            :border-radius="5"
+            :height="12"
+            :border-radius="6"
             type="line"
             :color="progressColor"
             rail-color="var(--surface-3)"
@@ -188,6 +211,7 @@ function handleClose() {
 
         <div class="ddm-logs-head">
           <span class="ddm-logs-title">{{ t('models.downloadLogs') }}</span>
+          <span v-if="logs.length" class="ddm-logs-count">{{ logs.length }}</span>
           <div class="ddm-logs-actions">
             <n-button size="tiny" quaternary @click="copyAllLogs">
               <template #icon><n-icon :component="CopyOutline" /></template>
@@ -213,6 +237,17 @@ function handleClose() {
             <span class="dl-log-msg">{{ log.message }}</span>
           </div>
         </div>
+        <!-- Scrolling up pauses the follow-along so a line being read does not slide away; this
+             is how to get back to it. -->
+        <button
+          v-if="logs.length && !autoScroll"
+          type="button"
+          class="ddm-logs-resume"
+          @click="resumeAutoScroll"
+        >
+          <n-icon :component="ArrowDownOutline" />
+          {{ t('models.downloadLogsFollow') }}
+        </button>
       </div>
 
       <template #footer>
@@ -254,7 +289,7 @@ function handleClose() {
 
 <style scoped>
 .download-detail-modal {
-  width: min(680px, calc(100vw - 48px));
+  width: min(780px, calc(100vw - 48px));
   max-height: min(640px, calc(100vh - 96px));
   display: flex;
   flex-direction: column;
@@ -298,7 +333,7 @@ function handleClose() {
 .ddm-model {
   font-size: 13px;
   color: var(--on-surface-muted);
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   max-width: 280px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -333,6 +368,14 @@ function handleClose() {
   font-size: 18px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+.ddm-progress-bytes,
+.ddm-progress-speed {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .ddm-progress-files {
@@ -373,7 +416,7 @@ function handleClose() {
   color: var(--on-surface);
   white-space: pre-wrap;
   word-break: break-all;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   max-height: 100px;
   overflow-y: auto;
 }
@@ -399,23 +442,56 @@ function handleClose() {
 
 .ddm-logs {
   flex: 1 1 auto;
-  min-height: 120px;
-  max-height: 320px;
+  /* Grows with its content instead of reserving a fixed block: a download that has not logged
+     anything yet would otherwise show a large empty panel as the main thing on screen. */
+  min-height: 0;
+  max-height: 340px;
+  position: relative;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
-  border: 1px solid color-mix(in srgb, var(--outline) 50%, transparent);
-  font-family: var(--font-mono, monospace);
+  padding: 12px;
+  border-radius: 12px;
+  /* Same console treatment as the separation log, so both read as machine output rather than
+     as two different panels that happen to contain log lines. */
+  background: #0b1020;
+  color: #dbeafe;
+  font-family: var(--font-mono);
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1.55;
 }
 
 .ddm-logs-empty {
-  color: var(--on-surface-muted);
+  color: #64748b;
   text-align: center;
-  padding: 24px 0;
+  padding: 10px 0;
+  font-size: 12px;
+}
+
+.ddm-logs-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--on-surface-muted);
+  background: color-mix(in srgb, var(--surface-3) 70%, transparent);
+}
+
+.ddm-logs-resume {
+  position: sticky;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--on-primary, #fff);
+  background: var(--primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.24);
 }
 
 .dl-log {
@@ -427,8 +503,11 @@ function handleClose() {
 }
 
 .dl-log-time {
-  color: var(--on-surface-muted);
+  /* Same muted slate as the separation log's line numbers — on the dark console the theme's
+     on-surface-muted is too close to the body text to recede. */
+  color: #64748b;
   font-variant-numeric: tabular-nums;
+  user-select: none;
 }
 
 .dl-log-level {
@@ -441,13 +520,14 @@ function handleClose() {
 }
 
 .dl-log-msg {
-  word-break: break-all;
+  min-width: 0;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
 .dl-log--info .dl-log-level {
-  color: var(--on-surface-muted);
-  background: color-mix(in srgb, var(--surface-3) 60%, transparent);
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.16);
 }
 
 .dl-log--warn {

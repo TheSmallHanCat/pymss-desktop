@@ -18,12 +18,14 @@ import {
   StarOutline,
   AddCircleOutline,
   LinkOutline,
+  GridOutline,
+  ListOutline,
 } from '@vicons/ionicons5'
 import { useModelStore, type ModelDefaultInferenceParams, type ModelEntry } from '@/stores/model'
 import { useSettingsStore } from '@/stores/settings'
 import { useTaskStore } from '@/stores/task'
 import { useAppStore } from '@/stores/app'
-import { formatBytes } from '@/utils/format'
+import { formatBytes, formatSpeedMBps } from '@/utils/format'
 import { buildModelCategoryOptionsFromPairs, getModelCategoryLabel } from '@/utils/modelCategory'
 import ModelProgressBlock from '@/components/ModelProgressBlock.vue'
 import DownloadDetailModal from '@/components/DownloadDetailModal.vue'
@@ -48,6 +50,7 @@ const {
   detailLoading,
   modelDir,
   modelSource,
+  modelViewMode,
   customModelCount,
   downloadTasks,
   deleteTasks,
@@ -317,6 +320,55 @@ function deleteStatusMessage(modelName: string) {
 
 function isDeletingModel(modelName: string) {
   return deleteTasks.value[modelName]?.status === 'deleting'
+}
+
+/**
+ * Whether the card is showing a progress block rather than an action button.
+ *
+ * The footer then needs the full width of the card: a progress bar squeezed into the narrow
+ * action column is unreadable, and its status line has nowhere to go.
+ */
+/**
+ * The percentage to draw along the card's bottom edge, or null when nothing is running.
+ *
+ * Rendering progress as the card border rather than as a block inside it costs no height, which
+ * is what stops a downloading card from towering over its neighbours and leaving the grid ragged.
+ */
+/** Current rate, or '' when the download is not moving (paused, queued, finished). */
+function downloadSpeed(modelName: string) {
+  const task = downloadTasks.value[modelName]
+  if (!task || task.status !== 'downloading') return ''
+  return formatSpeedMBps(task.speedBytesPerSecond)
+}
+
+/**
+ * The size cell. While downloading it becomes "done / total", which is the same number the
+ * percentage refers to and answers "how much is left" without a second row.
+ */
+function sizeLabel(model: ModelEntry) {
+  const task = downloadTasks.value[model.name]
+  if (task && task.status === 'downloading' && task.downloadedBytes && task.totalBytes) {
+    return `${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}`
+  }
+  return formatBytes(model.sizeBytes)
+}
+
+function cardProgressPercent(model: ModelEntry): number | null {
+  if (isDeletingModel(model.name)) return deleteTasks.value[model.name]?.progress || 0
+  const task = downloadTasks.value[model.name]
+  if (task && task.status !== 'done') return task.progress || 0
+  return null
+}
+
+function cardProgressState(model: ModelEntry) {
+  if (isDeletingModel(model.name)) return 'downloading'
+  return downloadTasks.value[model.name]?.status || 'downloading'
+}
+
+function isModelBusy(model: ModelEntry) {
+  if (isDeletingModel(model.name)) return true
+  const task = downloadTasks.value[model.name]
+  return Boolean(task && task.status !== 'done')
 }
 
 function inferenceValue(model: ModelEntry | null | undefined, key: keyof typeof inferenceDraft.value, fallback: number) {
@@ -702,6 +754,28 @@ onMounted(() => {
         <div class="toolbar-actions">
           <n-switch v-model:value="downloadedOnly" size="small" />
           <span class="text-sm text-muted">{{ t('models.downloadedOnly') }}</span>
+          <div class="view-toggle" role="group" :aria-label="t('models.viewMode')">
+            <button
+              type="button"
+              class="view-toggle__button"
+              :class="{ 'view-toggle__button--active': modelViewMode === 'list' }"
+              :aria-pressed="modelViewMode === 'list'"
+              :title="t('models.viewList')"
+              @click="modelViewMode = 'list'"
+            >
+              <n-icon :component="ListOutline" />
+            </button>
+            <button
+              type="button"
+              class="view-toggle__button"
+              :class="{ 'view-toggle__button--active': modelViewMode === 'card' }"
+              :aria-pressed="modelViewMode === 'card'"
+              :title="t('models.viewCard')"
+              @click="modelViewMode = 'card'"
+            >
+              <n-icon :component="GridOutline" />
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -709,7 +783,7 @@ onMounted(() => {
     <!-- Body: Model Grid + Detail Drawer -->
     <div class="models-body">
       <!-- Loading Skeleton -->
-      <div v-if="isLoading" class="model-grid">
+      <div v-if="isLoading" :class="['model-grid', `model-grid--${modelViewMode}`]">
         <div v-for="i in 6" :key="i" class="skel-card">
           <n-skeleton text style="width:70%;height:18px;margin-bottom:12px" />
           <n-skeleton text style="width:40%;height:14px;margin-bottom:16px" />
@@ -740,13 +814,14 @@ onMounted(() => {
 
       <!-- Model Grid -->
       <template v-else>
-        <div class="model-grid">
+        <div :class="['model-grid', `model-grid--${modelViewMode}`]">
           <div
             v-for="model in pagedModels"
             :key="model.name"
             :class="['model-card', {
               'model-card--selected': selectedModel === model.name,
-              'model-card--unsupported': !model.supported
+              'model-card--unsupported': !model.supported,
+              'model-card--busy': isModelBusy(model)
             }]"
             tabindex="0"
             :aria-label="t('models.viewDetailAria', { name: model.name })"
@@ -786,9 +861,9 @@ onMounted(() => {
               {{ model.modelType }}
             </n-tag>
           </div>
-          <span class="mc-size">{{ formatBytes(model.sizeBytes) }}</span>
 
-          <!-- Key Info -->
+          <!-- Key info: values read fine without their labels shouting, so both sit on
+               one wrapping line rather than as a label/value table. -->
           <div class="mc-meta">
             <div class="mc-meta-item">
               <span class="mc-label">{{ t('models.targetStem') }}</span>
@@ -800,101 +875,99 @@ onMounted(() => {
             </div>
           </div>
 
-          <!-- Footer -->
-          <div class="mc-footer">
-            <ModelProgressBlock
-              v-if="isDeletingModel(model.name)"
-              status="downloading"
-              :message="deleteStatusMessage(model.name) || t('models.deleting')"
-              :progress="deleteTasks[model.name]?.progress || 0"
-              :files-text="t('models.deleteProgress', { completed: deleteTasks[model.name]?.completedFiles || 0, total: deleteTasks[model.name]?.totalFiles || 0 })"
-            />
-            <!-- Imported models are local-only: no download, and their files may live anywhere,
-                 so a missing file means "relink", not "download". -->
-            <div v-else-if="isCustomModel(model)" class="mc-done-row">
-              <div v-if="model.downloaded" class="mc-done">
-                <n-icon :component="CheckmarkCircleOutline" color="var(--success)" size="17" />
-                <span>{{ t('models.customReady') }}</span>
-              </div>
-              <div v-else class="mc-done mc-done--missing">
-                <n-icon :component="LinkOutline" size="17" />
-                <span>{{ t('models.customFilesMissing') }}</span>
-              </div>
-              <div class="mc-custom-actions">
-                <n-button size="tiny" quaternary @click="relinkCustomModel(model, $event)">
+          <!-- Bottom bar: size on the left, whatever the model needs on the right. Keeping
+               them in one element means a state change swaps its contents instead of
+               re-choreographing the card grid. -->
+          <!-- Action row: one line in every state, so a downloading card is the same height as
+               its neighbours. The progress itself becomes the card's bottom edge. -->
+          <div class="mc-bottom">
+            <span class="mc-size">{{ sizeLabel(model) }}</span>
+
+            <template v-if="isDeletingModel(model.name)">
+              <span class="mc-state mc-state--downloading">
+                <span class="mc-state__dot" />
+                {{ deleteStatusMessage(model.name) || t('models.deleting') }}
+              </span>
+              <span class="mc-pct">{{ deleteTasks[model.name]?.progress || 0 }}%</span>
+            </template>
+
+            <!-- Imported models are local-only: a missing file means "relink", not "download". -->
+            <template v-else-if="isCustomModel(model)">
+              <span :class="['mc-state', model.downloaded ? 'mc-state--ok' : 'mc-state--warn']">
+                <n-icon :component="model.downloaded ? CheckmarkCircleOutline : LinkOutline" />
+                {{ model.downloaded ? t('models.customReady') : t('models.customFilesMissing') }}
+              </span>
+              <div class="mc-actions">
+                <n-button size="tiny" quaternary @click.stop="relinkCustomModel(model, $event)">
                   <template #icon><n-icon :component="LinkOutline" /></template>
                 </n-button>
-                <n-button size="tiny" quaternary type="error" @click="confirmRemoveCustomModel(model, $event)">
+                <n-button size="tiny" quaternary type="error" @click.stop="confirmRemoveCustomModel(model, $event)">
                   <template #icon><n-icon :component="TrashOutline" /></template>
                 </n-button>
               </div>
-            </div>
+            </template>
 
-            <!-- Download button -->
-            <n-button
-              v-else-if="model.supported && !model.downloaded && (!downloadTasks[model.name] || downloadTasks[model.name].status === 'done')"
-              class="mc-download-button"
-              secondary
-              size="tiny"
-              @click="downloadModel(model, $event)"
-            >
-              <template #icon><n-icon :component="DownloadOutline" /></template>
-              {{ t('common.download') }}
-            </n-button>
-
-            <!-- Download progress -->
-            <ModelProgressBlock
-              v-else-if="!model.downloaded && downloadTasks[model.name] && downloadTasks[model.name].status !== 'done'"
-              :status="downloadTasks[model.name].status"
-              :message="cardDownloadMessage(model.name)"
-              :progress="downloadTasks[model.name].progress"
-              :files-text="''"
-              :color="downloadProgressColor(downloadTasks[model.name].status)"
-            >
-              <template #actions>
+            <template v-else-if="!model.downloaded && downloadTasks[model.name] && downloadTasks[model.name].status !== 'done'">
+              <span :class="['mc-state', `mc-state--${downloadTasks[model.name].status}`]">
+                <span class="mc-state__dot" />
+                {{ cardDownloadMessage(model.name) }}
+              </span>
+              <span v-if="downloadSpeed(model.name)" class="mc-speed">{{ downloadSpeed(model.name) }}</span>
+              <span class="mc-pct">{{ downloadTasks[model.name].progress }}%</span>
+              <div class="mc-actions">
+                <n-button size="tiny" quaternary @click.stop="openDownloadDetail(model.name)">
+                  {{ t('models.downloadDetail') }}
+                </n-button>
                 <n-button
                   v-if="downloadTasks[model.name].status === 'downloading'"
                   size="tiny"
-                  secondary
+                  quaternary
                   @click.stop="cancelDownloadModel(model, $event)"
                 >
                   {{ t('common.cancel') }}
                 </n-button>
                 <n-button
-                  v-else-if="['paused','cancelled','error','interrupted'].includes(downloadTasks[model.name].status)"
+                  v-else
                   size="tiny"
+                  quaternary
                   type="primary"
-                  secondary
                   @click.stop="downloadModel(model, $event)"
                 >
                   {{ downloadTasks[model.name]?.status === 'interrupted' ? t('models.continueDownload') : t('common.resume') }}
                 </n-button>
-                <n-button
-                  size="tiny"
-                  quaternary
-                  @click.stop="openDownloadDetail(model.name)"
-                >
-                  {{ t('models.downloadDetail') }}
-                </n-button>
-              </template>
-            </ModelProgressBlock>
-
-            <!-- Already downloaded -->
-            <div v-else-if="model.downloaded" class="mc-done-row">
-              <div class="mc-done">
-                <n-icon :component="CheckmarkCircleOutline" color="var(--success)" size="17" />
-                <span>{{ t('models.downloaded') }}</span>
               </div>
-              <n-button
-                size="tiny"
-                quaternary
-                type="error"
-                @click="confirmDeleteModel(model, $event)"
-              >
+            </template>
+
+            <template v-else-if="model.downloaded">
+              <span class="mc-state mc-state--ok">
+                <n-icon :component="CheckmarkCircleOutline" />
+                {{ t('models.downloaded') }}
+              </span>
+              <n-button size="tiny" quaternary type="error" @click.stop="confirmDeleteModel(model, $event)">
                 <template #icon><n-icon :component="TrashOutline" /></template>
               </n-button>
-            </div>
+            </template>
+
+            <n-button
+              v-else-if="model.supported"
+              class="mc-download-button"
+              secondary
+              size="tiny"
+              @click.stop="downloadModel(model, $event)"
+            >
+              <template #icon><n-icon :component="DownloadOutline" /></template>
+              {{ t('common.download') }}
+            </n-button>
           </div>
+
+          <!-- Progress as the card's bottom edge: findable at a glance across the grid, and it
+               costs no height, which is what made downloading cards tower over their neighbours. -->
+          <div
+            v-if="cardProgressPercent(model) !== null"
+            class="mc-progressbar"
+            :style="{ '--mc-progress': cardProgressPercent(model) + '%' }"
+            :data-state="cardProgressState(model)"
+          />
           </div>
         </div>
         <div class="pagination-row">
@@ -1290,7 +1363,7 @@ onMounted(() => {
 
 <style scoped>
 .page--models {
-  max-width: 1240px;
+  max-width: var(--page-max-width);
 }
 
 .models-title-row {
@@ -1342,6 +1415,40 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
+/* ===== View mode toggle ===== */
+.view-toggle {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 55%, transparent);
+  flex-shrink: 0;
+}
+
+.view-toggle__button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--on-surface-muted);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.view-toggle__button:hover {
+  color: var(--on-surface);
+}
+
+.view-toggle__button--active {
+  background: var(--surface-1);
+  color: var(--primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
 .source-select {
   width: 150px;
   flex-shrink: 0;
@@ -1360,9 +1467,23 @@ onMounted(() => {
 
 .model-grid {
   display: grid;
-  grid-template-columns: 1fr;
   align-content: start;
   gap: 10px;
+}
+
+/* One entry per row: the densest way to scan a few hundred models. */
+.model-grid--list {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Columns are added as the window allows rather than at fixed breakpoints. */
+.model-grid--card {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  /* Each card is as tall as its own content. Equal row heights line the bottom bars up, but one
+     card downloading is much taller than the rest, and every neighbour then stretches to match
+     it — a large void in each is a worse trade than a ragged bottom edge. */
+  align-items: start;
+  gap: 12px;
 }
 
 .pagination-row {
@@ -1388,20 +1509,215 @@ onMounted(() => {
 .model-card {
   cursor: pointer;
   min-height: 0;
-  padding: 14px 14px 14px 16px;
+  min-width: 0;
+  padding: 14px 16px;
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
   background:
     linear-gradient(180deg, rgba(255,255,255,0.018), transparent 54%),
     color-mix(in srgb, var(--surface-1) 64%, transparent);
   transition: box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  /* Layout comes from the card's own width, not the window's: in card mode the two are
+     unrelated, since a 300px card can sit on a 2560px screen. */
+  container-type: inline-size;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ---- Card: a stack that ends in a bottom bar ---- */
+.model-grid--card .model-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  /* Room for the progress edge so it never sits under the action row. */
+  padding-bottom: 15px;
+}
+
+.model-grid--card .mc-bottom {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--outline) 38%, transparent);
+}
+
+/* ---- List: the original two-line row — the name over its details, with tags and actions
+   riding on the right. Spreading the same content across one flex line left large gaps between
+   the pieces and made long lists harder to scan. ---- */
+.model-grid--list .model-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(112px, 160px) 84px minmax(136px, 150px);
+  grid-template-columns: minmax(0, 1fr) minmax(112px, 160px) minmax(230px, 280px);
   grid-template-areas:
-    "header tags size footer"
-    "meta tags size footer";
+    "header tags bottom"
+    "meta   tags bottom";
   align-items: center;
   gap: 8px 14px;
+  padding: 14px 16px 17px;
+}
+
+.model-grid--list .mc-header { grid-area: header; min-width: 0; }
+.model-grid--list .mc-meta { grid-area: meta; min-width: 0; }
+.model-grid--list .mc-tags { grid-area: tags; }
+.model-grid--list .mc-bottom { grid-area: bottom; justify-content: flex-end; gap: 12px; }
+
+/* A narrow window cannot hold three columns; stack rather than crush them. */
+@container (max-width: 620px) {
+  .model-grid--list .model-card {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "header"
+      "tags"
+      "meta"
+      "bottom";
+  }
+
+  .model-grid--list .mc-bottom {
+    justify-content: space-between;
+    padding-top: 10px;
+    border-top: 1px solid color-mix(in srgb, var(--outline) 38%, transparent);
+  }
+}
+
+/* A running download is the one thing on the page that changes by itself; a tinted edge makes
+   it findable without scanning every card. */
+.model-card--busy {
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary) 5%, transparent), transparent 46%),
+    color-mix(in srgb, var(--surface-1) 72%, transparent);
+}
+
+/* ---- Action row: one line, identical height in every state ---- */
+.mc-bottom {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 26px;
+}
+
+.mc-size {
+  font-size: 11px;
+  color: var(--on-surface-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Pushes whatever follows the size to the right edge. */
+.mc-state,
+.mc-download-button,
+.mc-bottom > .n-button {
+  margin-left: auto;
+}
+
+/* Once a state label is present it owns the middle, and the actions go right. */
+.mc-state ~ .mc-pct,
+.mc-state ~ .mc-actions,
+.mc-state ~ .n-button {
+  margin-left: 0;
+}
+
+.mc-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--on-surface-muted);
+}
+
+.mc-state__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: currentColor;
+}
+
+.mc-state--downloading {
+  color: var(--primary);
+}
+
+.mc-state--downloading .mc-state__dot {
+  animation: mc-pulse 1.5s infinite;
+}
+
+.mc-state--ok {
+  color: var(--success);
+}
+
+.mc-state--warn,
+.mc-state--paused,
+.mc-state--cancelled,
+.mc-state--interrupted {
+  color: var(--warning);
+}
+
+.mc-state--error {
+  color: var(--danger);
+}
+
+@keyframes mc-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.mc-speed {
+  font-size: 11px;
+  color: var(--on-surface-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.mc-pct {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--on-surface);
+  flex-shrink: 0;
+}
+
+.mc-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* ---- Progress drawn as the card's bottom edge ---- */
+.mc-progressbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  border-radius: 0 0 12px 12px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--outline) 45%, transparent);
+}
+
+.mc-progressbar::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--mc-progress, 0%);
+  background: var(--primary);
+  transition: width 240ms ease;
+}
+
+.mc-progressbar[data-state='paused']::after,
+.mc-progressbar[data-state='cancelled']::after,
+.mc-progressbar[data-state='interrupted']::after {
+  background: var(--warning);
+}
+
+.mc-progressbar[data-state='error']::after {
+  background: var(--danger);
 }
 
 .model-card:hover {
@@ -1434,7 +1750,6 @@ onMounted(() => {
 
 /* Card header */
 .mc-header {
-  grid-area: header;
   display: flex;
   align-items: flex-start;
   min-width: 0;
@@ -1495,11 +1810,10 @@ onMounted(() => {
 
 /* Tags row */
 .mc-tags {
-  grid-area: tags;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 5px;
   min-width: 0;
 }
@@ -1514,20 +1828,21 @@ onMounted(() => {
 }
 
 .mc-size {
-  grid-area: size;
   font-size: 11px;
   color: var(--on-surface-muted);
-  text-align: center;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* Meta info */
 .mc-meta {
-  grid-area: meta;
   display: flex;
   align-items: center;
-  gap: 14px;
+  flex-wrap: wrap;
+  /* Wraps instead of stretching: pinning the value to the far edge left a wide gap between a
+     short label and a short value, which is what made the card look hollow. */
+  gap: 4px 14px;
   font-size: 11px;
   min-width: 0;
 }
@@ -1547,20 +1862,6 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* Footer */
-.mc-footer {
-  grid-area: footer;
-  min-width: 0;
-  width: auto;
-  margin-top: 0;
-  padding-top: 0;
-  border-top: 0;
-  justify-self: end;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
 }
 
 .mc-download-button {
@@ -1584,46 +1885,6 @@ onMounted(() => {
 .mc-dl-files {
   font-size: 11px;
   color: var(--on-surface-muted);
-}
-
-.mc-done {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--success);
-  min-height: 30px;
-}
-
-.mc-done-row {
-  width: 100%;
-  display: grid;
-  grid-template-columns: minmax(72px, auto) 1fr auto;
-  align-items: center;
-  min-height: 30px;
-}
-
-/* An imported model whose weights have moved away: not an error, but it needs relinking
-   before it can be used, so it must not read as ready. */
-.mc-done--missing {
-  color: var(--warning, #f2c97d);
-}
-
-.mc-custom-actions {
-  grid-column: 3;
-  display: flex;
-  gap: 2px;
-}
-
-.mc-done-row .mc-done {
-  justify-content: center;
-}
-
-.mc-done-row .n-button {
-  grid-column: 3;
-  justify-self: end;
 }
 
 /* ===== Drawer Footer ===== */
@@ -1978,19 +2239,12 @@ onMounted(() => {
     max-width: 100%;
   }
 
-  .toolbar-row,
-  .model-card {
+  .toolbar-row {
     grid-template-columns: 1fr;
   }
 
-  .model-card {
-    grid-template-areas:
-      "header"
-      "tags"
-      "size"
-      "meta"
-      "footer";
-  }
+  /* The card's own stacking is handled by its container query, which is correct whatever the
+     window is doing. */
 
   .category-select,
   .source-select,
@@ -2008,12 +2262,6 @@ onMounted(() => {
 
   .mc-meta {
     flex-wrap: wrap;
-  }
-
-  .mc-footer {
-    min-width: 0;
-    width: 100%;
-    justify-self: stretch;
   }
 }
 @media (max-width: 720px) {

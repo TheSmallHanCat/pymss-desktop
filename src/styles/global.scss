@@ -327,8 +327,26 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* ===== Page Layout ===== */
+
+/*
+ * How wide page content is allowed to grow.
+ *
+ * Panel-based pages (separation, models, workflows) read better wide: their content is cards and
+ * columns, not prose, so extra width becomes more visible at once rather than longer lines.
+ * Text-heavy pages narrow this themselves — see `--page-max-width` on the settings page.
+ */
+:root {
+  /* One monospace stack for every console-like surface. It was previously referenced as
+     --font-mono without ever being defined, so those panels silently fell back to the
+     browser default and did not match the separation log. */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --page-max-width: 1800px;
+  /* Forms and descriptions, where a long line is harder to read rather than more informative. */
+  --page-max-width-reading: 1180px;
+}
+
 .page {
-  max-width: 1260px;
+  max-width: var(--page-max-width);
   margin: 0 auto;
 }
 

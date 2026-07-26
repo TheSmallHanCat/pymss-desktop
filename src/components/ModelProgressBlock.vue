@@ -29,8 +29,8 @@ const slots = useSlots()
     <n-progress
       :percentage="progress"
       :show-indicator="false"
-      :height="8"
-      :border-radius="4"
+      :height="10"
+      :border-radius="5"
       type="line"
       :color="color"
       rail-color="var(--surface-3)"

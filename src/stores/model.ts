@@ -4,6 +4,9 @@ import { invoke } from '@tauri-apps/api/core'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
 import { matchesModelQuery } from '@/utils/modelSearch'
 import { matchesModelSource, type ModelSourceFilter } from '@/utils/modelSource'
+
+/** How the model library lays its entries out. */
+export type ModelViewMode = 'card' | 'list'
 import { useSettingsStore } from '@/stores/settings'
 
 export type ModelEntry = {
@@ -152,6 +155,13 @@ export type DownloadTask = {
   logs: DownloadLogEntry[]
   errorMessage?: string
   seen?: boolean
+  /**
+   * Bytes across every file of the model, and the current rate. The worker has always reported
+   * these; they were simply not read, so progress could only ever be shown as a percentage.
+   */
+  downloadedBytes?: number
+  totalBytes?: number
+  speedBytesPerSecond?: number
 }
 
 export type ModelStorageFile = { path: string; sizeBytes: number; exists?: boolean }
@@ -234,6 +244,7 @@ type StoredModelState = {
   modelInferenceBaseKnown?: Record<string, boolean>
   modelInferenceBaseSources?: Record<string, ModelEntry['defaultInferenceParamsSource']>
   modelPreferences?: Record<string, ModelPreference>
+  modelViewMode?: ModelViewMode
 }
 
 function normalizeDownloadTasks(input?: Record<string, DownloadTask>) {
@@ -371,6 +382,11 @@ export const useModelStore = defineStore('model', () => {
    * "everything except imported", and it buries the choice among a dozen categories.
    */
   const modelSource = ref<ModelSourceFilter>('all')
+  /**
+   * Card or list. Persisted rather than session-only: it is a standing preference about how the
+   * library reads, not a filter someone re-picks per visit.
+   */
+  const modelViewMode = ref<ModelViewMode>('list')
   const downloadStates = ref<Record<string, DownloadStatus>>({})
   const downloadErrors = ref<Record<string, string>>({})
   const downloadTasks = ref<Record<string, DownloadTask>>({})
@@ -445,6 +461,7 @@ export const useModelStore = defineStore('model', () => {
       modelInferenceBaseKnown: modelInferenceBaseKnown.value,
       modelInferenceBaseSources: modelInferenceBaseSources.value,
       modelPreferences: modelPreferences.value,
+      modelViewMode: modelViewMode.value,
     } satisfies StoredModelState)
   }
 
@@ -468,6 +485,8 @@ export const useModelStore = defineStore('model', () => {
     }
     modelInferenceBaseSources.value = stored?.modelInferenceBaseSources || {}
     modelPreferences.value = normalizeModelPreferences(stored?.modelPreferences)
+    // Anything unrecognised falls back to the list, which stays readable at any width.
+    modelViewMode.value = stored?.modelViewMode === 'card' ? 'card' : 'list'
     if (stored?.models?.length) {
       models.value = stored.models.map((model) => normalizeModelEntryWithOverrides(model, {
         rememberBase: !modelInferenceOverrides.value[model.name],
@@ -785,9 +804,15 @@ export const useModelStore = defineStore('model', () => {
         next.completedFiles = payload.completedFiles || next.completedFiles
         next.totalFiles = payload.totalFiles || next.totalFiles
         next.message = payload.completedFiles ? 'Downloading' : (next.message || 'Downloading')
+        // Aggregate figures cover the whole model; the per-file ones would jump backwards each
+        // time a new file starts.
+        next.downloadedBytes = payload.aggregateDownloadedBytes ?? next.downloadedBytes
+        next.totalBytes = payload.aggregateTotalBytes ?? next.totalBytes
+        next.speedBytesPerSecond = payload.speedBytesPerSecond ?? next.speedBytesPerSecond
       } else if (event.type === 'download_done') {
         next.status = 'done'
         next.progress = 100
+        next.speedBytesPerSecond = 0
         next.message = 'Done'
         next.completedFiles = payload.downloaded?.length + payload.skipped?.length || next.completedFiles
         next.totalFiles = Math.max(next.totalFiles, next.completedFiles || 1)
@@ -978,7 +1003,9 @@ export const useModelStore = defineStore('model', () => {
         model: name,
         status: 'downloading',
         progress: 0,
-        message: 'Queued',
+        // Left empty on purpose: the store has no translator, and every display path already
+        // derives a localised label from the status. A literal here leaked English into the UI.
+        message: '',
         completedFiles: 0,
         totalFiles: 1,
         updatedAt: Date.now(),
@@ -1066,6 +1093,12 @@ export const useModelStore = defineStore('model', () => {
           modelDir: settings.modelDir || null,
         },
       })
+      if (source === 'single') {
+        // Batch deletion already awaits each task; a single one used to fire and forget, so a
+        // terminal event that never arrived — the window reloading mid-delete, an event emitted
+        // before the listener was attached — left the card reading 'deleting' with no way back.
+        void watchSingleDeleteTask(name, taskId)
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       const previous = deleteTasks.value[name]
@@ -1097,6 +1130,33 @@ export const useModelStore = defineStore('model', () => {
     }
     const idxTask = deleteTasks.value[name]
     if (idxTask) clearDeleteTaskIndex(idxTask.taskId)
+  }
+
+  /**
+   * Backstop for a delete whose completion never arrives.
+   *
+   * The worker itself is reliable and the Rust layer reports an unexpected exit, but an event is
+   * only delivered to whatever listener exists at that moment. Rather than leave the entry stuck,
+   * fail it so the card returns to a state the user can act on.
+   */
+  async function watchSingleDeleteTask(name: string, taskId: string) {
+    try {
+      const task = await waitForDeleteTask(name, taskId)
+      finalizeDeletedModel(name, task.resultModelInfo ?? null)
+      clearDeleteTask(name)
+    } catch (err) {
+      const current = deleteTasks.value[name]
+      if (!current || current.taskId !== taskId || isDeleteTaskTerminal(current)) return
+      deleteTasks.value = {
+        ...deleteTasks.value,
+        [name]: {
+          ...current,
+          status: 'error',
+          message: err instanceof Error ? err.message : String(err),
+          updatedAt: Date.now(),
+        },
+      }
+    }
   }
 
   async function waitForDeleteTask(name: string, taskId: string) {
@@ -1359,6 +1419,7 @@ export const useModelStore = defineStore('model', () => {
     supportedOnly,
     category,
     modelSource,
+    modelViewMode,
     customModelCount,
     downloadStates,
     downloadErrors,

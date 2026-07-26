@@ -871,7 +871,7 @@ watch(workflows, (items) => {
 
 <style scoped>
 .workflows-page {
-  max-width: 1140px;
+  max-width: var(--page-max-width);
   margin: 0 auto;
   height: 100%;
   min-height: 0;

@@ -1581,7 +1581,7 @@ onMounted(() => {
 
 <style scoped>
 .page--settings {
-  max-width: 1180px;
+  max-width: var(--page-max-width-reading);
 }
 
 .page-header-compact {

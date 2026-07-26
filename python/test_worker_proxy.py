@@ -1,7 +1,8 @@
+import os
 import unittest
 
 from worker_download import _test_url_for_source
-from worker_proxy import ProxyConfigError, aria2_proxy_args, parse_proxy_config, redacted_proxy
+from worker_proxy import ProxyConfigError, aria2_proxy_args, configure_process_proxy, parse_proxy_config, redacted_proxy
 
 
 class ProxyConfigTests(unittest.TestCase):
@@ -30,6 +31,56 @@ class ProxyConfigTests(unittest.TestCase):
         self.assertIn("modelscope.cn", _test_url_for_source("modelscope"))
         self.assertIn("huggingface.co", _test_url_for_source("huggingface"))
         self.assertIn("hf-mirror.com", _test_url_for_source("hf-mirror"))
+
+
+class SocksRoutingTests(unittest.TestCase):
+    """Downloading is delegated to pymss, which calls urllib.request.urlopen directly. urllib
+    rejects a socks5:// proxy value outright, so a SOCKS proxy has to reach it some other way."""
+
+    def setUp(self):
+        import socket
+        self._socket = socket.socket
+        self._env = {k: os.environ.get(k) for k in
+                     ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy")}
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        import socket
+        socket.socket = self._socket
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_a_socks_proxy_replaces_the_socket_layer(self):
+        import socket
+        try:
+            import socks
+        except ImportError:
+            self.skipTest("PySocks is not installed for this interpreter")
+        configure_process_proxy(parse_proxy_config(
+            {"mode": "custom", "url": "socks5://127.0.0.1:1080", "bypass": ""}))
+        self.assertIs(socket.socket, socks.socksocket)
+
+    def test_socks_clears_the_proxy_variables_urllib_would_choke_on(self):
+        try:
+            import socks  # noqa: F401
+        except ImportError:
+            self.skipTest("PySocks is not installed for this interpreter")
+        os.environ["HTTP_PROXY"] = "http://stale:1"
+        configure_process_proxy(parse_proxy_config(
+            {"mode": "custom", "url": "socks5://127.0.0.1:1080", "bypass": ""}))
+        # Leaving socks5:// in these makes urllib fail with "unknown url type" before the
+        # socket layer ever gets a chance.
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            self.assertIsNone(os.environ.get(name), name)
+
+    def test_an_http_proxy_still_travels_by_environment(self):
+        configure_process_proxy(parse_proxy_config(
+            {"mode": "custom", "url": "http://127.0.0.1:7890", "bypass": ""}))
+        self.assertEqual(os.environ.get("HTTP_PROXY"), "http://127.0.0.1:7890")
+        self.assertEqual(os.environ.get("https_proxy"), "http://127.0.0.1:7890")
 
 
 if __name__ == "__main__":

@@ -124,8 +124,7 @@ jobs:
           fi
           PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl, pymss; print(sys.prefix); print('ssl ok'); print('pymss ok')"
           PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import shutil; assert shutil.which('ffmpeg'); assert shutil.which('aria2c'); print('bundled tools ok')"
-          WORKER_DIR="$(dirname "$WORKER")"
-          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys; sys.path.insert(0, '$WORKER_DIR'); import worker_download; assert worker_download._resolve_aria2c_path(); print('aria2 resolver ok')"
+          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "from pymss.model_download import ARIA2C_PATH; assert ARIA2C_PATH, 'pymss cannot see the bundled aria2c'; print('aria2 resolver ok:', ARIA2C_PATH)"
           PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" env_info
           PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" list_models --payload "{}"
           codesign --verify --deep --strict --verbose=4 "$APP"

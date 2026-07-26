@@ -1480,7 +1480,7 @@ async function retryCurrentTask() {
 <style scoped>
 /* ============ Workstation shell ============ */
 .separate-page {
-  max-width: 1140px;
+  max-width: var(--page-max-width);
   margin: 0 auto;
   height: 100%;
   min-height: 0;
@@ -1580,7 +1580,10 @@ async function retryCurrentTask() {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(420px, 480px) minmax(0, 1fr);
+  /* The rail grows with the window instead of staying at 480px: on a wide screen a fixed rail
+     leaves the input panel cramped next to a stage several times its width. The cap keeps it from
+     taking over once the stage has all the room it needs. */
+  grid-template-columns: minmax(420px, 0.42fr) minmax(0, 1fr);
   gap: 16px;
 }
 
@@ -2130,8 +2133,11 @@ async function retryCurrentTask() {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
+  /* Wraps into columns once there is room. A single column of very wide rows wastes the space
+     and makes each entry harder to scan, since the name and its tags drift far apart. */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  align-content: start;
   gap: 6px;
   padding: 2px;
   padding-right: 6px;
@@ -2632,7 +2638,7 @@ async function retryCurrentTask() {
   border-radius: 12px;
   background: #0b1020;
   color: #dbeafe;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;
 }

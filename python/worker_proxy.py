@@ -130,6 +130,46 @@ def configure_process_proxy(config: ProxyConfig) -> None:
             "https": config.url,
         })))
         return
+    if config.scheme in {"socks5", "socks5h"}:
+        # urllib rejects a socks5:// value outright ("unknown url type"), so the variables that
+        # carry it have to go before the socket layer can quietly do the work instead.
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            os.environ.pop(name, None)
+        urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+        _route_all_sockets_through_socks(config)
+
+
+def _route_all_sockets_through_socks(config: ProxyConfig) -> None:
+    """Send every outbound socket in this process through the SOCKS proxy.
+
+    Environment variables are enough for an HTTP proxy, but urllib does not understand a
+    socks5:// URL at all — it fails with "unknown url type: socks5". Downloading is handled by
+    pymss, which calls urllib.request.urlopen directly, so there is no call site left to special
+    case. Redirecting the socket layer is what makes the proxy apply to code this process does
+    not own.
+
+    Failure is deliberately silent: PySocks is an optional dependency, and a worker that cannot
+    proxy should still report a connection error from the attempt rather than fail to start.
+    """
+    try:
+        import socket
+
+        import socks  # type: ignore
+    except Exception:
+        return
+    parts = urlsplit(config.url)
+    if not parts.hostname:
+        return
+    socks.set_default_proxy(
+        socks.SOCKS5,
+        parts.hostname,
+        parts.port or 1080,
+        # socks5h defers name resolution to the proxy, which is the point of choosing it.
+        rdns=config.scheme == "socks5h",
+        username=parts.username or None,
+        password=parts.password or None,
+    )
+    socket.socket = socks.socksocket
 
 
 def proxy_urlopen(url: str, timeout: int, config: ProxyConfig | None = None):

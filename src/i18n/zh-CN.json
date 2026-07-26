@@ -376,7 +376,11 @@
     "customAliasNoSpace": "别名不能包含空格",
     "customImportCancelled": "导入已取消",
     "customRemoveContentCopy": "确定要移除 {name} 吗？导入时复制到模型库的文件将一并删除。",
-    "customRemoveContentReference": "确定要移除 {name} 吗？只会取消注册，你的原始文件不会被删除。"
+    "customRemoveContentReference": "确定要移除 {name} 吗？只会取消注册，你的原始文件不会被删除。",
+    "viewMode": "显示方式",
+    "viewList": "列表",
+    "viewCard": "卡片",
+    "downloadLogsFollow": "回到最新"
   },
   "results": {
     "title": "分离结果",
