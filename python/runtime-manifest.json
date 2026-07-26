@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "manifestVersion": "2026.07.1",
+  "python": "3.12",
+  "common": {
+    "av": "av>=14,<15",
+    "librosa": "librosa>=0.10.2,<0.11",
+    "numpy": "numpy>=1.26,<3",
+    "filelock": "filelock>=3.12,<4",
+    "fsspec": "fsspec>=2023.1,<2027",
+    "jinja2": "jinja2>=3.1,<4",
+    "networkx": "networkx>=3.0,<4",
+    "sympy": "sympy>=1.12,<2",
+    "typing-extensions": "typing-extensions>=4.8,<5",
+    "pysocks": "pysocks>=1.7.1,<2",
+    "requests": "requests>=2.32,<3",
+    "pyyaml": "pyyaml>=6.0.1,<7",
+    "tqdm": "tqdm>=4.60,<5",
+    "pymss": "pymss",
+    "pymss-core": "pymss-core==0.1.4"
+  },
+  "backends": {
+    "cpu": {
+      "platforms": ["win32", "linux", "darwin"],
+      "torch": {"requirement": "torch==2.7.1", "indexUrl": "https://download.pytorch.org/whl/cpu"}
+    },
+    "cuda": {
+      "platforms": ["win32", "linux"],
+      "torch": {"requirement": "torch==2.7.1", "indexUrl": "https://download.pytorch.org/whl/cu128"}
+    },
+    "rocm": {
+      "platforms": ["win32"],
+      "python": "3.12",
+      "torch": {
+        "rocmRequirements": [
+          "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
+          "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
+          "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
+          "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm-7.2.1.tar.gz"
+        ],
+        "requirements": [
+          "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
+          "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
+          "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl"
+        ],
+        "noDeps": true
+      }
+    },
+    "mlx": {
+      "platforms": ["darwin"],
+      "torch": {"requirement": "torch==2.7.1"},
+      "extras": ["mlx"]
+    }
+  }
+}

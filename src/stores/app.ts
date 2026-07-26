@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { createFreshRunner } from '@/utils/async'
 
 export type EnvInfo = {
   pythonVersion?: string
@@ -13,6 +14,8 @@ export type EnvInfo = {
   torchAvailable?: boolean
   torchVersion?: string | null
   torchError?: string
+  torchBackend?: 'cpu' | 'cuda' | 'rocm' | string
+  hipVersion?: string | null
   cudaAvailable?: boolean
   cudaDeviceCount?: number
   cudaDevices?: CudaDeviceInfo[]
@@ -20,6 +23,49 @@ export type EnvInfo = {
   mlxAvailable?: boolean
   avAvailable?: boolean
   librosaAvailable?: boolean
+}
+
+export type RuntimeBackend = 'cpu' | 'cuda' | 'rocm' | 'mlx'
+export type RuntimeInfo = {
+  manifestVersion?: string
+  pythonVersion?: string
+  platform?: string
+  machine?: string
+  backend?: RuntimeBackend | null
+  installedBackend?: RuntimeBackend | string | null
+  installState?: {
+    backend?: RuntimeBackend | string
+    manifestVersion?: string
+    installedAt?: string
+    pythonVersion?: string
+    torchVersion?: string | null
+    torchBackend?: string | null
+    packages?: Record<string, boolean>
+  } | null
+  installedEnvironments?: InstalledRuntime[]
+  /** GPU vendors detected without torch ('nvidia' | 'amd' | 'intel'); empty when undetectable. */
+  gpuVendors?: string[]
+  statePath?: string
+  logPath?: string
+  torchVersion?: string | null
+  torchBackend?: string
+  acceleratorAvailable?: boolean
+  packages?: Record<string, boolean>
+  ready?: boolean
+}
+
+export type InstalledRuntime = {
+  backend?: RuntimeBackend | string
+  manifestVersion?: string
+  installedAt?: string
+  pythonVersion?: string
+  torchVersion?: string | null
+  torchBackend?: string | null
+  acceleratorAvailable?: boolean
+  pythonPath?: string
+  logPath?: string
+  packages?: Record<string, boolean>
+  source?: 'managed' | 'bundled' | 'preinstalled'
 }
 
 export type CudaDeviceInfo = {
@@ -45,6 +91,17 @@ export const useAppStore = defineStore('app', () => {
   const envCheckedOnce = ref(false)
   const workerEvents = ref<any[]>([])
   const lastError = ref<string | null>(null)
+  const runtimeInfo = ref<RuntimeInfo | null>(null)
+  const runtimeInstallTaskId = ref<string | null>(null)
+  const runtimeInstallStatus = ref<'idle' | 'installing' | 'success' | 'error' | 'cancelled'>('idle')
+  const runtimeInstallBackend = ref<string | null>(null)
+  const runtimeInstallMessage = ref('')
+  const runtimeInstallLogs = ref<string[]>([])
+  const runtimeEnvSizes = ref<Record<string, number>>({})
+  const runtimeEnvSizesLoading = ref(false)
+  // Backends whose venv exists but never finished installing — leftover disk usage the user
+  // can reclaim.
+  const runtimeIncompleteBackends = ref<string[]>([])
 
   const diagnostics = computed<DiagnosticItem[]>(() => {
     const env = envInfo.value
@@ -76,7 +133,7 @@ export const useAppStore = defineStore('app', () => {
         level: env.cudaAvailable || env.mpsAvailable || env.mlxAvailable ? 'ok' : 'warn',
         label: 'Accelerator',
         value: env.cudaAvailable
-          ? `CUDA (${env.cudaDeviceCount || 0})`
+          ? `${env.torchBackend === 'rocm' ? 'ROCm' : 'CUDA'} (${env.cudaDeviceCount || 0})`
           : env.mlxAvailable
               ? 'MLX'
               : env.mpsAvailable
@@ -101,7 +158,26 @@ export const useAppStore = defineStore('app', () => {
     return Boolean(env?.pythonVersion && env?.pymssAvailable && env?.torchAvailable)
   })
 
+  const runtimeInstalledBackend = computed(() => {
+    const info = runtimeInfo.value
+    if (!info?.ready) return null
+    const recorded = info.installedBackend || info.installState?.backend
+    if (recorded === 'mlx' && info.packages?.mlx) return recorded
+    if (recorded && recorded === info.torchBackend) return recorded
+    if (info.packages?.mlx) return 'mlx'
+    return info.torchBackend || null
+  })
+
   const envIssueCount = computed(() => diagnostics.value.filter((item) => item.level !== 'ok').length)
+
+  function runtimeReadyForBackend(backend: RuntimeBackend) {
+    const info = runtimeInfo.value
+    if (!info?.ready) return false
+    if (backend === 'mlx') return Boolean(info.packages?.mlx)
+    if (info.torchBackend !== backend) return false
+    if (backend === 'cuda' || backend === 'rocm') return Boolean(info.acceleratorAvailable)
+    return true
+  }
 
   function pushWorkerEvent(event: any) {
     workerEvents.value.unshift(event)
@@ -147,6 +223,121 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  // Disk usage is a separate worker call: walking multi-GB venvs is too slow to fold into
+  // runtime_info, which runs on startup and after every runtime operation.
+  // Callers refresh right after an install or a delete, so a caller must never be handed the
+  // result of a walk that started before the change it is refreshing for.
+  const measureRuntimeEnvSizes = createFreshRunner(async () => {
+    const result = await invoke<{
+      sizes?: Record<string, number>
+      incompleteBackends?: string[]
+    }>('runtime_env_sizes')
+    runtimeEnvSizes.value = result?.sizes || {}
+    runtimeIncompleteBackends.value = result?.incompleteBackends || []
+    return runtimeEnvSizes.value
+  })
+
+  let runtimeEnvSizesWaiting = 0
+
+  async function loadRuntimeEnvSizes() {
+    runtimeEnvSizesWaiting += 1
+    runtimeEnvSizesLoading.value = true
+    try {
+      return await measureRuntimeEnvSizes()
+    } catch {
+      // Sizes are supplementary — a failure must not break the settings page.
+      return runtimeEnvSizes.value
+    } finally {
+      runtimeEnvSizesWaiting -= 1
+      // Only the last caller clears the flag; queued callers are still measuring.
+      if (runtimeEnvSizesWaiting === 0) runtimeEnvSizesLoading.value = false
+    }
+  }
+
+  async function checkRuntimeInfo(backend?: RuntimeBackend) {
+    runtimeInfo.value = await invoke<RuntimeInfo>('runtime_info', { payload: backend ? { backend } : {} })
+    return runtimeInfo.value
+  }
+
+  async function installRuntime(backend: RuntimeBackend, mirror = 'auto', locale = '') {
+    const taskId = `runtime_install_${crypto.randomUUID()}`
+    runtimeInstallTaskId.value = taskId
+    runtimeInstallStatus.value = 'installing'
+    runtimeInstallBackend.value = backend
+    runtimeInstallMessage.value = ''
+    runtimeInstallLogs.value = []
+    try {
+      await invoke('start_runtime_install', { payload: { taskId, backend, mirror, locale } })
+    } catch (error) {
+      runtimeInstallStatus.value = 'error'
+      runtimeInstallMessage.value = error instanceof Error ? error.message : String(error)
+      throw error
+    }
+    return taskId
+  }
+
+  async function activateRuntime(backend: RuntimeBackend) {
+    await invoke('activate_runtime', { payload: { backend } })
+    await Promise.all([checkRuntimeInfo(), checkEnv()])
+  }
+
+  async function cancelRuntimeInstall() {
+    if (!runtimeInstallTaskId.value) return false
+    return invoke<boolean>('cancel_runtime_install', { taskId: runtimeInstallTaskId.value })
+  }
+
+  async function waitForRuntimeInstall(timeoutMs = 30 * 60 * 1000) {
+    const startedAt = Date.now()
+    while (runtimeInstallStatus.value === 'installing') {
+      if (Date.now() - startedAt > timeoutMs) {
+        throw new Error('Runtime installation timed out')
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 250))
+    }
+    if (runtimeInstallStatus.value !== 'success') {
+      throw new Error(runtimeInstallMessage.value || 'Runtime installation failed')
+    }
+  }
+
+  async function deleteRuntime(backend: RuntimeBackend) {
+    await invoke('delete_runtime', { payload: { backend } })
+    await checkRuntimeInfo()
+  }
+
+  function handleRuntimeEvent(event: any) {
+    const taskId = event?.taskId
+    if (!runtimeInstallTaskId.value || taskId !== runtimeInstallTaskId.value) return
+    if (event?.type === 'runtime_install_finished') {
+      runtimeInstallStatus.value = 'success'
+      runtimeInstallMessage.value = ''
+      if (event.payload?.state || event.payload?.logPath) {
+        runtimeInfo.value = {
+          ...(runtimeInfo.value || {}),
+          installedBackend: event.payload?.state?.backend,
+          installState: event.payload?.state,
+          logPath: event.payload?.logPath,
+        }
+      }
+      void checkEnv()
+      void checkRuntimeInfo()
+      void import('@/stores/model').then(({ useModelStore }) => useModelStore().loadModels())
+    } else if (event?.type === 'runtime_install_started') {
+      runtimeInstallStatus.value = 'installing'
+      if (event.payload?.backend) runtimeInstallBackend.value = event.payload.backend
+      runtimeInstallMessage.value = event.payload?.backend || ''
+      if (event.payload?.logPath) runtimeInfo.value = { ...(runtimeInfo.value || {}), logPath: event.payload.logPath }
+    } else if (event?.type === 'runtime_install_stage' || event?.type === 'runtime_install_log') {
+      runtimeInstallMessage.value = event.payload?.message || event.payload?.stage || ''
+      const line = event.payload?.message || event.payload?.stage
+      if (line) runtimeInstallLogs.value = [...runtimeInstallLogs.value, String(line)].slice(-300)
+    } else if (event?.type === 'runtime_install_failed' || event?.type === 'error') {
+      runtimeInstallStatus.value = 'error'
+      runtimeInstallMessage.value = event.payload?.message || 'Runtime installation failed'
+    } else if (event?.type === 'task_cancelled') {
+      runtimeInstallStatus.value = 'cancelled'
+    }
+  }
+
   return {
     envInfo,
     envLoading,
@@ -156,8 +347,27 @@ export const useAppStore = defineStore('app', () => {
     diagnostics,
     envReady,
     envIssueCount,
+    runtimeInstalledBackend,
+    runtimeReadyForBackend,
     pushWorkerEvent,
     checkEnv,
     checkEnvInBackground,
+    runtimeInfo,
+    runtimeInstallTaskId,
+    runtimeInstallStatus,
+    runtimeInstallBackend,
+    runtimeInstallMessage,
+    runtimeInstallLogs,
+    runtimeEnvSizes,
+    runtimeEnvSizesLoading,
+    runtimeIncompleteBackends,
+    loadRuntimeEnvSizes,
+    checkRuntimeInfo,
+    installRuntime,
+    activateRuntime,
+    cancelRuntimeInstall,
+    waitForRuntimeInstall,
+    deleteRuntime,
+    handleRuntimeEvent,
   }
 })

@@ -6,6 +6,7 @@ import i18n from './i18n'
 import { initTheme } from './utils/theme'
 import { registerWorkerEvents } from './utils/events'
 import { useSettingsStore } from '@/stores/settings'
+import { useAppStore } from '@/stores/app'
 import './styles/global.scss'
 
 async function bootstrap() {
@@ -14,6 +15,7 @@ async function bootstrap() {
   app.use(pinia)
 
   const settings = useSettingsStore(pinia)
+  const appState = useAppStore(pinia)
   await settings.initialize()
   const tasks = await import('@/stores/task').then((mod) => mod.useTaskStore(pinia))
   const models = await import('@/stores/model').then((mod) => mod.useModelStore(pinia))
@@ -25,7 +27,12 @@ async function bootstrap() {
   app.use(router)
   app.use(i18n)
   app.mount('#app')
-  models.loadModels().catch((error) => {
+  appState.checkRuntimeInfo().then((runtime) => {
+    if (runtime.ready) {
+      return models.loadModels()
+    }
+    return undefined
+  }).catch((error) => {
     console.warn('Failed to preload model metadata', error)
   })
 }

@@ -42,11 +42,11 @@ if [[ -z "$TORCH_INDEX_URL" ]]; then
 else
   PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url "$TORCH_INDEX_URL"
 fi
-PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir av librosa numpy pyyaml tqdm
+PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir --only-binary=:all: --prefer-binary av filelock fsspec jinja2 librosa networkx numpy pysocks requests pyyaml sympy tqdm typing-extensions
 if [[ "$VARIANT" == "mlx" || "$VARIANT" == "mps" ]]; then
   PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir mlx
 fi
-PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir pymss
+PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir --no-deps pymss pymss-core==0.1.4
 
 bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR"
 PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RUNTIME_HOME" "$PY" - <<'PY'

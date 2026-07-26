@@ -120,6 +120,10 @@ def configure_process_proxy(config: ProxyConfig) -> None:
     if config.mode == "system":
         return
     _set_bypass_env(config)
+    os.environ["HTTP_PROXY"] = config.url
+    os.environ["HTTPS_PROXY"] = config.url
+    os.environ["http_proxy"] = config.url
+    os.environ["https_proxy"] = config.url
     if config.scheme in {"http", "https"}:
         urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({
             "http": config.url,

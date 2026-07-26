@@ -172,7 +172,7 @@ export type AudioParams = {
 }
 
 export type RuntimeDeviceConfig = {
-  device: 'auto' | 'cpu' | 'cuda' | 'mps' | 'mlx'
+  device: 'auto' | 'cpu' | 'cuda' | 'rocm' | 'mps' | 'mlx'
   deviceIds: number[]
 }
 
@@ -377,21 +377,25 @@ export const useSettingsStore = defineStore('settings', () => {
       { label: 'CPU', value: 'cpu', type: 'cpu', deviceIds: [0] },
     ]
     for (const gpu of env?.cudaDevices || []) {
+      const isRocm = env?.torchBackend === 'rocm'
       const memory = gpu.totalMemoryBytes
         ? ` · ${(gpu.totalMemoryBytes / 1024 / 1024 / 1024).toFixed(1)} GB`
         : ''
       options.push({
-        label: `CUDA ${gpu.id}: ${gpu.name}${memory}`,
-        value: `cuda:${gpu.id}`,
-        type: 'cuda',
+        label: `${isRocm ? 'ROCm' : 'CUDA'} ${gpu.id}: ${gpu.name}${memory}`,
+        value: isRocm ? 'rocm' : `cuda:${gpu.id}`,
+        type: isRocm ? 'rocm' : 'cuda',
         deviceIds: [gpu.id],
       })
     }
-    if (env?.cudaAvailable && !(env.cudaDevices || []).length) {
+    if (env?.cudaAvailable && !(env.cudaDevices || []).length && env.torchBackend !== 'rocm') {
       const count = Math.max(1, env.cudaDeviceCount || 1)
       for (let id = 0; id < count; id += 1) {
         options.push({ label: `CUDA ${id}`, value: `cuda:${id}`, type: 'cuda', deviceIds: [id] })
       }
+    }
+    if (env?.torchBackend === 'rocm' && !(env.cudaDevices || []).length) {
+      options.push({ label: 'ROCm 0', value: 'rocm', type: 'rocm', deviceIds: [0] })
     }
     if (env?.mlxAvailable || env?.mpsAvailable) options.push({ label: 'Apple MLX', value: 'mlx', type: 'mlx', deviceIds: [0] })
     if (env?.mpsAvailable) options.push({ label: 'Apple MPS', value: 'mps', type: 'mps', deviceIds: [0] })
@@ -404,6 +408,7 @@ export const useSettingsStore = defineStore('settings', () => {
       const id = parseInt(selected.slice('cuda:'.length), 10)
       return { device: 'cuda', deviceIds: Number.isFinite(id) ? [id] : [0] }
     }
+    if (selected === 'rocm') return { device: 'cuda', deviceIds: [0] }
     if (selected === 'cuda') return { device: 'cuda', deviceIds: [0] }
     if (selected === 'auto' && env?.mlxAvailable) {
       return { device: 'mlx', deviceIds: [0] }

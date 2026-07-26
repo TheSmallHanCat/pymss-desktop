@@ -110,6 +110,14 @@ pub fn temp_dir(app: &AppHandle) -> AppResult<PathBuf> {
     Ok(data_root_dir(app)?.join("temp"))
 }
 
+pub fn runtime_envs_dir(app: &AppHandle) -> AppResult<PathBuf> {
+    Ok(data_root_dir(app)?.join("runtime-envs"))
+}
+
+pub fn active_runtime_file(app: &AppHandle) -> AppResult<PathBuf> {
+    Ok(runtime_envs_dir(app)?.join("active-runtime.json"))
+}
+
 pub fn ensure_app_directories(app: &AppHandle) -> AppResult<()> {
     for dir in [
         data_root_dir(app)?,
@@ -119,6 +127,7 @@ pub fn ensure_app_directories(app: &AppHandle) -> AppResult<()> {
         editor_projects_dir(app)?,
         logs_dir(app)?,
         temp_dir(app)?,
+        runtime_envs_dir(app)?,
     ] {
         std::fs::create_dir_all(dir)?;
     }

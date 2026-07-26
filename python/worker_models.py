@@ -341,6 +341,8 @@ def cmd_env_info() -> int:
         "pymssVersion": package_version("pymss"),
         "torchAvailable": False,
         "torchVersion": None,
+        "torchBackend": "missing",
+        "hipVersion": None,
         "cudaAvailable": False,
         "cudaDeviceCount": 0,
         "cudaDevices": [],
@@ -362,6 +364,8 @@ def cmd_env_info() -> int:
         import torch  # type: ignore
         payload["torchAvailable"] = True
         payload["torchVersion"] = getattr(torch, "__version__", None)
+        payload["hipVersion"] = getattr(torch.version, "hip", None)
+        payload["torchBackend"] = "rocm" if payload["hipVersion"] else "cuda" if getattr(torch.version, "cuda", None) else "cpu"
         payload["cudaAvailable"] = bool(torch.cuda.is_available())
         payload["cudaDeviceCount"] = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
         cuda_devices: list[dict[str, Any]] = []

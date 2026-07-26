@@ -18,6 +18,7 @@ export function registerWorkerEvents() {
     const workerEvent = event.payload as WorkerEvent
     app.pushWorkerEvent(workerEvent)
     void settings.handleWorkerEvent(workerEvent)
+    app.handleRuntimeEvent(workerEvent)
     tasks.handleWorkerEvent(workerEvent)
     models.handleWorkerEvent(workerEvent)
   }).catch(() => {})

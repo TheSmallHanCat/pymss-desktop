@@ -2,6 +2,7 @@ use crate::error::{AppError, AppResult};
 use crate::python::protocol::WorkerEnvelope;
 use crate::state::AppState;
 use crate::storage;
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -18,6 +19,12 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 static PAYLOAD_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveRuntimeRecord {
+    python_path: String,
+}
 
 fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
     if let Ok(resource) = app.path().resource_dir() {
@@ -95,6 +102,70 @@ fn embedded_python_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
         };
         if let Some(path) = candidates.into_iter().find(|candidate| candidate.is_file()) {
             return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+fn bootstrap_python_path(app: &AppHandle) -> AppResult<String> {
+    if let Ok(value) = std::env::var("PYMSS_STUDIO_PYTHON") {
+        return Ok(value);
+    }
+    if let Some(embedded) = embedded_python_path(app)? {
+        return Ok(embedded.to_string_lossy().to_string());
+    }
+    if cfg!(debug_assertions) {
+        Ok("python".to_string())
+    } else {
+        Ok("python3".to_string())
+    }
+}
+
+fn bundled_runtime_envs_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
+    let mut dirs = Vec::new();
+    if let Ok(resource) = app.path().resource_dir() {
+        dirs.push(resource.join("runtime-envs"));
+        dirs.push(resource.join("_up_").join("runtime-envs"));
+        dirs.push(resource.join("resources").join("runtime-envs"));
+    }
+    let exe_dir = std::env::current_exe()?
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    dirs.push(exe_dir.join("runtime-envs"));
+    Ok(dirs.into_iter().filter(|dir| dir.is_dir()).collect())
+}
+
+fn try_resolve_active_runtime(file: &PathBuf) -> Option<String> {
+    if !file.is_file() {
+        return None;
+    }
+    let content = std::fs::read_to_string(file).ok()?;
+    let record: ActiveRuntimeRecord = serde_json::from_str(&content).ok()?;
+    let python = PathBuf::from(&record.python_path);
+    // Absolute path – check directly
+    if python.is_absolute() {
+        return python.is_file().then(|| python.to_string_lossy().to_string());
+    }
+    // Relative path – resolve against the directory containing the file
+    let parent = file.parent()?;
+    let resolved = parent.join(&python);
+    resolved
+        .is_file()
+        .then(|| resolved.to_string_lossy().to_string())
+}
+
+fn active_runtime_python_path(app: &AppHandle) -> AppResult<Option<String>> {
+    // 1. User data directory (highest priority)
+    let user_file = storage::active_runtime_file(app)?;
+    if let Some(result) = try_resolve_active_runtime(&user_file) {
+        return Ok(Some(result));
+    }
+    // 2. Bundled locations (fallback for pre-installed builds)
+    for envs_dir in bundled_runtime_envs_dirs(app)? {
+        let bundled_file = envs_dir.join("active-runtime.json");
+        if let Some(result) = try_resolve_active_runtime(&bundled_file) {
+            return Ok(Some(result));
         }
     }
     Ok(None)
@@ -186,14 +257,19 @@ fn build_worker_command(
     payload_file: Option<&PathBuf>,
 ) -> AppResult<Command> {
     let worker = worker_path(app)?;
-    let python = if let Ok(value) = std::env::var("PYMSS_STUDIO_PYTHON") {
-        value
-    } else if let Some(embedded) = embedded_python_path(app)? {
-        embedded.to_string_lossy().to_string()
-    } else if cfg!(debug_assertions) {
-        "python".to_string()
+    let bootstrap_python = bootstrap_python_path(app)?;
+    let python = if matches!(
+        command,
+        "runtime_info"
+            | "runtime_env_sizes"
+            | "install_runtime"
+            | "activate_runtime"
+            | "cancel_runtime_install"
+            | "delete_runtime"
+    ) {
+        bootstrap_python.clone()
     } else {
-        "python3".to_string()
+        active_runtime_python_path(app)?.unwrap_or_else(|| bootstrap_python.clone())
     };
     let mut cmd = Command::new(python);
     #[cfg(windows)]
@@ -203,10 +279,22 @@ fn build_worker_command(
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONUTF8", "1")
+        .env("PYMSS_STUDIO_BOOTSTRAP_PYTHON", bootstrap_python)
         .env(
             "PYMSS_STUDIO_DEFAULT_OUTPUT_DIR",
             default_output_dir(app)?.to_string_lossy().to_string(),
         );
+    if let Ok(dir) = storage::runtime_envs_dir(app) {
+        cmd.env("PYMSS_STUDIO_RUNTIME_ENVS_DIR", dir.to_string_lossy().to_string());
+    }
+    if let Ok(file) = storage::active_runtime_file(app) {
+        cmd.env("PYMSS_STUDIO_ACTIVE_RUNTIME_FILE", file.to_string_lossy().to_string());
+    }
+    if let Ok(dirs) = bundled_runtime_envs_dirs(app) {
+        if let Some(first) = dirs.first() {
+            cmd.env("PYMSS_STUDIO_BUNDLED_RUNTIME_ENVS_DIR", first.to_string_lossy().to_string());
+        }
+    }
     apply_proxy_env(app, &mut cmd);
     if let Some(path) = prepend_path(std::env::var("PATH").ok(), bundled_bin_dirs(app)?) {
         cmd.env("PATH", path);
@@ -400,6 +488,10 @@ fn is_background_terminal_event(command: &str, event_type: &str) -> bool {
             "error" | "model_residual_cleanup_done" | "model_residual_cleanup_failed"
         ),
         "download_model" => matches!(event_type, "error" | "download_done" | "task_cancelled"),
+        "install_runtime" => matches!(
+            event_type,
+            "error" | "runtime_install_finished" | "task_cancelled"
+        ),
         "infer" | "infer_workflow" => {
             matches!(event_type, "error" | "task_done" | "task_cancelled")
         }

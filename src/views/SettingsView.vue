@@ -1,15 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
-import { useMessage } from 'naive-ui'
+import { useDialog, useMessage } from 'naive-ui'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-shell'
 import packageMeta from '../../package.json'
 import appLogo from '@/assets/app-logo-symbol-canvas.png'
 import { SYSTEM_LOCALE, setLocale, type LocaleSetting } from '@/i18n'
 import { useSettingsStore } from '@/stores/settings'
-import { useAppStore } from '@/stores/app'
+import { useAppStore, type RuntimeBackend } from '@/stores/app'
+import {
+  detectRuntimePlatform,
+  isBuiltInRuntimeSource,
+  recommendedRuntimeBackend,
+  runtimeAcceleratorReady,
+  runtimeManifestStatus,
+  runtimeBackendLabel as runtimeBackendName,
+  runtimeSizeHint,
+} from '@/utils/runtime'
 import { useModelStore } from '@/stores/model'
 import { useTaskStore } from '@/stores/task'
 import { formatBytes } from '@/utils/format'
@@ -35,17 +44,23 @@ import {
   DocumentTextOutline,
   LinkOutline,
   OpenOutline,
+  DownloadOutline,
   AlertCircleOutline,
   CheckmarkCircleOutline,
+  TrashOutline,
+  PlayOutline,
+  HardwareChipOutline,
+  LockClosedOutline,
 } from '@vicons/ionicons5'
 
 const { t, locale: currentLocale } = useI18n()
 const message = useMessage()
+const dialog = useDialog()
 const settings = useSettingsStore()
 const app = useAppStore()
 const modelStore = useModelStore()
 const task = useTaskStore()
-type SettingsSection = 'about' | 'appearance' | 'paths' | 'defaults'
+type SettingsSection = 'about' | 'appearance' | 'runtime' | 'paths' | 'defaults'
 const activeSection = ref<SettingsSection>('appearance')
 const appVersion = computed(() => packageMeta.version || '0.0.0')
 const repoUrl = 'https://github.com/pymss-project/pymss-desktop'
@@ -98,6 +113,265 @@ const proxyTestMessage = ref('')
 const proxyTestSuggestion = ref('')
 const proxyTestElapsed = ref(0)
 const proxyTestLoading = computed(() => proxyTestStatus.value === 'testing')
+const runtimeMirror = ref('auto')
+const runtimeDetecting = ref(false)
+const runtimeDeleting = ref<string | null>(null)
+const runtimeActivating = ref<string | null>(null)
+const runtimeLogDialogVisible = ref(false)
+const runtimeLogPre = ref<HTMLPreElement | null>(null)
+
+watch(() => app.runtimeInstallLogs.length, () => {
+  if (runtimeLogDialogVisible.value && runtimeLogPre.value) {
+    nextTick(() => {
+      if (runtimeLogPre.value) {
+        runtimeLogPre.value.scrollTop = runtimeLogPre.value.scrollHeight
+      }
+    })
+  }
+})
+const runtimeInstalling = computed(() => app.runtimeInstallStatus === 'installing')
+// Install / switch / delete all restart the worker, so only one may run at a time.
+const runtimeBusy = computed(() => runtimeInstalling.value || runtimeActivating.value !== null || runtimeDeleting.value !== null)
+const runtimeCurrentBackend = computed(() => app.runtimeInstalledBackend || app.runtimeInfo?.torchBackend || app.envInfo?.torchBackend || null)
+const runtimeCurrentLabel = computed(() => runtimeCurrentBackend.value ? runtimeBackendName(runtimeCurrentBackend.value) : t('settings.envNotChecked'))
+const installedRuntimes = computed(() => app.runtimeInfo?.installedEnvironments || [])
+
+type BackendCardState = 'active' | 'installed' | 'not_installed'
+
+const runtimePlatform = computed(() => detectRuntimePlatform(app.runtimeInfo))
+const runtimeRecommendedBackend = computed(() => recommendedRuntimeBackend(app.runtimeInfo))
+
+// macOS ships its runtime inside the app bundle (torch + MLX), and CUDA/ROCm are rejected outright
+// by the installer there. Installing a managed CPU env would only re-download a strict subset and
+// silently drop MLX acceleration, so environment management is locked off.
+const runtimeManagementLocked = computed(() => {
+  if (!runtimePlatform.value.isMac) return false
+  const active = installedRuntimes.value.find((entry) => entry.backend === runtimeCurrentBackend.value)
+  return isBuiltInRuntimeSource(active?.source)
+})
+
+const RUNTIME_BACKEND_DESC_KEYS: Record<RuntimeBackend, string> = {
+  cpu: 'onboarding.runtimeCpu',
+  cuda: 'onboarding.runtimeCuda',
+  rocm: 'onboarding.runtimeRocm',
+  mlx: 'onboarding.runtimeMlx',
+}
+
+function runtimeBackendDescription(backend: RuntimeBackend | string) {
+  const key = RUNTIME_BACKEND_DESC_KEYS[backend as RuntimeBackend]
+  return key ? t(key) : ''
+}
+
+type BackendCardBase = { backend: RuntimeBackend; label: string; description: string; offCatalog: boolean }
+
+const runtimeBackendCatalog = computed<BackendCardBase[]>(() => {
+  const { isMac, isAppleSilicon } = runtimePlatform.value
+  const backends: RuntimeBackend[] = ['cpu']
+  if (!isMac) backends.push('cuda', 'rocm')
+  if (isAppleSilicon) backends.push('mlx')
+  return backends.map((backend) => ({
+    backend,
+    label: runtimeBackendName(backend),
+    description: runtimeBackendDescription(backend),
+    offCatalog: false,
+  }))
+})
+
+const runtimeBackendCards = computed(() => {
+  const catalog = [...runtimeBackendCatalog.value]
+  // Keep environments that exist on disk but are not offered on this platform
+  // (e.g. left over after moving the data root between machines) reachable.
+  for (const entry of installedRuntimes.value) {
+    const backend = String(entry.backend || '')
+    if (!backend || catalog.some((item) => item.backend === backend)) continue
+    catalog.push({
+      backend: backend as RuntimeBackend,
+      label: runtimeBackendName(backend),
+      description: runtimeBackendDescription(backend),
+      offCatalog: true,
+    })
+  }
+  return catalog.map((item) => {
+    const env = installedRuntimes.value.find((entry) => entry.backend === item.backend)
+    const isActive = runtimeCurrentBackend.value === item.backend
+    const state: BackendCardState = isActive ? 'active' : env ? 'installed' : 'not_installed'
+    const diskBytes = app.runtimeEnvSizes[String(item.backend)]
+    const gpuBackend = item.backend === 'cuda' || item.backend === 'rocm' || item.backend === 'mlx'
+    // A cancelled or failed install leaves its venv behind without an install state, so the
+    // backend reads as not installed while still holding gigabytes. Surface it so the space
+    // can be reclaimed instead of being stranded.
+    const leftover = !env && app.runtimeIncompleteBackends.includes(String(item.backend))
+    return {
+      ...item,
+      env,
+      state,
+      recommended: runtimeRecommendedBackend.value === item.backend,
+      manifestOutdated: runtimeManifestStatus(env, app.runtimeInfo?.manifestVersion) === 'outdated',
+      leftover,
+      leftoverLabel: leftover && diskBytes ? formatBytes(diskBytes) : '',
+      // Only warn on GPU backends: it explains why a card is there without hiding it, and
+      // detection missing a card must never stop someone installing what they need.
+      // Off-catalog cards already carry their own "not for this platform" line; a second,
+      // near-identical explanation on top of it is just noise.
+      vendorMissing: gpuBackend
+        && !item.offCatalog
+        && runtimeRecommendedBackend.value !== null
+        && runtimeRecommendedBackend.value !== item.backend,
+      sizeHint: runtimeSizeHint(item.backend),
+      // Absent means "not measured" (the app's own bundled runtime), and zero means the walk
+      // could not read anything. Neither is a usable number, and formatBytes renders both as
+      // an em dash, so only show the row when there is a real size to show.
+      diskLabel: diskBytes ? formatBytes(diskBytes) : '',
+      installing: runtimeInstalling.value && app.runtimeInstallBackend === item.backend,
+    }
+  })
+})
+
+function runtimeBackendLabel(value: RuntimeBackend | string | null | undefined) {
+  if (!value) return t('settings.envNotChecked')
+  return String(value).toUpperCase()
+}
+
+function runtimeSourceLabel(source: string | undefined) {
+  if (source === 'preinstalled') return t('settings.runtimeSourcePreinstalled')
+  if (source === 'bundled') return t('settings.runtimeSourceBundled')
+  return t('settings.runtimeSourceManaged')
+}
+
+function confirmRuntimeAction(title: string, content: string, positiveText: string) {
+  return new Promise<boolean>((resolve) => {
+    dialog.warning({
+      title,
+      content,
+      positiveText,
+      negativeText: t('common.cancel'),
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+    })
+  })
+}
+
+async function installBackend(backend: RuntimeBackend) {
+  if (runtimeBusy.value) return
+  const target = runtimeBackendLabel(backend)
+  const sizeHint = t('settings.runtimeInstallSizeHint', { size: runtimeSizeHint(backend) })
+  const reinstall = installedRuntimes.value.some((entry) => entry.backend === backend)
+  // The worker writes active-runtime.json at the end of an install, so this also switches.
+  const switchHint = runtimeCurrentBackend.value === backend ? '' : ` ${t('settings.runtimeInstallActivatesHint')}`
+  const confirmed = await confirmRuntimeAction(
+    reinstall ? t('settings.runtimeReinstallTitle') : t('settings.runtimeInstallTitle'),
+    reinstall
+      ? `${t('settings.runtimeReinstallContent', { current: runtimeBackendLabel(runtimeCurrentBackend.value), target })} ${sizeHint}${switchHint}`
+      : `${t('settings.runtimeInstallContent', { backend: target })} ${sizeHint}${switchHint}`,
+    t('common.confirm'),
+  )
+  if (!confirmed) return
+  try {
+    await app.installRuntime(backend, runtimeMirror.value, currentLocale.value)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  }
+}
+
+watch(() => app.runtimeInstallStatus, (status, previous) => {
+  if (previous !== 'installing') return
+  if (status === 'success') message.success(t('settings.runtimeInstallSuccess'))
+  // Refresh on failure and cancellation too: an interrupted install leaves its venv behind,
+  // and that leftover only becomes visible once sizes are re-measured.
+  if (status === 'success' || status === 'error' || status === 'cancelled') {
+    void app.loadRuntimeEnvSizes()
+  }
+})
+
+// Measuring disk usage walks every file in each venv, so only do it when the section is open.
+watch(activeSection, (section) => {
+  if (section === 'runtime') void app.loadRuntimeEnvSizes()
+}, { immediate: true })
+
+const runtimeDiskTotalLabel = computed(() => {
+  const values = Object.values(app.runtimeEnvSizes).filter((value) => value > 0)
+  // A single environment already shows its own size on the card; a total only adds
+  // information once more than one is installed.
+  if (values.length < 2) return ''
+  return formatBytes(values.reduce((sum, value) => sum + value, 0))
+})
+
+// Walking several multi-GB venvs takes visible time on a slow disk; say so rather than
+// leaving the section silently size-less.
+const runtimeDiskMeasuring = computed(() =>
+  app.runtimeEnvSizesLoading && !Object.keys(app.runtimeEnvSizes).length)
+
+async function cancelRuntimeInstall() {
+  try {
+    await app.cancelRuntimeInstall()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  }
+}
+
+async function deleteRuntime(backend: string) {
+  if (runtimeBusy.value) return
+  if (runtimeCurrentBackend.value === backend) {
+    message.warning(t('settings.runtimeDeleteActiveError'))
+    return
+  }
+  // Cleaning up an unfinished install discards nothing usable, so it must not be described
+  // as losing an environment.
+  const leftoverOnly = app.runtimeIncompleteBackends.includes(backend)
+    && !installedRuntimes.value.some((entry) => entry.backend === backend)
+  const confirmed = await confirmRuntimeAction(
+    leftoverOnly ? t('settings.runtimeCleanLeftoverTitle') : t('settings.runtimeDeleteTitle'),
+    leftoverOnly
+      ? t('settings.runtimeCleanLeftoverContent', { backend: runtimeBackendLabel(backend) })
+      : t('settings.runtimeDeleteContent', { backend: runtimeBackendLabel(backend) }),
+    leftoverOnly ? t('settings.runtimeCleanLeftover') : t('settings.runtimeDelete'),
+  )
+  if (!confirmed) return
+  runtimeDeleting.value = backend
+  try {
+    await app.deleteRuntime(backend as RuntimeBackend)
+    await Promise.all([app.checkRuntimeInfo(), app.checkEnv(), app.loadRuntimeEnvSizes()])
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    runtimeDeleting.value = null
+  }
+}
+
+async function activateInstalledRuntime(backend: string) {
+  if (runtimeBusy.value || runtimeCurrentBackend.value === backend) return
+  const confirmed = await confirmRuntimeAction(
+    t('settings.runtimeSwitchTitle'),
+    t('settings.runtimeSwitchContent', {
+      current: runtimeBackendLabel(runtimeCurrentBackend.value),
+      target: runtimeBackendLabel(backend),
+    }),
+    t('common.confirm'),
+  )
+  if (!confirmed) return
+  runtimeActivating.value = backend
+  try {
+    await app.activateRuntime(backend as RuntimeBackend)
+    message.success(t('settings.runtimeActivateSuccess'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    runtimeActivating.value = null
+  }
+}
+
+async function detectRuntime() {
+  runtimeDetecting.value = true
+  try {
+    await Promise.all([app.checkRuntimeInfo(), app.checkEnv(), app.loadRuntimeEnvSizes()])
+    message.success(t('settings.runtimeDetectSuccess'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    runtimeDetecting.value = false
+  }
+}
 
 const proxyModeOptions = computed(() => [
   { value: 'none' as const, label: t('settings.proxyModeNone') },
@@ -212,6 +486,7 @@ function resetProxyTest() {
 }
 const settingsSections = computed(() => [
   { key: 'appearance' as const, label: t('settings.appearance'), icon: ColorPaletteOutline, hint: t('settings.appearanceNavHint') },
+  { key: 'runtime' as const, label: t('settings.runtime'), icon: TerminalOutline, hint: t('settings.runtimeDesc') },
   { key: 'paths' as const, label: t('settings.dataDir'), icon: FolderOpenOutline, hint: t('settings.pathsNavHint') },
   { key: 'defaults' as const, label: t('settings.defaults'), icon: SettingsOutline, hint: t('settings.defaultsNavHint') },
   { key: 'about' as const, label: t('settings.about'), icon: InformationCircleOutline, hint: t('settings.aboutNavHint') },
@@ -226,6 +501,11 @@ const aboutVersionItems = computed(() => [
   { label: t('settings.softwareVersion'), value: appVersion.value, meta: 'Pymss Studio' },
   { label: t('settings.pymssCoreVersion'), value: pymssCoreVersion.value, meta: t('settings.coreRuntime') },
   { label: t('settings.workerVersion'), value: workerVersion.value, meta: t('settings.pythonWorker') },
+])
+const runtimeSummaryItems = computed(() => [
+  { label: t('settings.runtimeCurrentLabel'), value: runtimeCurrentLabel.value, meta: t('settings.runtimeCurrentMeta') },
+  { label: 'Torch', value: app.runtimeInfo?.torchVersion || app.envInfo?.torchVersion || t('common.unknown'), meta: t('settings.runtimeTorchMeta') },
+  { label: 'pymss', value: app.envInfo?.pymssVersion || t('common.unknown'), meta: t('settings.runtimePymssMeta') },
 ])
 const aboutLinks = computed(() => [
   { label: t('settings.desktopRepository'), url: repoUrl, icon: LogoGithub },
@@ -687,6 +967,206 @@ onMounted(() => {
         </n-card>
         </section>
 
+        <!-- Runtime -->
+        <section v-else-if="activeSection === 'runtime'" class="settings-section-panel runtime-section">
+          <article class="about-hero runtime-hero">
+            <div class="about-hero__main">
+              <div class="section-title__icon runtime-hero__icon">
+                <n-icon :component="TerminalOutline" size="18" />
+              </div>
+              <div class="about-hero__copy">
+                <span class="about-eyebrow">{{ t('settings.runtime') }}</span>
+                <h2 class="about-hero__title">{{ runtimeCurrentLabel }}</h2>
+                <p class="runtime-hero__desc">{{ t('settings.runtimeDesc') }}</p>
+              </div>
+              <n-button size="small" secondary :loading="runtimeDetecting" @click="detectRuntime" style="margin-left: auto; align-self: center;">
+                {{ t('settings.runtimeDetect') }}
+              </n-button>
+            </div>
+
+            <div class="about-stats" :aria-label="t('settings.runtime')">
+              <div v-for="item in runtimeSummaryItems" :key="item.label" class="about-stat">
+                <span class="about-stat__label">{{ item.label }}</span>
+                <strong class="about-stat__value">{{ item.value }}</strong>
+                <small class="about-stat__meta">{{ item.meta }}</small>
+              </div>
+            </div>
+          </article>
+
+          <!-- Runtime Environments -->
+          <article class="about-info-card runtime-envs-card">
+            <div class="section-title section-title--plain">
+              <span class="section-title__icon">
+                <n-icon :component="HardwareChipOutline" size="18" />
+              </span>
+              <span>{{ t('settings.runtimeBackendsSection') }}</span>
+            </div>
+            <div class="runtime-envs-list">
+              <div
+                v-for="card in runtimeBackendCards"
+                :key="card.backend"
+                class="runtime-env-card"
+                :class="{
+                  'runtime-env-card--active': card.state === 'active',
+                  'runtime-env-card--muted': card.state === 'not_installed',
+                }"
+              >
+                <div class="runtime-env-card__head">
+                  <strong class="runtime-env-card__backend">{{ card.label }}</strong>
+                  <n-tag v-if="card.state === 'active'" :bordered="false" size="small" type="success" round>
+                    {{ t('settings.runtimeActive') }}
+                  </n-tag>
+                  <n-tag v-else-if="card.state === 'installed'" :bordered="false" size="small" type="info" round>
+                    {{ t('settings.runtimeInstalled') }}
+                  </n-tag>
+                  <n-tag v-if="card.env?.source" :bordered="false" size="small" round>
+                    {{ runtimeSourceLabel(card.env.source) }}
+                  </n-tag>
+                  <n-tag v-if="card.recommended" :bordered="false" size="small" type="warning" round>
+                    {{ t('settings.runtimeRecommended') }}
+                  </n-tag>
+                  <n-tag v-if="card.manifestOutdated" :bordered="false" size="small" type="warning" round>
+                    {{ t('settings.runtimeManifestOutdated') }}
+                  </n-tag>
+                </div>
+
+                <p v-if="card.description" class="runtime-env-card__desc">{{ card.description }}</p>
+                <p v-if="card.offCatalog" class="runtime-env-card__desc">{{ t('settings.runtimeBackendUnsupported') }}</p>
+                <p v-if="card.vendorMissing" class="runtime-env-card__desc">{{ t('settings.runtimeVendorNotDetected') }}</p>
+                <p v-if="card.manifestOutdated && !runtimeManagementLocked" class="runtime-env-card__desc">
+                  {{ t('settings.runtimeManifestOutdatedHint') }}
+                </p>
+
+                <div v-if="card.env" class="runtime-env-card__meta">
+                  <span v-if="card.env.torchVersion">{{ t('settings.runtimeTorchVersion', { version: card.env.torchVersion }) }}</span>
+                  <span v-if="runtimeAcceleratorReady(card.env, card.backend)" class="runtime-env-card__accel runtime-env-card__accel--ok">{{ t('settings.runtimeAcceleratorAvailable') }}</span>
+                  <span v-else-if="card.backend !== 'cpu'" class="runtime-env-card__accel">{{ t('settings.runtimeAcceleratorUnavailable') }}</span>
+                  <span v-if="card.diskLabel">{{ t('settings.runtimeDiskUsage', { size: card.diskLabel }) }}</span>
+                </div>
+                <div v-else-if="card.state === 'not_installed'" class="runtime-env-card__meta">
+                  <span>{{ t('settings.runtimeInstallSizeHint', { size: card.sizeHint }) }}</span>
+                  <span v-if="card.leftoverLabel" class="runtime-env-card__accel">
+                    {{ t('settings.runtimeLeftover', { size: card.leftoverLabel }) }}
+                  </span>
+                </div>
+
+                <div v-if="runtimeManagementLocked" class="runtime-env-card__locked">
+                  <n-icon :component="LockClosedOutline" size="14" />
+                  <span>{{ t('settings.runtimeBuiltInLocked') }}</span>
+                </div>
+
+                <div v-else class="runtime-env-card__actions">
+                  <n-button
+                    v-if="card.state === 'not_installed'"
+                    size="tiny"
+                    secondary
+                    type="primary"
+                    :loading="card.installing"
+                    :disabled="runtimeBusy"
+                    @click="installBackend(card.backend)"
+                  >
+                    <template #icon><n-icon :component="DownloadOutline" /></template>
+                    {{ card.installing ? t('settings.runtimeInstalling') : t('settings.runtimeInstallBackend') }}
+                  </n-button>
+                  <n-button
+                    v-if="card.state === 'installed'"
+                    size="tiny"
+                    secondary
+                    type="primary"
+                    :loading="runtimeActivating === card.backend"
+                    :disabled="runtimeBusy"
+                    @click="activateInstalledRuntime(card.backend)"
+                  >
+                    <template #icon><n-icon :component="PlayOutline" /></template>
+                    {{ t('settings.runtimeActivateShort') }}
+                  </n-button>
+                  <n-button
+                    v-if="card.state !== 'not_installed'"
+                    size="tiny"
+                    tertiary
+                    :loading="card.installing"
+                    :disabled="runtimeBusy"
+                    @click="installBackend(card.backend)"
+                  >
+                    {{ card.installing ? t('settings.runtimeInstalling') : t('settings.runtimeRepair') }}
+                  </n-button>
+                  <n-button
+                    v-if="card.env?.logPath"
+                    size="tiny"
+                    tertiary
+                    @click="revealPath(card.env.logPath)"
+                  >
+                    {{ t('settings.runtimeViewLog') }}
+                  </n-button>
+                  <n-button
+                    v-if="card.leftover"
+                    size="tiny"
+                    tertiary
+                    type="error"
+                    :loading="runtimeDeleting === card.backend"
+                    :disabled="runtimeBusy"
+                    @click="deleteRuntime(card.backend)"
+                  >
+                    <template #icon><n-icon :component="TrashOutline" /></template>
+                    {{ t('settings.runtimeCleanLeftover') }}
+                  </n-button>
+                  <n-button
+                    v-if="card.env?.source === 'managed' && card.state === 'installed'"
+                    size="tiny"
+                    tertiary
+                    type="error"
+                    :loading="runtimeDeleting === card.backend"
+                    :disabled="runtimeBusy"
+                    @click="deleteRuntime(card.backend)"
+                  >
+                    <template #icon><n-icon :component="TrashOutline" /></template>
+                    {{ t('settings.runtimeDelete') }}
+                  </n-button>
+                </div>
+
+                <div v-if="card.installing" class="runtime-env-card__progress">
+                  <n-spin size="small" />
+                  <span class="runtime-env-card__progress-msg">{{ app.runtimeInstallMessage }}</span>
+                  <n-button size="tiny" tertiary @click="runtimeLogDialogVisible = true">
+                    <template #icon><n-icon :component="DocumentTextOutline" /></template>
+                    {{ t('settings.runtimeShowInstallLog') }}
+                  </n-button>
+                  <n-button size="tiny" tertiary @click="cancelRuntimeInstall">
+                    {{ t('common.cancel') }}
+                  </n-button>
+                </div>
+              </div>
+            </div>
+
+            <p v-if="runtimeDiskMeasuring" class="setting-row__hint runtime-disk-total">
+              {{ t('settings.runtimeDiskMeasuring') }}
+            </p>
+            <p v-else-if="runtimeDiskTotalLabel" class="setting-row__hint runtime-disk-total">
+              {{ t('settings.runtimeDiskTotal', { size: runtimeDiskTotalLabel }) }}
+            </p>
+
+            <div v-if="!runtimeManagementLocked" class="runtime-mirror-row">
+              <label class="text-muted text-sm">{{ t('settings.runtimeMirrorLabel') }}</label>
+              <n-select v-model:value="runtimeMirror" size="small" class="runtime-mirror-row__select" :options="[
+                { label: t('onboarding.runtimeMirrorAuto'), value: 'auto' },
+                { label: t('onboarding.runtimeMirrorUstc'), value: 'ustc' },
+                { label: t('onboarding.runtimeMirrorPypi'), value: 'pypi' },
+              ]" />
+            </div>
+
+            <n-alert v-if="app.runtimeInstallStatus === 'error'" type="error" :show-icon="true">
+              {{ app.runtimeInstallMessage }}
+            </n-alert>
+
+            <div v-if="!runtimeInstalling && app.runtimeInstallLogs.length" class="runtime-log-trigger">
+              <n-button size="small" tertiary @click="runtimeLogDialogVisible = true">
+                <template #icon><n-icon :component="DocumentTextOutline" /></template>
+                {{ t('settings.runtimeShowInstallLog') }}
+              </n-button>
+            </div>
+          </article>
+        </section>
+
         <!-- Paths -->
         <section v-else-if="activeSection === 'paths'" class="settings-section-panel">
         <n-card class="settings-card settings-card--feature settings-card--paths" :bordered="true" size="small">
@@ -1073,6 +1553,28 @@ onMounted(() => {
         </div>
       </template>
     </n-modal>
+
+    <n-modal
+      v-model:show="runtimeLogDialogVisible"
+      style="width:min(760px, 92vw)"
+      preset="card"
+      :title="t('settings.runtimeInstallLogTitle')"
+    >
+      <div class="runtime-log-dialog">
+        <div v-if="runtimeInstalling" class="runtime-log-dialog__status">
+          <n-spin size="small" />
+          <span>{{ app.runtimeInstallMessage }}</span>
+        </div>
+        <n-alert v-else-if="app.runtimeInstallStatus === 'error'" type="error" :show-icon="true" style="margin-bottom: 8px">
+          {{ app.runtimeInstallMessage }}
+        </n-alert>
+        <n-alert v-else-if="app.runtimeInstallStatus === 'success'" type="success" :show-icon="true" style="margin-bottom: 8px">
+          {{ t('settings.runtimeInstallLogSuccess') }}
+        </n-alert>
+        <pre v-if="app.runtimeInstallLogs.length" ref="runtimeLogPre" class="runtime-log-dialog__pre">{{ app.runtimeInstallLogs.join('\n') }}</pre>
+        <p v-else class="runtime-log-dialog__empty">{{ t('settings.runtimeInstallLogEmpty') }}</p>
+      </div>
+    </n-modal>
   </div>
 </template>
 
@@ -1441,6 +1943,178 @@ onMounted(() => {
   color: var(--on-surface-muted);
   opacity: 0.7;
 }
+
+.runtime-hero__icon {
+  flex: 0 0 auto;
+}
+
+.runtime-hero__desc {
+  margin: 6px 0 0;
+  color: var(--on-surface-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.runtime-detail-grid {
+  align-items: start;
+}
+
+.runtime-installed-list {
+  display: grid;
+  gap: 8px;
+}
+
+.runtime-installed-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 48%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 28%, transparent);
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.runtime-installed-item strong {
+  color: var(--on-surface);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.runtime-section {
+  display: grid;
+  gap: 16px;
+}
+
+.runtime-envs-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.runtime-envs-list {
+  display: grid;
+  gap: 10px;
+}
+
+.runtime-env-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 32%, transparent);
+  transition: border-color 180ms ease, background 180ms ease;
+}
+
+.runtime-env-card--active {
+  border-color: color-mix(in srgb, var(--primary-border) 52%, var(--outline));
+  background: color-mix(in srgb, var(--primary-soft) 12%, var(--surface-2) 28%);
+}
+
+.runtime-env-card--muted {
+  background: color-mix(in srgb, var(--surface-2) 18%, transparent);
+  border-style: dashed;
+}
+
+.runtime-env-card__desc {
+  margin: 0;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.runtime-env-card__locked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 58%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 26%, transparent);
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.runtime-env-card__progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 52%, transparent);
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.runtime-env-card__progress-msg {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-disk-total {
+  margin: 0;
+}
+
+.runtime-mirror-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+
+.runtime-mirror-row__select {
+  width: 220px;
+}
+
+.runtime-env-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.runtime-env-card__backend {
+  color: var(--on-surface);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.runtime-env-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.runtime-env-card__accel {
+  color: var(--on-surface-muted);
+}
+
+.runtime-env-card__accel--ok {
+  color: var(--success, #22c55e);
+}
+
+.runtime-env-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
 .settings-card {
   border-color: color-mix(in srgb, var(--outline) 58%, transparent) !important;
   background:
@@ -1704,6 +2378,69 @@ onMounted(() => {
   font-size: 12px;
   line-height: 1.55;
   color: var(--on-surface-muted);
+}
+
+.runtime-log-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.runtime-log-trigger__status {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.runtime-log-dialog {
+  display: grid;
+  gap: 8px;
+}
+
+.runtime-log-dialog__status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  color: var(--on-surface-muted);
+  font-size: 13px;
+}
+
+.runtime-log-dialog__pre {
+  max-height: 420px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid color-mix(in srgb, var(--outline) 40%, transparent);
+  color: var(--on-surface-muted);
+  font: 11px/1.55 "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.runtime-log-dialog__empty {
+  margin: 0;
+  padding: 24px 0;
+  text-align: center;
+  color: var(--on-surface-muted);
+  font-size: 13px;
+}
+
+.runtime-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.runtime-stack__section {
+  width: 100%;
 }
 
 .setting-field--switch {

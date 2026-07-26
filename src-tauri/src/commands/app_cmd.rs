@@ -282,6 +282,65 @@ pub async fn test_proxy_connection(app: AppHandle, payload: Value) -> AppResult<
     run_worker_with_payload(&app, "test_connection", Some(payload))
 }
 
+#[tauri::command]
+pub async fn runtime_info(app: AppHandle, payload: Option<Value>) -> AppResult<Value> {
+    run_worker_with_payload(&app, "runtime_info", payload)
+}
+
+#[tauri::command]
+pub async fn runtime_env_sizes(app: AppHandle) -> AppResult<Value> {
+    run_worker_with_payload(&app, "runtime_env_sizes", None)
+}
+
+#[tauri::command]
+pub async fn start_runtime_install(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> AppResult<Value> {
+    if let Ok(tasks) = state.tasks.lock() {
+        if tasks.keys().any(|id| id.starts_with("runtime_install_")) {
+            return Err(AppError::Worker("runtime installation is already running".into()));
+        }
+    }
+    let backend = payload
+        .get("backend")
+        .and_then(Value::as_str)
+        .unwrap_or("cpu")
+        .to_string();
+    let task_id = payload
+        .get("taskId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("runtime_install_{}", chrono_like_timestamp()));
+    let mut payload = payload;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("taskId".to_string(), Value::String(task_id.clone()));
+        object.insert("backend".to_string(), Value::String(backend.clone()));
+    }
+    spawn_worker_background(app, state, "install_runtime", task_id.clone(), payload)?;
+    Ok(serde_json::json!({ "taskId": task_id, "started": true }))
+}
+
+#[tauri::command]
+pub async fn cancel_runtime_install(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> AppResult<bool> {
+    cancel_task(app, state, task_id).await
+}
+
+#[tauri::command]
+pub async fn activate_runtime(app: AppHandle, payload: Value) -> AppResult<Value> {
+    run_worker_with_payload(&app, "activate_runtime", Some(payload))
+}
+
+#[tauri::command]
+pub async fn delete_runtime(app: AppHandle, payload: Value) -> AppResult<Value> {
+    run_worker_with_payload(&app, "delete_runtime", Some(payload))
+}
+
 fn chrono_like_timestamp() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

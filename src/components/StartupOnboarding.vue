@@ -1,13 +1,21 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
-import { CheckmarkOutline, ColorPaletteOutline, FolderOpenOutline, LanguageOutline, MoonOutline } from '@vicons/ionicons5'
+import { CheckmarkOutline, ColorPaletteOutline, FolderOpenOutline, HardwareChipOutline, LanguageOutline, LockClosedOutline, MoonOutline } from '@vicons/ionicons5'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 import { SYSTEM_LOCALE, setLocale, type LocaleSetting } from '@/i18n'
 import { useSettingsStore } from '@/stores/settings'
+import { useAppStore, type RuntimeBackend } from '@/stores/app'
 import { formatBytes } from '@/utils/format'
+import {
+  detectRuntimePlatform,
+  isBuiltInRuntimeSource,
+  recommendedRuntimeBackend,
+  runtimeBackendLabel as runtimeBackendName,
+  runtimeSizeHint,
+} from '@/utils/runtime'
 import {
   applyTheme,
   getThemeAccentPreview,
@@ -25,6 +33,7 @@ const emit = defineEmits<{
 const { t, locale: currentLocale } = useI18n()
 const message = useMessage()
 const settings = useSettingsStore()
+const app = useAppStore()
 const {
   locale,
   themeMode,
@@ -36,10 +45,67 @@ const {
 } = storeToRefs(settings)
 
 const step = ref(0)
-const totalSteps = 4
+const totalSteps = 5
 const checkingModelDir = ref(false)
 const overlayRef = ref<HTMLElement | null>(null)
 const completeButtonRef = ref<HTMLElement | null>(null)
+const selectedBackend = ref<RuntimeBackend>('cpu')
+const runtimeMirror = ref('auto')
+
+const runtimePlatform = computed(() => detectRuntimePlatform(app.runtimeInfo))
+
+// Same rule as Settings: a macOS build runs on its bundled runtime, so there is nothing to choose.
+const runtimeManagementLocked = computed(() => {
+  if (!runtimePlatform.value.isMac) return false
+  const active = (app.runtimeInfo?.installedEnvironments || [])
+    .find((entry) => entry.backend === app.runtimeInstalledBackend)
+  return isBuiltInRuntimeSource(active?.source)
+})
+
+// An environment counts as installed even when it is not the active one, so this reads the
+// installed list rather than app.runtimeReadyForBackend() (which only answers for the active backend).
+function backendInstalled(backend: RuntimeBackend) {
+  return (app.runtimeInfo?.installedEnvironments || []).some((entry) => entry.backend === backend)
+}
+
+const runtimeBackendChoices = computed(() => {
+  const { isMac, isAppleSilicon } = runtimePlatform.value
+  const items: Array<{ value: RuntimeBackend; label: string; hint: string }> = [
+    { value: 'cpu', label: runtimeBackendName('cpu'), hint: t('onboarding.runtimeCpu') },
+  ]
+  if (!isMac) {
+    items.push(
+      { value: 'cuda', label: runtimeBackendName('cuda'), hint: t('onboarding.runtimeCuda') },
+      { value: 'rocm', label: runtimeBackendName('rocm'), hint: t('onboarding.runtimeRocm') },
+    )
+  }
+  if (isAppleSilicon) {
+    items.push({ value: 'mlx', label: runtimeBackendName('mlx'), hint: t('onboarding.runtimeMlx') })
+  }
+  return items.map((item) => ({
+    ...item,
+    installed: backendInstalled(item.value),
+    recommended: runtimeRecommendedBackend.value === item.value,
+    size: runtimeSizeHint(item.value),
+  }))
+})
+
+const runtimeRecommendedBackend = computed(() => recommendedRuntimeBackend(app.runtimeInfo))
+
+// runtimeInfo arrives asynchronously, so preselect once it can actually answer — but never
+// override a choice the user has already made.
+const backendTouched = ref(false)
+watch(runtimeRecommendedBackend, (backend) => {
+  if (!backend || backendTouched.value) return
+  if (runtimeBackendChoices.value.some((choice) => choice.value === backend)) {
+    selectedBackend.value = backend
+  }
+}, { immediate: true })
+
+const runtimeBackendLabel = computed(() => runtimeBackendName(app.runtimeInstalledBackend) || 'CPU')
+
+const selectedBackendInstalled = computed(() => backendInstalled(selectedBackend.value))
+const selectedBackendSize = computed(() => runtimeSizeHint(selectedBackend.value))
 
 const languageOptions = computed(() => [
   { label: t('settings.languageSystem'), value: SYSTEM_LOCALE },
@@ -82,13 +148,23 @@ const stepList = computed(() => [
     title: t('onboarding.dataDirTitle'),
     description: t('onboarding.dataDirDescription'),
   },
+  {
+    icon: HardwareChipOutline,
+    title: t('onboarding.runtimeTitle'),
+    description: t('onboarding.runtimeDescription'),
+  },
 ])
 
 const stepMeta = computed(() => stepList.value[step.value])
 
+const dataDirStepIndex = 3
+const runtimeStepIndex = 4
+
 const canGoNext = computed(() => {
-  if (step.value !== 3) return true
-  return !checkingModelDir.value && !isModelDirMigrating.value && modelDirMigrationState.value.status !== 'confirm'
+  if (step.value === dataDirStepIndex) {
+    return !checkingModelDir.value && !isModelDirMigrating.value && modelDirMigrationState.value.status !== 'confirm'
+  }
+  return true
 })
 const modelDirMigrationVisible = computed(() => modelDirMigrationState.value.status !== 'idle' && modelDirMigrationState.value.status !== 'confirm')
 const modelDirMigrationProgress = computed(() => {
@@ -210,10 +286,23 @@ async function finishOnboarding(event?: MouseEvent) {
         x: window.innerWidth / 2,
         y: window.innerHeight / 2,
       }
+  const backend = selectedBackend.value
+  const locked = runtimeManagementLocked.value
+  const alreadyReady = app.runtimeReadyForBackend(backend)
+  const alreadyInstalled = backendInstalled(backend)
   await runRippleViewTransition(async () => {
     await settings.markStartupOnboardingCompleted()
     emit('completed')
   }, origin)
+  // Runtime errors are handled by the store and surfaced in Settings.
+  // When management is locked the bundled runtime is the only one — never touch it.
+  if (locked || alreadyReady) return
+  if (alreadyInstalled) {
+    // Installed but not active — switching is enough, no need to download it again.
+    app.activateRuntime(backend).catch(() => {})
+  } else {
+    app.installRuntime(backend, runtimeMirror.value, currentLocale.value).catch(() => {})
+  }
 }
 </script>
 
@@ -295,7 +384,7 @@ async function finishOnboarding(event?: MouseEvent) {
             </button>
           </section>
 
-          <section v-else class="onboarding-section">
+          <section v-else-if="step === dataDirStepIndex" class="onboarding-section">
             <div class="onboarding-path-card">
               <span>{{ t('onboarding.currentModelDir') }}</span>
               <code :title="modelDir">{{ modelDir }}</code>
@@ -316,6 +405,68 @@ async function finishOnboarding(event?: MouseEvent) {
               </n-button>
               <p class="onboarding-hint">{{ t('onboarding.dataDirReady') }}</p>
             </div>
+          </section>
+
+          <section v-else class="onboarding-section onboarding-runtime-section">
+            <div v-if="runtimeManagementLocked" class="onboarding-runtime-locked">
+              <n-icon :component="LockClosedOutline" size="18" />
+              <div class="onboarding-runtime-locked__copy">
+                <strong>{{ runtimeBackendLabel }}</strong>
+                <span>{{ t('onboarding.runtimeBuiltInLocked') }}</span>
+              </div>
+            </div>
+
+            <template v-else>
+            <div class="onboarding-runtime-grid">
+              <button
+                v-for="choice in runtimeBackendChoices"
+                :key="choice.value"
+                type="button"
+                class="onboarding-runtime-card"
+                :class="{ active: selectedBackend === choice.value }"
+                @click="selectedBackend = choice.value; backendTouched = true"
+              >
+                <span class="onboarding-runtime-card__title">
+                  <strong class="onboarding-runtime-card__label">{{ choice.label }}</strong>
+                  <n-tag v-if="choice.installed" :bordered="false" size="small" type="success" round>
+                    {{ t('onboarding.runtimeInstalledTag') }}
+                  </n-tag>
+                  <n-tag v-if="choice.recommended" :bordered="false" size="small" type="warning" round>
+                    {{ t('onboarding.runtimeRecommendedTag') }}
+                  </n-tag>
+                </span>
+                <span class="onboarding-runtime-card__hint">{{ choice.hint }}</span>
+                <span v-if="!choice.installed" class="onboarding-runtime-card__size">
+                  {{ t('onboarding.runtimeSizeHint', { size: choice.size }) }}
+                </span>
+              </button>
+            </div>
+
+            <div class="onboarding-runtime-mirror">
+              <n-select
+                v-model:value="runtimeMirror"
+                size="small"
+                :to="overlayRef || undefined"
+                :options="[
+                  { label: t('onboarding.runtimeMirrorAuto'), value: 'auto' },
+                  { label: t('onboarding.runtimeMirrorUstc'), value: 'ustc' },
+                  { label: t('onboarding.runtimeMirrorPypi'), value: 'pypi' },
+                ]"
+              />
+            </div>
+
+            <p class="onboarding-hint">
+              {{ t('onboarding.runtimeDriverHint') }}
+              <template v-if="selectedBackendInstalled">
+                <br />
+                <span>{{ t('onboarding.runtimeAlreadyReady') }}</span>
+              </template>
+              <template v-else>
+                <br />
+                <span>{{ t('onboarding.runtimeSizeHint', { size: selectedBackendSize }) }}</span>
+              </template>
+            </p>
+            </template>
           </section>
         </div>
 
@@ -936,7 +1087,8 @@ async function finishOnboarding(event?: MouseEvent) {
   }
 
   .onboarding-chip-grid,
-  .onboarding-accent-grid {
+  .onboarding-accent-grid,
+  .onboarding-runtime-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -948,5 +1100,91 @@ async function finishOnboarding(event?: MouseEvent) {
   .migration-progress-meta {
     flex-direction: column;
   }
+}
+
+.onboarding-runtime-section {
+  gap: 14px;
+}
+
+.onboarding-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.onboarding-runtime-card {
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 68%, transparent);
+  color: var(--on-surface);
+  cursor: pointer;
+  text-align: left;
+  transition: 180ms ease;
+}
+
+.onboarding-runtime-card.active,
+.onboarding-runtime-card:hover {
+  border-color: color-mix(in srgb, var(--primary-border) 88%, transparent);
+  background: color-mix(in srgb, var(--primary-soft) 22%, var(--surface-2));
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--primary-glow) 10%, transparent);
+}
+
+.onboarding-runtime-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.onboarding-runtime-card__label {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.onboarding-runtime-card__size {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.onboarding-runtime-card__hint {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.onboarding-runtime-mirror {
+  max-width: 260px;
+}
+
+.onboarding-runtime-locked {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 68%, transparent);
+  color: var(--on-surface-muted);
+}
+
+.onboarding-runtime-locked__copy {
+  display: grid;
+  gap: 4px;
+}
+
+.onboarding-runtime-locked__copy strong {
+  color: var(--on-surface);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.onboarding-runtime-locked__copy span {
+  font-size: 12px;
+  line-height: 1.55;
 }
 </style>

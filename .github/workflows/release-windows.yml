@@ -36,9 +36,9 @@ jobs:
           echo "stage_name=$stageName" >> $env:GITHUB_OUTPUT
           echo "stage_artifact=$artifactName" >> $env:GITHUB_OUTPUT
 
-      - name: Prepare embedded CUDA Python runtime
+      - name: Prepare bootstrap runtime + pre-installed CUDA environment
         shell: pwsh
-        run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL
+        run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL -PreinstallBackend cuda
 
       - name: Sync build version metadata
         shell: pwsh
@@ -93,18 +93,23 @@ jobs:
           Copy-Item "src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
           Copy-Item "python" "$stage/python" -Recurse
           Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
+          Copy-Item "runtime-envs" "$stage/runtime-envs" -Recurse
           Copy-Item "release/bin" "$stage/bin" -Recurse
+          Copy-Item "python/runtime-manifest.json" "$stage/runtime-manifest.json"
           @"
           Pymss Studio $version Windows x64 CUDA
           Author: TheSmallHanCat
 
-          This installer includes Python runtime, CUDA PyTorch, worker.py, and the PyPI pymss package.
+          This package includes a base Python runtime and a pre-installed CUDA environment.
           NVIDIA driver is required for GPU acceleration.
+          Users can switch backends or install additional environments in Settings.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
-          & "$stage\python-runtime\python.exe" "$stage\python\worker.py" env_info
-          if ($LASTEXITCODE -ne 0) { throw "Staged Python worker env_info failed with exit code $LASTEXITCODE" }
-          & "$stage\python-runtime\python.exe" "$stage\python\worker.py" list_models --payload "{}"
-          if ($LASTEXITCODE -ne 0) { throw "Staged Python worker list_models failed with exit code $LASTEXITCODE" }
+          $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR = (Resolve-Path "$stage/runtime-envs").Path
+          $env:PYMSS_STUDIO_ACTIVE_RUNTIME_FILE = (Join-Path $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR "active-runtime.json")
+          & "$stage\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" env_info
+          if ($LASTEXITCODE -ne 0) { throw "Staged CUDA env_info failed with exit code $LASTEXITCODE" }
+          & "$stage\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
+          if ($LASTEXITCODE -ne 0) { throw "Staged CUDA list_models failed with exit code $LASTEXITCODE" }
 
       - name: Upload CUDA stage artifact
         uses: actions/upload-artifact@v4
@@ -363,3 +368,191 @@ jobs:
         with:
           name: Pymss-Studio-${{ needs.windows-cpu-prepare.outputs.version }}-windows-x64-cpu-setup
           path: release/Pymss-Studio-${{ needs.windows-cpu-prepare.outputs.version }}-windows-x64-cpu-setup.exe
+
+  windows-online-prepare:
+    name: Windows x64 online runtime prepare
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      stage_name: ${{ steps.meta.outputs.stage_name }}
+      stage_artifact: ${{ steps.meta.outputs.stage_artifact }}
+    env:
+      PYMSS_VERSION_INPUT: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-release-env
+      - name: Resolve package metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $version = '${{ env.PYMSS_VERSION_INPUT }}'.TrimStart('v')
+          $stageName = "Pymss-Studio-$version-windows-x64-online"
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "stage_name=$stageName" >> $env:GITHUB_OUTPUT
+          echo "stage_artifact=$stageName-stage" >> $env:GITHUB_OUTPUT
+      - name: Prepare minimal Python runtime
+        shell: pwsh
+        run: ./scripts/prepare-python-runtime.ps1 -Variant default -Minimal
+      - name: Sync build version metadata
+        shell: pwsh
+        env:
+          PYMSS_VERSION: ${{ steps.meta.outputs.version }}
+        run: ./scripts/sync-build-version.ps1
+      - name: Build Tauri production app
+        run: pnpm tauri build --no-bundle
+      - name: Prepare Windows bundled tools
+        shell: pwsh
+        run: |
+          $bin = "release/bin"
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "release/ffmpeg.zip"
+          Expand-Archive -Path "release/ffmpeg.zip" -DestinationPath "release/ffmpeg" -Force
+          $ffmpeg = Get-ChildItem "release/ffmpeg" -Recurse -File -Filter "ffmpeg.exe" | Select-Object -First 1
+          if (-not $ffmpeg) { throw "ffmpeg.exe not found" }
+          Copy-Item $ffmpeg.FullName "$bin/ffmpeg.exe" -Force
+          Invoke-WebRequest -Uri "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" -OutFile "release/aria2.zip"
+          Expand-Archive -Path "release/aria2.zip" -DestinationPath "release/aria2" -Force
+          $aria2 = Get-ChildItem "release/aria2" -Recurse -File -Filter "aria2c.exe" | Select-Object -First 1
+          if (-not $aria2) { throw "aria2c.exe not found" }
+          Copy-Item $aria2.FullName "$bin/aria2c.exe" -Force
+          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "$bin/VC_redist.x64.exe"
+      - name: Stage online portable directory
+        shell: pwsh
+        run: |
+          $stage = "release/${{ steps.meta.outputs.stage_name }}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
+          Copy-Item "python" "$stage/python" -Recurse
+          Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
+          Copy-Item "release/bin" "$stage/bin" -Recurse
+          Copy-Item "python/runtime-manifest.json" "$stage/runtime-manifest.json"
+          @"
+          Pymss Studio ${{ steps.meta.outputs.version }} Windows x64 Online
+          This package installs the selected CPU, CUDA, or ROCm environment on first start.
+          "@ | Set-Content "$stage/README.txt" -Encoding UTF8
+          & "$stage\python-runtime\python.exe" "$stage\python\worker.py" runtime_info --payload "{}"
+          if ($LASTEXITCODE -ne 0) { throw "Online runtime bootstrap check failed" }
+      - name: Upload online stage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.stage_artifact }}
+          path: release/${{ steps.meta.outputs.stage_name }}
+          compression-level: 0
+
+  windows-online-7z:
+    name: Windows x64 online portable 7z
+    runs-on: windows-latest
+    needs: windows-online-prepare
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.windows-online-prepare.outputs.stage_artifact }}
+          path: release/${{ needs.windows-online-prepare.outputs.stage_name }}
+      - name: Build online portable archive
+        shell: pwsh
+        run: |
+          $stageName = '${{ needs.windows-online-prepare.outputs.stage_name }}'
+          Set-Content "release/$stageName/pymss-studio.portable" -Value "portable" -Encoding ASCII
+          Push-Location release
+          & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
+          Pop-Location
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pymss-Studio-${{ needs.windows-online-prepare.outputs.version }}-windows-x64-online-portable
+          path: release/${{ needs.windows-online-prepare.outputs.stage_name }}.7z
+
+  windows-rocm-prepare:
+    name: Windows x64 ROCm prepare
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      stage_name: ${{ steps.meta.outputs.stage_name }}
+      stage_artifact: ${{ steps.meta.outputs.stage_artifact }}
+    env:
+      PYMSS_VERSION_INPUT: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-release-env
+      - name: Resolve package metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $version = '${{ env.PYMSS_VERSION_INPUT }}'.TrimStart('v')
+          $stageName = "Pymss-Studio-$version-windows-x64-rocm"
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "stage_name=$stageName" >> $env:GITHUB_OUTPUT
+          echo "stage_artifact=$stageName-stage" >> $env:GITHUB_OUTPUT
+      - name: Prepare bootstrap runtime + pre-installed ROCm environment
+        shell: pwsh
+        run: ./scripts/prepare-python-runtime.ps1 -Variant rocm -TorchVersion 2.9.1 -TorchIndexUrl "" -PreinstallBackend rocm
+      - name: Sync build version metadata
+        shell: pwsh
+        env:
+          PYMSS_VERSION: ${{ steps.meta.outputs.version }}
+        run: ./scripts/sync-build-version.ps1
+      - name: Build Tauri production app
+        run: pnpm tauri build --no-bundle
+      - name: Prepare ROCm portable tools
+        shell: pwsh
+        run: |
+          $bin = "release/bin"
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "release/ffmpeg.zip"
+          Expand-Archive -Path "release/ffmpeg.zip" -DestinationPath "release/ffmpeg" -Force
+          $ffmpeg = Get-ChildItem "release/ffmpeg" -Recurse -File -Filter "ffmpeg.exe" | Select-Object -First 1
+          Copy-Item $ffmpeg.FullName "$bin/ffmpeg.exe" -Force
+          Invoke-WebRequest -Uri "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" -OutFile "release/aria2.zip"
+          Expand-Archive -Path "release/aria2.zip" -DestinationPath "release/aria2" -Force
+          $aria2 = Get-ChildItem "release/aria2" -Recurse -File -Filter "aria2c.exe" | Select-Object -First 1
+          Copy-Item $aria2.FullName "$bin/aria2c.exe" -Force
+          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "$bin/VC_redist.x64.exe"
+      - name: Stage ROCm portable directory
+        shell: pwsh
+        run: |
+          $stage = "release/${{ steps.meta.outputs.stage_name }}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
+          Copy-Item "python" "$stage/python" -Recurse
+          Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
+          Copy-Item "runtime-envs" "$stage/runtime-envs" -Recurse
+          Copy-Item "release/bin" "$stage/bin" -Recurse
+          Copy-Item "python/runtime-manifest.json" "$stage/runtime-manifest.json"
+          @"
+          Pymss Studio ${{ steps.meta.outputs.version }} Windows x64 ROCm
+          This package includes a base Python runtime and a pre-installed ROCm environment.
+          Requires Windows 11, a supported AMD GPU, and the matching AMD driver.
+          Users can switch backends or install additional environments in Settings.
+          "@ | Set-Content "$stage/README.txt" -Encoding UTF8
+          $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR = (Resolve-Path "$stage/runtime-envs").Path
+          $env:PYMSS_STUDIO_ACTIVE_RUNTIME_FILE = (Join-Path $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR "active-runtime.json")
+          & "$stage\runtime-envs\rocm\Scripts\python.exe" "$stage\python\worker.py" env_info
+          if ($LASTEXITCODE -ne 0) { throw "Staged ROCm env_info failed" }
+          & "$stage\runtime-envs\rocm\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
+          if ($LASTEXITCODE -ne 0) { throw "Staged ROCm list_models failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.stage_artifact }}
+          path: release/${{ steps.meta.outputs.stage_name }}
+          compression-level: 0
+
+  windows-rocm-7z:
+    name: Windows x64 ROCm portable 7z
+    runs-on: windows-latest
+    needs: windows-rocm-prepare
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.windows-rocm-prepare.outputs.stage_artifact }}
+          path: release/${{ needs.windows-rocm-prepare.outputs.stage_name }}
+      - name: Build ROCm portable archive
+        shell: pwsh
+        run: |
+          $stageName = '${{ needs.windows-rocm-prepare.outputs.stage_name }}'
+          Set-Content "release/$stageName/pymss-studio.portable" -Value "portable" -Encoding ASCII
+          Push-Location release
+          & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
+          Pop-Location
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pymss-Studio-${{ needs.windows-rocm-prepare.outputs.version }}-windows-x64-rocm-portable
+          path: release/${{ needs.windows-rocm-prepare.outputs.stage_name }}.7z
