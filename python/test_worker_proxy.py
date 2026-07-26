@@ -1,7 +1,6 @@
 import unittest
 
 from worker_download import _test_url_for_source
-from worker_bootstrap import _module_available
 from worker_proxy import ProxyConfigError, aria2_proxy_args, parse_proxy_config, redacted_proxy
 
 
@@ -31,9 +30,6 @@ class ProxyConfigTests(unittest.TestCase):
         self.assertIn("modelscope.cn", _test_url_for_source("modelscope"))
         self.assertIn("huggingface.co", _test_url_for_source("huggingface"))
         self.assertIn("hf-mirror.com", _test_url_for_source("hf-mirror"))
-
-    def test_bootstrap_module_mapping_uses_import_names(self):
-        self.assertTrue(_module_available("pymss_core"))
 
 
 if __name__ == "__main__":

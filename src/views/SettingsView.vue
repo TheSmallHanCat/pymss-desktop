@@ -227,9 +227,10 @@ const runtimeBackendCards = computed(() => {
   })
 })
 
+// Same naming as the cards ("NVIDIA CUDA", not "CUDA"), so a confirmation dialog never appears
+// to be talking about something other than the card that opened it.
 function runtimeBackendLabel(value: RuntimeBackend | string | null | undefined) {
-  if (!value) return t('settings.envNotChecked')
-  return String(value).toUpperCase()
+  return value ? runtimeBackendName(value) : t('settings.envNotChecked')
 }
 
 function runtimeSourceLabel(source: string | undefined) {

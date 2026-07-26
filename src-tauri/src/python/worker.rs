@@ -258,13 +258,15 @@ fn build_worker_command(
 ) -> AppResult<Command> {
     let worker = worker_path(app)?;
     let bootstrap_python = bootstrap_python_path(app)?;
+    // Runtime management must never run inside the environment it is managing: the bootstrap
+    // interpreter is the only one guaranteed to exist while an environment is being built,
+    // switched, or deleted.
     let python = if matches!(
         command,
         "runtime_info"
             | "runtime_env_sizes"
             | "install_runtime"
             | "activate_runtime"
-            | "cancel_runtime_install"
             | "delete_runtime"
     ) {
         bootstrap_python.clone()

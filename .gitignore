@@ -36,6 +36,11 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Local AI tooling state
+.claude/
+.serena/
+.playwright-mcp/
+
 # Local runtime outputs
 data/
 results/

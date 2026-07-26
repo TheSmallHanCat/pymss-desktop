@@ -31,9 +31,6 @@ def main(argv: list[str]) -> int:
         if args.command == "runtime_env_sizes":
             from worker_bootstrap import cmd_runtime_env_sizes
             return cmd_runtime_env_sizes(payload)
-        if args.command == "cancel_runtime_install":
-            from worker_bootstrap import cmd_cancel_runtime_install
-            return cmd_cancel_runtime_install()
         if args.command == "delete_runtime":
             from worker_bootstrap import cmd_delete_runtime
             return cmd_delete_runtime(payload)
@@ -43,7 +40,9 @@ def main(argv: list[str]) -> int:
                 "url": payload.get("url"),
                 "bypass": payload.get("bypass"),
             }))
-        elif args.command not in {"runtime_info", "install_runtime", "activate_runtime", "cancel_runtime_install"}:
+        else:
+            # Only non-runtime commands reach this: the runtime ones above have already
+            # returned, having set up their own proxy when they need the network.
             configure_process_proxy(load_proxy_config())
         if args.command == "health":
             from worker_models import cmd_health

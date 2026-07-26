@@ -171,15 +171,21 @@ export type AudioParams = {
   m4aCodec: string
 }
 
+/**
+ * What the worker is told to run on. ROCm is deliberately absent: a ROCm torch build exposes
+ * its GPUs through the same `cuda` device API, so it resolves to 'cuda' — sending 'rocm' would
+ * fail inside pymss. See getRuntimeDeviceConfig().
+ */
 export type RuntimeDeviceConfig = {
-  device: 'auto' | 'cpu' | 'cuda' | 'rocm' | 'mps' | 'mlx'
+  device: 'auto' | 'cpu' | 'cuda' | 'mps' | 'mlx'
   deviceIds: number[]
 }
 
+/** A pickable entry in the device dropdown. `type` is the UI kind, which does tell ROCm apart. */
 export type DeviceOption = {
   label: string
   value: string
-  type: RuntimeDeviceConfig['device']
+  type: RuntimeDeviceConfig['device'] | 'rocm'
   deviceIds?: number[]
 }
 
@@ -376,26 +382,29 @@ export const useSettingsStore = defineStore('settings', () => {
       { label: 'Auto (优先使用可用显卡)', value: 'auto', type: 'auto' },
       { label: 'CPU', value: 'cpu', type: 'cpu', deviceIds: [0] },
     ]
+    // A ROCm build reports its GPUs through torch's cuda API, so they arrive in cudaDevices and
+    // only the naming differs. Each device still gets its own value: sharing one across cards
+    // would make every card past the first unselectable and pin inference to GPU 0.
+    const isRocm = env?.torchBackend === 'rocm'
+    const gpuKind = isRocm ? 'rocm' : 'cuda'
+    const gpuName = isRocm ? 'ROCm' : 'CUDA'
     for (const gpu of env?.cudaDevices || []) {
-      const isRocm = env?.torchBackend === 'rocm'
       const memory = gpu.totalMemoryBytes
         ? ` · ${(gpu.totalMemoryBytes / 1024 / 1024 / 1024).toFixed(1)} GB`
         : ''
       options.push({
-        label: `${isRocm ? 'ROCm' : 'CUDA'} ${gpu.id}: ${gpu.name}${memory}`,
-        value: isRocm ? 'rocm' : `cuda:${gpu.id}`,
-        type: isRocm ? 'rocm' : 'cuda',
+        label: `${gpuName} ${gpu.id}: ${gpu.name}${memory}`,
+        value: `${gpuKind}:${gpu.id}`,
+        type: gpuKind,
         deviceIds: [gpu.id],
       })
     }
-    if (env?.cudaAvailable && !(env.cudaDevices || []).length && env.torchBackend !== 'rocm') {
+    // Enumeration can come back empty while the accelerator works; fall back to device count.
+    if (env?.cudaAvailable && !(env.cudaDevices || []).length) {
       const count = Math.max(1, env.cudaDeviceCount || 1)
       for (let id = 0; id < count; id += 1) {
-        options.push({ label: `CUDA ${id}`, value: `cuda:${id}`, type: 'cuda', deviceIds: [id] })
+        options.push({ label: `${gpuName} ${id}`, value: `${gpuKind}:${id}`, type: gpuKind, deviceIds: [id] })
       }
-    }
-    if (env?.torchBackend === 'rocm' && !(env.cudaDevices || []).length) {
-      options.push({ label: 'ROCm 0', value: 'rocm', type: 'rocm', deviceIds: [0] })
     }
     if (env?.mlxAvailable || env?.mpsAvailable) options.push({ label: 'Apple MLX', value: 'mlx', type: 'mlx', deviceIds: [0] })
     if (env?.mpsAvailable) options.push({ label: 'Apple MPS', value: 'mps', type: 'mps', deviceIds: [0] })
@@ -404,12 +413,14 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function getRuntimeDeviceConfig(env?: EnvInfo | null): RuntimeDeviceConfig {
     const selected = defaultDevice.value
-    if (selected.startsWith('cuda:')) {
-      const id = parseInt(selected.slice('cuda:'.length), 10)
+    // Both prefixes resolve to 'cuda' — that is the device API a ROCm torch build speaks.
+    const gpuPrefix = ['cuda:', 'rocm:'].find((prefix) => selected.startsWith(prefix))
+    if (gpuPrefix) {
+      const id = parseInt(selected.slice(gpuPrefix.length), 10)
       return { device: 'cuda', deviceIds: Number.isFinite(id) ? [id] : [0] }
     }
-    if (selected === 'rocm') return { device: 'cuda', deviceIds: [0] }
-    if (selected === 'cuda') return { device: 'cuda', deviceIds: [0] }
+    // Bare 'rocm' is what settings saved before ROCm gained per-device values.
+    if (selected === 'cuda' || selected === 'rocm') return { device: 'cuda', deviceIds: [0] }
     if (selected === 'auto' && env?.mlxAvailable) {
       return { device: 'mlx', deviceIds: [0] }
     }

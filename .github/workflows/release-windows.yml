@@ -95,7 +95,6 @@ jobs:
           Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
           Copy-Item "runtime-envs" "$stage/runtime-envs" -Recurse
           Copy-Item "release/bin" "$stage/bin" -Recurse
-          Copy-Item "python/runtime-manifest.json" "$stage/runtime-manifest.json"
           @"
           Pymss Studio $version Windows x64 CUDA
           Author: TheSmallHanCat
@@ -425,7 +424,6 @@ jobs:
           Copy-Item "python" "$stage/python" -Recurse
           Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
           Copy-Item "release/bin" "$stage/bin" -Recurse
-          Copy-Item "python/runtime-manifest.json" "$stage/runtime-manifest.json"
           @"
           Pymss Studio ${{ steps.meta.outputs.version }} Windows x64 Online
           This package installs the selected CPU, CUDA, or ROCm environment on first start.
@@ -516,7 +514,6 @@ jobs:
           Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
           Copy-Item "runtime-envs" "$stage/runtime-envs" -Recurse
           Copy-Item "release/bin" "$stage/bin" -Recurse
-          Copy-Item "python/runtime-manifest.json" "$stage/runtime-manifest.json"
           @"
           Pymss Studio ${{ steps.meta.outputs.version }} Windows x64 ROCm
           This package includes a base Python runtime and a pre-installed ROCm environment.

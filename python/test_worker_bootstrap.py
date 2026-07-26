@@ -229,6 +229,46 @@ class MultipleEnvironmentTests(unittest.TestCase):
         self.assertEqual(self._active()["backend"], "cuda")
 
 
+class PackageImportNameTests(unittest.TestCase):
+    """Package availability is decided with importlib, so every manifest package needs an
+    importable name. A dashed distribution name that nobody mapped can never be found, and the
+    environment would read as permanently incomplete with no hint as to why."""
+
+    def _manifest_packages(self):
+        # The real manifest, not the test stub: this is a guard on the shipped dependency list.
+        manifest = json.loads(worker_bootstrap.MANIFEST_PATH.read_text(encoding="utf-8"))
+        extras = [name for spec in manifest["backends"].values() for name in spec.get("extras", [])]
+        return [*manifest["common"], *extras]
+
+    def test_every_manifest_package_resolves_to_an_importable_name(self):
+        unimportable = [
+            name for name in self._manifest_packages()
+            if not worker_bootstrap.PACKAGE_IMPORT_NAMES.get(name, name).isidentifier()
+        ]
+        self.assertEqual(unimportable, [], f"add these to PACKAGE_IMPORT_NAMES: {unimportable}")
+
+    def test_the_mapping_carries_no_entries_for_packages_that_are_gone(self):
+        # A stale entry is harmless but hides that the dependency was dropped.
+        packages = set(self._manifest_packages())
+        stale = sorted(set(worker_bootstrap.PACKAGE_IMPORT_NAMES) - packages)
+        self.assertEqual(stale, [], f"PACKAGE_IMPORT_NAMES maps packages no longer in the manifest: {stale}")
+
+    def test_the_probe_script_shares_the_same_mapping(self):
+        # Two detection paths exist (in-process and the probe subprocess). They must agree, or an
+        # environment's package list changes depending on which one answered.
+        captured = {}
+
+        def fake_check_output(command, **kwargs):
+            del kwargs
+            captured["script"] = command[2]
+            return "{}"
+
+        with mock.patch.object(worker_bootstrap, "_manifest", return_value=MANIFEST), \
+             mock.patch.object(worker_bootstrap.subprocess, "check_output", fake_check_output):
+            worker_bootstrap._probe_python_runtime(Path("python"))
+        self.assertIn(json.dumps(worker_bootstrap.PACKAGE_IMPORT_NAMES), captured["script"])
+
+
 class EnvironmentStateTrustTests(unittest.TestCase):
     """An environment's recorded torch build must describe that environment. Installs used to
     record whatever the *active* runtime reported, so a CPU env installed while CUDA was active

@@ -8,7 +8,6 @@ import re
 import subprocess
 import sys
 import venv
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -17,7 +16,17 @@ MANIFEST_PATH = Path(__file__).with_name("runtime-manifest.json")
 RUNTIME_ENVS_DIR = Path(os.environ.get("PYMSS_STUDIO_RUNTIME_ENVS_DIR") or Path(sys.executable).resolve().parent / "runtime-envs")
 ACTIVE_RUNTIME_FILE = Path(os.environ.get("PYMSS_STUDIO_ACTIVE_RUNTIME_FILE") or RUNTIME_ENVS_DIR / "active-runtime.json")
 BUNDLED_RUNTIME_ENVS_DIR: Path | None = Path(v) if (v := os.environ.get("PYMSS_STUDIO_BUNDLED_RUNTIME_ENVS_DIR")) else None
-_cancel = threading.Event()
+
+# Distribution name -> import name, for the manifest packages whose two names differ.
+# Availability is decided with importlib, so an unmapped dashed name can never be found and the
+# environment would read as permanently incomplete. Both detection paths — in-process and the
+# probe script below — share this table so they can never disagree.
+PACKAGE_IMPORT_NAMES = {
+    "pyyaml": "yaml",
+    "pysocks": "socks",
+    "pymss-core": "pymss_core",
+    "typing-extensions": "typing_extensions",
+}
 
 
 def _manifest() -> dict[str, Any]:
@@ -273,7 +282,7 @@ def _probe_python_runtime(python_path: Path, extras: list[str] | None = None) ->
     script = """
 import importlib.util, json, platform
 packages = json.loads(%PACKAGES%)
-mapping = {'pyyaml': 'yaml', 'pysocks': 'socks', 'pymss-core': 'pymss_core', 'typing-extensions': 'typing_extensions'}
+mapping = json.loads(%MAPPING%)
 result = {'pythonVersion': platform.python_version(), 'torchVersion': None, 'torchBackend': 'missing', 'acceleratorAvailable': False, 'packages': {}}
 for name in packages:
     result['packages'][name] = importlib.util.find_spec(mapping.get(name, name)) is not None
@@ -286,7 +295,8 @@ if importlib.util.find_spec('torch') is not None:
     except Exception as exc:
         result['torchBackend'] = f'error:{exc}'
 print(json.dumps(result, ensure_ascii=False))
-""".replace("%PACKAGES%", repr(json.dumps(list(_manifest()["common"].keys()) + extras)))
+""".replace("%PACKAGES%", repr(json.dumps(list(_manifest()["common"].keys()) + extras))) \
+   .replace("%MAPPING%", repr(json.dumps(PACKAGE_IMPORT_NAMES)))
     output = subprocess.check_output([str(python_path), "-c", script], text=True, encoding="utf-8", errors="replace")
     return json.loads(output.strip() or "{}")
 
@@ -398,13 +408,7 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
     manifest = _manifest()
     backend = str(payload.get("backend") or "").strip() or None
     install_state = _read_runtime_state()
-    module_names = {
-        "pyyaml": "yaml",
-        "pysocks": "socks",
-        "pymss-core": "pymss_core",
-        "typing-extensions": "typing_extensions",
-    }
-    packages = {name: _module_available(module_names.get(name, name)) for name in manifest["common"]}
+    packages = {name: _module_available(PACKAGE_IMPORT_NAMES.get(name, name)) for name in manifest["common"]}
     extra_names = _backend_extra_names(manifest, backend)
     # With no explicit backend the caller is asking "what am I running on"; on macOS that answer
     # depends on whether MLX is present, so probe for it even though no backend was requested.
@@ -495,11 +499,6 @@ def cmd_runtime_env_sizes(payload: dict[str, Any]) -> int:
         "totalBytes": sum(sizes.values()),
         "incompleteBackends": incomplete,
     })
-    return 0
-
-
-def cmd_cancel_runtime_install() -> int:
-    _cancel.set()
     return 0
 
 
@@ -599,7 +598,11 @@ def cmd_delete_runtime(payload: dict[str, Any]) -> int:
 
 
 def cmd_install_runtime(payload: dict[str, Any]) -> int:
-    _cancel.clear()
+    """Build and activate an environment for `backend`.
+
+    Cancellation is not handled here: the desktop shell kills this process and its whole tree
+    (see cancel_task in app_cmd.rs), which takes pip down with it. The interrupted venv is left
+    on disk on purpose — _incomplete_env_backends() reports it so the space can be reclaimed."""
     task_id = str(payload.get("taskId") or f"runtime_install_{int(time.time() * 1000)}")
     backend = str(payload.get("backend") or "cpu").strip().lower()
     mirror = str(payload.get("mirror") or "auto").strip().lower()
@@ -637,8 +640,6 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
             file.write(f"[{stage}] {message}\n")
 
     def run_pip(args: list[str], stage: str, package_index: str | None = None) -> None:
-        if _cancel.is_set():
-            raise RuntimeError("installation cancelled")
         command = [str(env_python), "-m", "pip", "install", "--no-cache-dir"]
         if stage in {"common", "pymss"}:
             command.extend(["--only-binary=:all:", "--prefer-binary"])
@@ -653,9 +654,6 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
             message = line.rstrip()
             append_log(stage, message)
             _emit("runtime_install_log", {"stage": stage, "message": message}, task_id)
-            if _cancel.is_set():
-                process.terminate()
-                raise RuntimeError("installation cancelled")
         if process.wait() != 0:
             raise RuntimeError(f"pip failed during {stage} with exit code {process.returncode}")
 
@@ -663,7 +661,7 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
         try:
             run_pip(args, stage)
         except RuntimeError:
-            if mirror == "pypi" or _cancel.is_set():
+            if mirror == "pypi":
                 raise
             append_log(stage, "selected mirror failed, retrying with PyPI")
             _emit("runtime_install_stage", {"stage": stage, "message": "Selected mirror failed, retrying with PyPI"}, task_id)
