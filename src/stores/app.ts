@@ -8,6 +8,8 @@ export type EnvInfo = {
   platform?: string
   workerVersion?: string
   pymssAvailable?: boolean
+  /** Whether the active runtime's pymss exposes the user-model registry (2.0.15+). */
+  customModelsSupported?: boolean
   pymssPath?: string | null
   pymssVersion?: string | null
   pymssError?: string

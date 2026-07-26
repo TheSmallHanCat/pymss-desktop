@@ -99,6 +99,64 @@ pub async fn delete_model(app: AppHandle, payload: Value) -> AppResult<Value> {
 }
 
 #[tauri::command]
+pub async fn inspect_custom_model(app: AppHandle, payload: Value) -> AppResult<Value> {
+    run_worker_with_payload(&app, "inspect_custom_model", Some(payload))
+}
+
+/// Import a local model. Backgrounded because copying multi-GB weights and verifying them by
+/// really loading the model both take long enough to need progress and cancellation.
+#[tauri::command]
+pub async fn start_custom_model_import(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> AppResult<Value> {
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if name.trim().is_empty() {
+        return Err(AppError::Worker("missing custom model name".into()));
+    }
+    let task_id = payload
+        .get("taskId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("custom_model_import_{}", chrono_like_timestamp()));
+    // One import at a time. pymss registers by rewriting the whole registry file (read, append,
+    // write), so two concurrent imports would race and silently drop one of the registrations.
+    if let Ok(tasks) = state.tasks.lock() {
+        if tasks.keys().any(|id| id.starts_with("custom_model_import_")) {
+            return Err(AppError::Worker("a custom model import is already running".into()));
+        }
+    }
+    let mut payload = payload;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("taskId".to_string(), Value::String(task_id.clone()));
+    }
+    spawn_worker_background(app, state, "import_custom_model", task_id.clone(), payload)?;
+    Ok(serde_json::json!({ "taskId": task_id, "started": true }))
+}
+
+#[tauri::command]
+pub async fn unregister_custom_model(app: AppHandle, payload: Value) -> AppResult<Value> {
+    run_worker_with_payload(&app, "unregister_custom_model", Some(payload))
+}
+
+#[tauri::command]
+pub async fn relink_custom_model(app: AppHandle, payload: Value) -> AppResult<Value> {
+    run_worker_with_payload(&app, "relink_custom_model", Some(payload))
+}
+
+/// Rebase custom model registrations after the model directory moved. Called once a migration
+/// finishes; the registry stores absolute paths and would otherwise point at the old location.
+#[tauri::command]
+pub async fn remap_custom_model_paths(app: AppHandle, payload: Value) -> AppResult<Value> {
+    run_worker_with_payload(&app, "remap_custom_model_paths", Some(payload))
+}
+
+#[tauri::command]
 pub async fn start_model_delete(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1280,6 +1338,32 @@ pub async fn pick_audio_files(app: AppHandle) -> AppResult<Vec<String>> {
         .blocking_pick_files()
         .unwrap_or_default();
     Ok(files.into_iter().map(|p| p.to_string()).collect())
+}
+
+/// Pick a model weights file. Extensions mirror what pymss can actually load with `torch.load`;
+/// `.safetensors` is deliberately absent because pymss has no safetensors path at all.
+///
+/// `title` is supplied by the caller so it can be localised, and so that back-to-back weights
+/// and config dialogs are told apart by more than their file filter.
+#[tauri::command]
+pub async fn pick_model_weights_file(app: AppHandle, title: Option<String>) -> AppResult<Option<String>> {
+    let mut builder = app
+        .dialog()
+        .file()
+        .add_filter("Model weights", &["ckpt", "pth", "th", "pt", "bin"]);
+    if let Some(title) = title.as_deref().filter(|value| !value.trim().is_empty()) {
+        builder = builder.set_title(title);
+    }
+    Ok(builder.blocking_pick_file().map(|p| p.to_string()))
+}
+
+#[tauri::command]
+pub async fn pick_model_config_file(app: AppHandle, title: Option<String>) -> AppResult<Option<String>> {
+    let mut builder = app.dialog().file().add_filter("Model config", &["yaml", "yml"]);
+    if let Some(title) = title.as_deref().filter(|value| !value.trim().is_empty()) {
+        builder = builder.set_title(title);
+    }
+    Ok(builder.blocking_pick_file().map(|p| p.to_string()))
 }
 
 #[tauri::command]

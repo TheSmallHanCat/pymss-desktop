@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useMessage, useDialog } from 'naive-ui'
+import { invoke } from '@tauri-apps/api/core'
 import {
   SearchOutline,
   DownloadOutline,
@@ -15,14 +16,18 @@ import {
   ServerOutline,
   Star,
   StarOutline,
+  AddCircleOutline,
+  LinkOutline,
 } from '@vicons/ionicons5'
 import { useModelStore, type ModelDefaultInferenceParams, type ModelEntry } from '@/stores/model'
 import { useSettingsStore } from '@/stores/settings'
 import { useTaskStore } from '@/stores/task'
+import { useAppStore } from '@/stores/app'
 import { formatBytes } from '@/utils/format'
 import { buildModelCategoryOptionsFromPairs, getModelCategoryLabel } from '@/utils/modelCategory'
 import ModelProgressBlock from '@/components/ModelProgressBlock.vue'
 import DownloadDetailModal from '@/components/DownloadDetailModal.vue'
+import CustomModelImportDialog from '@/components/CustomModelImportDialog.vue'
 
 const { t, locale } = useI18n()
 const message = useMessage()
@@ -30,6 +35,7 @@ const dialog = useDialog()
 const modelStore = useModelStore()
 const settings = useSettingsStore()
 const taskStore = useTaskStore()
+const app = useAppStore()
 const {
   filteredModels,
   selectedInfo,
@@ -41,6 +47,8 @@ const {
   isLoading,
   detailLoading,
   modelDir,
+  modelSource,
+  customModelCount,
   downloadTasks,
   deleteTasks,
   modelStorageSummary,
@@ -51,6 +59,7 @@ const {
 } = storeToRefs(modelStore)
 
 const showDetail = ref(false)
+const showCustomImport = ref(false)
 const showDownloadDetail = ref(false)
 const downloadDetailModel = ref<string>('')
 const downloadedOnly = ref(false)
@@ -74,6 +83,14 @@ const categoryOptions = computed(() => {
   return buildModelCategoryOptionsFromPairs(categories.value, categoriesCn.value, locale.value, t('common.all'))
 })
 
+// The imported count is shown on the option itself: it is the quickest answer to "did my import
+// land?", and it keeps the option from looking broken when there is nothing to show yet.
+const modelSourceOptions = computed(() => [
+  { label: t('models.sourceAll'), value: 'all' },
+  { label: t('models.sourceCatalog'), value: 'catalog' },
+  { label: t('models.sourceUser', { count: customModelCount.value }), value: 'user' },
+])
+
 const modelSortOptions = computed(() => [
   { label: t('models.sortDefault'), value: 'default' },
   { label: t('models.sortFavorite'), value: 'favorite' },
@@ -85,6 +102,10 @@ const modelSortOptions = computed(() => [
   { label: t('models.sortType'), value: 'type' },
   { label: t('models.sortDownloaded'), value: 'downloaded' },
 ])
+
+/** Whether anything is narrowing the list — decides "no matches" vs "nothing loaded yet". */
+const hasActiveFilter = computed(() =>
+  Boolean(search.value || category.value || downloadedOnly.value || modelSource.value !== 'all'))
 
 const collator = computed(() => new Intl.Collator(locale.value === 'zh-CN' ? 'zh-CN' : 'en', { numeric: true, sensitivity: 'base' }))
 
@@ -197,7 +218,7 @@ function setStorageSelected(name: string, checked: boolean) {
     : selectedStorageModels.value.filter((item) => item !== name)
 }
 
-watch([search, category, downloadedOnly, pageSize, modelSort], () => {
+watch([search, category, modelSource, downloadedOnly, pageSize, modelSort], () => {
   page.value = 1
 })
 
@@ -455,6 +476,73 @@ function confirmDeleteModel(model: ModelEntry, event?: MouseEvent) {
 }
 
 
+/** Imported models are local-only: pymss refuses to download them, so they need their own actions. */
+function isCustomModel(model: ModelEntry | null | undefined) {
+  return model?.source === 'user'
+}
+
+/** Whether the active runtime's pymss exposes the user-model registry at all (2.0.15+). */
+const customModelsSupported = computed(() => app.envInfo?.customModelsSupported !== false)
+
+/**
+ * Show the freshly imported model instead of leaving it buried among 300+ catalog entries.
+ * Other filters are cleared for the same reason — a stale search would hide it again.
+ */
+function onCustomModelImported() {
+  modelSource.value = 'user'
+  search.value = ''
+  category.value = ''
+  downloadedOnly.value = false
+}
+
+function confirmRemoveCustomModel(model: ModelEntry, event?: MouseEvent) {
+  event?.stopPropagation()
+  // State exactly what will happen rather than describing both cases: this deletes files, and a
+  // vague warning is the wrong thing to show before a destructive action. Only copies the app
+  // made are ever deleted — the worker enforces that too.
+  const copied = model.importMode === 'copy'
+  dialog.warning({
+    title: t('models.customRemoveTitle'),
+    content: copied
+      ? t('models.customRemoveContentCopy', { name: model.name })
+      : t('models.customRemoveContentReference', { name: model.name }),
+    positiveText: t('models.customRemoveConfirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      modelStore.removeCustomModel(model.name, true)
+        .then((result) => {
+          message.success(result.deletedFiles
+            ? t('models.customRemovedWithFiles', { name: model.name })
+            : t('models.customRemoved', { name: model.name }))
+        })
+        .catch((err) => message.error(err instanceof Error ? err.message : String(err)))
+    },
+  })
+}
+
+async function relinkCustomModel(model: ModelEntry, event?: MouseEvent) {
+  event?.stopPropagation()
+  try {
+    const picked = await invoke<string | null>('pick_model_weights_file', {
+      title: t('models.customPickWeightsTitle', { name: model.name }),
+    })
+    if (!picked) return
+    let configPicked: string | null = null
+    if (model.configPath) {
+      configPicked = await invoke<string | null>('pick_model_config_file', {
+        title: t('models.customPickConfigTitle', { name: model.name }),
+      })
+      // Most architectures require a config, so relinking without one would fail deep inside
+      // pymss with a confusing message. A cancelled picker means "abandon the relink".
+      if (!configPicked) return
+    }
+    await modelStore.relinkCustomModel(model.name, picked, configPicked)
+    message.success(t('models.customRelinked', { name: model.name }))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
 async function openStorageManager() {
   showStorage.value = true
   try {
@@ -555,6 +643,19 @@ onMounted(() => {
         <p>{{ t('models.subtitle') }}</p>
       </div>
       <div class="header-actions">
+        <n-tooltip v-if="!customModelsSupported" trigger="hover">
+          <template #trigger>
+            <n-button secondary disabled>
+              <template #icon><n-icon :component="AddCircleOutline" /></template>
+              {{ t('models.customImport') }}
+            </n-button>
+          </template>
+          {{ t('models.customUnsupported') }}
+        </n-tooltip>
+        <n-button v-else secondary @click="showCustomImport = true">
+          <template #icon><n-icon :component="AddCircleOutline" /></template>
+          {{ t('models.customImport') }}
+        </n-button>
         <n-button secondary @click="openStorageManager">
           <template #icon><n-icon :component="ServerOutline" /></template>
           {{ t('models.storageManage') }}
@@ -582,6 +683,13 @@ onMounted(() => {
           :options="categoryOptions"
           size="small"
           class="category-select"
+          :consistent-menu-width="false"
+        />
+        <n-select
+          v-model:value="modelSource"
+          :options="modelSourceOptions"
+          size="small"
+          class="source-select"
           :consistent-menu-width="false"
         />
         <n-select
@@ -613,10 +721,21 @@ onMounted(() => {
       <!-- Empty State -->
       <div v-else-if="!sortedModels.length" class="empty-state">
         <n-icon :component="CubeOutline" size="48" color="var(--on-surface-muted)" />
-        <p class="text-muted">{{ search || category || downloadedOnly ? t('models.searchEmpty') : t('models.empty') }}</p>
-        <n-button v-if="!search && !category && !downloadedOnly && !modelStore.models.length" secondary @click="loadModels">
-          {{ t('models.load') }}
-        </n-button>
+        <!-- Filtering to imported models with none imported is not a failed search: say what is
+             missing and offer the action that fixes it, rather than "no results". -->
+        <template v-if="modelSource === 'user' && !customModelCount">
+          <p class="text-muted">{{ t('models.customEmpty') }}</p>
+          <n-button v-if="customModelsSupported" secondary @click="showCustomImport = true">
+            <template #icon><n-icon :component="AddCircleOutline" /></template>
+            {{ t('models.customImport') }}
+          </n-button>
+        </template>
+        <template v-else>
+          <p class="text-muted">{{ hasActiveFilter ? t('models.searchEmpty') : t('models.empty') }}</p>
+          <n-button v-if="!hasActiveFilter && !modelStore.models.length" secondary @click="loadModels">
+            {{ t('models.load') }}
+          </n-button>
+        </template>
       </div>
 
       <!-- Model Grid -->
@@ -690,6 +809,27 @@ onMounted(() => {
               :progress="deleteTasks[model.name]?.progress || 0"
               :files-text="t('models.deleteProgress', { completed: deleteTasks[model.name]?.completedFiles || 0, total: deleteTasks[model.name]?.totalFiles || 0 })"
             />
+            <!-- Imported models are local-only: no download, and their files may live anywhere,
+                 so a missing file means "relink", not "download". -->
+            <div v-else-if="isCustomModel(model)" class="mc-done-row">
+              <div v-if="model.downloaded" class="mc-done">
+                <n-icon :component="CheckmarkCircleOutline" color="var(--success)" size="17" />
+                <span>{{ t('models.customReady') }}</span>
+              </div>
+              <div v-else class="mc-done mc-done--missing">
+                <n-icon :component="LinkOutline" size="17" />
+                <span>{{ t('models.customFilesMissing') }}</span>
+              </div>
+              <div class="mc-custom-actions">
+                <n-button size="tiny" quaternary @click="relinkCustomModel(model, $event)">
+                  <template #icon><n-icon :component="LinkOutline" /></template>
+                </n-button>
+                <n-button size="tiny" quaternary type="error" @click="confirmRemoveCustomModel(model, $event)">
+                  <template #icon><n-icon :component="TrashOutline" /></template>
+                </n-button>
+              </div>
+            </div>
+
             <!-- Download button -->
             <n-button
               v-else-if="model.supported && !model.downloaded && (!downloadTasks[model.name] || downloadTasks[model.name].status === 'done')"
@@ -1143,6 +1283,8 @@ onMounted(() => {
       @delete="onDownloadDetailDelete"
       @close="closeDownloadDetail"
     />
+
+    <CustomModelImportDialog v-model:show="showCustomImport" @imported="onCustomModelImported" />
   </div>
 </template>
 
@@ -1175,14 +1317,16 @@ onMounted(() => {
 
 .toolbar-row {
   display: grid;
-  grid-template-columns: minmax(220px, 0.92fr) 230px 180px auto;
+  /* One column per control: search | category | source | sort | actions. A missing column would
+     push the last control into an implicit one and squeeze the switch label onto two lines. */
+  grid-template-columns: minmax(180px, 0.92fr) 220px 160px 180px auto;
   align-items: center;
   gap: 10px;
 }
 
 .search-input {
   max-width: none;
-  min-width: 200px;
+  min-width: 180px;
 }
 
 .toolbar-actions {
@@ -1195,6 +1339,11 @@ onMounted(() => {
 /* ===== Category Select ===== */
 .category-select {
   width: 220px;
+  flex-shrink: 0;
+}
+
+.source-select {
+  width: 150px;
   flex-shrink: 0;
 }
 
@@ -1454,6 +1603,18 @@ onMounted(() => {
   grid-template-columns: minmax(72px, auto) 1fr auto;
   align-items: center;
   min-height: 30px;
+}
+
+/* An imported model whose weights have moved away: not an error, but it needs relinking
+   before it can be used, so it must not read as ready. */
+.mc-done--missing {
+  color: var(--warning, #f2c97d);
+}
+
+.mc-custom-actions {
+  grid-column: 3;
+  display: flex;
+  gap: 2px;
 }
 
 .mc-done-row .mc-done {
@@ -1832,6 +1993,7 @@ onMounted(() => {
   }
 
   .category-select,
+  .source-select,
   .sort-select {
     width: 100%;
   }

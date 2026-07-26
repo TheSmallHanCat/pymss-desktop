@@ -113,6 +113,141 @@ class UserModelPathTests(unittest.TestCase):
         self.assertFalse(worker_models.is_user_model_entry(CATALOG_ENTRY))
 
 
+class UserModelSerializationTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.weights = self.root / "my_model.ckpt"
+        self.weights.write_bytes(b"x" * 3072)
+        self.config = self.root / "my_model.yaml"
+        self.config.write_text(
+            "training:\n  instruments: [vocals, instrumental]\n  target_instrument: vocals\n",
+            encoding="utf-8",
+        )
+
+    def test_an_imported_model_is_labelled_as_a_user_model(self):
+        payload = worker_models.model_to_dict(FakeUserModelEntry("my_model", self.weights, self.config))
+        self.assertEqual(payload["source"], "user")
+        self.assertEqual(payload["modelPath"], str(self.weights))
+        self.assertEqual(payload["configPath"], str(self.config))
+        self.assertTrue(payload["downloaded"])
+        self.assertEqual(payload["missingPaths"], [])
+
+    def test_catalog_models_are_labelled_as_catalog(self):
+        payload = worker_models.model_to_dict(CATALOG_ENTRY, str(self.root), include_local_state=False)
+        self.assertEqual(payload["source"], "catalog")
+        # Catalog models have no import mode; the UI uses its absence to keep its own actions apart.
+        self.assertIsNone(payload["importMode"])
+
+    def test_the_import_mode_travels_with_the_model(self):
+        # This is what lets the removal dialog state whether files will actually be deleted,
+        # instead of describing both cases and leaving the user to guess.
+        with mock.patch.dict("sys.modules", {
+            "worker_custom_models": mock.Mock(sidecar_entry=mock.Mock(return_value={"importMode": "copy"})),
+        }):
+            payload = worker_models.model_to_dict(FakeUserModelEntry("m", self.weights))
+        self.assertEqual(payload["importMode"], "copy")
+
+    def test_a_model_registered_outside_the_app_reads_as_a_reference(self):
+        # `pymss register` leaves no side-car. Assuming 'copy' would let the UI promise a file
+        # deletion that must never happen.
+        with mock.patch.dict("sys.modules", {
+            "worker_custom_models": mock.Mock(sidecar_entry=mock.Mock(return_value={})),
+        }):
+            payload = worker_models.model_to_dict(FakeUserModelEntry("m", self.weights))
+        self.assertEqual(payload["importMode"], "reference")
+
+    def test_an_unreadable_sidecar_falls_back_to_reference(self):
+        with mock.patch.dict("sys.modules", {
+            "worker_custom_models": mock.Mock(sidecar_entry=mock.Mock(side_effect=OSError("denied"))),
+        }):
+            payload = worker_models.model_to_dict(FakeUserModelEntry("m", self.weights))
+        self.assertEqual(payload["importMode"], "reference")
+
+    def test_a_size_is_measured_when_the_registration_records_none(self):
+        # Registration never stores a size, so without measuring, every card would read 0 bytes.
+        payload = worker_models.model_to_dict(FakeUserModelEntry("my_model", self.weights, self.config))
+        self.assertEqual(payload["sizeBytes"], 3072)
+
+    def test_a_recorded_size_is_preferred_over_measuring(self):
+        entry = FakeUserModelEntry("my_model", self.weights, self.config, size_bytes=999)
+        self.assertEqual(worker_models.model_to_dict(entry)["sizeBytes"], 999)
+
+    def test_a_missing_weight_file_is_reported_rather_than_measured_as_zero(self):
+        entry = FakeUserModelEntry("gone", self.root / "absent.ckpt")
+        payload = worker_models.model_to_dict(entry)
+        self.assertFalse(payload["downloaded"])
+        self.assertEqual(payload["missingPaths"], [str(self.root / "absent.ckpt")])
+        self.assertEqual(payload["sizeBytes"], 0)
+
+    def test_stems_are_read_from_the_registered_config(self):
+        # This is what lets the separation page offer stem selection for an imported model.
+        payload = worker_models.model_to_dict(FakeUserModelEntry("my_model", self.weights, self.config))
+        self.assertEqual(payload["configInstruments"], "vocals|instrumental")
+        self.assertEqual(payload["configTargetInstrument"], "vocals")
+
+
+class ListMergesImportedModelsTests(unittest.TestCase):
+    """Imported models must appear alongside catalog ones, or importing a model would leave it
+    invisible everywhere except inference."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.weights = self.root / "my_model.ckpt"
+        self.weights.write_bytes(b"x" * 512)
+        self.stdout = io.StringIO()
+
+    def _list(self, payload, user_entries, raises=None):
+        user_models = mock.Mock()
+        if raises is not None:
+            user_models.list_user_models.side_effect = raises
+        else:
+            user_models.list_user_models.return_value = user_entries
+        with mock.patch.dict("sys.modules", {"pymss": mock.Mock(), "pymss.user_models": user_models}), \
+             mock.patch.object(worker_models, "list_catalog_models", return_value=[CATALOG_ENTRY]), \
+             mock.patch.object(worker_models, "model_root", return_value=self.root), \
+             redirect_stdout(self.stdout):
+            code = worker_models.cmd_list_models(payload)
+        events = [json.loads(line) for line in self.stdout.getvalue().strip().splitlines() if line.strip()]
+        return code, events[-1]["payload"]
+
+    def test_imported_models_are_listed_with_catalog_models(self):
+        entry = FakeUserModelEntry("my_model", self.weights)
+        code, payload = self._list({}, [entry])
+        self.assertEqual(code, 0)
+        by_source = {m["name"]: m["source"] for m in payload["models"]}
+        self.assertEqual(by_source, {"catalog_model.ckpt": "catalog", "my_model": "user"})
+        self.assertEqual(payload["count"], 2)
+
+    def test_imported_models_can_be_excluded(self):
+        entry = FakeUserModelEntry("my_model", self.weights)
+        _, payload = self._list({"includeCustom": False}, [entry])
+        self.assertEqual([m["name"] for m in payload["models"]], ["catalog_model.ckpt"])
+
+    def test_an_unreadable_registry_does_not_break_the_model_list(self):
+        # The catalog is what the app primarily needs; a broken registry must degrade, not fail.
+        code, payload = self._list({}, [], raises=RuntimeError("corrupt registry"))
+        self.assertEqual(code, 0)
+        self.assertEqual([m["name"] for m in payload["models"]], ["catalog_model.ckpt"])
+
+    def test_the_custom_category_is_offered_for_filtering(self):
+        entry = FakeUserModelEntry("my_model", self.weights)
+        _, payload = self._list({}, [entry])
+        self.assertIn("user/custom", payload["categories"])
+
+    def test_a_category_filter_applies_to_imported_models_too(self):
+        entry = FakeUserModelEntry("my_model", self.weights)
+        kept = worker_models.list_registered_user_models
+        with mock.patch.dict("sys.modules", {
+            "pymss": mock.Mock(),
+            "pymss.user_models": mock.Mock(list_user_models=mock.Mock(return_value=[entry])),
+        }):
+            self.assertEqual(kept(category="user"), [entry])
+            self.assertEqual(kept(category="user/custom"), [entry])
+            self.assertEqual(kept(category="vocal"), [])
+
+
 class DeleteRefusesImportedModelsTests(unittest.TestCase):
     """Deleting an imported model would delete the user's own file, often outside the app.
     cmd_delete_model must refuse and point at the unregister path instead."""

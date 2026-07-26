@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
 import { matchesModelQuery } from '@/utils/modelSearch'
+import { matchesModelSource, type ModelSourceFilter } from '@/utils/modelSource'
 import { useSettingsStore } from '@/stores/settings'
 
 export type ModelEntry = {
@@ -30,9 +31,78 @@ export type ModelEntry = {
   modelPath: string
   configPath: string | null
   auxiliaryPaths: string[]
+  /**
+   * Where the model came from. 'user' models were imported from local files and are local-only:
+   * pymss refuses to download them, and their weights may live anywhere on disk, so they offer
+   * relink/remove where a catalog model offers download/delete.
+   * Absent on entries restored from an older persisted cache — treat a missing value as 'catalog'.
+   */
+  source?: 'catalog' | 'user'
+  /**
+   * How an imported model got here — 'copy' means the app owns its files and removing it deletes
+   * them. Null for catalog models. Models registered outside the app read as 'reference', the
+   * mode under which nothing is deleted.
+   */
+  importMode?: 'copy' | 'reference' | null
   defaultInferenceParams?: ModelDefaultInferenceParams
   defaultInferenceParamsResolved?: boolean
   defaultInferenceParamsSource?: 'config' | 'runtime_fallback'
+}
+
+/** One architecture the worker thinks a weights file might be, with why it thinks so. */
+export type CustomModelSuggestion = {
+  modelType: string
+  confidence: 'high' | 'medium' | 'low'
+  /** Translated by the UI — the worker must not emit prose it cannot localise. */
+  basisCode: 'config_model_key' | 'config_kwargs_section' | 'state_dict_key' | string
+  basisDetail: string
+}
+
+export type CustomModelInspection = {
+  modelPath: string
+  configPath: string | null
+  sizeBytes: number
+  suggestions: CustomModelSuggestion[]
+  suggestedModelType: string | null
+  suggestedName: string
+  instruments: string[]
+  targetInstrument: string
+  knownModelTypes: string[]
+  configOptionalModelTypes: string[]
+  /** Null when nothing could be suggested — there is then no type to require a config for. */
+  configRequired: boolean | null
+  stateDictReadable: boolean
+  stateDictError: string | null
+}
+
+export type CustomModelImportRequest = {
+  name: string
+  modelType: string
+  modelPath: string
+  configPath?: string | null
+  aliases?: string[]
+  /** 'reference' registers the file where it is; 'copy' puts it under app management. */
+  importMode?: 'reference' | 'copy'
+  verify?: boolean
+  force?: boolean
+}
+
+export type CustomModelImportState = {
+  taskId: string
+  name: string
+  status: 'idle' | 'importing' | 'success' | 'error' | 'cancelled'
+  stage: string
+  progress: number
+  message: string
+}
+
+export type CustomModelRemoval = {
+  name: string
+  filesDeleted: string[]
+  deletedFiles: boolean
+  /** False for referenced models, whose weights the app must never delete. */
+  fileDeletionSupported: boolean
+  errors: string[]
 }
 
 export type ModelDefaultInferenceParams = {
@@ -295,6 +365,12 @@ export const useModelStore = defineStore('model', () => {
   const search = ref('')
   const supportedOnly = ref(true)
   const category = ref('')
+  /**
+   * Which half of the library to show. Session-only, like the other filters.
+   * The category filter can already single out `user/custom`, but it cannot express
+   * "everything except imported", and it buries the choice among a dozen categories.
+   */
+  const modelSource = ref<ModelSourceFilter>('all')
   const downloadStates = ref<Record<string, DownloadStatus>>({})
   const downloadErrors = ref<Record<string, string>>({})
   const downloadTasks = ref<Record<string, DownloadTask>>({})
@@ -327,6 +403,14 @@ export const useModelStore = defineStore('model', () => {
     updatedAt: 0,
     notified: false,
   })
+  const customImportState = ref<CustomModelImportState>({
+    taskId: '',
+    name: '',
+    status: 'idle',
+    stage: '',
+    progress: 0,
+    message: '',
+  })
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -340,9 +424,11 @@ export const useModelStore = defineStore('model', () => {
         || model.primaryCategory.toLowerCase() === selectedCategory
         || model.secondaryCategory.toLowerCase() === selectedCategory
       const matchesSupported = !supportedOnly.value || model.supported
-      return matchesQuery && matchesCategory && matchesSupported
+      return matchesQuery && matchesCategory && matchesSupported && matchesModelSource(model, modelSource.value)
     })
   })
+
+  const customModelCount = computed(() => models.value.filter((model) => model.source === 'user').length)
   const downloadedModels = computed(() => models.value.filter((model) => model.supported && model.downloaded))
 
   async function persistState() {
@@ -574,6 +660,7 @@ export const useModelStore = defineStore('model', () => {
           category: null,
           supportedOnly: false,
           includeLocalState: true,
+          includeCustom: true,
           modelDir: settings.modelDir || null,
         },
       })
@@ -635,6 +722,30 @@ export const useModelStore = defineStore('model', () => {
   function handleWorkerEvent(event: WorkerEvent) {
     const taskId = event?.taskId as string | undefined
     const payload = event.payload || {}
+
+    if (taskId && taskId === customImportState.value.taskId) {
+      if (event.type === 'custom_model_import_progress') {
+        customImportState.value = {
+          ...customImportState.value,
+          stage: payload.stage || customImportState.value.stage,
+          progress: typeof payload.progress === 'number' ? payload.progress : customImportState.value.progress,
+          message: payload.message || payload.file || customImportState.value.message,
+        }
+      } else if (event.type === 'custom_model_import_finished') {
+        customImportState.value = { ...customImportState.value, status: 'success', stage: 'done', progress: 100, message: '' }
+        // The new model only becomes visible once the list is refetched.
+        void loadModels()
+      } else if (event.type === 'error') {
+        customImportState.value = {
+          ...customImportState.value,
+          status: 'error',
+          message: payload.message || 'Import failed',
+        }
+      } else if (event.type === 'task_cancelled') {
+        customImportState.value = { ...customImportState.value, status: 'cancelled' }
+      }
+      return
+    }
 
     if (taskId?.startsWith('download_')) {
       const modelName = payload.model || downloadTaskIndex.value[taskId] || Object.values(downloadTasks.value).find((task) => task.taskId === taskId)?.model
@@ -1163,6 +1274,76 @@ export const useModelStore = defineStore('model', () => {
     }
   }
 
+  /** Inspect a weights file to suggest an architecture before the user has to pick one. */
+  async function inspectCustomModel(modelPath: string, configPath?: string | null) {
+    return invoke<CustomModelInspection>('inspect_custom_model', {
+      payload: { modelPath, configPath: configPath || null },
+    })
+  }
+
+  /**
+   * Start an import. Backgrounded: copying multi-GB weights and verifying them by really
+   * loading the model both take long enough to need progress and cancellation.
+   */
+  async function importCustomModel(request: CustomModelImportRequest) {
+    const settings = useSettingsStore()
+    const taskId = `custom_model_import_${crypto.randomUUID()}`
+    customImportState.value = {
+      taskId,
+      name: request.name,
+      status: 'importing',
+      stage: 'starting',
+      progress: 0,
+      message: '',
+    }
+    try {
+      // The configured model directory travels with the request: copies must land beside the
+      // catalog models, and the worker's PYMSS_MODEL_DIR only ever holds the default location.
+      await invoke('start_custom_model_import', {
+        payload: { ...request, taskId, modelDir: settings.modelDir || null },
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      customImportState.value = { ...customImportState.value, status: 'error', message }
+      throw err
+    }
+    return taskId
+  }
+
+  /**
+   * Stop a running import.
+   *
+   * Necessary rather than optional: the wizard blocks every other way out while importing, and
+   * verifying a large model can take a long time, so without this the user would be stuck.
+   * Killing the worker leaves no half-written weights behind — a copy writes to a temporary file,
+   * and the next import of the same name clears the directory first.
+   */
+  async function cancelCustomModelImport() {
+    const taskId = customImportState.value.taskId
+    if (!taskId || customImportState.value.status !== 'importing') return false
+    return invoke<boolean>('cancel_task', { taskId })
+  }
+
+  function resetCustomImportState() {
+    customImportState.value = { taskId: '', name: '', status: 'idle', stage: '', progress: 0, message: '' }
+  }
+
+  async function removeCustomModel(name: string, deleteFiles = false) {
+    const result = await invoke<CustomModelRemoval>('unregister_custom_model', {
+      payload: { name, deleteFiles },
+    })
+    await loadModels()
+    return result
+  }
+
+  async function relinkCustomModel(name: string, modelPath: string, configPath?: string | null) {
+    const result = await invoke<{ name: string }>('relink_custom_model', {
+      payload: { name, modelPath, configPath: configPath || null },
+    })
+    await loadModels()
+    return result
+  }
+
   return {
     initialized,
     models,
@@ -1177,6 +1358,8 @@ export const useModelStore = defineStore('model', () => {
     search,
     supportedOnly,
     category,
+    modelSource,
+    customModelCount,
     downloadStates,
     downloadErrors,
     downloadTasks,
@@ -1187,6 +1370,7 @@ export const useModelStore = defineStore('model', () => {
     storageLoading,
     batchDeleteState,
     residualCleanupState,
+    customImportState,
     filteredModels,
     downloadedModels,
     initialize,
@@ -1213,6 +1397,12 @@ export const useModelStore = defineStore('model', () => {
     clearDownloadTask,
     markDownloadTaskSeen,
     resetResidualCleanupState,
+    inspectCustomModel,
+    importCustomModel,
+    cancelCustomModelImport,
+    resetCustomImportState,
+    removeCustomModel,
+    relinkCustomModel,
     handleWorkerEvent,
   }
 })

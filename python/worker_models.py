@@ -297,6 +297,36 @@ def resolve_config_stems(config_path: Path | None) -> tuple[str, str]:
     return config_instruments, str(target_instrument or "").strip()
 
 
+def _user_model_import_mode(entry: Any) -> str | None:
+    """How an imported model got here: 'copy' (the app holds the files) or 'reference'.
+
+    Carried on the model itself so the UI can say exactly what removing it will do. Models
+    registered outside the app (`pymss register`) have no record, and 'reference' is the safe
+    reading — it is the one under which no files are deleted."""
+    if not is_user_model_entry(entry):
+        return None
+    try:
+        from worker_custom_models import sidecar_entry
+        return str(sidecar_entry(str(entry.name)).get("importMode") or "reference")
+    except Exception:
+        return "reference"
+
+
+def _entry_size_bytes(entry: Any, model_path: Path) -> int:
+    """Size to report for a model.
+
+    Catalog entries carry the published size, which is what lets the UI show a download size
+    before anything exists locally. User registrations never record one, so measure the file
+    they point at — otherwise every imported model would read as 0 bytes."""
+    recorded = int(getattr(entry, "size_bytes", 0) or 0)
+    if recorded or not is_user_model_entry(entry):
+        return recorded
+    try:
+        return model_path.stat().st_size
+    except OSError:
+        return 0
+
+
 def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state: bool = True) -> dict[str, Any]:
     model_path = model_path_for(entry, model_dir)
     config_path = config_path_for(entry, model_dir)
@@ -333,8 +363,12 @@ def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state:
         "configTargetInstrument": config_target_instrument,
         "classificationConfidence": entry.classification_confidence,
         "classificationBasis": entry.classification_basis,
-        "sizeBytes": entry.size_bytes,
-        "sha256": entry.sha256,
+        "sizeBytes": _entry_size_bytes(entry, model_path),
+        "sha256": getattr(entry, "sha256", "") or "",
+        # 'user' models are local-only: they cannot be downloaded (pymss.download_model rejects
+        # them outright), so the UI has to offer relink/remove instead of download/delete.
+        "source": "user" if is_user_model_entry(entry) else "catalog",
+        "importMode": _user_model_import_mode(entry),
         "downloaded": downloaded,
         "missingPaths": missing_paths if include_local_state else [],
         "modelPath": str(model_path),
@@ -358,6 +392,10 @@ def cmd_env_info() -> int:
         "pymssAvailable": False,
         "pymssPath": None,
         "pymssVersion": package_version("pymss"),
+        # Importing local models needs pymss's user-model registry, which only exists from
+        # 2.0.15. Probed by import rather than by comparing version strings, so a repackaged or
+        # patched build is judged on what it actually provides.
+        "customModelsSupported": import_available("pymss.user_models"),
         "torchAvailable": False,
         "torchVersion": None,
         "torchBackend": "missing",
@@ -409,13 +447,43 @@ def cmd_env_info() -> int:
     return 0
 
 
+def list_registered_user_models(category: str | None = None) -> list[Any]:
+    """Locally registered custom models, or an empty list when none can be read.
+
+    Never raises: an unreadable registry must not take the whole model list down with it, since
+    the catalog is what the app primarily needs. Filtering mirrors list_catalog_models() so a
+    category selection applies to both halves of the list.
+
+    `supported` is deliberately not filtered on — pymss registers every user model as supported
+    (it has no catalog verdict to consult), so filtering would be a no-op that reads as a check."""
+    try:
+        from pymss.user_models import list_user_models  # type: ignore
+        entries = list(list_user_models())
+    except Exception:
+        return []
+    if category:
+        wanted = category.lower()
+        entries = [
+            entry for entry in entries
+            if str(getattr(entry, "primary_category", "")).lower() == wanted
+            or str(getattr(entry, "secondary_category", "")).lower() == wanted
+            or str(getattr(entry, "category_path", "")).lower() == wanted
+        ]
+    return entries
+
+
 def cmd_list_models(payload: dict[str, Any]) -> int:
     category = payload.get("category") or None
     supported_only = bool(payload.get("supportedOnly", True))
     include_local_state = bool(payload.get("includeLocalState", True))
+    include_custom = bool(payload.get("includeCustom", True))
     model_dir = payload.get("modelDir") or None
 
-    entries = list_catalog_models(category=category, supported=True if supported_only else None)
+    entries: list[Any] = list(list_catalog_models(category=category, supported=True if supported_only else None))
+    if include_custom:
+        # Appended after the catalog so the default ordering keeps imported models together at
+        # the end; the UI sorts on top of this anyway.
+        entries.extend(list_registered_user_models(category=category))
     models = [model_to_dict(entry, model_dir, include_local_state) for entry in entries]
     category_pairs = sorted({
         (m["category"], m.get("categoryCn") or m["category"])
@@ -432,12 +500,25 @@ def cmd_list_models(payload: dict[str, Any]) -> int:
     return 0
 
 
+def get_any_model_entry(model_name: str) -> Any:
+    """Resolve a name against imported models first, then the catalog.
+
+    Same precedence as pymss's own get_model_entry(), which is what inference resolves through —
+    so a name means the same thing everywhere in the app."""
+    try:
+        from pymss.user_models import get_user_model_entry  # type: ignore
+        return get_user_model_entry(model_name)
+    except Exception:
+        pass
+    return get_catalog_model_entry(model_name)
+
+
 def cmd_model_info(payload: dict[str, Any]) -> int:
     model_name = payload.get("model")
     if not model_name:
         return emit_error("MODEL_NOT_FOUND", "Missing model name")
     try:
-        entry = get_catalog_model_entry(model_name)
+        entry = get_any_model_entry(model_name)
     except KeyError as exc:
         return emit_error("MODEL_NOT_FOUND", str(exc))
 
@@ -489,11 +570,11 @@ def cmd_delete_model(payload: dict[str, Any]) -> int:
         return fail(str(exc))
 
     # An imported model's weights are the user's own file, often outside the app entirely.
-    # Deleting it here would be an unrecoverable surprise, so removal must go through a
-    # dedicated path that only ever touches files the app itself copied.
+    # Deleting it here would be an unrecoverable surprise, so removal goes through
+    # unregister_custom_model, which unregisters by default and only touches files it copied.
     if is_user_model_entry(entry):
         return fail(
-            f"{model_name} is a locally registered custom model; remove it from the custom model list instead"
+            f"{model_name} is an imported custom model; remove it from the custom model list instead"
         )
 
     model_path = model_path_for(entry, model_dir)

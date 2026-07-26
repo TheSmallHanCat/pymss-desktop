@@ -59,6 +59,21 @@ def main(argv: list[str]) -> int:
         if args.command == "delete_model":
             from worker_models import cmd_delete_model
             return cmd_delete_model(payload)
+        if args.command == "inspect_custom_model":
+            from worker_custom_models import cmd_inspect_custom_model
+            return cmd_inspect_custom_model(payload)
+        if args.command == "import_custom_model":
+            from worker_custom_models import cmd_import_custom_model
+            return cmd_import_custom_model(payload)
+        if args.command == "unregister_custom_model":
+            from worker_custom_models import cmd_unregister_custom_model
+            return cmd_unregister_custom_model(payload)
+        if args.command == "relink_custom_model":
+            from worker_custom_models import cmd_relink_custom_model
+            return cmd_relink_custom_model(payload)
+        if args.command == "remap_custom_model_paths":
+            from worker_custom_models import cmd_remap_custom_model_paths
+            return cmd_remap_custom_model_paths(payload)
         if args.command == "model_storage_summary":
             from worker_models import cmd_model_storage_summary
             return cmd_model_storage_summary(payload)

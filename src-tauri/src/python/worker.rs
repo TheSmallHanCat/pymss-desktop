@@ -321,6 +321,12 @@ fn build_worker_command(
     if let Ok(models_dir) = storage::models_dir(app) {
         cmd.env("PYMSS_MODEL_DIR", models_dir.to_string_lossy().to_string());
     }
+    // Keep the custom-model registry with the app's own state rather than in pymss's default
+    // ~/.cache location, so a portable install carries its imported models with it.
+    // pymss reads this at import time, which is why it has to be set before spawning.
+    if let Ok(file) = storage::user_models_file(app) {
+        cmd.env("PYMSS_USER_MODELS", file.to_string_lossy().to_string());
+    }
     if let Some(path) = payload_file {
         cmd.arg("--payload").arg(path);
     }
@@ -493,6 +499,10 @@ fn is_background_terminal_event(command: &str, event_type: &str) -> bool {
         "install_runtime" => matches!(
             event_type,
             "error" | "runtime_install_finished" | "task_cancelled"
+        ),
+        "import_custom_model" => matches!(
+            event_type,
+            "error" | "custom_model_import_finished" | "task_cancelled"
         ),
         "infer" | "infer_workflow" => {
             matches!(event_type, "error" | "task_done" | "task_cancelled")

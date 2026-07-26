@@ -83,7 +83,7 @@ if ($PreinstallBackend) {
     if ($PreinstallBackend -in @("mps", "mlx")) {
         & $envPython -m pip install --no-cache-dir mlx
     }
-    & $envPython -m pip install --no-cache-dir --no-deps pymss pymss-core==0.1.4
+    & $envPython -m pip install --no-cache-dir --no-deps "pymss>=2.0.15" pymss-core==0.1.4
     & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $envDir
 
     # Step 4: Verify the environment
@@ -197,7 +197,7 @@ if ($Variant -eq "rocm") {
 if ($Variant -in @("mps", "mlx")) {
     & $runtimePython -m pip install --no-cache-dir mlx
 }
-& $runtimePython -m pip install --no-cache-dir --no-deps pymss pymss-core==0.1.4
+& $runtimePython -m pip install --no-cache-dir --no-deps "pymss>=2.0.15" pymss-core==0.1.4
 
 & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $runtime
 $previousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE

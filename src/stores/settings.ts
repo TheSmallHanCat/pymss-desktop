@@ -733,6 +733,17 @@ export const useSettingsStore = defineStore('settings', () => {
         resolvingConflict: false,
       }
       modelDir.value = displayModelDirPath(payload.targetModelDir || modelDirMigrationState.value.targetModelDir)
+      // Custom model registrations store absolute paths, so anything that lived under the old
+      // model directory now points at files the migration has moved away. Rebase them.
+      // Fire-and-forget: a failure here leaves those models showing as missing with a relink
+      // action, which must not turn a completed migration into a failed one.
+      if (payload.sourceModelDir && payload.targetModelDir) {
+        void invoke('remap_custom_model_paths', {
+          payload: { fromRoot: payload.sourceModelDir, toRoot: payload.targetModelDir },
+        }).then(() => import('@/stores/model'))
+          .then(({ useModelStore }) => useModelStore().loadModels())
+          .catch(() => {})
+      }
       return
     }
 

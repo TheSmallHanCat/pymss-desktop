@@ -118,6 +118,15 @@ pub fn active_runtime_file(app: &AppHandle) -> AppResult<PathBuf> {
     Ok(runtime_envs_dir(app)?.join("active-runtime.json"))
 }
 
+/// pymss's registry of imported ("custom") models.
+///
+/// Kept under `settings/` rather than with the models themselves: the registry stores absolute
+/// paths to files that usually live outside the model directory, so it is app state, not model
+/// data, and must not be caught up in a model-directory migration.
+pub fn user_models_file(app: &AppHandle) -> AppResult<PathBuf> {
+    Ok(settings_dir(app)?.join("user_models.json"))
+}
+
 pub fn ensure_app_directories(app: &AppHandle) -> AppResult<()> {
     for dir in [
         data_root_dir(app)?,
