@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -169,7 +170,77 @@ def _route_all_sockets_through_socks(config: ProxyConfig) -> None:
         username=parts.username or None,
         password=parts.password or None,
     )
-    socket.socket = socks.socksocket
+    socket.socket = _bypass_aware_socket_class(socks)
+    socket.create_connection = _bypass_aware_create_connection(socket.create_connection)
+
+
+# The host currently being connected to, by name. socket.create_connection resolves the name to
+# an address before it ever builds a socket, so by the time connect() runs the name is gone --
+# and a bypass list is written in names. This carries it across those two steps, per thread
+# because downloads and the UI's own requests can be in flight at the same time.
+_connect_target = threading.local()
+
+
+def _host_is_bypassed(host: str) -> bool:
+    """Whether NO_PROXY says this host should skip the proxy."""
+    if not host:
+        return False
+    try:
+        return bool(urllib.request.proxy_bypass_environment(str(host)))
+    except Exception:
+        return False
+
+
+def _bypass_aware_create_connection(original: Any) -> Any:
+    """Wrap socket.create_connection so the socket layer can see the hostname.
+
+    Args:
+        original (Any): The stock ``socket.create_connection``.
+
+    Returns:
+        Any: A drop-in replacement that records its target before delegating."""
+
+    def create_connection(address, *args, **kwargs):
+        previous = getattr(_connect_target, "host", None)
+        _connect_target.host = address[0] if isinstance(address, (tuple, list)) and address else None
+        try:
+            return original(address, *args, **kwargs)
+        finally:
+            _connect_target.host = previous
+
+    return create_connection
+
+
+def _bypass_aware_socket_class(socks: Any) -> type:
+    """Build a SOCKS socket class that still honours the bypass list.
+
+    PySocks sends every connection to the proxy; a bypass list is not a concept it has. The
+    variable that carries one, NO_PROXY, is read by urllib's HTTP layer, which a SOCKS
+    connection never reaches — so without this the entries a user listed, typically localhost
+    and their own network, would be tunnelled anyway.
+
+    Args:
+        socks (Any): The imported PySocks module.
+
+    Returns:
+        type: A ``socks.socksocket`` subclass that connects directly to bypassed hosts."""
+
+    class BypassAwareSocksSocket(socks.socksocket):
+        def connect(self, dest_pair, *args, **kwargs):
+            # Prefer the name recorded by create_connection; fall back to whatever connect was
+            # handed, which is already a name when PySocks is used directly.
+            host = getattr(_connect_target, "host", None)
+            if host is None and isinstance(dest_pair, (tuple, list)) and dest_pair:
+                host = dest_pair[0]
+            if _host_is_bypassed(host):
+                # Reach past PySocks to the plain socket rather than clearing the proxy on this
+                # instance: a socket that gets reused would otherwise stay un-proxied. Note that
+                # _BaseSocket, not socket.socket, is the original class — the latter is this very
+                # subclass by now.
+                return socks._BaseSocket.connect(self, dest_pair)
+            return super().connect(dest_pair, *args, **kwargs)
+
+    return BypassAwareSocksSocket
 
 
 def proxy_urlopen(url: str, timeout: int, config: ProxyConfig | None = None):

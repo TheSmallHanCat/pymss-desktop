@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest import mock
 
 from worker_download import _test_url_for_source
 from worker_proxy import ProxyConfigError, aria2_proxy_args, configure_process_proxy, parse_proxy_config, redacted_proxy
@@ -39,7 +40,10 @@ class SocksRoutingTests(unittest.TestCase):
 
     def setUp(self):
         import socket
+        # Both are replaced, so both have to be put back or the rest of the suite inherits a
+        # process still pointed at a proxy that does not exist.
         self._socket = socket.socket
+        self._create_connection = socket.create_connection
         self._env = {k: os.environ.get(k) for k in
                      ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy")}
         self.addCleanup(self._restore)
@@ -47,6 +51,7 @@ class SocksRoutingTests(unittest.TestCase):
     def _restore(self):
         import socket
         socket.socket = self._socket
+        socket.create_connection = self._create_connection
         for key, value in self._env.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -61,7 +66,9 @@ class SocksRoutingTests(unittest.TestCase):
             self.skipTest("PySocks is not installed for this interpreter")
         configure_process_proxy(parse_proxy_config(
             {"mode": "custom", "url": "socks5://127.0.0.1:1080", "bypass": ""}))
-        self.assertIs(socket.socket, socks.socksocket)
+        # A subclass rather than socksocket itself: it adds the bypass check on top.
+        self.assertTrue(issubclass(socket.socket, socks.socksocket))
+        self.assertIsNot(socket.create_connection, self._create_connection)
 
     def test_socks_clears_the_proxy_variables_urllib_would_choke_on(self):
         try:
@@ -81,6 +88,91 @@ class SocksRoutingTests(unittest.TestCase):
             {"mode": "custom", "url": "http://127.0.0.1:7890", "bypass": ""}))
         self.assertEqual(os.environ.get("HTTP_PROXY"), "http://127.0.0.1:7890")
         self.assertEqual(os.environ.get("https_proxy"), "http://127.0.0.1:7890")
+
+
+class BypassRoutingTests(unittest.TestCase):
+    """A bypass list is written in host names, but the socket layer only ever sees addresses."""
+
+    def setUp(self):
+        self._env = {k: os.environ.get(k) for k in ("NO_PROXY", "no_proxy")}
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        from worker_proxy import _connect_target
+        _connect_target.host = None
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_bypass_matching_follows_no_proxy_semantics(self):
+        from worker_proxy import _host_is_bypassed
+
+        os.environ["no_proxy"] = "localhost,.example.com,modelscope.cn"
+
+        self.assertTrue(_host_is_bypassed("localhost"))
+        self.assertTrue(_host_is_bypassed("x.example.com"))
+        # A bare entry covers its subdomains, which is how NO_PROXY has always read.
+        self.assertTrue(_host_is_bypassed("www.modelscope.cn"))
+        self.assertFalse(_host_is_bypassed("huggingface.co"))
+        self.assertFalse(_host_is_bypassed(""))
+
+    def test_create_connection_carries_the_hostname_to_the_socket(self):
+        # create_connection resolves the name to an address before building a socket, so without
+        # this the socket only ever sees an IP and no bypass entry could match.
+        from worker_proxy import _bypass_aware_create_connection, _connect_target
+
+        seen = []
+
+        def original(address, *_args, **_kwargs):
+            seen.append(getattr(_connect_target, "host", None))
+            return "socket"
+
+        wrapped = _bypass_aware_create_connection(original)
+
+        self.assertEqual(wrapped(("example.com", 443)), "socket")
+        self.assertEqual(seen, ["example.com"])
+        # It must not outlive the call, or the next connection inherits the wrong name.
+        self.assertIsNone(getattr(_connect_target, "host", None))
+
+    def test_a_bypassed_host_skips_the_proxy(self):
+        try:
+            import socks
+        except ImportError:
+            self.skipTest("PySocks is not installed for this interpreter")
+        from worker_proxy import _bypass_aware_socket_class, _connect_target
+
+        os.environ["no_proxy"] = "internal.test"
+        socket_class = _bypass_aware_socket_class(socks)
+        instance = socket_class.__new__(socket_class)  # no real socket needed
+        _connect_target.host = "internal.test"
+
+        with mock.patch.object(socks._BaseSocket, "connect") as direct, \
+             mock.patch.object(socks.socksocket, "connect") as through_proxy:
+            socket_class.connect(instance, ("10.0.0.5", 443))
+
+        direct.assert_called_once()
+        through_proxy.assert_not_called()
+
+    def test_other_hosts_still_go_through_the_proxy(self):
+        try:
+            import socks
+        except ImportError:
+            self.skipTest("PySocks is not installed for this interpreter")
+        from worker_proxy import _bypass_aware_socket_class, _connect_target
+
+        os.environ["no_proxy"] = "internal.test"
+        socket_class = _bypass_aware_socket_class(socks)
+        instance = socket_class.__new__(socket_class)
+        _connect_target.host = "www.modelscope.cn"
+
+        with mock.patch.object(socks._BaseSocket, "connect") as direct, \
+             mock.patch.object(socks.socksocket, "connect") as through_proxy:
+            socket_class.connect(instance, ("39.1.2.3", 443))
+
+        through_proxy.assert_called_once()
+        direct.assert_not_called()
 
 
 if __name__ == "__main__":
