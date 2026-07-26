@@ -492,10 +492,16 @@ export function importComfyMssWorkflow(input: unknown, options?: { models?: Mode
     const device = kind === 'custom' ? readStringWidget(node, 2, 'auto') : readStringWidget(node, 1, 'auto')
     if (index === 0 && device) defaultDevice = device
 
-    const stems = asArray(node.outputs)
-      .filter((output) => String((output as Record<string, unknown>)?.type || '').toUpperCase() === 'AUDIO')
-      .map((output) => stemNameFromPort((output as Record<string, unknown>)?.name))
-      .filter(Boolean)
+    // A *_separate_list node returns one bundled AUDIO list, named "audios" — a container, not a
+    // stem. Reading it as one would register a stem no model produces, and the run would fail
+    // looking for it. Its real stems are only knowable from the model, same as an unconfigured
+    // custom node.
+    const stems = isListSeparateNode(node.type)
+      ? []
+      : asArray(node.outputs)
+        .filter((output) => String((output as Record<string, unknown>)?.type || '').toUpperCase() === 'AUDIO')
+        .map((output) => stemNameFromPort((output as Record<string, unknown>)?.name))
+        .filter(Boolean)
     const inferredStems = stems.length ? stems : stemsFromModelEntry(model, kind, models)
 
     const step: WorkflowStepDraft = {

@@ -36,6 +36,20 @@ def _write_workflow_definition(payload: dict[str, Any], task_id: str) -> Path:
     return path
 
 
+# --------------------------------------------------------------------------------------
+# Legacy CLI fallback
+#
+# Everything below runs a workflow by shelling out to the `pymss` CLI. It is only reached when
+# the definition is NOT a graph, and the desktop app never sends one of those: both
+# buildWorkflowRunConfig() and buildWorkflowDefinitionForRun() in stores/task.ts pass every
+# definition through readWorkflowGraphDefinition() first, including on re-run of a task restored
+# from history.
+#
+# It is kept for the one caller that can still reach it: running this worker directly, e.g.
+# `python worker.py infer_workflow --payload legacy.json` with a pre-graph workflow file.
+# --------------------------------------------------------------------------------------
+
+
 def _candidate_commands(workflow_path: Path, input_path: str, output_dir: str, payload: dict[str, Any], output_layout: str) -> list[list[str]]:
     output_format = str(payload.get("outputFormat") or "wav")
     audio_params = payload.get("audioParams") if isinstance(payload.get("audioParams"), dict) else {}

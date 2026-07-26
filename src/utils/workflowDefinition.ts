@@ -682,11 +682,6 @@ export function getWorkflowStepDisplayId(index: number) {
   return `step_${index + 1}`
 }
 
-export function buildWorkflowRuntimeIdMap(steps: WorkflowStepDraft[]) {
-  ensureWorkflowStepIds(steps)
-  return new Map(steps.map((step, index) => [step.id, getWorkflowStepDisplayId(index)]))
-}
-
 export function safeWorkflowStemDir(stem: string) {
   return stem.trim().replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_') || stem
 }
@@ -724,10 +719,6 @@ export function getWorkflowBatchInputConfigs(definition: Record<string, unknown>
       }
     })
     .filter((item): item is WorkflowBatchInputConfig => Boolean(item))
-}
-
-export function getWorkflowBatchInputFolders(definition: Record<string, unknown>): string[] {
-  return getWorkflowBatchInputConfigs(definition).map(item => item.folder)
 }
 
 export type WorkflowValidationTranslator = (key: string, params?: Record<string, unknown>) => string
