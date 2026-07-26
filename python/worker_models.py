@@ -157,15 +157,34 @@ def model_root(model_dir: str | None = None) -> Path:
     return Path(model_dir).expanduser() if model_dir else _default_model_dir()
 
 
-def model_path_for(entry: ModelEntry, model_dir: str | None = None) -> Path:
+def is_user_model_entry(entry: Any) -> bool:
+    """Whether `entry` is a pymss UserModelEntry rather than a catalog ModelEntry.
+
+    The two describe their files in incompatible ways: a catalog entry stores a `relpath`
+    relative to the model directory, while a user entry stores absolute `model_path` /
+    `config_path` and leaves `relpath` empty. Feeding a user entry through the catalog
+    computation therefore yields the model directory itself — a path that silently exists
+    and points at the wrong thing, rather than failing."""
+    return str(getattr(entry, "source", "") or "") == "user"
+
+
+def model_path_for(entry: Any, model_dir: str | None = None) -> Path:
+    if is_user_model_entry(entry):
+        return Path(str(entry.model_path))
     return model_root(model_dir) / entry.relpath
 
 
-def config_path_for(entry: ModelEntry, model_dir: str | None = None) -> Path | None:
+def config_path_for(entry: Any, model_dir: str | None = None) -> Path | None:
+    if is_user_model_entry(entry):
+        config_path = getattr(entry, "config_path", None)
+        return Path(str(config_path)) if config_path else None
     return model_root(model_dir) / entry.config_relpath if entry.config_relpath else None
 
 
-def auxiliary_paths_for(entry: ModelEntry, model_dir: str | None = None) -> list[Path]:
+def auxiliary_paths_for(entry: Any, model_dir: str | None = None) -> list[Path]:
+    if is_user_model_entry(entry):
+        # User registrations name their files outright, so anything here is already absolute.
+        return [Path(str(relpath)) for relpath in getattr(entry, "auxiliary_relpaths", ()) or ()]
     root = model_root(model_dir)
     return [root / relpath for relpath in entry.auxiliary_relpaths]
 
@@ -444,38 +463,38 @@ def cmd_delete_model(payload: dict[str, Any]) -> int:
 
     model_dir = payload.get("modelDir") or None
 
-    try:
-        from pymss.model_registry import (  # type: ignore
-            auxiliary_paths_for,
-            config_path_for,
-            get_model_entry,
-            model_path_for,
-        )
-    except Exception as exc:
+    def fail(message: str) -> int:
         emit("model_delete_failed", {
             "model": model_name,
             "deleted": [],
-            "errors": [str(exc)],
+            "errors": [message],
             "completedFiles": 0,
             "totalFiles": 0,
             "progress": 0,
-            "message": str(exc),
+            "message": message,
         }, task_id=task_id)
         return 1
+
+    # Deliberately NOT importing pymss's path helpers: they are catalog-only and would shadow
+    # the source-aware ones in this module. get_model_entry is imported for its user-model
+    # lookup, which is what lets the guard below recognise an imported model.
+    try:
+        from pymss.model_registry import get_model_entry  # type: ignore
+    except Exception as exc:
+        return fail(str(exc))
 
     try:
         entry = get_model_entry(model_name)
     except KeyError as exc:
-        emit("model_delete_failed", {
-            "model": model_name,
-            "deleted": [],
-            "errors": [str(exc)],
-            "completedFiles": 0,
-            "totalFiles": 0,
-            "progress": 0,
-            "message": str(exc),
-        }, task_id=task_id)
-        return 1
+        return fail(str(exc))
+
+    # An imported model's weights are the user's own file, often outside the app entirely.
+    # Deleting it here would be an unrecoverable surprise, so removal must go through a
+    # dedicated path that only ever touches files the app itself copied.
+    if is_user_model_entry(entry):
+        return fail(
+            f"{model_name} is a locally registered custom model; remove it from the custom model list instead"
+        )
 
     model_path = model_path_for(entry, model_dir)
     config_path = config_path_for(entry, model_dir)
