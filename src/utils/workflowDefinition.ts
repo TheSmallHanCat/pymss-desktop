@@ -733,6 +733,52 @@ export function getWorkflowBatchInputFolders(definition: Record<string, unknown>
 export type WorkflowValidationTranslator = (key: string, params?: Record<string, unknown>) => string
 
 /**
+ * Why a workflow cannot run. Shared vocabulary with the Python runtime, which enforces the same
+ * rules at execution time — `tests/fixtures/workflow-validation.json` pins that both sides reach
+ * the same verdict for the same graph.
+ */
+export type WorkflowValidationRuleCode =
+  | 'batch_input_multiple'
+  | 'batch_input_missing_folder'
+  | 'utility_input_missing'
+  | 'dangling_connection'
+  | 'invalid_port'
+  | 'duplicate_input'
+  | 'cycle'
+  | 'no_save_outputs'
+
+/**
+ * The rules, in the order they are reported. Order is meaningful: the first match is what the
+ * user is told about, so the most actionable problem has to come first.
+ *
+ * A table rather than a chain of ifs, because the order and the codes are the contract the
+ * runtime is checked against — they need to be readable as data, not inferred from control flow.
+ */
+const WORKFLOW_VALIDATION_RULES: ReadonlyArray<{
+  code: WorkflowValidationRuleCode
+  applies: (summary: WorkflowValidationSummary) => boolean
+  messageKey: string
+  params?: (summary: WorkflowValidationSummary) => Record<string, unknown>
+}> = [
+  { code: 'batch_input_multiple', applies: s => s.batchInputMultipleUnsupported, messageKey: 'workflows.batchInputMultipleUnsupported' },
+  { code: 'batch_input_missing_folder', applies: s => s.batchInputMissingFolderCount > 0, messageKey: 'workflows.batchInputFolderRequired' },
+  { code: 'utility_input_missing', applies: s => s.utilityInputMissingCount > 0, messageKey: 'workflows.utilityInputsRequired', params: s => ({ count: s.utilityInputMissingCount }) },
+  { code: 'dangling_connection', applies: s => s.danglingConnectionCount > 0, messageKey: 'workflows.workflowDanglingConnections', params: s => ({ count: s.danglingConnectionCount }) },
+  { code: 'invalid_port', applies: s => s.invalidConnectionCount > 0, messageKey: 'workflows.workflowInvalidConnections', params: s => ({ count: s.invalidConnectionCount }) },
+  { code: 'duplicate_input', applies: s => s.duplicateInputConnectionCount > 0, messageKey: 'workflows.workflowDuplicateInputConnections', params: s => ({ count: s.duplicateInputConnectionCount }) },
+  { code: 'cycle', applies: s => s.graphCycleDetected, messageKey: 'workflows.workflowCycleDetected' },
+  { code: 'no_save_outputs', applies: s => s.noSaveOutputs, messageKey: 'workflows.workflowNoSaveOutputs' },
+]
+
+/** The first rule a summary violates, or null when the workflow can run. */
+export function getWorkflowValidationRuleCode(
+  summary: WorkflowValidationSummary | null | undefined,
+): WorkflowValidationRuleCode | null {
+  if (!summary) return null
+  return WORKFLOW_VALIDATION_RULES.find(rule => rule.applies(summary))?.code ?? null
+}
+
+/**
  * Single source of truth mapping a validation summary to a user-facing error
  * message. All entry points (separate page, workflows page, node editor,
  * task store) must use this to avoid divergence. Pass the caller's translator
@@ -743,15 +789,9 @@ export function workflowValidationErrorMessage(
   translate: WorkflowValidationTranslator,
 ): string {
   if (!summary) return ''
-  if (summary.batchInputMultipleUnsupported) return translate('workflows.batchInputMultipleUnsupported')
-  if (summary.batchInputMissingFolderCount > 0) return translate('workflows.batchInputFolderRequired')
-  if (summary.utilityInputMissingCount > 0) return translate('workflows.utilityInputsRequired', { count: summary.utilityInputMissingCount })
-  if (summary.danglingConnectionCount > 0) return translate('workflows.workflowDanglingConnections', { count: summary.danglingConnectionCount })
-  if (summary.invalidConnectionCount > 0) return translate('workflows.workflowInvalidConnections', { count: summary.invalidConnectionCount })
-  if (summary.duplicateInputConnectionCount > 0) return translate('workflows.workflowDuplicateInputConnections', { count: summary.duplicateInputConnectionCount })
-  if (summary.graphCycleDetected) return translate('workflows.workflowCycleDetected')
-  if (summary.noSaveOutputs) return translate('workflows.workflowNoSaveOutputs')
-  return ''
+  const rule = WORKFLOW_VALIDATION_RULES.find(item => item.applies(summary))
+  if (!rule) return ''
+  return translate(rule.messageKey, rule.params?.(summary))
 }
 
 export function getWorkflowValidationSummary(definition: Record<string, unknown>): WorkflowValidationSummary {
