@@ -192,8 +192,11 @@ def _prepare_separator(
     except Exception as resolve_exc:
         if not download:
             raise resolve_exc
+        from pymss import model_download as pymss_model_download  # type: ignore
         from pymss.model_download import download_model  # type: ignore
+        from worker_download import prepare_pymss_download
         emit("task_stage", {"stage": "downloading_model", "message": "Downloading model files"}, task_id=task_id)
+        prepare_pymss_download(pymss_model_download, task_id, download_model)
         download_model(model_name, model_dir=model_dir, source=source, endpoint=endpoint)
         resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
     if not isinstance(resolved, dict):
@@ -598,10 +601,13 @@ def cmd_infer(payload: dict[str, Any]) -> int:
             if not download:
                 return emit_error("MODEL_NOT_FOUND", str(resolve_exc), traceback.format_exc(), task_id=task_id)
 
+            from pymss import model_download as pymss_model_download  # type: ignore
             from pymss.model_download import download_model  # type: ignore
+            from worker_download import prepare_pymss_download
 
             try:
                 emit("task_stage", {"stage": "downloading_model", "message": "Downloading model files"}, task_id=task_id)
+                prepare_pymss_download(pymss_model_download, task_id, download_model)
                 download_model(model_name, model_dir=model_dir, source=source, endpoint=endpoint)
                 resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
             except Exception as exc:

@@ -408,6 +408,36 @@ class ImportPipelineTests(unittest.TestCase):
         self.assertEqual(self.unregistered, [], "the previous registration must be left alone")
         self.assertEqual(self.registered, [])
 
+    def test_a_failed_copy_reimport_leaves_existing_files_intact(self):
+        managed = self.models_dir / "custom" / "my_model"
+        managed.mkdir(parents=True)
+        old_weights = managed / "my_model.ckpt"
+        old_weights.write_bytes(b"old")
+
+        code, _, _ = self._run(
+            self._base_payload(importMode="copy", force=True),
+            verify_error=RuntimeError("bad architecture"),
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(old_weights.read_bytes(), b"old")
+        self.assertEqual(self.registered, [])
+
+    def test_a_failed_copy_registration_restores_existing_files(self):
+        managed = self.models_dir / "custom" / "my_model"
+        managed.mkdir(parents=True)
+        old_weights = managed / "my_model.ckpt"
+        old_weights.write_bytes(b"old")
+
+        code, events, _ = self._run(
+            self._base_payload(importMode="copy", force=True),
+            register_error=ValueError("name conflict"),
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(events[-1]["payload"]["code"], "CUSTOM_MODEL_IMPORT_FAILED")
+        self.assertEqual(old_weights.read_bytes(), b"old")
+
     def test_verification_runs_before_registration(self):
         # Ordering is the whole guarantee; assert it rather than trusting the call sites.
         order = []

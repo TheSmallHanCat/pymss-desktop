@@ -74,7 +74,9 @@ const modelCategoryFilter = ref('')
 const workflowSearch = ref('')
 const runMode = ref<'model' | 'workflow'>(route.query.mode === 'workflow' ? 'workflow' : 'model')
 const temporaryOutputDir = ref('')
-const outputLayout = ref<OutputLayout>('folders')
+// Flat by default: most runs produce a handful of stems that are easier to find alongside each
+// other than nested one directory deep per input.
+const outputLayout = ref<OutputLayout>('flat')
 const focusedSeparationJobId = ref<string | null>(null)
 const cancellingTaskId = ref<string | null>(null)
 const audioElements = new Map<string, HTMLAudioElement>()
@@ -1005,17 +1007,17 @@ async function retryCurrentTask() {
                   <button
                     type="button"
                     class="seg__btn"
-                    :class="{ 'seg__btn--active': saveAsFolder }"
-                    :disabled="isRunModeLocked"
-                    @click="saveAsFolder = true"
-                  >{{ t('separate.saveModeFolderName') }}</button>
-                  <button
-                    type="button"
-                    class="seg__btn"
                     :class="{ 'seg__btn--active': !saveAsFolder }"
                     :disabled="isRunModeLocked"
                     @click="saveAsFolder = false"
                   >{{ t('separate.saveModeFlatName') }}</button>
+                  <button
+                    type="button"
+                    class="seg__btn"
+                    :class="{ 'seg__btn--active': saveAsFolder }"
+                    :disabled="isRunModeLocked"
+                    @click="saveAsFolder = true"
+                  >{{ t('separate.saveModeFolderName') }}</button>
                 </div>
               </div>
             </div>

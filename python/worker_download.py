@@ -91,6 +91,28 @@ def _pymss_reports_progress(download_model: Any) -> bool:
         return False
 
 
+def prepare_pymss_download(pymss_download: Any, task_id: str | None, download_model: Any | None = None) -> None:
+    """Prepare pymss's downloader for this worker process.
+
+    This is shared by the model-library download command and the automatic download path used
+    before separation. Both invoke pymss directly, so both need the same child-process proxy and
+    stdout-protocol guards.
+    """
+    _align_aria2_with_proxy(pymss_download, task_id)
+    legacy_aria2 = (
+        download_model is not None
+        and not _pymss_reports_progress(download_model)
+        and getattr(pymss_download, "ARIA2C_PATH", None)
+    )
+    if legacy_aria2:
+        pymss_download.ARIA2C_PATH = None
+        _emit_download_log(
+            task_id,
+            "warning",
+            "Installed pymss cannot report aria2c progress safely; downloading via urllib instead",
+        )
+
+
 def _watch_download_progress(
     *,
     files: list[tuple[str, Path]],
@@ -250,7 +272,7 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
     stop_watching = threading.Event()
     watcher: threading.Thread | None = None
     try:
-        _align_aria2_with_proxy(pymss_model_download, task_id)
+        prepare_pymss_download(pymss_model_download, task_id, download_model)
 
         entry, files = files_for_model(model_name, model_dir)
         total_files = max(1, len(files))
@@ -343,19 +365,6 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
             )
         else:
             uses_aria2 = bool(getattr(pymss_model_download, "ARIA2C_PATH", None))
-            if uses_aria2:
-                # This combination cannot work. A pymss without progress reporting is also a
-                # pymss that runs aria2c without capturing it, so aria2's per-second summary
-                # lands on this worker's stdout — the JSON event channel — and the first such
-                # line makes the host abort the task. Say so here, before it happens, so the
-                # log carries the cause rather than a parse error.
-                _emit_download_log(
-                    task_id,
-                    "error",
-                    "Installed pymss is too old: it does not capture aria2c's output, which "
-                    "corrupts this worker's event stream and will abort the download. "
-                    "Upgrade pymss, or remove aria2c from PATH to fall back to urllib.",
-                )
             watcher = threading.Thread(
                 target=_watch_download_progress,
                 kwargs={

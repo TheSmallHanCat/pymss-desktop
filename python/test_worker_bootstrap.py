@@ -460,7 +460,7 @@ class InstallRecordsTheNewEnvironmentTests(unittest.TestCase):
     def test_the_recorded_state_describes_the_installed_environment(self):
         manifest = {
             **MANIFEST,
-            "common": {**MANIFEST["common"], "pymss-core": "pymss-core==0.1.4"},
+            "common": {**MANIFEST["common"], "pymss-core": "pymss-core==0.1.6"},
             "backends": {"cpu": {"platforms": ["win32"], "torch": {"requirement": "torch==2.7.1"}}},
         }
         pip = mock.Mock(return_value=mock.Mock(stdout=iter(()), wait=mock.Mock(return_value=0), returncode=0))

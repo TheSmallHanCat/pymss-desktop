@@ -365,6 +365,49 @@ def _copy_with_progress(source: Path, target: Path, task_id: str | None, label: 
         raise
 
 
+def _unique_sibling_dir(path: Path, suffix: str) -> Path:
+    parent = path.parent
+    for index in range(1000):
+        candidate = parent / f".{path.name}{suffix}-{int(time.time() * 1000)}-{index}"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Unable to create a temporary directory name for {path}")
+
+
+def _replace_managed_dir(staging_dir: Path, managed_dir: Path) -> Path | None:
+    """Move the verified staged copy into its final managed path.
+
+    A failed re-import must leave the previous copied model usable. Replacing by way of a backup
+    keeps the old directory available until the caller has updated the registry; if the final move
+    fails, the backup is restored before the error reaches the caller.
+    """
+    backup_dir: Path | None = None
+    managed_dir.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if managed_dir.exists():
+            backup_dir = _unique_sibling_dir(managed_dir, ".backup")
+            managed_dir.replace(backup_dir)
+        staging_dir.replace(managed_dir)
+        return backup_dir
+    except Exception:
+        if backup_dir is not None and backup_dir.exists() and not managed_dir.exists():
+            try:
+                backup_dir.replace(managed_dir)
+            except Exception:
+                pass
+        raise
+
+
+def _restore_managed_dir(managed_dir: Path, backup_dir: Path | None) -> None:
+    try:
+        if managed_dir.exists():
+            shutil.rmtree(managed_dir, ignore_errors=True)
+        if backup_dir is not None and backup_dir.exists():
+            backup_dir.replace(managed_dir)
+    except Exception:
+        pass
+
+
 def _verify_model_loads(model_type: str, model_path: Path, config_path: Path | None, task_id: str | None) -> None:
     """Load the model for real, so a wrong architecture is caught before anything is registered.
 
@@ -441,20 +484,17 @@ def cmd_import_custom_model(payload: dict[str, Any]) -> int:
     }, task_id=task_id)
 
     managed_dir: Path | None = None
+    staging_dir: Path | None = None
     model_path = source_model
     config_path = source_config
     try:
         if import_mode == "copy":
             managed_dir = managed_root(str(payload.get("modelDir") or "").strip() or None) / name
-            # Start from an empty directory. Re-importing the same name with a differently named
-            # weights file would otherwise strand the previous one here forever, and a copy killed
-            # mid-write (cancellation kills the process, so no cleanup runs) leaves a .part behind.
-            if managed_dir.exists():
-                shutil.rmtree(managed_dir, ignore_errors=True)
-            model_path = managed_dir / source_model.name
+            staging_dir = _unique_sibling_dir(managed_dir, ".importing")
+            model_path = staging_dir / source_model.name
             _copy_with_progress(source_model, model_path, task_id, source_model.name)
             if source_config:
-                config_path = managed_dir / source_config.name
+                config_path = staging_dir / source_config.name
                 _copy_with_progress(source_config, config_path, task_id, source_config.name)
 
         if verify:
@@ -463,8 +503,8 @@ def cmd_import_custom_model(payload: dict[str, Any]) -> int:
             except Exception as verify_exc:
                 # Nothing is registered yet, so there is no registration to unwind — only the
                 # copy this import made, if any.
-                if managed_dir is not None:
-                    shutil.rmtree(managed_dir, ignore_errors=True)
+                if staging_dir is not None:
+                    shutil.rmtree(staging_dir, ignore_errors=True)
                 return emit_error(
                     "CUSTOM_MODEL_VERIFY_FAILED",
                     f"{type(verify_exc).__name__}: {verify_exc}",
@@ -475,15 +515,29 @@ def cmd_import_custom_model(payload: dict[str, Any]) -> int:
         # The top-level register_model, not user_models.register_user_model: only the former wires
         # in the catalog name check, which is what stops a custom model from shadowing a built-in.
         from pymss.model_registry import register_model  # type: ignore
-        entry = register_model(
-            name,
-            model_type,
-            str(model_path),
-            config_path=str(config_path) if config_path else None,
-            aliases=aliases or None,
-            force=force,
-            require_exists=True,
-        )
+        backup_dir: Path | None = None
+        if staging_dir is not None and managed_dir is not None:
+            backup_dir = _replace_managed_dir(staging_dir, managed_dir)
+            model_path = managed_dir / source_model.name
+            config_path = (managed_dir / source_config.name) if source_config else None
+
+        try:
+            entry = register_model(
+                name,
+                model_type,
+                str(model_path),
+                config_path=str(config_path) if config_path else None,
+                aliases=aliases or None,
+                force=force,
+                require_exists=True,
+            )
+        except Exception:
+            if managed_dir is not None:
+                _restore_managed_dir(managed_dir, backup_dir)
+            raise
+        finally:
+            if backup_dir is not None:
+                shutil.rmtree(backup_dir, ignore_errors=True)
 
         _remember_import(name, import_mode, managed_dir)
         emit("custom_model_import_finished", {
@@ -496,8 +550,8 @@ def cmd_import_custom_model(payload: dict[str, Any]) -> int:
         }, task_id=task_id)
         return 0
     except Exception as exc:
-        if managed_dir is not None:
-            shutil.rmtree(managed_dir, ignore_errors=True)
+        if staging_dir is not None:
+            shutil.rmtree(staging_dir, ignore_errors=True)
         return emit_error("CUSTOM_MODEL_IMPORT_FAILED", f"{type(exc).__name__}: {exc}", task_id=task_id)
 
 

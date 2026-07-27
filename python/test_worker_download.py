@@ -13,6 +13,7 @@ from worker_download import (
     _make_pymss_progress_adapter,
     _pymss_reports_progress,
     _watch_download_progress,
+    prepare_pymss_download,
 )
 from worker_proxy import parse_proxy_config
 
@@ -96,6 +97,32 @@ class PymssCapabilityTest(unittest.TestCase):
         # Some builtins have no retrievable signature; guessing yes would raise TypeError at the
         # call site and fail the download outright.
         self.assertFalse(_pymss_reports_progress(print))
+
+    def test_old_pymss_with_aria2_falls_back_before_stdout_is_corrupted(self):
+        def old_style(model_name, model_dir=None):
+            pass
+
+        module = SimpleNamespace(ARIA2C_PATH="C:/bin/aria2c.exe")
+        proxy = parse_proxy_config({"mode": "system", "url": "", "bypass": ""})
+        with mock.patch("worker_download.load_proxy_config", return_value=proxy), \
+             mock.patch("worker_download.urllib.request.getproxies", return_value={}), \
+             mock.patch("worker_download.emit"):
+            prepare_pymss_download(module, "task", old_style)
+
+        self.assertIsNone(module.ARIA2C_PATH)
+
+    def test_new_pymss_keeps_aria2_when_proxy_allows_it(self):
+        def new_style(model_name, model_dir=None, progress_callback=None):
+            pass
+
+        module = SimpleNamespace(ARIA2C_PATH="C:/bin/aria2c.exe")
+        proxy = parse_proxy_config({"mode": "system", "url": "", "bypass": ""})
+        with mock.patch("worker_download.load_proxy_config", return_value=proxy), \
+             mock.patch("worker_download.urllib.request.getproxies", return_value={}), \
+             mock.patch("worker_download.emit"):
+            prepare_pymss_download(module, "task", new_style)
+
+        self.assertEqual(module.ARIA2C_PATH, "C:/bin/aria2c.exe")
 
 
 class ProgressAdapterTest(unittest.TestCase):
