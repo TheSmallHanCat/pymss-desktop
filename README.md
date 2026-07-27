@@ -32,7 +32,7 @@
 </p>
 
 <p align="center">
-  <img src="./images/en-light-home.png" alt="Pymss Studio light home screen" width="900" />
+  <img src="./images/en-light-home.webp" alt="Pymss Studio light home screen" width="900" />
 </p>
 
 ## Why Pymss Studio
@@ -65,7 +65,7 @@ Pymss Studio focuses on practical desktop performance across more machines:
 
 | Light | Dark |
 | --- | --- |
-| <img src="./images/en-light-preview.jpg" alt="Light theme interface preview collage" /> | <img src="./images/en-dark-preview.jpg" alt="Dark theme interface preview collage" /> |
+| <img src="./images/en-light-preview.webp" alt="Light theme interface preview collage" /> | <img src="./images/en-dark-preview.webp" alt="Dark theme interface preview collage" /> |
 
 ## Highlights
 
