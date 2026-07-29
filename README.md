@@ -45,6 +45,17 @@ Pymss Studio turns the [`pymss`](https://github.com/pymss-project/pymss) source-
 
 Download the latest Windows, Linux, or macOS package from the [Pymss Studio releases page](https://github.com/pymss-project/pymss-studio/releases).
 
+Choose the package variant that matches your machine:
+
+| Use case | Recommended package |
+| --- | --- |
+| NVIDIA GPU | Windows CUDA |
+| No discrete GPU, integrated graphics only, or you prefer CPU inference | Windows CPU |
+| Stable network, and you want the smallest download | Windows Online |
+| Windows AMD GPU | Windows ROCm |
+| Apple Silicon Mac, including M1/M2/M3/M4 | macOS MLX |
+| Intel Mac | No dedicated release package currently |
+
 On macOS, clear the quarantine attribute after installing the app:
 
 ```bash

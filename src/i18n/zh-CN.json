@@ -1000,8 +1000,6 @@
     "duplicateSelected": "复制所选节点",
     "deleteSelectedNodes": "删除所选节点",
     "pendingTarget": "目标节点",
-    "collapseNode": "折叠节点",
-    "expandNode": "展开节点",
     "nodeSettings": "节点设置",
     "utilityNode": "工具节点",
     "batchInputFolder": "批量输入目录",
@@ -1049,8 +1047,6 @@
     "noModelsConfigured": "尚未配置模型",
     "modelNotDownloadedShort": "未下载",
     "runParams": "运行参数",
-    "paramOn": "开启",
-    "paramOff": "关闭",
     "statusReady": "配置就绪",
     "runWorkflowAction": "运行",
     "connectionCycleBlocked": "无法连接：该连线会形成循环依赖。"

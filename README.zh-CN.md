@@ -45,6 +45,17 @@ Pymss Studio 将 [`pymss`](https://github.com/pymss-project/pymss) 音乐源分�
 
 请从 [Pymss Studio Releases](https://github.com/pymss-project/pymss-studio/releases) 下载最新的 Windows、Linux 或 macOS 安装包。
 
+请根据设备选择对应版本：
+
+| 使用场景 | 推荐版本 |
+| --- | --- |
+| NVIDIA 显卡 | Windows CUDA |
+| 没有独立显卡、只有核显，或希望直接使用 CPU 推理 | Windows CPU |
+| 网络稳定且希望下载体积尽可能小 | Windows Online |
+| Windows AMD 显卡 | Windows ROCm |
+| Apple Silicon Mac，即 M1/M2/M3/M4 等 | macOS MLX |
+| Intel Mac | 当前没有对应发布版本 |
+
 macOS 版本安装完成后，需要执行：
 
 ```bash

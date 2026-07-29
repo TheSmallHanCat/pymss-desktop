@@ -1172,7 +1172,7 @@ onMounted(() => {
 
             <n-alert v-if="app.runtimeInstallStatus === 'error'" type="error" :show-icon="true">
               <div class="runtime-install-error">
-                <div>{{ app.runtimeInstallMessage }}</div>
+                <div class="runtime-install-error__message">{{ app.runtimeInstallMessage }}</div>
                 <div class="runtime-install-error__actions">
                   <n-button
                     size="small"
@@ -2155,6 +2155,24 @@ onMounted(() => {
   gap: 8px;
   flex-wrap: wrap;
   padding-top: 4px;
+}
+
+.runtime-install-error {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.runtime-install-error__message {
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.runtime-install-error__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .settings-card {

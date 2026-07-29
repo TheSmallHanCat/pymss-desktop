@@ -1000,8 +1000,6 @@
     "duplicateSelected": "Duplicate selected nodes",
     "deleteSelectedNodes": "Delete selected nodes",
     "pendingTarget": "Target",
-    "collapseNode": "Collapse node",
-    "expandNode": "Expand node",
     "nodeSettings": "Node settings",
     "utilityNode": "Utility node",
     "batchInputFolder": "Batch input folder",
@@ -1049,8 +1047,6 @@
     "noModelsConfigured": "No models configured yet",
     "modelNotDownloadedShort": "Not downloaded",
     "runParams": "Run parameters",
-    "paramOn": "On",
-    "paramOff": "Off",
     "statusReady": "Ready",
     "runWorkflowAction": "Run",
     "connectionCycleBlocked": "Cannot connect: this link would create a dependency cycle."

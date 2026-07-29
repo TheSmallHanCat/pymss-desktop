@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
-import { AddOutline, ArrowRedoOutline, ArrowUndoOutline, CloseOutline, CopyOutline, RemoveOutline, SearchOutline, SettingsOutline, TrashOutline } from '@vicons/ionicons5'
+import { AddOutline, ArrowRedoOutline, ArrowUndoOutline, CloseOutline, CopyOutline, SearchOutline, SettingsOutline, TrashOutline } from '@vicons/ionicons5'
 import type { ModelEntry } from '@/stores/model'
 import type {
   WorkflowCanvasPoint,
@@ -287,7 +287,6 @@ const saveOutputs = computed(() => {
 })
 const saveNodeX = computed(() => GRAPH_STEP_START_X + Math.max(1, steps.value.length) * GRAPH_STEP_GAP + GRAPH_SAVE_GAP)
 const notes = computed(() => editorUi.value.notes || [])
-const collapsedStepIds = computed(() => editorUi.value.collapsedStepIds || [])
 const selectedGraphStepId = computed(() => {
   const match = selectedGraphNode.value.match(/^step:(.+)$/)
   return match ? match[1] : ''
@@ -516,8 +515,7 @@ const viewportStyle = computed(() => {
   }
 })
 const zoomLayerStyle = computed(() => ({
-  transform: `scale(${viewport.value.k})`,
-  willChange: 'transform',
+  zoom: `${viewport.value.k}`,
 }))
 const zoomPercent = computed(() => Math.round(viewport.value.k * 100))
 function utilityInputPortIds(node: WorkflowUtilityNodeDraft) {
@@ -823,7 +821,7 @@ watch(() => steps.value.map(step => step.id).join('|'), () => {
   }
 }, { immediate: true })
 
-watch(() => steps.value.map(step => `${step.id}:${step.model}:${step.input}:${step.stems.join(',')}:${isStepCollapsed(step.id) ? '1' : '0'}`).join('|'), schedulePortMeasure, { flush: 'post' })
+watch(() => steps.value.map(step => `${step.id}:${step.model}:${step.input}:${step.stems.join(',')}`).join('|'), schedulePortMeasure, { flush: 'post' })
 watch(() => graphDefinition.value.graph.nodes.map(node => `${node.id}:${node.position.x}:${node.position.y}`), schedulePortMeasure, { deep: true, flush: 'post' })
 watch(() => `${viewport.value.x}:${viewport.value.y}:${viewport.value.k}`, schedulePortMeasure, { flush: 'post' })
 watch(notes, () => {
@@ -987,20 +985,6 @@ function stepDisplayId(index: number) {
   return getWorkflowStepDisplayId(index)
 }
 
-function isStepCollapsed(stepId: string) {
-  return collapsedStepIds.value.includes(stepId)
-}
-
-function toggleStepCollapsed(stepId: string) {
-  mutateDraft((next) => {
-    if (next.ui.collapsedStepIds.includes(stepId)) {
-      next.ui.collapsedStepIds = next.ui.collapsedStepIds.filter(id => id !== stepId)
-      return
-    }
-    next.ui.collapsedStepIds = [...next.ui.collapsedStepIds, stepId]
-  })
-}
-
 function openStepConfig(stepId: string) {
   stepConfigModalStepId.value = stepId
   selectedGraphNode.value = stepSelectionKey(stepId)
@@ -1057,7 +1041,6 @@ function updateGraphNodePosition(nodeId: string, point: WorkflowCanvasPoint) {
 
 
 function stepNodeHeight(step: WorkflowStepDraft) {
-  if (isStepCollapsed(step.id)) return 168
   return 168 + Math.max(1, step.stems.length) * 26
 }
 
@@ -3275,14 +3258,6 @@ function jumpMinimap(event: MouseEvent) {
                   >
                     <n-icon :component="CloseOutline" />
                   </button>
-                  <button
-                    type="button"
-                    class="graph-node__head-button graph-node__collapse"
-                    :title="isStepCollapsed(step.id) ? t('workflows.expandNode') : t('workflows.collapseNode')"
-                    @click.stop="toggleStepCollapsed(step.id)"
-                  >
-                    <n-icon :component="isStepCollapsed(step.id) ? AddOutline : RemoveOutline" />
-                  </button>
                 </div>
               </div>
               <button
@@ -3301,7 +3276,7 @@ function jumpMinimap(event: MouseEvent) {
               <div class="graph-node__model" :title="step.model || t('workflows.stepModelPlaceholder')">
                 {{ step.model || t('workflows.stepModelPlaceholder') }}
               </div>
-              <div v-if="!isStepCollapsed(step.id)" class="graph-node__ports">
+              <div class="graph-node__ports">
                 <button
                   v-for="stem in step.stems"
                   :key="stem"
@@ -3313,9 +3288,6 @@ function jumpMinimap(event: MouseEvent) {
                   <i :data-port-id="`out:${step.id}.${stem}`" />
                 </button>
                 <div v-if="!step.stems.length" class="graph-node__empty-port">{{ t('workflows.noStemPorts') }}</div>
-              </div>
-              <div v-if="isStepCollapsed(step.id)" class="graph-node__collapsed-summary">
-                {{ step.stems.length ? `${step.stems.length} stems` : t('workflows.noStemPorts') }}
               </div>
             </article>
 
@@ -4090,7 +4062,6 @@ function jumpMinimap(event: MouseEvent) {
   position: absolute;
   inset: 0;
   transform: translate(var(--viewport-x), var(--viewport-y));
-  will-change: transform;
   z-index: 2;
 }
 
@@ -4294,16 +4265,6 @@ function jumpMinimap(event: MouseEvent) {
   font-size: 13px;
 }
 
-.graph-node__collapse {
-  border: 1px solid color-mix(in srgb, var(--outline) 52%, transparent);
-  color: var(--on-surface-muted);
-  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
-  cursor: pointer;
-  font: inherit;
-  font-size: 16px;
-  line-height: 1;
-}
-
 .graph-node__icon-action {
   border: 1px solid color-mix(in srgb, var(--outline) 52%, transparent);
   color: var(--on-surface-muted);
@@ -4314,7 +4275,6 @@ function jumpMinimap(event: MouseEvent) {
   line-height: 1;
 }
 
-.graph-node__collapse :deep(.n-icon),
 .graph-node__icon-action :deep(.n-icon) {
   display: flex;
   align-items: center;
@@ -4325,15 +4285,13 @@ function jumpMinimap(event: MouseEvent) {
   transform: translateY(0);
 }
 
-.graph-node__collapse :deep(svg),
 .graph-node__icon-action :deep(svg) {
   display: block;
   width: 14px;
   height: 14px;
 }
 
-.graph-node__icon-action:hover,
-.graph-node__collapse:hover {
+.graph-node__icon-action:hover {
   color: var(--primary-strong);
   border-color: color-mix(in srgb, var(--primary) 38%, var(--outline));
   background: color-mix(in srgb, var(--primary-soft) 20%, var(--surface-1));
