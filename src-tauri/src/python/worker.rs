@@ -27,6 +27,13 @@ struct ActiveRuntimeRecord {
 }
 
 fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
+    if cfg!(debug_assertions) {
+        let path = dev_worker_path();
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
     if let Ok(resource) = app.path().resource_dir() {
         let candidates = [
             resource.join("python").join("worker.py"),
@@ -51,10 +58,6 @@ fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
     }
 
     if cfg!(debug_assertions) {
-        let path = dev_worker_path();
-        if path.exists() {
-            return Ok(path);
-        }
         // Fallback: try cwd (for backward compatibility)
         let cwd = std::env::current_dir()?;
         Ok(cwd.join("python").join("worker.py"))

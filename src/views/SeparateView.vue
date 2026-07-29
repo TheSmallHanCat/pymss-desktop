@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -22,6 +22,9 @@ import {
   PauseOutline,
   TerminalOutline,
   TimeOutline,
+  ReorderFourOutline,
+  ChevronUpOutline,
+  ChevronDownOutline,
 } from '@vicons/ionicons5'
 import { useModelStore } from '@/stores/model'
 import { useTaskStore, type OutputLayout, type SeparationTask, type StemOutput } from '@/stores/task'
@@ -68,6 +71,7 @@ const { workflows, selectedWorkflow, selectedWorkflowId } = storeToRefs(workflow
 
 const isDragging = ref(false)
 const showSettingsDrawer = ref(false)
+const showNamingModal = ref(false)
 const showLogModal = ref(false)
 const modelSearch = ref('')
 const modelCategoryFilter = ref('')
@@ -82,6 +86,23 @@ const cancellingTaskId = ref<string | null>(null)
 const audioElements = new Map<string, HTMLAudioElement>()
 const playingOutputPath = ref('')
 const outputPlayback = ref<Record<string, { currentTime: number; duration: number }>>({})
+const outputNamingTemplate = ref('%index%_%filename%_%stem%')
+const customStemOrder = ref<string[]>([])
+const draggedInputIndex = ref<number | null>(null)
+const inputDragPointerId = ref<number | null>(null)
+const draggedStemIndex = ref<number | null>(null)
+const stemDragPointerId = ref<number | null>(null)
+const namingTemplateInputRef = ref<any>(null)
+const STEM_ORDER_ROW_HEIGHT = 43
+const WINDOWS_RESERVED_FILENAMES = new Set([
+  'CON',
+  'PRN',
+  'AUX',
+  'NUL',
+  ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`),
+])
+const MAX_FILENAME_PART_BYTES = 200
 let unlistenDragDrop: UnlistenFn | null = null
 
 const formatOptions = [
@@ -214,6 +235,46 @@ const selectedStemDetail = computed(() => {
   }
   return selectedStemSummary.value
 })
+
+const namingTokens = computed(() => [
+  { value: '%index%', label: t('separate.namingTokenIndex') },
+  { value: '%input_number%', label: t('separate.namingTokenInputNumber') },
+  { value: '%filename%', label: t('separate.namingTokenFilename') },
+  { value: '%stem%', label: t('separate.namingTokenStem') },
+  { value: '%model%', label: t('separate.namingTokenModel') },
+  { value: '%yyyyMMdd%', label: t('separate.namingTokenDate') },
+  { value: '%hhmmss%', label: t('separate.namingTokenTime') },
+  { value: '%ddmmss%', label: t('separate.namingTokenLegacyTime') },
+])
+
+function normalizeStemOrder(order: string[], stems: string[]) {
+  const byKey = new Map(stems.map(stem => [stem.toLowerCase(), stem]))
+  const used = new Set<string>()
+  const next: string[] = []
+  order.forEach((stem) => {
+    const key = stem.toLowerCase()
+    const resolved = byKey.get(key)
+    if (!resolved || used.has(key)) return
+    used.add(key)
+    next.push(resolved)
+  })
+  stems.forEach((stem) => {
+    const key = stem.toLowerCase()
+    if (!used.has(key)) next.push(stem)
+  })
+  return next
+}
+
+const orderedOutputStems = computed(() => normalizeStemOrder(customStemOrder.value, checkedOutputStems.value))
+const outputNamingConfig = computed(() => ({
+  enabled: Boolean(outputNamingTemplate.value.trim()),
+  template: outputNamingTemplate.value.trim() || '%index%_%filename%_%stem%',
+  stemOrder: orderedOutputStems.value,
+}))
+const outputNamingSummary = computed(() => outputNamingConfig.value.enabled
+  ? outputNamingConfig.value.template
+  : t('separate.namingDefaultSummary'))
+const usesIndexToken = computed(() => outputNamingTemplate.value.includes('%index%'))
 const selectedWorkflowValidation = computed(() => selectedWorkflow.value
   ? getWorkflowValidationSummary(selectedWorkflow.value.definition)
   : null)
@@ -292,10 +353,11 @@ const normalizedOutputDir = computed(() => (temporaryOutputDir.value || settings
 const outputPreview = computed(() => {
   const base = normalizedOutputDir.value.replace(/[\\/]$/, '')
   const separator = base.includes('\\') ? '\\' : '/'
+  const previewName = outputNamingPreviewFiles.value[0] || t('separate.outputFilePreview')
   if (effectiveOutputLayout.value === 'flat') {
-    return `${base}${separator}${t('separate.outputFilePreview')}`
+    return `${base}${separator}${previewName}`
   }
-  return `${base}${separator}${t('separate.resultFolderPreview')}${separator}${t('separate.outputStemPreview')}`
+  return `${base}${separator}${t('separate.resultFolderPreview')}${separator}${previewName}`
 })
 const effectiveFormat = computed(() => {
   if (runMode.value === 'workflow' && selectedWorkflow.value) {
@@ -305,6 +367,17 @@ const effectiveFormat = computed(() => {
   return String(settings.defaultFormat || 'wav').trim().toLowerCase() || 'wav'
 })
 const formatLabel = computed(() => effectiveFormat.value.toUpperCase())
+const outputNamingPreviewFiles = computed(() => {
+  const stems = orderedOutputStems.value.length ? orderedOutputStems.value : ['vocals']
+  return stems.slice(0, 8).map((stem, index) => formatOutputNamingPreviewFile(stem, index))
+})
+const outputNamingPreviewParts = computed(() => {
+  const stems = orderedOutputStems.value.length ? orderedOutputStems.value : ['vocals']
+  return stems.slice(0, 8).map((stem, index) => ({
+    key: `${stem}-${index}`,
+    parts: formatOutputNamingPreviewParts(stem, index),
+  }))
+})
 const outputSummaryPath = computed(() => shortenMiddle(outputPreview.value, 60))
 const canStart = computed(() => (
   (workflowUsesBatchInput.value || inputFiles.value.length > 0)
@@ -385,6 +458,7 @@ const currentTaskOutputSummary = computed(() => shortenMiddle(currentTaskOutputP
 const currentTaskDuration = computed(() => currentTask.value ? taskDuration(currentTask.value) : '')
 
 function configuredStemOrder(item: SeparationTask) {
+  if (item.runConfig?.outputNaming?.stemOrder?.length) return item.runConfig.outputNaming.stemOrder
   if (item.runConfig?.runMode === 'workflow') return []
   const modelEntry = modelEntries.value.find(modelItem => modelItem.name === item.model)
   const configured = parseModelInstruments(modelEntry?.configInstruments)
@@ -537,6 +611,206 @@ function getFileName(path: string) {
   return path.split(/[/\\]/).filter(Boolean).pop() || path
 }
 
+function stripFileExtension(path: string) {
+  return getFileName(path).replace(/\.[^/.\\]+$/, '')
+}
+
+function padNumber(value: number) {
+  return String(value).padStart(2, '0')
+}
+
+function formatDateToken(date = new Date()) {
+  return `${date.getFullYear()}${padNumber(date.getMonth() + 1)}${padNumber(date.getDate())}`
+}
+
+function formatTimeToken(date = new Date()) {
+  return `${padNumber(date.getHours())}${padNumber(date.getMinutes())}${padNumber(date.getSeconds())}`
+}
+
+function formatLegacyTimeToken(date = new Date()) {
+  return `${padNumber(date.getDate())}${padNumber(date.getMinutes())}${padNumber(date.getSeconds())}`
+}
+
+function truncateUtf8(value: string, maxBytes: number) {
+  let bytes = 0
+  let result = ''
+  for (const char of value) {
+    const size = new TextEncoder().encode(char).length
+    if (bytes + size > maxBytes) break
+    bytes += size
+    result += char
+  }
+  return result.replace(/[ ._]+$/u, '')
+}
+
+function normalizeFilenameFragment(value: string) {
+  return String(value || '')
+    .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*_\s*/g, '_')
+}
+
+function safeFilenamePart(value: string) {
+  let text = normalizeFilenameFragment(value).replace(/^[ ._]+|[ ._]+$/g, '')
+  text = truncateUtf8(text, MAX_FILENAME_PART_BYTES) || 'output'
+  const reservedKey = text.split('.', 1)[0].toUpperCase()
+  if (WINDOWS_RESERVED_FILENAMES.has(reservedKey) || text === '.' || text === '..') text = `${text}_`
+  return text
+}
+
+function formatOutputNamingPreviewFile(stem: string, stemIndex: number) {
+  return formatOutputNamingPreviewParts(stem, stemIndex).map(part => part.text).join('')
+}
+
+function formatOutputNamingPreviewParts(stem: string, stemIndex: number) {
+  const inputPath = inputFiles.value[0] || t('separate.resultFolderPreview')
+  const modelName = runMode.value === 'workflow'
+    ? selectedWorkflow.value?.name || t('separate.workflow')
+    : selectedModelName.value || t('separate.model')
+  const now = new Date()
+  const values: Record<string, string> = {
+    '%index%': padNumber(stemIndex + 1),
+    '%input_number%': '01',
+    '%filename%': stripFileExtension(inputPath),
+    '%stem%': stem,
+    '%model%': modelName,
+    '%yyyyMMdd%': formatDateToken(now),
+    '%hhmmss%': formatTimeToken(now),
+    '%ddmmss%': formatLegacyTimeToken(now),
+  }
+  const template = outputNamingConfig.value.enabled ? outputNamingConfig.value.template : '%filename%_%stem%'
+  const parts: Array<{ text: string; token: string }> = []
+  const tokenPattern = /%(?:index|input_number|filename|stem|model|yyyyMMdd|hhmmss|ddmmss)%/g
+  let cursor = 0
+  for (const match of template.matchAll(tokenPattern)) {
+    const token = match[0]
+    const index = match.index ?? 0
+    if (index > cursor) parts.push({ text: template.slice(cursor, index), token: 'literal' })
+    parts.push({ text: values[token] || token, token })
+    cursor = index + token.length
+  }
+  if (cursor < template.length) parts.push({ text: template.slice(cursor), token: 'literal' })
+  const namedParts = parts.length
+    ? parts.map(part => ({ ...part, text: normalizeFilenameFragment(part.text) }))
+    : [{ text: 'output', token: 'literal' }]
+  const firstPart = namedParts[0]
+  const lastPart = namedParts[namedParts.length - 1]
+  firstPart.text = firstPart.text.replace(/^[ ._]+/g, '')
+  lastPart.text = lastPart.text.replace(/[ ._]+$/g, '')
+  const fullName = namedParts.map(part => part.text).join('')
+  if (!fullName) namedParts.splice(0, namedParts.length, { text: 'output', token: 'literal' })
+  else {
+    const safeName = safeFilenamePart(fullName)
+    if (safeName.startsWith(fullName)) lastPart.text += safeName.slice(fullName.length)
+  }
+  return [
+    ...namedParts.filter(part => part.text),
+    { text: `.${effectiveFormat.value || 'wav'}`, token: 'extension' },
+  ]
+}
+
+function moveItem<T>(items: T[], fromIndex: number, toIndex: number) {
+  if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= items.length || toIndex >= items.length) return items
+  const next = [...items]
+  const [item] = next.splice(fromIndex, 1)
+  next.splice(toIndex, 0, item)
+  return next
+}
+
+function moveStem(fromIndex: number, toIndex: number) {
+  customStemOrder.value = moveItem(orderedOutputStems.value, fromIndex, toIndex)
+}
+
+function onInputPointerDown(event: PointerEvent, index: number) {
+  if (isRunModeLocked.value) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.file-chip__remove')) return
+  draggedInputIndex.value = index
+  inputDragPointerId.value = event.pointerId
+  ;(event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId)
+}
+
+function onInputPointerMove(event: PointerEvent) {
+  if (inputDragPointerId.value !== event.pointerId || draggedInputIndex.value === null) return
+  const list = (event.currentTarget as HTMLElement).parentElement
+  const rows = Array.from(list?.querySelectorAll<HTMLElement>('.file-chip') || [])
+  if (!rows.length) return
+  const targetIndex = rows.findIndex(row => event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2)
+  const nextIndex = targetIndex === -1 ? rows.length - 1 : targetIndex
+  if (nextIndex === draggedInputIndex.value) return
+  task.moveInputFile(draggedInputIndex.value, nextIndex)
+  draggedInputIndex.value = nextIndex
+}
+
+function finishInputPointerDrag(event?: PointerEvent) {
+  if (event && inputDragPointerId.value === event.pointerId) {
+    ;(event.currentTarget as HTMLElement | null)?.releasePointerCapture?.(event.pointerId)
+  }
+  inputDragPointerId.value = null
+  draggedInputIndex.value = null
+}
+
+function onStemPointerDown(event: PointerEvent, index: number) {
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.stem-order-row__actions')) return
+  draggedStemIndex.value = index
+  stemDragPointerId.value = event.pointerId
+  ;(event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId)
+}
+
+function onStemPointerMove(event: PointerEvent) {
+  if (stemDragPointerId.value !== event.pointerId || draggedStemIndex.value === null) return
+  const list = (event.currentTarget as HTMLElement).parentElement
+  const listTop = list?.getBoundingClientRect().top ?? (event.currentTarget as HTMLElement).getBoundingClientRect().top
+  const targetIndex = Math.max(0, Math.min(
+    orderedOutputStems.value.length - 1,
+    Math.trunc((event.clientY - listTop) / STEM_ORDER_ROW_HEIGHT),
+  ))
+  if (targetIndex === draggedStemIndex.value) return
+  moveStem(draggedStemIndex.value, targetIndex)
+  draggedStemIndex.value = targetIndex
+}
+
+function finishStemPointerDrag(event?: PointerEvent) {
+  if (event && stemDragPointerId.value === event.pointerId) {
+    ;(event.currentTarget as HTMLElement | null)?.releasePointerCapture?.(event.pointerId)
+  }
+  stemDragPointerId.value = null
+  draggedStemIndex.value = null
+}
+
+async function insertNamingToken(token: string) {
+  const input = namingTemplateInputRef.value?.inputElRef as HTMLInputElement | undefined
+  const current = outputNamingTemplate.value
+  const withSeparators = (start: number, end: number) => {
+    const before = current.slice(0, start)
+    const after = current.slice(end)
+    const prefix = before && !before.endsWith('_') ? '_' : ''
+    const suffix = after && !after.startsWith('_') ? '_' : ''
+    return {
+      text: `${before}${prefix}${token}${suffix}${after}`,
+      cursor: before.length + prefix.length + token.length,
+    }
+  }
+  if (!input) {
+    const next = withSeparators(current.length, current.length)
+    outputNamingTemplate.value = next.text
+    return
+  }
+  const start = input.selectionStart ?? current.length
+  const end = input.selectionEnd ?? start
+  const next = withSeparators(start, end)
+  outputNamingTemplate.value = next.text
+  await nextTick()
+  input.focus()
+  input.setSelectionRange(next.cursor, next.cursor)
+}
+
+function resetOutputNaming() {
+  outputNamingTemplate.value = '%index%_%filename%_%stem%'
+  customStemOrder.value = []
+}
+
 function categoryLabel(item: { categoryCn?: string; category?: string; primaryCategoryCn?: string; primaryCategory?: string } | null | undefined) {
   return getModelCategoryLabel(item, locale.value, t('common.notSet'))
 }
@@ -681,6 +955,14 @@ watch(
 )
 
 watch(
+  checkedOutputStems,
+  (stems) => {
+    customStemOrder.value = normalizeStemOrder(customStemOrder.value, stems)
+  },
+  { immediate: true },
+)
+
+watch(
   currentModelInfo,
   (info) => {
     if (!info || info.name !== selectedModelName.value) return
@@ -752,6 +1034,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (unlistenDragDrop) unlistenDragDrop()
+  finishInputPointerDrag()
+  finishStemPointerDrag()
   stopAllPreviewAudio()
 })
 
@@ -805,8 +1089,8 @@ async function start() {
   }
   try {
     const result = runMode.value === 'workflow' && selectedWorkflow.value
-      ? await task.startWorkflowInference(selectedWorkflow.value, { outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value })
-      : await task.startSeparation({ outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value })
+      ? await task.startWorkflowInference(selectedWorkflow.value, { outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value, outputNaming: outputNamingConfig.value })
+      : await task.startSeparation({ outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value, outputNaming: outputNamingConfig.value })
     focusedSeparationJobId.value = result?.jobId || newestRunningJob.value?.id || focusedSeparationJobId.value
     task.clearInputFiles()
     if (result && result.failed > 0) {
@@ -950,7 +1234,17 @@ async function retryCurrentTask() {
               @click="(!inputFiles.length && !isRunModeLocked) ? handlePickFiles() : undefined"
             >
               <div v-if="inputFiles.length" class="file-list">
-                <div v-for="path in inputFiles" :key="path" class="file-chip">
+                <div
+                  v-for="(path, index) in inputFiles"
+                  :key="path"
+                  class="file-chip"
+                  :class="{ 'file-chip--dragging': draggedInputIndex === index }"
+                  @pointerdown="onInputPointerDown($event, index)"
+                  @pointermove="onInputPointerMove"
+                  @pointerup="finishInputPointerDrag"
+                  @pointercancel="finishInputPointerDrag"
+                >
+                  <span class="file-chip__handle" :title="t('separate.dragToReorder')"><n-icon :component="ReorderFourOutline" /></span>
                   <span class="file-chip__glyph"><n-icon :component="MusicalNotesOutline" /></span>
                   <div class="file-chip__main">
                     <strong :title="getFileName(path)">{{ getFileName(path) }}</strong>
@@ -1020,6 +1314,14 @@ async function retryCurrentTask() {
                   >{{ t('separate.saveModeFolderName') }}</button>
                 </div>
               </div>
+            </div>
+
+            <div class="ofield naming-field">
+              <span class="ofield__label">{{ t('separate.namingRule') }}</span>
+              <button type="button" class="naming-summary" :disabled="isRunModeLocked" @click="showNamingModal = true">
+                <span>{{ outputNamingSummary }}</span>
+                <small>{{ t('separate.namingRuleAction') }}</small>
+              </button>
             </div>
 
             <div v-if="runMode === 'model'" class="ofield ofield--stems">
@@ -1458,6 +1760,104 @@ async function retryCurrentTask() {
         </template>
       </n-card>
     </n-modal>
+    <n-modal v-model:show="showNamingModal" style="width:min(640px, 92vw)">
+      <n-card
+        class="naming-modal"
+        :title="t('separate.namingModalTitle')"
+        :bordered="false"
+        closable
+        role="dialog"
+        aria-modal="true"
+        @close="showNamingModal = false"
+      >
+        <div class="naming-modal__content">
+          <div class="naming-section naming-section--main">
+            <div class="naming-section__head">
+              <strong>{{ t('separate.namingTemplate') }}</strong>
+              <span>{{ t('separate.namingTemplateHint') }}</span>
+            </div>
+            <n-input
+              ref="namingTemplateInputRef"
+              v-model:value="outputNamingTemplate"
+              placeholder="%index%_%filename%_%stem%"
+            />
+            <div class="naming-preview-inline">
+              <span>{{ t('separate.namingPreview') }}</span>
+              <div v-for="row in outputNamingPreviewParts" :key="row.key" class="naming-preview-file">
+                <span
+                  v-for="(part, partIndex) in row.parts"
+                  :key="`${row.key}-${partIndex}`"
+                  class="naming-preview-part"
+                  :class="`naming-preview-part--${part.token.replace(/[%_]/g, '')}`"
+                >{{ part.text }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="naming-section">
+            <div class="naming-section__head">
+              <strong>{{ t('separate.namingVariables') }}</strong>
+              <span>{{ t('separate.namingVariablesHint') }}</span>
+            </div>
+            <div class="token-grid">
+              <button
+                v-for="token in namingTokens"
+                :key="token.value"
+                type="button"
+                class="token-chip"
+                :title="token.value"
+                @click="insertNamingToken(token.value)"
+              >
+                <span>{{ token.label }}</span>
+                <code>{{ token.value }}</code>
+              </button>
+            </div>
+          </div>
+
+          <div v-if="usesIndexToken" class="naming-section">
+            <div class="naming-section__head">
+              <strong>{{ t('separate.namingNumberOrder') }}</strong>
+              <span>{{ t('separate.namingNumberOrderHint') }}</span>
+            </div>
+            <div v-if="orderedOutputStems.length" class="stem-order-list">
+              <div
+                v-for="(stem, index) in orderedOutputStems"
+                :key="stem"
+                class="stem-order-row"
+                :class="{ 'stem-order-row--dragging': draggedStemIndex === index }"
+                @pointerdown="onStemPointerDown($event, index)"
+                @pointermove="onStemPointerMove"
+                @pointerup="finishStemPointerDrag"
+                @pointercancel="finishStemPointerDrag"
+              >
+                <n-icon :component="ReorderFourOutline" />
+                <span>{{ padNumber(index + 1) }}</span>
+                <strong>{{ stem }}</strong>
+                <div class="stem-order-row__actions">
+                  <n-button quaternary circle size="tiny" :disabled="index === 0" :title="t('separate.moveUp')" @click="moveStem(index, index - 1)">
+                    <template #icon><n-icon :component="ChevronUpOutline" /></template>
+                  </n-button>
+                  <n-button quaternary circle size="tiny" :disabled="index === orderedOutputStems.length - 1" :title="t('separate.moveDown')" @click="moveStem(index, index + 1)">
+                    <template #icon><n-icon :component="ChevronDownOutline" /></template>
+                  </n-button>
+                </div>
+              </div>
+            </div>
+            <n-empty v-else size="small" :description="t('separate.namingNoStems')" />
+          </div>
+          <div v-else class="naming-section naming-section--muted">
+            {{ t('separate.namingNumberOrderDisabled') }}
+          </div>
+        </div>
+
+        <template #footer>
+          <div class="drawer-footer">
+            <n-button secondary @click="resetOutputNaming">{{ t('separate.namingReset') }}</n-button>
+            <n-button type="primary" @click="showNamingModal = false">{{ t('common.close') }}</n-button>
+          </div>
+        </template>
+      </n-card>
+    </n-modal>
     <n-modal v-model:show="showLogModal" style="width:min(900px, 92vw)">
       <n-card
         :title="currentTask ? `${currentTaskFileName} - ${t('tasks.logs')}` : t('tasks.logs')"
@@ -1768,7 +2168,24 @@ async function retryCurrentTask() {
   border-radius: 10px;
   background: color-mix(in srgb, var(--surface-2) 50%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 76%, transparent);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
 }
+
+.file-chip--dragging {
+  opacity: 0.55;
+}
+
+.file-chip__handle {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  color: var(--on-surface-muted);
+}
+
+.file-chip:active { cursor: grabbing; }
 
 .file-chip__glyph {
   flex: 0 0 auto;
@@ -1888,6 +2305,45 @@ async function retryCurrentTask() {
 }
 .dir-input .n-input { flex: 1 1 auto; min-width: 0; }
 .dir-input__browse { flex: 0 0 auto; }
+
+.naming-field { margin-top: -2px; }
+
+.naming-summary {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 9px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--surface-2) 48%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 82%, transparent);
+  color: var(--on-surface);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.naming-summary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.naming-summary span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.naming-summary small {
+  flex: 0 0 auto;
+  color: var(--primary-strong);
+  font-size: 11px;
+}
 
 /* save-mode segmented control */
 .seg {
@@ -2714,6 +3170,218 @@ async function retryCurrentTask() {
   background: color-mix(in srgb, var(--surface-1) 96%, transparent);
 }
 
+.naming-modal {
+  max-height: min(620px, calc(100vh - 72px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.naming-modal :deep(.n-card-header) {
+  padding: 16px 20px 10px;
+}
+
+.naming-modal :deep(.n-card-footer),
+.naming-modal :deep(.n-card__footer) {
+  padding: 10px 20px 14px;
+}
+
+.naming-modal :deep(.n-card-content),
+.naming-modal :deep(.n-card__content) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 20px 12px;
+}
+
+.naming-modal__content {
+  display: grid;
+  gap: 10px;
+}
+
+.naming-section {
+  display: grid;
+  gap: 8px;
+  padding: 11px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 56%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 82%, transparent);
+}
+
+.naming-section__head {
+  display: grid;
+  gap: 3px;
+}
+
+.naming-section--muted {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.naming-section strong,
+.naming-section__head strong {
+  font-size: 12.5px;
+}
+
+.naming-section span,
+.naming-section__head span {
+  color: var(--on-surface-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.token-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.token-chip {
+  flex: 0 0 auto;
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 8px;
+  padding: 5px 5px 5px 8px;
+  background: color-mix(in srgb, var(--surface) 68%, var(--surface-1));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 78%, transparent);
+  color: var(--on-surface);
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.token-chip code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--primary-strong) 82%, var(--on-surface-muted));
+  background: color-mix(in srgb, var(--primary-soft) 34%, transparent);
+}
+
+.token-chip span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--on-surface);
+}
+
+.stem-order-list,
+.naming-preview-list {
+  display: grid;
+  gap: 6px;
+}
+
+.naming-preview-inline {
+  display: grid;
+  gap: 6px;
+}
+
+.naming-preview-inline > span {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+}
+
+.naming-preview-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 68%, var(--surface-1));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 78%, transparent);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--on-surface) 86%, var(--on-surface-muted));
+}
+
+.naming-preview-part {
+  border-radius: 5px;
+  padding: 0 2px;
+}
+
+.naming-preview-part--literal,
+.naming-preview-part--extension {
+  color: color-mix(in srgb, var(--on-surface-muted) 88%, var(--on-surface));
+}
+
+.naming-preview-part--index,
+.naming-preview-part--inputnumber {
+  color: color-mix(in srgb, #2f6fed 78%, var(--on-surface));
+  background: color-mix(in srgb, #2f6fed 10%, transparent);
+}
+
+.naming-preview-part--filename {
+  color: color-mix(in srgb, #0f8a6b 78%, var(--on-surface));
+  background: color-mix(in srgb, #0f8a6b 10%, transparent);
+}
+
+.naming-preview-part--stem {
+  color: color-mix(in srgb, #9a5a00 78%, var(--on-surface));
+  background: color-mix(in srgb, #d08400 12%, transparent);
+}
+
+.naming-preview-part--model {
+  color: color-mix(in srgb, #7a4ed8 78%, var(--on-surface));
+  background: color-mix(in srgb, #7a4ed8 10%, transparent);
+}
+
+.naming-preview-part--yyyyMMdd,
+.naming-preview-part--hhmmss,
+.naming-preview-part--ddmmss {
+  color: color-mix(in srgb, #b54274 78%, var(--on-surface));
+  background: color-mix(in srgb, #b54274 10%, transparent);
+}
+
+.stem-order-row {
+  display: grid;
+  grid-template-columns: auto 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 68%, var(--surface-1));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 78%, transparent);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.stem-order-row--dragging { opacity: 0.55; }
+
+.stem-order-row .n-icon { color: var(--on-surface-muted); }
+.stem-order-row span { font-variant-numeric: tabular-nums; color: var(--primary-strong); }
+.stem-order-row strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.stem-order-row__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.naming-preview-list code,
+.naming-preview-inline code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 68%, var(--surface-1));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 78%, transparent);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--on-surface) 86%, var(--on-surface-muted));
+}
+
 .field-block {
   display: grid;
   gap: 6px;
@@ -2893,6 +3561,10 @@ async function retryCurrentTask() {
     justify-content: space-between;
   }
   .ofield-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .naming-grid,
+  .token-grid {
     grid-template-columns: minmax(0, 1fr);
   }
   .launch-bar {

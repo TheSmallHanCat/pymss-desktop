@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from worker_infer import JsonLogHandler, _prepare_separator, normalize_audio_params, resolve_pymss_output_dir
+from worker_infer import JsonLogHandler, _prepare_separator, _safe_filename_part, apply_output_naming, normalize_audio_params, resolve_pymss_output_dir
 from worker_protocol import emit
 
 
@@ -45,13 +45,6 @@ def is_graph_workflow_definition(definition: Any) -> bool:
         and int(definition.get("version") or 0) == 2
         and isinstance(definition.get("graph"), dict)
     )
-
-
-def _safe_filename_part(value: str) -> str:
-    import re
-
-    safe = re.sub(r"[\\/:\0<>\"|?*]+", "_", str(value or "")).strip()
-    return safe or "stem"
 
 
 def _utility_title(node_type: str) -> str:
@@ -635,6 +628,14 @@ def run_graph_workflow_task(
                 "path": str(output_path),
             })
 
+        outputs = apply_output_naming(
+            outputs,
+            payload.get("outputNaming"),
+            input_path=input_path,
+            input_index=int(payload.get("inputIndex") or 1),
+            model=str(payload.get("workflowName") or ""),
+            output_format=output_format,
+        )
         return {
             "files": [item["path"] for item in outputs],
             "outputs": outputs,

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from worker_graph_workflows import is_graph_workflow_definition, run_graph_workflow_task
-from worker_infer import _normalize_output_layout, _resolve_separator_device, collect_outputs
+from worker_infer import _normalize_output_layout, _resolve_separator_device, apply_output_naming, collect_changed_files, collect_outputs, snapshot_output_files
 from worker_protocol import emit, emit_error
 
 
@@ -158,6 +158,7 @@ def _prepare_workflow_batch_tasks(raw_tasks: Any, root_task_id: str) -> tuple[li
         batch_tasks.append({
             "taskId": task_id,
             "input": str(source_path),
+            "inputIndex": str(item.get("inputIndex") or index + 1),
         })
     return batch_tasks, None, None
 
@@ -218,7 +219,7 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
             if graph_workflow:
                 try:
                     result = run_graph_workflow_task(
-                        payload=payload,
+                        payload={**payload, "inputIndex": item.get("inputIndex")},
                         task_id=task_id,
                         input_path=input_path,
                         output_dir=output_dir,
@@ -234,6 +235,7 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
             failures: list[str] = []
             completed = False
             for command in _candidate_commands(workflow_path, input_path, output_dir, payload, output_layout):
+                output_baseline = snapshot_output_files(str(task_output_dir), output_format)
                 try:
                     code, tail = _run_workflow_cli(command, task_id)
                 except FileNotFoundError as exc:
@@ -244,10 +246,17 @@ def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
                     continue
 
                 emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
-                outputs = collect_outputs(str(task_output_dir), [Path(input_path).name], output_format)
+                outputs = apply_output_naming(
+                    collect_outputs(str(task_output_dir), [Path(input_path).name], output_format, output_baseline),
+                    payload.get("outputNaming"),
+                    input_path=input_path,
+                    input_index=int(item.get("inputIndex") or 1),
+                    model=str(payload.get("workflowName") or ""),
+                    output_format=output_format,
+                )
                 files = [output["path"] for output in outputs]
                 if not files and task_output_dir.exists():
-                    files = [str(path) for path in task_output_dir.rglob("*") if path.is_file()]
+                    files = collect_changed_files(str(task_output_dir), output_baseline)
                 emit("task_done", {
                     "files": files,
                     "outputs": outputs,
@@ -316,6 +325,7 @@ def cmd_infer_workflow(payload: dict[str, Any]) -> int:
             return 0
         failures: list[str] = []
         for command in _candidate_commands(workflow_path, input_path, output_dir, payload, output_layout):
+            output_baseline = snapshot_output_files(str(task_output_dir), output_format)
             try:
                 code, tail = _run_workflow_cli(command, task_id)
             except FileNotFoundError as exc:
@@ -323,10 +333,17 @@ def cmd_infer_workflow(payload: dict[str, Any]) -> int:
                 continue
             if code == 0:
                 emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
-                outputs = collect_outputs(str(task_output_dir), [source_path.name], output_format)
+                outputs = apply_output_naming(
+                    collect_outputs(str(task_output_dir), [source_path.name], output_format, output_baseline),
+                    payload.get("outputNaming"),
+                    input_path=input_path,
+                    input_index=int(payload.get("inputIndex") or 1),
+                    model=str(payload.get("workflowName") or ""),
+                    output_format=output_format,
+                )
                 files = [item["path"] for item in outputs]
                 if not files:
-                    files = [str(path) for path in task_output_dir.rglob("*") if path.is_file()]
+                    files = collect_changed_files(str(task_output_dir), output_baseline)
                 emit("task_done", {
                     "files": files,
                     "outputs": outputs,

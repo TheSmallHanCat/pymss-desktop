@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -26,18 +27,197 @@ class JsonLogHandler:
         return True
 
 
-def collect_outputs(output_dir: str, success_files: list[str], output_format: str) -> list[dict[str, str]]:
+def snapshot_output_files(output_dir: str, output_format: str) -> dict[Path, int]:
+    base = Path(output_dir)
+    if not base.exists():
+        return {}
+    snapshot: dict[Path, int] = {}
+    for path in base.rglob(f"*.{output_format.lower()}"):
+        try:
+            snapshot[path.resolve()] = path.stat().st_mtime_ns
+        except OSError:
+            continue
+    return snapshot
+
+
+def collect_outputs(
+    output_dir: str,
+    success_files: list[str],
+    output_format: str,
+    baseline: dict[Path, int] | None = None,
+) -> list[dict[str, str]]:
     base = Path(output_dir)
     outputs: list[dict[str, str]] = []
     if not base.exists():
         return outputs
     success_stems = {Path(name).stem for name in success_files}
-    for path in base.rglob(f"*.{output_format.lower()}"):
+    for path in sorted(base.rglob(f"*.{output_format.lower()}")):
+        if baseline is not None:
+            try:
+                resolved = path.resolve()
+                if baseline.get(resolved) == path.stat().st_mtime_ns:
+                    continue
+            except OSError:
+                continue
         if success_stems and not any(path.stem.startswith(stem + "_") or path.stem == stem for stem in success_stems):
             continue
-        stem = path.stem.split("_")[-1] if "_" in path.stem else path.stem
+        stem = path.stem
+        for source_stem in sorted(success_stems, key=len, reverse=True):
+            prefix = f"{source_stem}_"
+            if stem.startswith(prefix):
+                stem = stem[len(prefix):] or stem
+                break
         outputs.append({"stem": stem, "path": str(path)})
     return outputs
+
+
+def collect_changed_files(output_dir: str, baseline: dict[Path, int] | None = None) -> list[str]:
+    base = Path(output_dir)
+    if not base.exists():
+        return []
+    changed: list[str] = []
+    for path in sorted(item for item in base.rglob("*") if item.is_file()):
+        try:
+            resolved = path.resolve()
+            if baseline is not None and baseline.get(resolved) == path.stat().st_mtime_ns:
+                continue
+        except OSError:
+            continue
+        changed.append(str(path))
+    return changed
+
+
+def _normalize_output_naming(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"enabled": False, "template": "", "stem_order": []}
+    template = str(value.get("template") or "").strip()
+    stem_order = value.get("stemOrder")
+    if not isinstance(stem_order, list):
+        stem_order = []
+    return {
+        "enabled": bool(value.get("enabled")) and bool(template),
+        "template": template,
+        "stem_order": [str(item or "").strip() for item in stem_order if str(item or "").strip()],
+    }
+
+
+WINDOWS_RESERVED_FILENAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+MAX_FILENAME_PART_BYTES = 200
+
+
+def _truncate_utf8(value: str, max_bytes: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore").rstrip(" ._")
+
+
+def _safe_filename_part(value: str) -> str:
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip(" ._")
+    text = re.sub(r"\s*_\s*", "_", text).strip(" ._")
+    text = _truncate_utf8(text, MAX_FILENAME_PART_BYTES) or "output"
+    reserved_key = text.split(".", 1)[0].upper()
+    if reserved_key in WINDOWS_RESERVED_FILENAMES or text in {".", ".."}:
+        text = f"{text}_"
+    return text
+
+
+def _stem_rank(stem: str, order: list[str]) -> int:
+    key = stem.strip().lower()
+    for index, item in enumerate(order):
+        if item.strip().lower() == key:
+            return index
+    return len(order) + 1000
+
+
+def _replace_output_tokens(
+    template: str,
+    *,
+    input_path: str,
+    stem: str,
+    stem_index: int,
+    input_index: int,
+    model: str,
+    now: datetime,
+) -> str:
+    values = {
+        "%index%": f"{stem_index + 1:02d}",
+        "%input_number%": f"{max(1, input_index):02d}",
+        "%filename%": Path(input_path).stem,
+        "%stem%": stem,
+        "%model%": model,
+        "%yyyyMMdd%": now.strftime("%Y%m%d"),
+        "%hhmmss%": now.strftime("%H%M%S"),
+        "%ddmmss%": now.strftime("%d%M%S"),
+    }
+    name = template
+    for token, value in values.items():
+        name = name.replace(token, value)
+    return _safe_filename_part(name)
+
+
+def _unique_output_path(path: Path, reserved: set[Path] | None = None) -> Path:
+    reserved = reserved or set()
+    if not path.exists() and path not in reserved:
+        return path
+    for index in range(2, 1000):
+        candidate = path.with_name(f"{path.stem}_{index}{path.suffix}")
+        if not candidate.exists() and candidate not in reserved:
+            return candidate
+    return path.with_name(f"{path.stem}_{int(datetime.now().timestamp())}{path.suffix}")
+
+
+def apply_output_naming(
+    outputs: list[dict[str, str]],
+    naming: Any,
+    *,
+    input_path: str,
+    input_index: int = 1,
+    model: str = "",
+    output_format: str = "wav",
+) -> list[dict[str, str]]:
+    config = _normalize_output_naming(naming)
+    if not config["enabled"]:
+        return outputs
+    order = config["stem_order"]
+    sorted_outputs = [item for _, item in sorted(
+        enumerate(outputs),
+        key=lambda pair: (_stem_rank(str(pair[1].get("stem") or ""), order), pair[0]),
+    )]
+    now = datetime.now()
+    renamed: list[dict[str, str]] = []
+    claimed_paths: set[Path] = set()
+    for index, output in enumerate(sorted_outputs):
+        source = Path(str(output.get("path") or ""))
+        if not source.is_file():
+            renamed.append(output)
+            continue
+        stem = str(output.get("stem") or source.stem).strip() or source.stem
+        suffix = source.suffix or f".{output_format}"
+        target_name = _replace_output_tokens(
+            config["template"],
+            input_path=input_path,
+            stem=stem,
+            stem_index=index,
+            input_index=input_index,
+            model=model,
+            now=now,
+        )
+        target = source.with_name(f"{target_name}{suffix}")
+        target = _unique_output_path(target, claimed_paths) if target != source else target
+        if target != source:
+            source.rename(target)
+        claimed_paths.add(target)
+        renamed.append({"stem": stem, "path": str(target)})
+    return renamed
 
 
 def resolve_pymss_output_dir(output_dir: str, success_files: list[str], fallback_input: str, save_as_folder: bool) -> str:
@@ -390,7 +570,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
     output_format = payload.get("outputFormat") or "wav"
     output_layout = _normalize_output_layout(payload.get("outputLayout"))
     save_as_folder = output_layout == "folders"
-    batch_tasks: list[dict[str, str]] = []
+    batch_tasks: list[dict[str, Any]] = []
 
     for index, item in enumerate(raw_tasks):
         if not isinstance(item, dict):
@@ -407,6 +587,7 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
         batch_tasks.append({
             "taskId": task_id,
             "input": str(source_path),
+            "inputIndex": int(item.get("inputIndex") or index + 1),
         })
 
     logger = None
@@ -468,15 +649,24 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
             task_id = item["taskId"]
             active_task_id = task_id
             emit("task_stage", {"stage": "separating", "message": "Separating"}, task_id=task_id)
+            task_output = resolve_pymss_output_dir(output_root, [], item["input"], save_as_folder)
+            item["baseline"] = snapshot_output_files(task_output, str(output_format))
             success_files = separator.process_folder(item["input"])
             if Path(item["input"]).name not in {Path(name).name for name in success_files}:
                 emit_error("INFERENCE_FAILED", f"Batch separation did not produce outputs for {Path(item['input']).name}", task_id=task_id)
                 continue
             task_output = resolve_pymss_output_dir(output_root, success_files, item["input"], save_as_folder)
             emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
-            outputs = collect_outputs(task_output, success_files, output_format)
+            outputs = apply_output_naming(
+                collect_outputs(task_output, success_files, output_format, item.get("baseline")),
+                payload.get("outputNaming"),
+                input_path=item["input"],
+                input_index=int(item.get("inputIndex") or 1),
+                model=str(payload.get("model") or ""),
+                output_format=str(output_format),
+            )
             emit("task_done", {
-                "files": success_files,
+                "files": [output["path"] for output in outputs],
                 "outputs": outputs,
                 "outputDir": str(Path(task_output).resolve()),
                 "outputFormat": output_format,
@@ -578,6 +768,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         emit("task_started", {"model": model_name, "input": input_path, "output": task_output}, task_id=task_id)
         emit("task_stage", {"stage": "validating_input", "message": "Validating input"}, task_id=task_id)
         Path(output_dir).mkdir(parents=True, exist_ok=True)
+        output_baseline = snapshot_output_files(task_output, str(output_format))
 
         if download:
             emit("task_stage", {"stage": "downloading_model", "message": "Checking model files"}, task_id=task_id)
@@ -646,8 +837,15 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         success_files = separator.process_folder(input_path)
         emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
         task_output = resolve_pymss_output_dir(output_dir, success_files, input_path, save_as_folder)
-        outputs = collect_outputs(task_output, success_files, output_format)
-        emit("task_done", {"files": success_files, "outputs": outputs, "outputDir": str(Path(task_output).resolve()), "outputFormat": output_format}, task_id=task_id)
+        outputs = apply_output_naming(
+            collect_outputs(task_output, success_files, output_format, output_baseline),
+            payload.get("outputNaming"),
+            input_path=str(input_path),
+            input_index=int(payload.get("inputIndex") or 1),
+            model=str(model_name or ""),
+            output_format=str(output_format),
+        )
+        emit("task_done", {"files": [output["path"] for output in outputs], "outputs": outputs, "outputDir": str(Path(task_output).resolve()), "outputFormat": output_format}, task_id=task_id)
         return 0
     except Exception as exc:
         message = str(exc)

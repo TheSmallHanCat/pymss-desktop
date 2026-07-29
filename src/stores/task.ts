@@ -16,6 +16,12 @@ export type OutputLayout = 'folders' | 'flat'
 
 export type StemOutput = { stem: string; path: string }
 
+export type OutputNamingConfig = {
+  enabled: boolean
+  template: string
+  stemOrder: string[]
+}
+
 export type SeparationRunConfig = {
   runMode?: 'model' | 'workflow'
   modelDir: string | null
@@ -25,6 +31,7 @@ export type SeparationRunConfig = {
   workflowDefinition?: Record<string, unknown>
   modelType?: string | null
   outputLayout: OutputLayout
+  outputNaming?: OutputNamingConfig
   device: string
   deviceIds: number[]
   outputFormat: string
@@ -125,6 +132,20 @@ function normalizeStatus(status: unknown): TaskStatus {
 
 function normalizeOutputLayout(value: unknown): OutputLayout {
   return value === 'flat' ? 'flat' : 'folders'
+}
+
+function normalizeOutputNaming(value: unknown): OutputNamingConfig | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const raw = value as Partial<OutputNamingConfig>
+  const template = typeof raw.template === 'string' ? raw.template.trim() : ''
+  const stemOrder = Array.isArray(raw.stemOrder)
+    ? raw.stemOrder.map(item => String(item || '').trim()).filter(Boolean)
+    : []
+  return {
+    enabled: raw.enabled === true,
+    template,
+    stemOrder,
+  }
 }
 
 function normalizeOutputPath(value?: string | null) {
@@ -239,6 +260,7 @@ function normalizeRunConfig(runConfig?: SeparationRunConfig): SeparationRunConfi
   const next: SeparationRunConfig = {
     ...runConfig,
     outputLayout: normalizeOutputLayout(runConfig.outputLayout),
+    outputNaming: normalizeOutputNaming(runConfig.outputNaming),
     selectedStems: Array.isArray(runConfig.selectedStems)
       ? runConfig.selectedStems.map(item => String(item || '').trim()).filter(Boolean)
       : [],
@@ -573,7 +595,7 @@ export const useTaskStore = defineStore('task', () => {
     return Math.min(MAX_CONCURRENT_SEPARATIONS, Math.max(1, Math.trunc(value)))
   }
 
-  function buildRunConfig(inferenceParams: Record<string, unknown>, modelType?: string | null, outputLayout: OutputLayout = 'folders'): SeparationRunConfig {
+  function buildRunConfig(inferenceParams: Record<string, unknown>, modelType?: string | null, outputLayout: OutputLayout = 'folders', outputNaming?: OutputNamingConfig): SeparationRunConfig {
     const settings = useSettingsStore()
     const app = useAppStore()
     const runtimeDevice = settings.getRuntimeDeviceConfig(app.envInfo)
@@ -583,6 +605,7 @@ export const useTaskStore = defineStore('task', () => {
       downloadSource: settings.downloadSource,
       modelType: modelType ?? null,
       outputLayout,
+      outputNaming: normalizeOutputNaming(outputNaming),
       device: runtimeDevice.device,
       deviceIds: runtimeDevice.deviceIds,
       outputFormat: settings.defaultFormat,
@@ -629,7 +652,7 @@ export const useTaskStore = defineStore('task', () => {
       },
     }
   }
-  function buildWorkflowRunConfig(workflow: WorkflowEntry, outputLayout: OutputLayout = 'folders'): SeparationRunConfig {
+  function buildWorkflowRunConfig(workflow: WorkflowEntry, outputLayout: OutputLayout = 'folders', outputNaming?: OutputNamingConfig): SeparationRunConfig {
     const settings = useSettingsStore()
     const app = useAppStore()
     const runtimeDevice = settings.getRuntimeDeviceConfig(app.envInfo)
@@ -653,6 +676,7 @@ export const useTaskStore = defineStore('task', () => {
       workflowName: workflow.name,
       workflowDefinition: buildWorkflowDefinitionForRun(workflow, workflowFormat),
       outputLayout,
+      outputNaming: normalizeOutputNaming(outputNaming),
       device: workflowDevice,
       deviceIds: workflowDevice === runtimeDevice.device ? runtimeDevice.deviceIds : [],
       outputFormat: workflowFormat,
@@ -671,7 +695,7 @@ export const useTaskStore = defineStore('task', () => {
       : joinOutputPath(jobOutput, inputStemSegment(input, resultId))
   }
 
-  function createQueuedTask(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputLayout: OutputLayout = 'folders') {
+  function createQueuedTask(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputLayout: OutputLayout = 'folders', outputNaming?: OutputNamingConfig) {
     const settings = useSettingsStore()
     const id = createRunId('sep')
     const resultId = createRunId('result')
@@ -693,7 +717,7 @@ export const useTaskStore = defineStore('task', () => {
       files: [],
       outputs: [],
       logs: [`${new Date().toLocaleTimeString()} Queued`],
-      runConfig: buildRunConfig(inferenceParams, modelType, outputLayout),
+      runConfig: buildRunConfig(inferenceParams, modelType, outputLayout, outputNaming),
     }
     tasks.value.unshift(task)
     activeTaskId.value = id
@@ -701,7 +725,7 @@ export const useTaskStore = defineStore('task', () => {
     return task
   }
 
-  function createQueuedWorkflowTask(input: string, workflow: WorkflowEntry, jobId?: string, jobOutput?: string, outputLayout: OutputLayout = 'folders') {
+  function createQueuedWorkflowTask(input: string, workflow: WorkflowEntry, jobId?: string, jobOutput?: string, outputLayout: OutputLayout = 'folders', outputNaming?: OutputNamingConfig) {
     const settings = useSettingsStore()
     const id = createRunId('wf')
     const resultId = createRunId('result')
@@ -723,7 +747,7 @@ export const useTaskStore = defineStore('task', () => {
       files: [],
       outputs: [],
       logs: [`${new Date().toLocaleTimeString()} Queued workflow: ${workflow.name}`],
-      runConfig: buildWorkflowRunConfig(workflow, outputLayout),
+      runConfig: buildWorkflowRunConfig(workflow, outputLayout, outputNaming),
     }
     tasks.value.unshift(task)
     activeTaskId.value = id
@@ -754,6 +778,7 @@ export const useTaskStore = defineStore('task', () => {
             deviceIds: config.deviceIds,
             outputFormat: config.outputFormat,
             outputLayout: config.outputLayout,
+            outputNaming: config.outputNaming,
             useTta: config.useTta,
             debug: config.debug,
             audioParams: config.audioParams,
@@ -775,6 +800,7 @@ export const useTaskStore = defineStore('task', () => {
           deviceIds: config.deviceIds,
           outputFormat: config.outputFormat,
           outputLayout: config.outputLayout,
+          outputNaming: config.outputNaming,
           selectedStems: config.selectedStems || [],
           useTta: config.useTta,
           debug: config.debug,
@@ -811,10 +837,11 @@ export const useTaskStore = defineStore('task', () => {
           taskId: primary.id,
           model: primary.model,
           output: primary.jobOutput || primary.output,
-          tasks: batchTasks.map((task) => ({
+          tasks: batchTasks.map((task, index) => ({
             taskId: task.id,
             input: task.input,
             output: task.output,
+            inputIndex: index + 1,
           })),
           modelDir: config.modelDir ?? (settings.modelDir || null),
           download: true,
@@ -824,6 +851,7 @@ export const useTaskStore = defineStore('task', () => {
           deviceIds: config.deviceIds,
           outputFormat: config.outputFormat,
           outputLayout: config.outputLayout,
+          outputNaming: config.outputNaming,
           selectedStems: config.selectedStems || [],
           useTta: config.useTta,
           debug: config.debug,
@@ -864,10 +892,11 @@ export const useTaskStore = defineStore('task', () => {
           workflowName: config.workflowName || primary.model,
           workflow: config.workflowDefinition || {},
           output: primary.jobOutput || primary.output,
-          tasks: batchTasks.map((task) => ({
+          tasks: batchTasks.map((task, index) => ({
             taskId: task.id,
             input: task.input,
             output: task.output,
+            inputIndex: index + 1,
           })),
           modelDir: config.modelDir ?? (settings.modelDir || null),
           source: config.downloadSource || settings.downloadSource,
@@ -875,6 +904,7 @@ export const useTaskStore = defineStore('task', () => {
           deviceIds: config.deviceIds,
           outputFormat: config.outputFormat,
           outputLayout: config.outputLayout,
+          outputNaming: config.outputNaming,
           useTta: config.useTta,
           debug: config.debug,
           audioParams: config.audioParams,
@@ -1034,6 +1064,17 @@ export const useTaskStore = defineStore('task', () => {
 
   function clearInputFiles() {
     inputFiles.value = []
+  }
+
+  function moveInputFile(fromIndex: number, toIndex: number) {
+    const from = Math.trunc(Number(fromIndex))
+    const to = Math.trunc(Number(toIndex))
+    if (from === to || from < 0 || to < 0 || from >= inputFiles.value.length || to >= inputFiles.value.length) return false
+    const next = [...inputFiles.value]
+    const [item] = next.splice(from, 1)
+    next.splice(to, 0, item)
+    inputFiles.value = next
+    return true
   }
 
   async function pickFiles() {
@@ -1287,11 +1328,11 @@ export const useTaskStore = defineStore('task', () => {
 
 
 
-  function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputLayout: OutputLayout = 'folders') {
-    return createQueuedTask(input, model, inferenceParams, modelType, jobId, jobOutput, outputLayout)
+  function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputLayout: OutputLayout = 'folders', outputNaming?: OutputNamingConfig) {
+    return createQueuedTask(input, model, inferenceParams, modelType, jobId, jobOutput, outputLayout, outputNaming)
   }
 
-  async function startSeparation(options: { outputDir?: string; outputLayout?: OutputLayout } = {}) {
+  async function startSeparation(options: { outputDir?: string; outputLayout?: OutputLayout; outputNaming?: OutputNamingConfig } = {}) {
     const modelStore = useModelStore()
     if (!inputFiles.value.length) {
       throw new Error('Input file is required')
@@ -1312,6 +1353,7 @@ export const useTaskStore = defineStore('task', () => {
     const batchMode = targets.length > 1
     const outputLayout = normalizeOutputLayout(options.outputLayout)
     const jobOutput = normalizeOutputPath(options.outputDir || settings.outputDir)
+    const outputNaming = normalizeOutputNaming(options.outputNaming)
     const createdTasks = targets.map(input => submitOne(
       input,
       model,
@@ -1320,6 +1362,7 @@ export const useTaskStore = defineStore('task', () => {
       jobId,
       jobOutput,
       outputLayout,
+      outputNaming,
     ))
     if (batchMode) {
       void startBatchWorker(createdTasks)
@@ -1333,7 +1376,7 @@ export const useTaskStore = defineStore('task', () => {
     return workflowValidationErrorMessage(summary, i18n.global.t)
   }
 
-  async function startWorkflowInference(workflow: WorkflowEntry, options: { outputDir?: string; outputLayout?: OutputLayout } = {}) {
+  async function startWorkflowInference(workflow: WorkflowEntry, options: { outputDir?: string; outputLayout?: OutputLayout; outputNaming?: OutputNamingConfig } = {}) {
     if (!workflow?.id) {
       throw new Error('Workflow is required')
     }
@@ -1365,12 +1408,14 @@ export const useTaskStore = defineStore('task', () => {
     const batchMode = targets.length > 1
     const outputLayout = normalizeOutputLayout(options.outputLayout)
     const jobOutput = normalizeOutputPath(options.outputDir || settings.outputDir)
+    const outputNaming = normalizeOutputNaming(options.outputNaming)
     const createdTasks = targets.map(input => createQueuedWorkflowTask(
       input,
       workflow,
       jobId,
       jobOutput,
       outputLayout,
+      outputNaming,
     ))
     if (batchMode) {
       void startWorkflowBatchWorker(createdTasks)
@@ -1391,7 +1436,7 @@ export const useTaskStore = defineStore('task', () => {
         definition: existing.runConfig.workflowDefinition,
         createdAt: existing.createdAt,
         updatedAt: existing.updatedAt,
-      }, undefined, undefined, existing.runConfig.outputLayout)
+      }, undefined, undefined, existing.runConfig.outputLayout, existing.runConfig.outputNaming)
       scheduleQueue()
       return task
     }
@@ -1401,7 +1446,7 @@ export const useTaskStore = defineStore('task', () => {
     const persistedModelType = existing.runConfig?.modelType ?? null
     const modelEntry = modelStore.models.find((item) => item.name === existing.model) || null
     const modelType = modelEntry?.modelType || persistedModelType || null
-    const task = createQueuedTask(existing.input, existing.model, retryParams, modelType, undefined, undefined, existing.runConfig?.outputLayout)
+    const task = createQueuedTask(existing.input, existing.model, retryParams, modelType, undefined, undefined, existing.runConfig?.outputLayout, existing.runConfig?.outputNaming)
     scheduleQueue()
     return task
   }
@@ -1445,6 +1490,7 @@ export const useTaskStore = defineStore('task', () => {
     pickInputFolder,
     addPaths,
     addInputFiles,
+    moveInputFile,
     removeInputFile,
     clearInputFiles,
     revealPath,
