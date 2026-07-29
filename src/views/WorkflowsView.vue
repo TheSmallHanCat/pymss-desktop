@@ -33,6 +33,7 @@ import {
   workflowValidationErrorMessage,
   type WorkflowValidationSummary,
 } from '@/utils/workflowDefinition'
+import { readWorkflowGraphDefinition, serializeWorkflowGraphDefinition } from '@/utils/workflowGraph'
 import { exportComfyMssWorkflow, importComfyMssWorkflow } from '@/utils/comfyMssWorkflow'
 import {
   analyzeSimpleWorkflow,
@@ -206,11 +207,48 @@ function simpleReasonLabel(reason: SimpleWorkflowReasonCode) {
   return t(simpleReasonKeys[reason])
 }
 
-function deviceLabel(value: string) {
-  return deviceOptions.find(option => option.value === value)?.label || value
+async function updateSelectedWorkflowDefaults(patch: {
+  defaultDevice?: string
+  defaultFormat?: string
+  defaultNormalize?: boolean
+}) {
+  const current = selectedWorkflow.value
+  const draft = selectedDraft.value
+  if (!current || !draft || isNodeEditorOpen.value) return
+  const graph = readWorkflowGraphDefinition(current.definition)
+  graph.defaults = {
+    ...graph.defaults,
+    device: patch.defaultDevice ?? draft.defaultDevice,
+    output_format: patch.defaultFormat ?? draft.defaultFormat,
+    inference_params: {
+      ...graph.defaults.inference_params,
+      normalize: patch.defaultNormalize ?? draft.defaultNormalize,
+    },
+  }
+  try {
+    const entry = await workflow.saveWorkflow({
+      id: current.id,
+      name: current.name,
+      description: current.description,
+      definition: serializeWorkflowGraphDefinition(graph),
+      expectedUpdatedAt: current.updatedAt,
+    })
+    editWorkflow(entry)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  }
 }
-function formatLabel(value: string) {
-  return formatOptions.find(option => option.value === value)?.label || String(value || '').toUpperCase()
+
+function updateSelectedDefaultDevice(value: string | number | null) {
+  void updateSelectedWorkflowDefaults({ defaultDevice: String(value || 'auto') })
+}
+
+function updateSelectedDefaultFormat(value: string | number | null) {
+  void updateSelectedWorkflowDefaults({ defaultFormat: String(value || 'wav') })
+}
+
+function updateSelectedDefaultNormalize(value: boolean) {
+  void updateSelectedWorkflowDefaults({ defaultNormalize: value })
 }
 
 // ---- Selection + quick meta edit ----
@@ -761,15 +799,31 @@ watch(workflows, (items) => {
               <div class="wf-param-grid">
                 <div class="wf-param">
                   <span>{{ t('workflows.defaultDevice') }}</span>
-                  <strong>{{ deviceLabel(selectedDraft.defaultDevice) }}</strong>
+                  <n-select
+                    :value="selectedDraft.defaultDevice"
+                    size="small"
+                    :options="deviceOptions"
+                    :disabled="isNodeEditorOpen"
+                    @update:value="updateSelectedDefaultDevice"
+                  />
                 </div>
                 <div class="wf-param">
                   <span>{{ t('workflows.defaultFormat') }}</span>
-                  <strong>{{ formatLabel(selectedDraft.defaultFormat) }}</strong>
+                  <n-select
+                    :value="selectedDraft.defaultFormat"
+                    size="small"
+                    :options="formatOptions"
+                    :disabled="isNodeEditorOpen"
+                    @update:value="updateSelectedDefaultFormat"
+                  />
                 </div>
                 <div class="wf-param">
                   <span>{{ t('workflows.normalize') }}</span>
-                  <strong>{{ selectedDraft.defaultNormalize ? t('workflows.paramOn') : t('workflows.paramOff') }}</strong>
+                  <n-switch
+                    :value="selectedDraft.defaultNormalize"
+                    :disabled="isNodeEditorOpen"
+                    @update:value="updateSelectedDefaultNormalize"
+                  />
                 </div>
               </div>
             </section>

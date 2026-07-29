@@ -378,7 +378,7 @@ const outputNamingPreviewParts = computed(() => {
     parts: formatOutputNamingPreviewParts(stem, index),
   }))
 })
-const outputSummaryPath = computed(() => shortenMiddle(outputPreview.value, 60))
+const outputSummaryPath = computed(() => outputPreview.value)
 const canStart = computed(() => (
   (workflowUsesBatchInput.value || inputFiles.value.length > 0)
   && !workflowBatchInputInvalid.value
@@ -2473,9 +2473,8 @@ async function retryCurrentTask() {
 .launch-bar__text span {
   font-size: 11px;
   color: var(--on-surface-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
   font-variant-numeric: tabular-nums;
 }
 
