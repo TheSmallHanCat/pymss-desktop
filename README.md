@@ -53,6 +53,10 @@ xattr -cr '/Applications/Pymss Studio.app'
 
 Then open Pymss Studio from `/Applications`.
 
+## Community and feedback
+
+For Chinese users, a QQ group is available for beta testing, bug reports, and community discussion: [Pymss Studio testing group](https://qm.qq.com/q/YLLou4NucE).
+
 ## Advantages
 
 Pymss Studio focuses on practical desktop performance across more machines:

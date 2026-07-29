@@ -53,6 +53,10 @@ xattr -cr '/Applications/Pymss Studio.app'
 
 然后从 `/Applications` 打开 Pymss Studio。
 
+## 交流与反馈
+
+Beta 测试、Bug 反馈和用户交流，可以加入 QQ 群：[Pymss Studio 测试交流群](https://qm.qq.com/q/YLLou4NucE)。
+
 ## 优点
 
 Pymss Studio 的目标是让更多设备获得更顺畅的桌面分离体验：
