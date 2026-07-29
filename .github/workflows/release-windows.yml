@@ -187,9 +187,17 @@ jobs:
         run: |
           $stageFull = (Resolve-Path "release/${{ needs.windows-cuda-prepare.outputs.stage_name }}").Path
           $releaseFull = (Resolve-Path "release").Path
-          $env:PYMSS_PORTABLE_DIR = $stageFull
-          $env:PYMSS_INSTALLER_OUTPUT = $releaseFull
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
+          $drive = "Z:"
+          subst $drive $stageFull
+          if ($LASTEXITCODE -ne 0) { throw "Unable to map $stageFull to $drive" }
+          try {
+            $env:PYMSS_PORTABLE_DIR = $drive
+            $env:PYMSS_INSTALLER_OUTPUT = $releaseFull
+            & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
+            if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+          } finally {
+            subst $drive /D | Out-Null
+          }
 
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
@@ -374,9 +382,17 @@ jobs:
         run: |
           $stageFull = (Resolve-Path "release/${{ needs.windows-cpu-prepare.outputs.stage_name }}").Path
           $releaseFull = (Resolve-Path "release").Path
-          $env:PYMSS_PORTABLE_DIR = $stageFull
-          $env:PYMSS_INSTALLER_OUTPUT = $releaseFull
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
+          $drive = "Z:"
+          subst $drive $stageFull
+          if ($LASTEXITCODE -ne 0) { throw "Unable to map $stageFull to $drive" }
+          try {
+            $env:PYMSS_PORTABLE_DIR = $drive
+            $env:PYMSS_INSTALLER_OUTPUT = $releaseFull
+            & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
+            if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+          } finally {
+            subst $drive /D | Out-Null
+          }
 
       - name: Upload Windows CPU installer artifact
         uses: actions/upload-artifact@v4
