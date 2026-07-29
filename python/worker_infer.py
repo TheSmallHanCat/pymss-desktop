@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import os
 import re
 import traceback
@@ -265,6 +266,18 @@ def _close_separator(separator: Any) -> None:
             separator.del_cache()
         except Exception:
             pass
+    _purge_cuda()
+
+def _purge_cuda() -> None:
+    try:
+        gc.collect()
+        import torch
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        torch.backends.cudnn.benchmark = False
+    except Exception:
+        pass
+
 
 def _normalize_output_dir(value: Any) -> str:
     default_output_dir = os.environ.get("PYMSS_STUDIO_DEFAULT_OUTPUT_DIR")
@@ -927,15 +940,4 @@ def cmd_infer(payload: dict[str, Any]) -> int:
                 logger.removeHandler(log_handler)
             except Exception:
                 pass
-        if separator is not None:
-            close = getattr(separator, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    pass
-            else:
-                try:
-                    separator.del_cache()
-                except Exception:
-                    pass
+        _close_separator(separator)
