@@ -11,10 +11,20 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from worker_models import model_to_dict
+from worker_models import (
+    auxiliary_paths_for,
+    config_path_for,
+    effective_source_for,
+    get_any_model_entry,
+    is_user_model_entry,
+    model_root,
+    model_path_for,
+    model_to_dict,
+)
 from worker_protocol import emit, emit_error
 from worker_proxy import (
     ProxyConfigError,
+    aria2_proxy_args,
     load_proxy_config,
     parse_proxy_config,
     proxy_urlopen,
@@ -55,9 +65,17 @@ def _align_aria2_with_proxy(pymss_download: Any, task_id: str | None) -> None:
 
     config = load_proxy_config()
     if config.scheme in {"socks5", "socks5h"}:
-        # PySocks swaps the socket class inside this process only; a child process is unaffected.
-        pymss_download.ARIA2C_PATH = None
-        _emit_download_log(task_id, "info", "SOCKS proxy configured; downloading via urllib, which aria2c cannot do")
+        # New pymss versions receive explicit --socks5-* arguments below. The capability fallback
+        # for older pymss versions is handled by prepare_pymss_download, after its signature is known.
+        _emit_download_log(task_id, "info", "SOCKS proxy configured; preparing aria2c SOCKS options")
+        return
+    if config.mode == "custom":
+        # The app's proxy opener is configured in this worker process. Do not let aria2c bypass it:
+        # its child-process environment handling differs across platforms and versions.
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            os.environ[name] = config.url
+        _set_aria2_bypass_environment(config)
+        _emit_download_log(task_id, "info", "Custom HTTP proxy configured; downloading via aria2c")
         return
     if config.mode != "system":
         # "custom" already exported the variables aria2 reads, and "none" deliberately cleared them.
@@ -76,6 +94,69 @@ def _align_aria2_with_proxy(pymss_download: Any, task_id: str | None) -> None:
         os.environ.setdefault(name, proxy_url)
     # Credentials in a proxy URL must not reach the log.
     _emit_download_log(task_id, "info", f"Using the system proxy for aria2c: {parts.hostname}:{parts.port or ''}")
+
+
+def _set_aria2_bypass_environment(config: Any) -> None:
+    value = ",".join(config.bypass)
+    os.environ["NO_PROXY"] = value
+    os.environ["no_proxy"] = value
+
+
+def _aria2_args_for_current_proxy() -> tuple[str, ...]:
+    return tuple(aria2_proxy_args(load_proxy_config()))
+
+
+def files_for_studio_model(model_name: str, model_dir: str | None = None) -> tuple[Any, list[tuple[str, Path]]]:
+    entry = get_any_model_entry(model_name)
+    if is_user_model_entry(entry):
+        raise ValueError(f"User-registered model {model_name!r} is local-only and cannot be downloaded")
+    files = [(str(entry.relpath), model_path_for(entry, model_dir))]
+    config_path = config_path_for(entry, model_dir)
+    if entry.config_relpath and config_path is not None:
+        files.append((str(entry.config_relpath), config_path))
+    files.extend((str(relpath), path) for relpath, path in zip(entry.auxiliary_relpaths, auxiliary_paths_for(entry, model_dir)))
+    return entry, files
+
+
+def download_studio_model(
+    pymss_download: Any,
+    model_name: str,
+    files: list[tuple[str, Path]],
+    *,
+    source: str = "modelscope",
+    endpoint: str | None = None,
+    verify: bool = True,
+    force: bool = False,
+    timeout: int = 30,
+    progress_callback: Any = None,
+    aria2_args: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    remote_url = pymss_download.remote_url
+    download_file = pymss_download._download_file
+    already_valid = pymss_download._already_valid
+    expected_size_and_hash = pymss_download._expected_size_and_hash
+    fetch_index = pymss_download.fetch_modelscope_file_index
+    normalize_args = getattr(pymss_download, "_normalize_aria2_args", lambda args: tuple(args))
+    normalized_aria2_args = tuple(normalize_args(aria2_args))
+    index = fetch_index(timeout=timeout) if verify and endpoint is None else None
+    downloaded: list[str] = []
+    skipped: list[str] = []
+
+    for relpath, dest in files:
+        expected_size, expected_sha256 = expected_size_and_hash(relpath, index)
+        if not force and already_valid(dest, expected_size, expected_sha256):
+            skipped.append(str(dest))
+            continue
+        download_kwargs = {"timeout": timeout}
+        download_file_params = inspect.signature(download_file).parameters
+        if "progress_callback" in download_file_params:
+            download_kwargs["progress_callback"] = progress_callback
+        if "aria2_args" in download_file_params:
+            download_kwargs["aria2_args"] = normalized_aria2_args
+        download_file(remote_url(relpath, source=source, endpoint=endpoint), dest, expected_size, expected_sha256, **download_kwargs)
+        downloaded.append(str(dest))
+
+    return {"downloaded": downloaded, "skipped": skipped}
 
 
 def _pymss_reports_progress(download_model: Any) -> bool:
@@ -99,6 +180,14 @@ def prepare_pymss_download(pymss_download: Any, task_id: str | None, download_mo
     stdout-protocol guards.
     """
     _align_aria2_with_proxy(pymss_download, task_id)
+    config = load_proxy_config()
+    supports_variadic_args = bool(download_model) and any(
+        parameter.kind is inspect.Parameter.VAR_POSITIONAL
+        for parameter in inspect.signature(download_model).parameters.values()
+    )
+    if config.scheme in {"socks5", "socks5h"} and not supports_variadic_args:
+        pymss_download.ARIA2C_PATH = None
+        _emit_download_log(task_id, "info", "Installed pymss cannot pass SOCKS options to aria2c; downloading via urllib")
     legacy_aria2 = (
         download_model is not None
         and not _pymss_reports_progress(download_model)
@@ -125,7 +214,7 @@ def _watch_download_progress(
     """Report progress by watching the files pymss is writing.
 
     Used when the installed pymss cannot report progress itself. What it does guarantee is where
-    the bytes land — `files_for_model` names every destination, and a partial download sits
+    the bytes land — files_for_studio_model names every destination, and a partial download sits
     beside it as `<dest>.part`. Sampling those sizes gives a percentage without reaching into how
     the transfer is done.
 
@@ -241,9 +330,8 @@ def _make_pymss_progress_adapter(
 def cmd_download_model(payload: dict[str, Any]) -> int:
     """Download a model.
 
-    The transfer itself belongs to pymss: which files a model needs, where they come from, which
-    downloader to use, retries, resume and validation are all its decisions. This command
-    schedules that work and reports on it — it does not move any bytes itself.
+    Studio resolves the files so local Debug catalog entries download to the same paths that the
+    model page and inference use. The transfer itself still uses pymss's downloader helpers.
     """
     model_name = payload.get("model")
     if not model_name:
@@ -263,9 +351,7 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
             _expected_size_and_hash,
             download_model,
             fetch_modelscope_file_index,
-            files_for_model,
         )
-        from pymss.model_registry import model_root  # type: ignore
     except Exception as exc:
         return emit_error("PYMSS_IMPORT_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
 
@@ -274,7 +360,7 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
     try:
         prepare_pymss_download(pymss_model_download, task_id, download_model)
 
-        entry, files = files_for_model(model_name, model_dir)
+        entry, files = files_for_studio_model(model_name, model_dir)
         total_files = max(1, len(files))
         emit("download_started", {
             "model": entry.name,
@@ -379,7 +465,17 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
             )
             watcher.start()
 
-        result = download_model(model_name, **download_kwargs)
+        result = download_studio_model(
+            pymss_model_download,
+            model_name,
+            files,
+            source=source,
+            endpoint=endpoint,
+            force=force,
+            timeout=timeout,
+            progress_callback=download_kwargs.get("progress_callback"),
+            aria2_args=_aria2_args_for_current_proxy(),
+        )
     except KeyError as exc:
         # An unknown model name is the caller's mistake, not a transfer failure, and the UI tells
         # the two apart by this code.
@@ -415,6 +511,7 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
         "skipped": skipped,
         "modelDir": str(model_root(model_dir)),
         "modelInfo": model_to_dict(entry, model_dir, include_local_state=True),
+        "source": effective_source_for(entry),
         "progress": 100,
     }, task_id=task_id)
     return 0

@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from worker_audio import _apply_stereo_pan, _equal_power_fade, _read_audio, _resample_audio
-from worker_models import _derive_overlap_size_from_num_overlap
+from worker_models import (
+    _derive_overlap_size_from_num_overlap,
+    auxiliary_paths_for,
+    config_path_for,
+    get_any_model_entry,
+    model_path_for,
+)
 from worker_protocol import _as_bool, _as_float, _as_int, emit, emit_error
 
 class JsonLogHandler:
@@ -328,6 +334,38 @@ def _resolve_separator_device(device: Any, device_ids: Any) -> tuple[str, list[i
     return "auto", normalized_ids, f"cuda:{normalized_ids[0]}"
 
 
+def _resolve_studio_model(
+    model_name: str,
+    model_dir: str | None,
+    *,
+    require_supported: bool,
+    require_exists: bool,
+) -> dict[str, Any]:
+    entry = get_any_model_entry(model_name)
+    if require_supported and not bool(getattr(entry, "supported", True)):
+        reason = str(getattr(entry, "unsupported_reason", "") or "unsupported")
+        raise RuntimeError(f"Model {model_name!r} is not supported: {reason}")
+    model_path = model_path_for(entry, model_dir)
+    config_path = config_path_for(entry, model_dir)
+    auxiliary_paths = auxiliary_paths_for(entry, model_dir)
+    required_paths = [model_path]
+    if config_path is not None:
+        required_paths.append(config_path)
+    required_paths.extend(auxiliary_paths)
+    missing = [path for path in required_paths if not path.is_file()]
+    if require_exists and missing:
+        raise FileNotFoundError(
+            f"Model {model_name!r} is missing required file(s): {', '.join(str(path) for path in missing)}"
+        )
+    return {
+        "entry": entry,
+        "model_type": getattr(entry, "model_type", None),
+        "model_path": str(model_path),
+        "config_path": str(config_path) if config_path else None,
+        "auxiliary_paths": [str(path) for path in auxiliary_paths],
+    }
+
+
 def _prepare_separator(
     *,
     payload: dict[str, Any],
@@ -365,20 +403,27 @@ def _prepare_separator(
     else:
         emit("task_stage", {"stage": "ensuring_model", "message": "Checking model files"}, task_id=task_id)
     from pymss import MSSeparator  # type: ignore
-    from pymss.model_registry import resolve_model  # type: ignore
     emit("task_stage", {"stage": "loading_model", "message": "Loading model"}, task_id=task_id)
     try:
-        resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
+        resolved = _resolve_studio_model(model_name, model_dir, require_supported=True, require_exists=True)
     except Exception as resolve_exc:
         if not download:
             raise resolve_exc
         from pymss import model_download as pymss_model_download  # type: ignore
         from pymss.model_download import download_model  # type: ignore
-        from worker_download import prepare_pymss_download
+        from worker_download import _aria2_args_for_current_proxy, download_studio_model, files_for_studio_model, prepare_pymss_download
         emit("task_stage", {"stage": "downloading_model", "message": "Downloading model files"}, task_id=task_id)
         prepare_pymss_download(pymss_model_download, task_id, download_model)
-        download_model(model_name, model_dir=model_dir, source=source, endpoint=endpoint)
-        resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
+        _entry, files = files_for_studio_model(model_name, model_dir)
+        download_studio_model(
+            pymss_model_download,
+            model_name,
+            files,
+            source=source,
+            endpoint=endpoint,
+            aria2_args=_aria2_args_for_current_proxy(),
+        )
+        resolved = _resolve_studio_model(model_name, model_dir, require_supported=True, require_exists=True)
     if not isinstance(resolved, dict):
         raise RuntimeError(f"resolve_model returned unexpected result for {model_name!r}: {type(resolved).__name__}")
     resolved_model_type = resolved.get('model_type')
@@ -776,7 +821,6 @@ def cmd_infer(payload: dict[str, Any]) -> int:
             emit("task_stage", {"stage": "ensuring_model", "message": "Checking model files"}, task_id=task_id)
 
         from pymss import MSSeparator  # type: ignore
-        from pymss.model_registry import resolve_model  # type: ignore
         emit("task_stage", {"stage": "loading_model", "message": "Loading model"}, task_id=task_id)
         try:
             from pymss import get_separation_logger  # type: ignore
@@ -787,20 +831,28 @@ def cmd_infer(payload: dict[str, Any]) -> int:
             logger = None
 
         try:
-            resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
+            resolved = _resolve_studio_model(model_name, model_dir, require_supported=True, require_exists=True)
         except Exception as resolve_exc:
             if not download:
                 return emit_error("MODEL_NOT_FOUND", str(resolve_exc), traceback.format_exc(), task_id=task_id)
 
             from pymss import model_download as pymss_model_download  # type: ignore
             from pymss.model_download import download_model  # type: ignore
-            from worker_download import prepare_pymss_download
+            from worker_download import _aria2_args_for_current_proxy, download_studio_model, files_for_studio_model, prepare_pymss_download
 
             try:
                 emit("task_stage", {"stage": "downloading_model", "message": "Downloading model files"}, task_id=task_id)
                 prepare_pymss_download(pymss_model_download, task_id, download_model)
-                download_model(model_name, model_dir=model_dir, source=source, endpoint=endpoint)
-                resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
+                _entry, files = files_for_studio_model(model_name, model_dir)
+                download_studio_model(
+                    pymss_model_download,
+                    model_name,
+                    files,
+                    source=source,
+                    endpoint=endpoint,
+                    aria2_args=_aria2_args_for_current_proxy(),
+                )
+                resolved = _resolve_studio_model(model_name, model_dir, require_supported=True, require_exists=True)
             except Exception as exc:
                 return emit_error("MODEL_DOWNLOAD_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
 

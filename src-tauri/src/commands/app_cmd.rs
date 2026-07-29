@@ -89,6 +89,26 @@ pub async fn list_models(app: AppHandle, payload: Option<Value>) -> AppResult<Va
 }
 
 #[tauri::command]
+pub async fn debug_catalog_info(app: AppHandle) -> AppResult<Value> {
+    run_worker_with_payload(&app, "debug_catalog_info", None)
+}
+
+#[tauri::command]
+pub async fn debug_catalog_save(app: AppHandle, payload: Value) -> AppResult<Value> {
+    run_worker_with_payload(&app, "debug_catalog_save", Some(payload))
+}
+
+#[tauri::command]
+pub async fn debug_catalog_reset(app: AppHandle) -> AppResult<Value> {
+    run_worker_with_payload(&app, "debug_catalog_reset", None)
+}
+
+#[tauri::command]
+pub async fn debug_model_config(app: AppHandle, payload: Value) -> AppResult<Value> {
+    run_worker_with_payload(&app, "debug_model_config", Some(payload))
+}
+
+#[tauri::command]
 pub async fn get_model_info(app: AppHandle, payload: Value) -> AppResult<Value> {
     run_worker_with_payload(&app, "model_info", Some(payload))
 }

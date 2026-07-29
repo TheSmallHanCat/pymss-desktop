@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
 import { matchesModelQuery } from '@/utils/modelSearch'
 import { matchesModelSource, type ModelSourceFilter } from '@/utils/modelSource'
+import { useAppStore } from '@/stores/app'
 
 /** How the model library lays its entries out. */
 export type ModelViewMode = 'card' | 'list'
@@ -40,7 +41,8 @@ export type ModelEntry = {
    * relink/remove where a catalog model offers download/delete.
    * Absent on entries restored from an older persisted cache — treat a missing value as 'catalog'.
    */
-  source?: 'catalog' | 'user'
+  source?: 'catalog' | 'debug' | 'user'
+  baseConfigPath?: string | null
   /**
    * How an imported model got here — 'copy' means the app owns its files and removing it deletes
    * them. Null for catalog models. Models registered outside the app read as 'reference', the
@@ -128,6 +130,20 @@ type ModelsPayload = {
   categoriesCn: string[]
   count: number
   modelDir: string
+  debugStatus?: ModelDebugStatus
+}
+
+export type ModelDebugStatus = {
+  active: boolean
+  catalogActive: boolean
+  changedCount: number
+  addedCount: number
+  removedCount: number
+  changedModels?: string[]
+  addedModels?: string[]
+  removedModels?: string[]
+  debugDir?: string
+  debugCatalogPath?: string
 }
 
 type DownloadStatus = 'idle' | 'downloading' | 'done' | 'error' | 'cancelled' | 'paused' | 'interrupted'
@@ -368,6 +384,7 @@ export const useModelStore = defineStore('model', () => {
   const categories = ref<string[]>([])
   const categoriesCn = ref<string[]>([])
   const modelDir = ref('')
+  const debugStatus = ref<ModelDebugStatus | null>(null)
   const selectedModel = ref('bs_roformer_voc_hyperacev2')
   const selectedInfo = ref<ModelEntry | null>(null)
   const isLoading = ref(false)
@@ -445,6 +462,7 @@ export const useModelStore = defineStore('model', () => {
   })
 
   const customModelCount = computed(() => models.value.filter((model) => model.source === 'user').length)
+  const debugModelCount = computed(() => models.value.filter((model) => model.source === 'debug').length)
   const downloadedModels = computed(() => models.value.filter((model) => model.supported && model.downloaded))
 
   async function persistState() {
@@ -687,6 +705,7 @@ export const useModelStore = defineStore('model', () => {
       categories.value = result.categories
       categoriesCn.value = result.categoriesCn
       modelDir.value = result.modelDir
+      debugStatus.value = result.debugStatus || null
       const nextSelected = models.value.find((model) => model.name === selectedModel.value) || null
       if (nextSelected) selectedInfo.value = nextSelected
       else if (selectedInfo.value?.name === selectedModel.value) selectedInfo.value = null
@@ -992,7 +1011,15 @@ export const useModelStore = defineStore('model', () => {
   }
 
   async function downloadModel(name: string, force = false) {
+    const app = useAppStore()
     const settings = useSettingsStore()
+    if (app.runtimeInstallStatus === 'installing') {
+      await app.waitForRuntimeInstall()
+    }
+    await app.checkRuntimeInfo()
+    if (!app.runtimeInfo?.ready) {
+      throw new Error('请先完成并激活 Python 运行环境后再下载模型')
+    }
     const taskId = `download_${crypto.randomUUID()}`
     downloadStates.value = { ...downloadStates.value, [name]: 'downloading' }
     downloadErrors.value = { ...downloadErrors.value, [name]: '' }
@@ -1410,6 +1437,7 @@ export const useModelStore = defineStore('model', () => {
     categories,
     categoriesCn,
     modelDir,
+    debugStatus,
     selectedModel,
     selectedInfo,
     isLoading,
@@ -1421,6 +1449,7 @@ export const useModelStore = defineStore('model', () => {
     modelSource,
     modelViewMode,
     customModelCount,
+    debugModelCount,
     downloadStates,
     downloadErrors,
     downloadTasks,

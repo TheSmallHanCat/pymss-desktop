@@ -1,9 +1,9 @@
 /** Which half of the model library to show. */
-export type ModelSourceFilter = 'all' | 'catalog' | 'user'
+export type ModelSourceFilter = 'all' | 'catalog' | 'debug' | 'user'
 
 type SourceLikeModel = {
   /** Absent on entries restored from a cache written before imported models existed. */
-  source?: 'catalog' | 'user' | string
+  source?: 'catalog' | 'debug' | 'user' | string
 }
 
 /**
@@ -15,6 +15,7 @@ type SourceLikeModel = {
  */
 export function matchesModelSource(model: SourceLikeModel | null | undefined, filter: ModelSourceFilter) {
   if (filter === 'all') return true
+  if (filter === 'debug') return model?.source === 'debug'
   const imported = model?.source === 'user'
-  return filter === 'user' ? imported : !imported
+  return filter === 'user' ? imported : model?.source !== 'debug' && !imported
 }

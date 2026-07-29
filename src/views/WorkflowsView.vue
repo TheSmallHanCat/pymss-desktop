@@ -3,7 +3,6 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
-  AddOutline,
   AlertCircleOutline,
   CheckmarkCircle,
   CopyOutline,
@@ -614,8 +613,8 @@ watch(workflows, (items) => {
           <template #icon><n-icon :component="OpenOutline" /></template>
           {{ t('workflows.importComfyMss') }}
         </n-button>
-        <n-button type="primary" @click="createSimpleWorkflow">
-          <template #icon><n-icon :component="AddOutline" /></template>
+        <n-button class="workflow-create-button" type="primary" @click="createSimpleWorkflow">
+          <span class="workflow-create-button__mark" aria-hidden="true" />
           {{ t('workflows.newWorkflow') }}
         </n-button>
       </div>
@@ -654,8 +653,8 @@ watch(workflows, (items) => {
             <n-icon :component="GitNetworkOutline" />
             <strong>{{ t('workflows.emptyTitle') }}</strong>
             <span>{{ t('workflows.emptyDesc') }}</span>
-            <n-button type="primary" size="small" @click="createSimpleWorkflow">
-              <template #icon><n-icon :component="AddOutline" /></template>
+            <n-button class="workflow-create-button" type="primary" size="small" @click="createSimpleWorkflow">
+              <span class="workflow-create-button__mark" aria-hidden="true" />
               {{ t('workflows.newWorkflow') }}
             </n-button>
           </div>
@@ -682,8 +681,8 @@ watch(workflows, (items) => {
           <n-icon :component="GitNetworkOutline" />
           <strong>{{ t('workflows.overviewEmptyTitle') }}</strong>
           <span>{{ t('workflows.overviewEmptyDesc') }}</span>
-          <n-button type="primary" @click="createSimpleWorkflow">
-            <template #icon><n-icon :component="AddOutline" /></template>
+          <n-button class="workflow-create-button" type="primary" @click="createSimpleWorkflow">
+            <span class="workflow-create-button__mark" aria-hidden="true" />
             {{ t('workflows.newWorkflow') }}
           </n-button>
         </div>
@@ -889,6 +888,52 @@ watch(workflows, (items) => {
   align-items: center;
   gap: 10px;
   flex: 0 0 auto;
+}
+
+.workflow-create-button {
+  --n-border-radius: 9px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--primary) 22%, transparent);
+  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+}
+
+.workflow-create-button:hover {
+  transform: translateY(-1px);
+  filter: saturate(1.06);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--primary) 28%, transparent);
+}
+
+.workflow-create-button:active {
+  transform: translateY(1px) scale(0.985);
+  box-shadow: 0 3px 9px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.workflow-create-button__mark {
+  position: relative;
+  display: inline-block;
+  flex: 0 0 14px;
+  width: 16px;
+  height: 14px;
+  margin-right: 1px;
+  color: currentColor;
+}
+
+.workflow-create-button__mark::before,
+.workflow-create-button__mark::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 11px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
+  content: '';
+  transform: translate(-50%, -50%);
+}
+
+.workflow-create-button__mark::after {
+  transform: translate(-50%, -50%) rotate(90deg);
 }
 
 /* ============ Console grid ============ */

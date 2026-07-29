@@ -33,6 +33,10 @@ export type RuntimeInfo = {
   pythonVersion?: string
   platform?: string
   machine?: string
+  bootstrapPython?: string
+  runtimeEnvsDir?: string
+  activeRuntimeFile?: string
+  bundledRuntimeEnvsDir?: string | null
   backend?: RuntimeBackend | null
   installedBackend?: RuntimeBackend | string | null
   installState?: {
@@ -189,7 +193,15 @@ export const useAppStore = defineStore('app', () => {
       envLoading.value = false
       envCheckedOnce.value = true
     }
-    if (event?.type === 'error') lastError.value = event.payload?.message || 'Unknown error'
+    if (event?.type === 'error') {
+      lastError.value = event.payload?.message || 'Unknown error'
+      if (event.payload?.logPath) {
+        runtimeInfo.value = { ...(runtimeInfo.value || {}), logPath: event.payload.logPath }
+      }
+      if (event.payload?.backend && event.payload?.logPath && runtimeInstallBackend.value === event.payload.backend) {
+        runtimeInstallMessage.value = event.payload.message || runtimeInstallMessage.value
+      }
+    }
     if (event?.type === 'error' && event?.payload?.code === 'ENV_CHECK_FAILED') {
       envLoading.value = false
       envCheckedOnce.value = true

@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
+import { useRouter } from 'vue-router'
 import { CheckmarkOutline, ColorPaletteOutline, FolderOpenOutline, HardwareChipOutline, LanguageOutline, LockClosedOutline, MoonOutline } from '@vicons/ionicons5'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 import { SYSTEM_LOCALE, setLocale, type LocaleSetting } from '@/i18n'
@@ -32,6 +33,7 @@ const emit = defineEmits<{
 
 const { t, locale: currentLocale } = useI18n()
 const message = useMessage()
+const router = useRouter()
 const settings = useSettingsStore()
 const app = useAppStore()
 const {
@@ -290,8 +292,12 @@ async function finishOnboarding(event?: MouseEvent) {
   const locked = runtimeManagementLocked.value
   const alreadyReady = app.runtimeReadyForBackend(backend)
   const alreadyInstalled = backendInstalled(backend)
+  const needsRuntimeSettings = !locked && !alreadyReady
   await runRippleViewTransition(async () => {
     await settings.markStartupOnboardingCompleted()
+    if (needsRuntimeSettings) {
+      await router.push({ name: 'settings', query: { section: 'runtime' } })
+    }
     emit('completed')
   }, origin)
   // Runtime errors are handled by the store and surfaced in Settings.
@@ -450,6 +456,9 @@ async function finishOnboarding(event?: MouseEvent) {
                 :options="[
                   { label: t('onboarding.runtimeMirrorAuto'), value: 'auto' },
                   { label: t('onboarding.runtimeMirrorUstc'), value: 'ustc' },
+                  { label: t('onboarding.runtimeMirrorTsinghua'), value: 'tsinghua' },
+                  { label: t('onboarding.runtimeMirrorAliyun'), value: 'aliyun' },
+                  { label: t('onboarding.runtimeMirrorTencent'), value: 'tencent' },
                   { label: t('onboarding.runtimeMirrorPypi'), value: 'pypi' },
                 ]"
               />

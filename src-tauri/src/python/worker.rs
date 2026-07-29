@@ -330,6 +330,9 @@ fn build_worker_command(
     if let Ok(file) = storage::user_models_file(app) {
         cmd.env("PYMSS_USER_MODELS", file.to_string_lossy().to_string());
     }
+    if let Ok(dir) = storage::data_root_dir(app).map(|root| root.join("debug")) {
+        cmd.env("PYMSS_STUDIO_DEBUG_DIR", dir.to_string_lossy().to_string());
+    }
     if let Some(path) = payload_file {
         cmd.arg("--payload").arg(path);
     }

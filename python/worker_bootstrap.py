@@ -98,6 +98,19 @@ def _env_log_path(backend: str) -> Path:
 # version may carry another environment's torch build (see _repaired_env_state).
 ENV_STATE_VERSION = 2
 
+PYPI_MIRROR_URLS = {
+    "ustc": "https://mirrors.ustc.edu.cn/pypi/web/simple",
+    "tsinghua": "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "aliyun": "https://mirrors.aliyun.com/pypi/simple",
+    "tencent": "https://mirrors.cloud.tencent.com/pypi/simple",
+    "pypi": "https://pypi.org/simple",
+}
+
+
+def _resolve_pypi_mirror(mirror: str, locale: str) -> tuple[str, str | None]:
+    selected = "ustc" if mirror == "auto" and locale.startswith("zh") else "pypi" if mirror == "auto" else mirror
+    return selected, PYPI_MIRROR_URLS.get(selected)
+
 
 def _backend_extra_names(manifest: dict[str, Any], backend: str | None) -> list[str]:
     return [extra.split("=", 1)[0] for extra in manifest["backends"].get(backend or "", {}).get("extras", [])]
@@ -448,6 +461,10 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "pythonVersion": platform.python_version(),
         "platform": sys.platform,
         "machine": platform.machine(),
+        "bootstrapPython": str(Path(os.environ.get("PYMSS_STUDIO_BOOTSTRAP_PYTHON") or sys.executable)),
+        "runtimeEnvsDir": str(RUNTIME_ENVS_DIR),
+        "activeRuntimeFile": str(ACTIVE_RUNTIME_FILE),
+        "bundledRuntimeEnvsDir": str(BUNDLED_RUNTIME_ENVS_DIR) if BUNDLED_RUNTIME_ENVS_DIR else None,
         "backend": backend,
         "installedBackend": install_state.get("backend") if install_state else None,
         "installState": install_state,
@@ -616,12 +633,7 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
         from worker_protocol import emit_error
         return emit_error("RUNTIME_PLATFORM_UNSUPPORTED", f"Backend {backend} is not supported on {sys.platform}", task_id=task_id)
     index_url = None
-    if mirror == "auto":
-        mirror = "ustc" if locale.startswith("zh") else "pypi"
-    if mirror == "ustc":
-        index_url = "https://mirrors.ustc.edu.cn/pypi/web/simple"
-    elif mirror == "pypi":
-        index_url = "https://pypi.org/simple"
+    mirror, index_url = _resolve_pypi_mirror(mirror, locale)
     env_dir = _env_dir(backend)
     env_dir.mkdir(parents=True, exist_ok=True)
     env_python = _env_python_path(backend)
@@ -708,4 +720,11 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
     except Exception as exc:
         from worker_protocol import emit_error
         append_log("error", str(exc))
-        return emit_error("RUNTIME_INSTALL_FAILED", str(exc), task_id=task_id)
+        return emit_error(
+            "RUNTIME_INSTALL_FAILED",
+            str(exc),
+            detail=f"详细安装日志：{install_log_path}",
+            task_id=task_id,
+            recoverable=True,
+            extra={"backend": backend, "logPath": str(install_log_path)},
+        )

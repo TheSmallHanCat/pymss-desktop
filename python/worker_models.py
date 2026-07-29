@@ -45,6 +45,7 @@ class ModelEntry:
     config_target_instrument: str
     classification_confidence: str
     classification_basis: str
+    debug_source: str = ""
 
     @property
     def stem(self) -> str:
@@ -77,6 +78,7 @@ class ModelEntry:
             config_target_instrument=data.get("config_target_instrument", ""),
             classification_confidence=data.get("classification_confidence", ""),
             classification_basis=data.get("classification_basis", ""),
+            debug_source=data.get("debug_source", ""),
         )
 
 
@@ -104,6 +106,111 @@ def _model_catalog_path() -> Path:
     raise FileNotFoundError("Unable to locate pymss/resources/model_catalog.json")
 
 
+def _debug_dir() -> Path:
+    return Path(
+        os.environ.get("PYMSS_STUDIO_DEBUG_DIR")
+        or Path.home() / ".cache" / "pymss-studio" / "debug"
+    )
+
+
+def _debug_catalog_path() -> Path:
+    return _debug_dir() / "model-catalog.json"
+
+
+def _json_stable(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _entry_to_catalog_dict(entry: ModelEntry) -> dict[str, Any]:
+    return {
+        "name": entry.name,
+        "aliases": list(entry.aliases),
+        "model_type": entry.model_type,
+        "architecture": entry.architecture,
+        "supported": entry.supported,
+        "unsupported_reason": entry.unsupported_reason,
+        "relpath": entry.relpath,
+        "config_relpath": entry.config_relpath,
+        "auxiliary_relpaths": list(entry.auxiliary_relpaths),
+        "size_bytes": entry.size_bytes,
+        "sha256": entry.sha256,
+        "primary_category": entry.primary_category,
+        "primary_category_cn": entry.primary_category_cn,
+        "secondary_category": entry.secondary_category,
+        "secondary_category_cn": entry.secondary_category_cn,
+        "target_stem": entry.target_stem,
+        "config_instruments": entry.config_instruments,
+        "config_target_instrument": entry.config_target_instrument,
+        "classification_confidence": entry.classification_confidence,
+        "classification_basis": entry.classification_basis,
+    }
+
+
+def _base_catalog_data() -> dict[str, Any]:
+    with _model_catalog_path().open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _debug_catalog_raw() -> dict[str, Any]:
+    path = _debug_catalog_path()
+    if not path.is_file():
+        return {"schema_version": 1, "models": []}
+    with path.open(encoding="utf-8") as handle:
+        data = json.load(handle)
+    return data if isinstance(data, dict) else {"schema_version": 1, "models": []}
+
+
+def _inactive_debug_status() -> dict[str, Any]:
+    return {
+        "active": False,
+        "catalogActive": False,
+        "changedCount": 0,
+        "addedCount": 0,
+        "removedCount": 0,
+        "changedModels": [],
+        "addedModels": [],
+        "removedModels": [],
+        "debugDir": str(_debug_dir()),
+        "debugCatalogPath": str(_debug_catalog_path()),
+    }
+
+
+def _debug_catalog_status(base_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    base_data = base_data or _base_catalog_data()
+    base_by_name = {
+        str(item.get("name") or ""): item
+        for item in base_data.get("models", [])
+        if isinstance(item, dict) and item.get("name")
+    }
+    path = _debug_catalog_path()
+    override = _debug_catalog_raw() if path.is_file() else {"models": list(base_by_name.values())}
+    override_models = [item for item in override.get("models", []) if isinstance(item, dict) and item.get("name")]
+    override_names = {str(item["name"]) for item in override_models}
+    removed = sorted(
+        set(str(item) for item in override.get("removed", []) if str(item).strip())
+        | {name for name in base_by_name if name not in override_names}
+    )
+    changed = [
+        str(item["name"])
+        for item in override_models
+        if str(item["name"]) in base_by_name and _json_stable(item) != _json_stable(base_by_name[str(item["name"])])
+    ]
+    added = [str(item["name"]) for item in override_models if str(item["name"]) not in base_by_name]
+    active = bool(changed or added or removed)
+    return {
+        "active": active,
+        "catalogActive": bool(changed or added or removed),
+        "changedCount": len(changed),
+        "addedCount": len(added),
+        "removedCount": len(removed),
+        "changedModels": changed,
+        "addedModels": added,
+        "removedModels": removed,
+        "debugDir": str(_debug_dir()),
+        "debugCatalogPath": str(_debug_catalog_path()),
+    }
+
+
 def _default_model_dir() -> Path:
     env_value = os.environ.get("PYMSS_MODEL_DIR")
     if env_value:
@@ -124,8 +231,28 @@ def _load_yaml_config(config_path: Path) -> dict[str, Any]:
 def load_model_catalog() -> dict[str, Any]:
     with _model_catalog_path().open(encoding="utf-8") as handle:
         data = json.load(handle)
-    models = [ModelEntry.from_dict(item) for item in data["models"]]
-    return {**data, "models": models}
+    base_models = data.get("models", [])
+    base_by_name = {str(item.get("name") or ""): item for item in base_models if item.get("name")}
+
+    override_path = _debug_catalog_path()
+    if override_path.is_file():
+        with override_path.open(encoding="utf-8") as handle:
+            override = json.load(handle)
+        models: list[ModelEntry] = []
+        removed = {str(name) for name in override.get("removed", []) if str(name).strip()}
+        for item in override.get("models", []) if isinstance(override.get("models"), list) else []:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            name = str(item["name"])
+            next_item = dict(item)
+            if name not in base_by_name or _json_stable(item) != _json_stable(base_by_name[name]):
+                next_item["debug_source"] = "debug"
+            if name not in removed:
+                models.append(ModelEntry.from_dict(next_item))
+        return {**data, **override, "models": models, "debug_status": _debug_catalog_status(data)}
+
+    models = [ModelEntry.from_dict(item) for item in base_models]
+    return {**data, "models": models, "debug_status": _debug_catalog_status(data)}
 
 
 @lru_cache(maxsize=1)
@@ -190,6 +317,21 @@ def config_path_for(entry: Any, model_dir: str | None = None) -> Path | None:
         config_path = getattr(entry, "config_path", None)
         return Path(str(config_path)) if config_path else None
     return model_root(model_dir) / entry.config_relpath if entry.config_relpath else None
+
+
+def base_config_path_for(entry: Any, model_dir: str | None = None) -> Path | None:
+    if is_user_model_entry(entry):
+        config_path = getattr(entry, "config_path", None)
+        return Path(str(config_path)) if config_path else None
+    return model_root(model_dir) / entry.config_relpath if entry.config_relpath else None
+
+
+def effective_source_for(entry: Any) -> str:
+    if is_user_model_entry(entry):
+        return "user"
+    if str(getattr(entry, "debug_source", "") or "") == "debug":
+        return "debug"
+    return "catalog"
 
 
 def auxiliary_paths_for(entry: Any, model_dir: str | None = None) -> list[Path]:
@@ -378,7 +520,8 @@ def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state:
         "sha256": getattr(entry, "sha256", "") or "",
         # 'user' models are local-only: they cannot be downloaded (pymss.download_model rejects
         # them outright), so the UI has to offer relink/remove instead of download/delete.
-        "source": "user" if is_user_model_entry(entry) else "catalog",
+        "source": effective_source_for(entry),
+        "baseConfigPath": str(base_config_path_for(entry, model_dir)) if base_config_path_for(entry, model_dir) else None,
         "importMode": _user_model_import_mode(entry),
         "downloaded": downloaded,
         "missingPaths": missing_paths if include_local_state else [],
@@ -483,6 +626,165 @@ def list_registered_user_models(category: str | None = None) -> list[Any]:
     return entries
 
 
+def _validate_catalog_payload(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("Catalog payload must be a JSON object")
+    models = data.get("models", [])
+    removed = data.get("removed", [])
+    if not isinstance(models, list):
+        raise ValueError("Catalog field 'models' must be an array")
+    if not isinstance(removed, list):
+        raise ValueError("Catalog field 'removed' must be an array")
+    seen: set[str] = set()
+    normalized_models: list[dict[str, Any]] = []
+
+    def safe_relpath(model_name: str, field: str, value: Any, *, required: bool = False) -> str:
+        if value is None:
+            value = ""
+        if not isinstance(value, str):
+            raise ValueError(f"{model_name}.{field} must be a string")
+        relpath = value.strip().replace("\\", "/")
+        if required and not relpath:
+            raise ValueError(f"{model_name}.{field} is required")
+        if relpath and (Path(relpath).is_absolute() or ".." in Path(relpath).parts):
+            raise ValueError(f"{model_name}.{field} must be a safe relative path")
+        return relpath
+
+    for index, item in enumerate(models):
+        if not isinstance(item, dict):
+            raise ValueError(f"models[{index}] must be an object")
+        name = str(item.get("name") or "").strip()
+        if not name:
+            raise ValueError(f"models[{index}].name is required")
+        if name in seen:
+            raise ValueError(f"Duplicated model name: {name}")
+        seen.add(name)
+        normalized_item = dict(item)
+        normalized_item["name"] = name
+        normalized_item["relpath"] = safe_relpath(name, "relpath", item.get("relpath"), required=True)
+        normalized_item["config_relpath"] = safe_relpath(name, "config_relpath", item.get("config_relpath"))
+        auxiliary_relpaths = item.get("auxiliary_relpaths", [])
+        if not isinstance(auxiliary_relpaths, list):
+            raise ValueError(f"{name}.auxiliary_relpaths must be an array")
+        normalized_auxiliary_relpaths: list[str] = []
+        for auxiliary_index, auxiliary_relpath in enumerate(auxiliary_relpaths):
+            normalized_auxiliary_relpaths.append(
+                safe_relpath(name, f"auxiliary_relpaths[{auxiliary_index}]", auxiliary_relpath, required=True)
+            )
+        normalized_item["auxiliary_relpaths"] = normalized_auxiliary_relpaths
+        normalized_models.append(normalized_item)
+    normalized = dict(data)
+    normalized["schema_version"] = int(data.get("schema_version") or 1)
+    normalized["models"] = normalized_models
+    removed_models = [str(item).strip() for item in removed if str(item).strip()]
+    if removed_models:
+        normalized["removed"] = removed_models
+    else:
+        normalized.pop("removed", None)
+    return normalized
+
+
+def cmd_debug_catalog_info(payload: dict[str, Any] | None = None) -> int:
+    try:
+        base_data = _base_catalog_data()
+        override = _debug_catalog_raw()
+        emit("debug_catalog_info", {
+            "baseCatalogPath": str(_model_catalog_path()),
+            "debugCatalogPath": str(_debug_catalog_path()),
+            "debugDir": str(_debug_dir()),
+            "baseCatalog": base_data,
+            "debugCatalog": override,
+            "effectiveCatalog": {
+                **base_data,
+                "models": [_entry_to_catalog_dict(entry) for entry in load_model_catalog()["models"]],
+            },
+            "status": _debug_catalog_status(base_data),
+        })
+        return 0
+    except Exception as exc:
+        return emit_error("DEBUG_CATALOG_INFO_FAILED", str(exc), traceback.format_exc())
+
+
+def cmd_debug_catalog_save(payload: dict[str, Any]) -> int:
+    try:
+        data = payload.get("catalog", payload)
+        normalized = _validate_catalog_payload(data)
+        path = _debug_catalog_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(normalized, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        load_model_catalog.cache_clear()
+        _model_index.cache_clear()
+        return cmd_debug_catalog_info({})
+    except Exception as exc:
+        return emit_error("DEBUG_CATALOG_SAVE_FAILED", str(exc), traceback.format_exc())
+
+
+def cmd_debug_catalog_reset(payload: dict[str, Any] | None = None) -> int:
+    try:
+        path = _debug_catalog_path()
+        if path.is_file():
+            path.unlink()
+        load_model_catalog.cache_clear()
+        _model_index.cache_clear()
+        return cmd_debug_catalog_info({})
+    except Exception as exc:
+        return emit_error("DEBUG_CATALOG_RESET_FAILED", str(exc), traceback.format_exc())
+
+
+def _read_text(path: Path | None) -> str:
+    if not path or not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def cmd_debug_model_config(payload: dict[str, Any]) -> int:
+    try:
+        action = str(payload.get("action") or "read")
+        model_name = str(payload.get("model") or "").strip()
+        if not model_name:
+            raise ValueError("Missing model name")
+        entry = get_any_model_entry(model_name)
+        model_dir = payload.get("modelDir") or None
+        if is_user_model_entry(entry) and action != "read":
+            raise ValueError("Imported user models are read-only in Debug")
+
+        base_path = base_config_path_for(entry, model_dir)
+
+        if action in {"save", "save_downloaded"}:
+            content = str(payload.get("content") or "")
+            yaml.load(content, Loader=yaml.FullLoader)
+            if base_path is None:
+                raise ValueError("This model does not have a config path")
+            base_path.parent.mkdir(parents=True, exist_ok=True)
+            base_path.write_text(content, encoding="utf-8", newline="\n")
+        elif action == "reset":
+            pass
+        elif action != "read":
+            raise ValueError(f"Unsupported debug model config action: {action}")
+
+        load_model_catalog.cache_clear()
+        _model_index.cache_clear()
+        next_entry = get_any_model_entry(model_name)
+        next_base_path = base_config_path_for(next_entry, model_dir)
+        effective_path = config_path_for(next_entry, model_dir)
+        emit("debug_model_config", {
+            "model": str(getattr(next_entry, "name", model_name)),
+            "source": effective_source_for(next_entry),
+            "readOnly": is_user_model_entry(next_entry),
+            "baseConfigPath": str(next_base_path) if next_base_path else None,
+            "effectiveConfigPath": str(effective_path) if effective_path else None,
+            "baseContent": _read_text(next_base_path),
+            "effectiveContent": _read_text(effective_path),
+            "downloadedConfigExists": bool(next_base_path and next_base_path.is_file()),
+            "status": _debug_catalog_status(),
+        })
+        return 0
+    except Exception as exc:
+        return emit_error("DEBUG_MODEL_CONFIG_FAILED", str(exc), traceback.format_exc())
+
+
 def cmd_list_models(payload: dict[str, Any]) -> int:
     category = payload.get("category") or None
     supported_only = bool(payload.get("supportedOnly", True))
@@ -490,6 +792,10 @@ def cmd_list_models(payload: dict[str, Any]) -> int:
     include_custom = bool(payload.get("includeCustom", True))
     model_dir = payload.get("modelDir") or None
 
+    try:
+        catalog_state = load_model_catalog()
+    except Exception:
+        catalog_state = {}
     entries: list[Any] = list(list_catalog_models(category=category, supported=True if supported_only else None))
     if include_custom:
         # Appended after the catalog so the default ordering keeps imported models together at
@@ -501,12 +807,14 @@ def cmd_list_models(payload: dict[str, Any]) -> int:
         for m in models
         if m.get("category")
     }, key=lambda item: item[1] or item[0])
+    debug_status = catalog_state.get("debug_status") if isinstance(catalog_state, dict) else None
     emit("models", {
         "models": models,
         "categories": [item[0] for item in category_pairs],
         "categoriesCn": [item[1] for item in category_pairs],
         "count": len(models),
         "modelDir": str(model_root(model_dir)),
+        "debugStatus": debug_status if isinstance(debug_status, dict) else _inactive_debug_status(),
     })
     return 0
 

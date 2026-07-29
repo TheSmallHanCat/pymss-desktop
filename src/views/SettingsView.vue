@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-shell'
@@ -56,6 +57,7 @@ import {
 const { t, locale: currentLocale } = useI18n()
 const message = useMessage()
 const dialog = useDialog()
+const route = useRoute()
 const settings = useSettingsStore()
 const app = useAppStore()
 const modelStore = useModelStore()
@@ -273,6 +275,15 @@ async function installBackend(backend: RuntimeBackend) {
   } catch (error) {
     message.error(error instanceof Error ? error.message : String(error))
   }
+}
+
+async function retryRuntimeInstall() {
+  const backend = app.runtimeInstallBackend as RuntimeBackend | null
+  if (!backend) {
+    message.error(t('settings.runtimeRetryUnavailable'))
+    return
+  }
+  await installBackend(backend)
 }
 
 watch(() => app.runtimeInstallStatus, (status, previous) => {
@@ -737,6 +748,7 @@ async function resolveModelDirConflict(action: 'overwrite' | 'skip' | 'abort') {
 }
 
 onMounted(() => {
+  if (route.query.section === 'runtime') activeSection.value = 'runtime'
   if (!app.envInfo && !app.envLoading) {
     app.checkEnvInBackground().catch(() => {})
   }
@@ -1151,12 +1163,33 @@ onMounted(() => {
               <n-select v-model:value="runtimeMirror" size="small" class="runtime-mirror-row__select" :options="[
                 { label: t('onboarding.runtimeMirrorAuto'), value: 'auto' },
                 { label: t('onboarding.runtimeMirrorUstc'), value: 'ustc' },
+                { label: t('onboarding.runtimeMirrorTsinghua'), value: 'tsinghua' },
+                { label: t('onboarding.runtimeMirrorAliyun'), value: 'aliyun' },
+                { label: t('onboarding.runtimeMirrorTencent'), value: 'tencent' },
                 { label: t('onboarding.runtimeMirrorPypi'), value: 'pypi' },
               ]" />
             </div>
 
             <n-alert v-if="app.runtimeInstallStatus === 'error'" type="error" :show-icon="true">
-              {{ app.runtimeInstallMessage }}
+              <div class="runtime-install-error">
+                <div>{{ app.runtimeInstallMessage }}</div>
+                <div class="runtime-install-error__actions">
+                  <n-button
+                    size="small"
+                    tertiary
+                    @click="runtimeLogDialogVisible = true"
+                  >
+                    <template #icon><n-icon :component="DocumentTextOutline" /></template>
+                    {{ t('settings.runtimeShowInstallLog') }}
+                  </n-button>
+                  <n-button v-if="app.runtimeInfo?.logPath" size="small" tertiary @click="revealPath(app.runtimeInfo.logPath)">
+                    {{ t('settings.runtimeOpenInstallLog') }}
+                  </n-button>
+                  <n-button size="small" secondary @click="retryRuntimeInstall">
+                    {{ t('settings.runtimeRetryInstall') }}
+                  </n-button>
+                </div>
+              </div>
             </n-alert>
 
             <div v-if="!runtimeInstalling && app.runtimeInstallLogs.length" class="runtime-log-trigger">
@@ -1573,7 +1606,15 @@ onMounted(() => {
           {{ t('settings.runtimeInstallLogSuccess') }}
         </n-alert>
         <pre v-if="app.runtimeInstallLogs.length" ref="runtimeLogPre" class="runtime-log-dialog__pre">{{ app.runtimeInstallLogs.join('\n') }}</pre>
-        <p v-else class="runtime-log-dialog__empty">{{ t('settings.runtimeInstallLogEmpty') }}</p>
+        <div v-if="app.runtimeInfo?.logPath" class="runtime-log-dialog__path">
+          <code>{{ app.runtimeInfo.logPath }}</code>
+          <n-button size="tiny" tertiary @click="revealPath(app.runtimeInfo.logPath)">
+            {{ t('settings.runtimeOpenInstallLog') }}
+          </n-button>
+        </div>
+        <p v-if="!app.runtimeInstallLogs.length && !app.runtimeInfo?.logPath" class="runtime-log-dialog__empty">
+          {{ t('settings.runtimeInstallLogEmpty') }}
+        </p>
       </div>
     </n-modal>
   </div>

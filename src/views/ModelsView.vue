@@ -49,9 +49,11 @@ const {
   isLoading,
   detailLoading,
   modelDir,
+  debugStatus,
   modelSource,
   modelViewMode,
   customModelCount,
+  debugModelCount,
   downloadTasks,
   deleteTasks,
   modelStorageSummary,
@@ -91,8 +93,16 @@ const categoryOptions = computed(() => {
 const modelSourceOptions = computed(() => [
   { label: t('models.sourceAll'), value: 'all' },
   { label: t('models.sourceCatalog'), value: 'catalog' },
+  { label: t('models.sourceDebug', { count: debugModelCount.value }), value: 'debug' },
   { label: t('models.sourceUser', { count: customModelCount.value }), value: 'user' },
 ])
+
+const debugStatusText = computed(() => {
+  const status = debugStatus.value
+  if (!status?.active) return ''
+  if (status.addedCount || status.changedCount || status.removedCount) return t('models.debugCatalogActive')
+  return ''
+})
 
 const modelSortOptions = computed(() => [
   { label: t('models.sortDefault'), value: 'default' },
@@ -690,6 +700,9 @@ onMounted(() => {
           <h1>{{ t('models.title') }}</h1>
           <n-tag size="small" :bordered="false" type="info" round>
             {{ t('models.count', { count: sortedModels.length }) }}
+          </n-tag>
+          <n-tag v-if="debugStatusText" size="small" :bordered="false" type="warning" round>
+            {{ debugStatusText }}
           </n-tag>
         </div>
         <p>{{ t('models.subtitle') }}</p>

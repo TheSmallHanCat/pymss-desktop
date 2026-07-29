@@ -480,6 +480,28 @@ class InstallRecordsTheNewEnvironmentTests(unittest.TestCase):
         self.assertEqual(state["stateVersion"], worker_bootstrap.ENV_STATE_VERSION)
 
 
+class PyPiMirrorSelectionTests(unittest.TestCase):
+    def test_auto_uses_ustc_for_chinese_locale(self):
+        mirror, url = worker_bootstrap._resolve_pypi_mirror("auto", "zh-CN")
+        self.assertEqual(mirror, "ustc")
+        self.assertIn("ustc.edu.cn", url)
+
+    def test_auto_uses_pypi_for_non_chinese_locale(self):
+        mirror, url = worker_bootstrap._resolve_pypi_mirror("auto", "en")
+        self.assertEqual(mirror, "pypi")
+        self.assertEqual(url, "https://pypi.org/simple")
+
+    def test_domestic_mirrors_have_expected_urls(self):
+        for mirror, host in {
+            "tsinghua": "pypi.tuna.tsinghua.edu.cn",
+            "aliyun": "mirrors.aliyun.com",
+            "tencent": "mirrors.cloud.tencent.com",
+        }.items():
+            selected, url = worker_bootstrap._resolve_pypi_mirror(mirror, "en")
+            self.assertEqual(selected, mirror)
+            self.assertIn(host, url)
+
+
 class GpuVendorDetectionTests(unittest.TestCase):
     """Vendor detection must not depend on torch: a CPU-only environment on an NVIDIA machine
     reports no CUDA, which is precisely when recommending CUDA matters."""

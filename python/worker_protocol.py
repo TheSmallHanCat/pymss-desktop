@@ -36,13 +36,17 @@ def emit_error(
     *,
     task_id: str | None = None,
     recoverable: bool = False,
+    extra: dict[str, Any] | None = None,
 ) -> int:
-    emit("error", {
+    payload: dict[str, Any] = {
         "code": code,
         "message": message,
         "detail": detail,
         "recoverable": recoverable,
-    }, task_id=task_id)
+    }
+    if extra:
+        payload.update(extra)
+    emit("error", payload, task_id=task_id)
     return 1
 
 

@@ -13,6 +13,7 @@ from worker_download import (
     _make_pymss_progress_adapter,
     _pymss_reports_progress,
     _watch_download_progress,
+    files_for_studio_model,
     prepare_pymss_download,
 )
 from worker_proxy import parse_proxy_config
@@ -32,11 +33,12 @@ class Aria2ProxyAlignmentTest(unittest.TestCase):
             return module, dict(os.environ)
 
     def test_socks_proxy_takes_aria2_out_of_the_picture(self):
-        # PySocks only patches sockets in this process; aria2 would connect directly.
+        # The current worker alignment only logs the SOCKS route. New pymss receives explicit
+        # --socks5-* arguments; old pymss is disabled by prepare_pymss_download instead.
         proxy = parse_proxy_config({"mode": "custom", "url": "socks5://127.0.0.1:1080", "bypass": ""})
         module, _env = self._align(proxy)
 
-        self.assertIsNone(module.ARIA2C_PATH)
+        self.assertEqual(module.ARIA2C_PATH, "C:/bin/aria2c.exe")
 
     def test_system_http_proxy_is_handed_to_aria2(self):
         # urllib finds this in the OS settings; aria2 only ever reads the environment.
@@ -64,11 +66,14 @@ class Aria2ProxyAlignmentTest(unittest.TestCase):
         self.assertEqual(module.ARIA2C_PATH, "C:/bin/aria2c.exe")
         self.assertEqual(env, {})
 
-    def test_custom_http_proxy_is_left_to_the_environment_already_exported(self):
+    def test_custom_http_proxy_is_exported_for_aria2(self):
         proxy = parse_proxy_config({"mode": "custom", "url": "http://127.0.0.1:8080", "bypass": ""})
-        module, _env = self._align(proxy)
+        module, env = self._align(proxy)
 
         self.assertEqual(module.ARIA2C_PATH, "C:/bin/aria2c.exe")
+        exported = {name.lower(): value for name, value in env.items()}
+        self.assertEqual(exported.get("http_proxy"), "http://127.0.0.1:8080")
+        self.assertEqual(exported.get("https_proxy"), "http://127.0.0.1:8080")
 
     def test_does_nothing_when_aria2_is_not_installed(self):
         proxy = parse_proxy_config({"mode": "custom", "url": "socks5://127.0.0.1:1080", "bypass": ""})
@@ -123,6 +128,29 @@ class PymssCapabilityTest(unittest.TestCase):
             prepare_pymss_download(module, "task", new_style)
 
         self.assertEqual(module.ARIA2C_PATH, "C:/bin/aria2c.exe")
+
+
+class StudioModelFileResolutionTest(unittest.TestCase):
+    def test_uses_studio_catalog_entry_paths(self):
+        entry = SimpleNamespace(
+            name="debug_model.ckpt",
+            source="catalog",
+            relpath="debug/debug_model.ckpt",
+            config_relpath="debug/debug_model.yaml",
+            auxiliary_relpaths=("debug/debug_model.json",),
+        )
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, True))
+
+        with mock.patch("worker_download.get_any_model_entry", return_value=entry):
+            resolved_entry, files = files_for_studio_model("debug_model.ckpt", str(root))
+
+        self.assertIs(resolved_entry, entry)
+        self.assertEqual(files, [
+            ("debug/debug_model.ckpt", root / "debug" / "debug_model.ckpt"),
+            ("debug/debug_model.yaml", root / "debug" / "debug_model.yaml"),
+            ("debug/debug_model.json", root / "debug" / "debug_model.json"),
+        ])
 
 
 class ProgressAdapterTest(unittest.TestCase):

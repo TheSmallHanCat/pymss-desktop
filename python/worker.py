@@ -53,6 +53,18 @@ def main(argv: list[str]) -> int:
         if args.command == "list_models":
             from worker_models import cmd_list_models
             return cmd_list_models(payload)
+        if args.command == "debug_catalog_info":
+            from worker_models import cmd_debug_catalog_info
+            return cmd_debug_catalog_info(payload)
+        if args.command == "debug_catalog_save":
+            from worker_models import cmd_debug_catalog_save
+            return cmd_debug_catalog_save(payload)
+        if args.command == "debug_catalog_reset":
+            from worker_models import cmd_debug_catalog_reset
+            return cmd_debug_catalog_reset(payload)
+        if args.command == "debug_model_config":
+            from worker_models import cmd_debug_model_config
+            return cmd_debug_model_config(payload)
         if args.command == "model_info":
             from worker_models import cmd_model_info
             return cmd_model_info(payload)

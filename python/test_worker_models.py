@@ -102,6 +102,17 @@ class UserModelPathTests(unittest.TestCase):
             self.model_dir / "vocals" / "catalog_model.yaml",
         )
 
+    def test_catalog_config_ignores_legacy_debug_override(self):
+        debug_dir = self.root / "debug"
+        override = debug_dir / "model-configs" / "catalog_model.ckpt.yaml"
+        override.parent.mkdir(parents=True)
+        override.write_text("debug: true\n", encoding="utf-8")
+        with mock.patch.dict("os.environ", {"PYMSS_STUDIO_DEBUG_DIR": str(debug_dir)}):
+            self.assertEqual(
+                worker_models.config_path_for(CATALOG_ENTRY, str(self.model_dir)),
+                self.model_dir / "vocals" / "catalog_model.yaml",
+            )
+
     def test_auxiliary_paths_of_a_user_entry_are_used_as_given(self):
         entry = FakeUserModelEntry("my_model", self.weights, self.config)
         extra = self.root / "elsewhere" / "extra.bin"
@@ -185,6 +196,35 @@ class UserModelSerializationTests(unittest.TestCase):
         payload = worker_models.model_to_dict(FakeUserModelEntry("my_model", self.weights, self.config))
         self.assertEqual(payload["configInstruments"], "vocals|instrumental")
         self.assertEqual(payload["configTargetInstrument"], "vocals")
+
+
+class DebugCatalogPayloadValidationTests(unittest.TestCase):
+    def _payload(self, **overrides):
+        model = {
+            "name": "debug_model.ckpt",
+            "relpath": "debug/debug_model.ckpt",
+            "config_relpath": "debug/debug_model.yaml",
+            "auxiliary_relpaths": ["debug/debug_model.json"],
+        }
+        model.update(overrides)
+        return {"schema_version": 1, "models": [model]}
+
+    def test_normalizes_valid_auxiliary_relpaths(self):
+        result = worker_models._validate_catalog_payload(self._payload(auxiliary_relpaths=["debug\\extra.json"]))
+
+        self.assertEqual(result["models"][0]["auxiliary_relpaths"], ["debug/extra.json"])
+
+    def test_rejects_auxiliary_relpaths_when_not_an_array(self):
+        with self.assertRaisesRegex(ValueError, "auxiliary_relpaths must be an array"):
+            worker_models._validate_catalog_payload(self._payload(auxiliary_relpaths="debug/extra.json"))
+
+    def test_rejects_unsafe_auxiliary_relpath(self):
+        with self.assertRaisesRegex(ValueError, "safe relative path"):
+            worker_models._validate_catalog_payload(self._payload(auxiliary_relpaths=["../outside.json"]))
+
+    def test_rejects_missing_weight_relpath(self):
+        with self.assertRaisesRegex(ValueError, "relpath is required"):
+            worker_models._validate_catalog_payload(self._payload(relpath=""))
 
 
 class ListMergesImportedModelsTests(unittest.TestCase):
