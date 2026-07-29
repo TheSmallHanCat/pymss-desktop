@@ -1,0 +1,60 @@
+name: Build Windows installer
+description: Build and upload an Inno Setup installer from a staged Windows package
+inputs:
+  version:
+    description: Normalized package version
+    required: true
+  package-suffix:
+    description: Installer package suffix
+    required: true
+  stage-name:
+    description: Staged package directory name
+    required: true
+  stage-artifact:
+    description: Staged package artifact name
+    required: true
+  output-artifact:
+    description: Uploaded installer artifact name
+    required: true
+  output-file:
+    description: Generated installer filename
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install Inno Setup
+      shell: pwsh
+      run: choco install innosetup --no-progress -y
+    - name: Install Inno Setup Chinese language file
+      shell: pwsh
+      run: |
+        $languages = "C:\Program Files (x86)\Inno Setup 6\Languages"
+        New-Item -ItemType Directory -Force -Path $languages | Out-Null
+        Invoke-WebRequest `
+          -Uri "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/master/ChineseSimplified.isl" `
+          -OutFile (Join-Path $languages "ChineseSimplified.isl")
+        if (!(Test-Path (Join-Path $languages "ChineseSimplified.isl"))) {
+          throw "ChineseSimplified.isl was not installed"
+        }
+    - name: Download staged package
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.stage-artifact }}
+        path: release/${{ inputs.stage-name }}
+    - name: Build Inno Setup installer with LZMA2
+      shell: pwsh
+      env:
+        PYMSS_VERSION: ${{ inputs.version }}
+        PYMSS_PACKAGE_SUFFIX: ${{ inputs.package-suffix }}
+      run: |
+        $stageFull = (Resolve-Path "release/${{ inputs.stage-name }}").Path
+        $releaseFull = (Resolve-Path "release").Path
+        $env:PYMSS_PORTABLE_DIR = $stageFull
+        $env:PYMSS_INSTALLER_OUTPUT = $releaseFull
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
+        if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+    - name: Upload Windows installer artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.output-artifact }}
+        path: release/${{ inputs.output-file }}

@@ -25,6 +25,26 @@ jobs:
 
       - uses: ./.github/actions/setup-release-env
 
+      - name: Sync build version metadata
+        run: |
+          VERSION="${PYMSS_VERSION#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid semantic version: $PYMSS_VERSION" >&2
+            exit 1
+          fi
+          python3 - "$VERSION" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          version = sys.argv[1]
+          for name in ("package.json", "src-tauri/tauri.conf.json"):
+              path = Path(name)
+              data = json.loads(path.read_text(encoding="utf-8"))
+              data["version"] = version
+              path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
+
       - name: Prepare embedded Python runtime with PyTorch + MLX support
         working-directory: .
         env:

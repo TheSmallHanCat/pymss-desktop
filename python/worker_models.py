@@ -83,13 +83,24 @@ class ModelEntry:
 def _model_catalog_path() -> Path:
     try:
         import pymss  # type: ignore
-    except ImportError as exc:
-        raise FileNotFoundError("Unable to import the installed pymss package") from exc
+        package_dir = Path(pymss.__file__).resolve().parent
+        direct = package_dir / "resources" / "model_catalog.json"
+        if direct.is_file():
+            return direct
+    except ImportError:
+        # Online bootstrap installs pymss without heavy ML dependencies. Locate its
+        # catalog through distribution metadata without executing pymss.__init__.
+        try:
+            from importlib.metadata import distribution
 
-    package_dir = Path(pymss.__file__).resolve().parent
-    direct = package_dir / "resources" / "model_catalog.json"
-    if direct.is_file():
-        return direct
+            package = distribution("pymss")
+            for file in package.files or ():
+                if str(file).replace("\\", "/") == "pymss/resources/model_catalog.json":
+                    catalog = Path(package.locate_file(file)).resolve()
+                    if catalog.is_file():
+                        return catalog
+        except Exception:
+            pass
     raise FileNotFoundError("Unable to locate pymss/resources/model_catalog.json")
 
 

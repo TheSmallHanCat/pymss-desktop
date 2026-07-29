@@ -13,6 +13,20 @@ $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $runtime = Join-Path $root $RuntimeDir
 
+function Invoke-NativeChecked {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [Parameter(Mandatory = $true)]
+        [object[]]$Arguments
+    )
+
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FilePath failed with exit code $LASTEXITCODE"
+    }
+}
+
 # ---------------------------------------------------------------------------
 # PreinstallBackend mode: create minimal bootstrap + pre-installed backend env
 # ---------------------------------------------------------------------------
@@ -38,10 +52,9 @@ if ($PreinstallBackend) {
         Remove-Item -LiteralPath $sitePackages -Recurse -Force
     }
     New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
-    & $runtimePython -m ensurepip --upgrade
-    & $runtimePython -m pip install --upgrade pip setuptools wheel
-    & $runtimePython -m pip install --no-cache-dir pysocks requests
-    & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $runtime
+    Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'ensurepip', '--upgrade')
+    Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel')
+    Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', 'pysocks', 'pyyaml', 'pymss', 'pymss-core', 'requests', '--no-deps')
     Write-Host "Bootstrap runtime created at $runtime"
 
     # Step 2: Create venv for the pre-installed backend
@@ -51,12 +64,13 @@ if ($PreinstallBackend) {
         Remove-Item -LiteralPath $envDir -Recurse -Force
     }
     Write-Host "Creating venv at $envDir"
-    & $runtimePython -m venv $envDir
+    Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'venv', $envDir)
     $envPython = Join-Path $envDir "Scripts\python.exe"
     if (!(Test-Path -LiteralPath $envPython)) {
         throw "venv python.exe was not created at $envPython"
     }
-    & $envPython -m pip install --upgrade pip setuptools wheel
+    & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $runtime
+    Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel')
 
     # Step 3: Install packages for the backend
     $torchRequirement = if ([string]::IsNullOrWhiteSpace($TorchVersion)) { "torch" } else { "torch==$TorchVersion" }
@@ -67,29 +81,29 @@ if ($PreinstallBackend) {
             "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
             "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm-7.2.1.tar.gz"
         )
-        & $envPython -m pip install --no-cache-dir @rocmSdkWheels
+        Invoke-NativeChecked -FilePath $envPython -Arguments (@('-m', 'pip', 'install', '--no-cache-dir') + $rocmSdkWheels)
         $rocmWheels = @(
             "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
             "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
             "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl"
         )
-        & $envPython -m pip install --no-cache-dir --no-deps @rocmWheels
+        Invoke-NativeChecked -FilePath $envPython -Arguments (@('-m', 'pip', 'install', '--no-cache-dir', '--no-deps') + $rocmWheels)
     } elseif ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) {
-        & $envPython -m pip install --no-cache-dir $torchRequirement
+        Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', $torchRequirement)
     } else {
-        & $envPython -m pip install --no-cache-dir $torchRequirement --index-url $TorchIndexUrl
+        Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', $torchRequirement, '--index-url', $TorchIndexUrl)
     }
-    & $envPython -m pip install --no-cache-dir --only-binary=:all: --prefer-binary av filelock fsspec jinja2 librosa networkx numpy pysocks requests pyyaml sympy tqdm typing-extensions
+    Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--only-binary=:all:', '--prefer-binary', 'av', 'filelock', 'fsspec', 'jinja2', 'librosa', 'networkx', 'numpy', 'pysocks', 'requests', 'pyyaml', 'sympy', 'tqdm', 'typing-extensions')
     if ($PreinstallBackend -in @("mps", "mlx")) {
-        & $envPython -m pip install --no-cache-dir mlx
+        Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', 'mlx')
     }
-    & $envPython -m pip install --no-cache-dir --no-deps "pymss>=2.0.15" pymss-core==0.1.6
-    & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $envDir
+    Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--no-deps', 'pymss>=2.0.15', 'pymss-core==0.1.6')
+    & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $envDir -KeepScripts
 
     # Step 4: Verify the environment
     $previousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
     $env:PYTHONDONTWRITEBYTECODE = "1"
-    & $envPython -c "import importlib.util, pymss, torch, librosa, av, yaml, tqdm; print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') is not None)"
+    Invoke-NativeChecked -FilePath $envPython -Arguments @('-c', "import importlib.util, pymss, torch, librosa, av, yaml, tqdm; print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') is not None)")
     if ($null -eq $previousDontWriteBytecode) {
         Remove-Item Env:\PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
     } else {
@@ -102,7 +116,7 @@ if ($PreinstallBackend) {
     $manifestVersion = $manifest.manifestVersion
 
     # Probe torch info from the env
-    $probeResult = & $envPython -c "import torch, json, platform; print(json.dumps({'torchVersion': torch.__version__, 'torchBackend': 'rocm' if getattr(torch.version, 'hip', None) else 'cuda' if getattr(torch.version, 'cuda', None) else 'cpu', 'acceleratorAvailable': torch.cuda.is_available(), 'pythonVersion': platform.python_version()}))"
+    $probeResult = Invoke-NativeChecked -FilePath $envPython -Arguments @('-c', "import torch, json, platform; print(json.dumps({'torchVersion': torch.__version__, 'torchBackend': 'rocm' if getattr(torch.version, 'hip', None) else 'cuda' if getattr(torch.version, 'cuda', None) else 'cpu', 'acceleratorAvailable': torch.cuda.is_available(), 'pythonVersion': platform.python_version()}))")
     $probed = $probeResult | ConvertFrom-Json
     $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
@@ -137,7 +151,7 @@ if ($PreinstallBackend) {
     Set-Content -Path $activeRuntimePath -Value $activeState -Encoding UTF8
     Write-Host "Wrote active runtime to $activeRuntimePath"
 
-    & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $envDir
+    & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $envDir -KeepScripts
     Write-Host "=== PreinstallBackend complete: $PreinstallBackend environment ready ==="
     exit 0
 }
@@ -161,15 +175,15 @@ if (!(Test-Path -LiteralPath $runtimePython)) {
     throw "python.exe was not copied to $runtime"
 }
 
-& $runtimePython -m pip install --upgrade pip setuptools wheel
+Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel')
 if ($Minimal) {
     $sitePackages = Join-Path $runtime "Lib\site-packages"
     if (Test-Path -LiteralPath $sitePackages) {
         Remove-Item -LiteralPath $sitePackages -Recurse -Force
     }
     New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
-    & $runtimePython -m ensurepip --upgrade
-    & $runtimePython -m pip install --no-cache-dir pysocks requests
+    Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'ensurepip', '--upgrade')
+    Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', 'pysocks', 'pyyaml', 'pymss', 'pymss-core', 'requests', '--no-deps')
     Write-Host "Prepared minimal Python runtime without ML dependencies"
     exit 0
 }
@@ -181,28 +195,28 @@ if ($Variant -eq "rocm") {
         "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
         "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm-7.2.1.tar.gz"
     )
-    & $runtimePython -m pip install --no-cache-dir @rocmSdkWheels
+    Invoke-NativeChecked -FilePath $runtimePython -Arguments (@('-m', 'pip', 'install', '--no-cache-dir') + $rocmSdkWheels)
     $rocmWheels = @(
         "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
         "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
         "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl"
     )
-    & $runtimePython -m pip install --no-cache-dir --no-deps @rocmWheels
+    Invoke-NativeChecked -FilePath $runtimePython -Arguments (@('-m', 'pip', 'install', '--no-cache-dir', '--no-deps') + $rocmWheels)
 } elseif ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) {
-    & $runtimePython -m pip install --no-cache-dir $torchRequirement
+    Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', $torchRequirement)
 } else {
-    & $runtimePython -m pip install --no-cache-dir $torchRequirement --index-url $TorchIndexUrl
+    Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', $torchRequirement, '--index-url', $TorchIndexUrl)
 }
-& $runtimePython -m pip install --no-cache-dir --only-binary=:all: --prefer-binary av filelock fsspec jinja2 librosa networkx numpy pysocks requests pyyaml sympy tqdm typing-extensions
+Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--only-binary=:all:', '--prefer-binary', 'av', 'filelock', 'fsspec', 'jinja2', 'librosa', 'networkx', 'numpy', 'pysocks', 'requests', 'pyyaml', 'sympy', 'tqdm', 'typing-extensions')
 if ($Variant -in @("mps", "mlx")) {
-    & $runtimePython -m pip install --no-cache-dir mlx
+    Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', 'mlx')
 }
-& $runtimePython -m pip install --no-cache-dir --no-deps "pymss>=2.0.15" pymss-core==0.1.6
+Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--no-deps', 'pymss>=2.0.15', 'pymss-core==0.1.6')
 
 & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $runtime
 $previousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
 $env:PYTHONDONTWRITEBYTECODE = "1"
-& $runtimePython -c "import importlib.util, pymss, torch, librosa, av, yaml, tqdm; print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') is not None)"
+Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-c', "import importlib.util, pymss, torch, librosa, av, yaml, tqdm; print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') is not None)")
 if ($null -eq $previousDontWriteBytecode) {
     Remove-Item Env:\PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
 } else {

@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$RuntimeDir
+    [string]$RuntimeDir,
+    [switch]$KeepScripts
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,9 +18,11 @@ $removeDirs = @(
     "Lib\idlelib",
     "Lib\lib2to3",
     "Lib\tkinter",
-    "Lib\venv",
-    "Scripts"
+    "Lib\venv"
 )
+if (-not $KeepScripts) {
+    $removeDirs += "Scripts"
+}
 foreach ($name in $removeDirs) {
     $path = Join-Path $runtime $name
     if (Test-Path -LiteralPath $path) {

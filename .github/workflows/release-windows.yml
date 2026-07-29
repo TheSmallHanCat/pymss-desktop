@@ -29,7 +29,8 @@ jobs:
         id: meta
         shell: pwsh
         run: |
-          $version = '${{ env.PYMSS_VERSION_INPUT }}'.TrimStart('v')
+          $version = $env:PYMSS_VERSION_INPUT.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw "Invalid semantic version: $env:PYMSS_VERSION_INPUT" }
           $stageName = "Pymss-Studio-$version-windows-x64-cuda"
           $artifactName = "$stageName-stage"
           echo "version=$version" >> $env:GITHUB_OUTPUT
@@ -105,6 +106,7 @@ jobs:
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
           $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR = (Resolve-Path "$stage/runtime-envs").Path
           $env:PYMSS_STUDIO_ACTIVE_RUNTIME_FILE = (Join-Path $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR "active-runtime.json")
+          if (!(Test-Path "$stage\runtime-envs\cuda\Scripts\python.exe")) { throw "Staged CUDA Python executable is missing" }
           & "$stage\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" env_info
           if ($LASTEXITCODE -ne 0) { throw "Staged CUDA env_info failed with exit code $LASTEXITCODE" }
           & "$stage\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
@@ -154,42 +156,14 @@ jobs:
       PYMSS_PACKAGE_SUFFIX: windows-x64-cuda
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
-
-      - name: Install Inno Setup Chinese language file
-        shell: pwsh
-        run: |
-          $languages = "C:\Program Files (x86)\Inno Setup 6\Languages"
-          New-Item -ItemType Directory -Force -Path $languages | Out-Null
-          Invoke-WebRequest `
-            -Uri "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/master/ChineseSimplified.isl" `
-            -OutFile (Join-Path $languages "ChineseSimplified.isl")
-          if (!(Test-Path (Join-Path $languages "ChineseSimplified.isl"))) {
-            throw "ChineseSimplified.isl was not installed"
-          }
-
-      - name: Download CUDA stage artifact
-        uses: actions/download-artifact@v4
+      - uses: ./.github/actions/build-windows-installer
         with:
-          name: ${{ needs.windows-cuda-prepare.outputs.stage_artifact }}
-          path: release/${{ needs.windows-cuda-prepare.outputs.stage_name }}
-
-      - name: Build Inno Setup installer with LZMA2
-        shell: pwsh
-        run: |
-          $stageFull = (Resolve-Path "release/${{ needs.windows-cuda-prepare.outputs.stage_name }}").Path
-          $releaseFull = (Resolve-Path "release").Path
-          $env:PYMSS_PORTABLE_DIR = $stageFull
-          $env:PYMSS_INSTALLER_OUTPUT = $releaseFull
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
-
-      - name: Upload Windows installer artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Pymss-Studio-${{ needs.windows-cuda-prepare.outputs.version }}-windows-x64-cuda-setup
-          path: release/Pymss-Studio-${{ needs.windows-cuda-prepare.outputs.version }}-windows-x64-cuda-setup.exe
+          version: ${{ needs.windows-cuda-prepare.outputs.version }}
+          package-suffix: windows-x64-cuda
+          stage-name: ${{ needs.windows-cuda-prepare.outputs.stage_name }}
+          stage-artifact: ${{ needs.windows-cuda-prepare.outputs.stage_artifact }}
+          output-artifact: Pymss-Studio-${{ needs.windows-cuda-prepare.outputs.version }}-windows-x64-cuda-setup
+          output-file: Pymss-Studio-${{ needs.windows-cuda-prepare.outputs.version }}-windows-x64-cuda-setup.exe
 
   windows-cpu-prepare:
     name: Windows x64 CPU prepare
@@ -211,7 +185,8 @@ jobs:
         id: meta
         shell: pwsh
         run: |
-          $version = '${{ env.PYMSS_VERSION_INPUT }}'.TrimStart('v')
+          $version = $env:PYMSS_VERSION_INPUT.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw "Invalid semantic version: $env:PYMSS_VERSION_INPUT" }
           $stageName = "Pymss-Studio-$version-windows-x64-cpu"
           $artifactName = "$stageName-stage"
           echo "version=$version" >> $env:GITHUB_OUTPUT
@@ -332,41 +307,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
-
-      - name: Install Inno Setup Chinese language file
-        shell: pwsh
-        run: |
-          $languages = "C:\Program Files (x86)\Inno Setup 6\Languages"
-          New-Item -ItemType Directory -Force -Path $languages | Out-Null
-          Invoke-WebRequest `
-            -Uri "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/master/ChineseSimplified.isl" `
-            -OutFile (Join-Path $languages "ChineseSimplified.isl")
-          if (!(Test-Path (Join-Path $languages "ChineseSimplified.isl"))) {
-            throw "ChineseSimplified.isl was not installed"
-          }
-
-      - name: Download CPU stage artifact
-        uses: actions/download-artifact@v4
+      - uses: ./.github/actions/build-windows-installer
         with:
-          name: ${{ needs.windows-cpu-prepare.outputs.stage_artifact }}
-          path: release/${{ needs.windows-cpu-prepare.outputs.stage_name }}
+          version: ${{ needs.windows-cpu-prepare.outputs.version }}
+          package-suffix: windows-x64-cpu
+          stage-name: ${{ needs.windows-cpu-prepare.outputs.stage_name }}
+          stage-artifact: ${{ needs.windows-cpu-prepare.outputs.stage_artifact }}
+          output-artifact: Pymss-Studio-${{ needs.windows-cpu-prepare.outputs.version }}-windows-x64-cpu-setup
+          output-file: Pymss-Studio-${{ needs.windows-cpu-prepare.outputs.version }}-windows-x64-cpu-setup.exe
 
-      - name: Build Windows CPU Inno Setup installer with LZMA2
-        shell: pwsh
-        run: |
-          $stageFull = (Resolve-Path "release/${{ needs.windows-cpu-prepare.outputs.stage_name }}").Path
-          $releaseFull = (Resolve-Path "release").Path
-          $env:PYMSS_PORTABLE_DIR = $stageFull
-          $env:PYMSS_INSTALLER_OUTPUT = $releaseFull
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\pymss-studio.iss"
-
-      - name: Upload Windows CPU installer artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Pymss-Studio-${{ needs.windows-cpu-prepare.outputs.version }}-windows-x64-cpu-setup
-          path: release/Pymss-Studio-${{ needs.windows-cpu-prepare.outputs.version }}-windows-x64-cpu-setup.exe
 
   windows-online-prepare:
     name: Windows x64 online runtime prepare
@@ -384,7 +333,8 @@ jobs:
         id: meta
         shell: pwsh
         run: |
-          $version = '${{ env.PYMSS_VERSION_INPUT }}'.TrimStart('v')
+          $version = $env:PYMSS_VERSION_INPUT.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw "Invalid semantic version: $env:PYMSS_VERSION_INPUT" }
           $stageName = "Pymss-Studio-$version-windows-x64-online"
           echo "version=$version" >> $env:GITHUB_OUTPUT
           echo "stage_name=$stageName" >> $env:GITHUB_OUTPUT
@@ -459,6 +409,25 @@ jobs:
           name: Pymss-Studio-${{ needs.windows-online-prepare.outputs.version }}-windows-x64-online-portable
           path: release/${{ needs.windows-online-prepare.outputs.stage_name }}.7z
 
+  windows-online-exe:
+    name: Windows x64 online setup exe
+    runs-on: windows-latest
+    needs: windows-online-prepare
+    env:
+      PYMSS_VERSION: ${{ needs.windows-online-prepare.outputs.version }}
+      PYMSS_PACKAGE_SUFFIX: windows-x64-online
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/build-windows-installer
+        with:
+          version: ${{ needs.windows-online-prepare.outputs.version }}
+          package-suffix: windows-x64-online
+          stage-name: ${{ needs.windows-online-prepare.outputs.stage_name }}
+          stage-artifact: ${{ needs.windows-online-prepare.outputs.stage_artifact }}
+          output-artifact: Pymss-Studio-${{ needs.windows-online-prepare.outputs.version }}-windows-x64-online-setup
+          output-file: Pymss-Studio-${{ needs.windows-online-prepare.outputs.version }}-windows-x64-online-setup.exe
+
   windows-rocm-prepare:
     name: Windows x64 ROCm prepare
     runs-on: windows-latest
@@ -475,7 +444,8 @@ jobs:
         id: meta
         shell: pwsh
         run: |
-          $version = '${{ env.PYMSS_VERSION_INPUT }}'.TrimStart('v')
+          $version = $env:PYMSS_VERSION_INPUT.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw "Invalid semantic version: $env:PYMSS_VERSION_INPUT" }
           $stageName = "Pymss-Studio-$version-windows-x64-rocm"
           echo "version=$version" >> $env:GITHUB_OUTPUT
           echo "stage_name=$stageName" >> $env:GITHUB_OUTPUT
@@ -522,6 +492,7 @@ jobs:
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
           $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR = (Resolve-Path "$stage/runtime-envs").Path
           $env:PYMSS_STUDIO_ACTIVE_RUNTIME_FILE = (Join-Path $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR "active-runtime.json")
+          if (!(Test-Path "$stage\runtime-envs\rocm\Scripts\python.exe")) { throw "Staged ROCm Python executable is missing" }
           & "$stage\runtime-envs\rocm\Scripts\python.exe" "$stage\python\worker.py" env_info
           if ($LASTEXITCODE -ne 0) { throw "Staged ROCm env_info failed" }
           & "$stage\runtime-envs\rocm\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
@@ -553,3 +524,21 @@ jobs:
         with:
           name: Pymss-Studio-${{ needs.windows-rocm-prepare.outputs.version }}-windows-x64-rocm-portable
           path: release/${{ needs.windows-rocm-prepare.outputs.stage_name }}.7z
+
+  windows-rocm-exe:
+    name: Windows x64 ROCm setup exe
+    runs-on: windows-latest
+    needs: windows-rocm-prepare
+    env:
+      PYMSS_VERSION: ${{ needs.windows-rocm-prepare.outputs.version }}
+      PYMSS_PACKAGE_SUFFIX: windows-x64-rocm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-windows-installer
+        with:
+          version: ${{ needs.windows-rocm-prepare.outputs.version }}
+          package-suffix: windows-x64-rocm
+          stage-name: ${{ needs.windows-rocm-prepare.outputs.stage_name }}
+          stage-artifact: ${{ needs.windows-rocm-prepare.outputs.stage_artifact }}
+          output-artifact: Pymss-Studio-${{ needs.windows-rocm-prepare.outputs.version }}-windows-x64-rocm-setup
+          output-file: Pymss-Studio-${{ needs.windows-rocm-prepare.outputs.version }}-windows-x64-rocm-setup.exe
