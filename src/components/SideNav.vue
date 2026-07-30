@@ -15,11 +15,13 @@ import {
 const route = useRoute()
 const { t } = useI18n()
 const settings = useSettingsStore()
-const items = computed(() => [
+const mainItems = computed(() => [
   { name: 'separate', path: '/', icon: MusicalNotesOutline, label: t('nav.separate') },
   { name: 'models', path: '/models', icon: CubeOutline, label: t('nav.models') },
   { name: 'workflows', path: '/workflows', icon: GitNetworkOutline, label: t('nav.workflows') },
   { name: 'results', path: '/results', icon: FolderOpenOutline, label: t('nav.results') },
+])
+const bottomItems = computed(() => [
   ...(settings.developerMode ? [{ name: 'debug', path: '/debug', icon: TerminalOutline, label: t('nav.debug') }] : []),
   { name: 'settings', path: '/settings', icon: SettingsOutline, label: t('nav.settings') },
 ])
@@ -27,18 +29,39 @@ const items = computed(() => [
 
 <template>
   <aside class="side-nav">
-    <router-link
-      v-for="item in items"
-      :key="item.name"
-      class="nav-item"
-      :class="{ active: route.name === item.name }"
-      :to="item.path"
-      :title="item.label"
-    >
-      <span class="nav-icon">
-        <n-icon :component="item.icon" :size="18" />
-      </span>
-      <span>{{ item.label }}</span>
-    </router-link>
+    <div class="side-nav__main">
+      <router-link
+        v-for="item in mainItems"
+        :key="item.name"
+        class="nav-item"
+        :class="{ active: route.name === item.name }"
+        :to="item.path"
+        :title="item.label"
+      >
+        <span class="nav-icon">
+          <n-icon :component="item.icon" :size="18" />
+        </span>
+        <span>{{ item.label }}</span>
+      </router-link>
+    </div>
+    <div class="side-nav__bottom">
+      <router-link
+        v-for="item in bottomItems"
+        :key="item.name"
+        class="nav-item"
+        :class="[
+          { active: route.name === item.name },
+          'nav-item--utility',
+          item.name === 'debug' ? 'nav-item--debug' : '',
+        ]"
+        :to="item.path"
+        :title="item.label"
+      >
+        <span class="nav-icon">
+          <n-icon :component="item.icon" :size="18" />
+        </span>
+        <span>{{ item.label }}</span>
+      </router-link>
+    </div>
   </aside>
 </template>

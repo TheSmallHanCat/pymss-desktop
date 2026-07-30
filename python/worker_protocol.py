@@ -2,12 +2,23 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 WORKER_VERSION = "0.1.0"
+MAX_LOG_LINE_CHARS = 8 * 1024
+MAX_LOG_BYTES = 50 * 1024 * 1024
+MAX_PERSISTENT_LOG_BYTES = 100 * 1024 * 1024
+SENSITIVE_KEY_RE = re.compile(r"(password|passwd|token|secret|authorization|api[_-]?key|proxy[-_]?pass)", re.IGNORECASE)
+URL_CREDENTIALS_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^\s/@]+@", re.IGNORECASE)
+SENSITIVE_VALUE_RE = re.compile(
+    r"(?i)\b(password|passwd|token|secret|api[_-]?key|proxy[-_]?pass)(\s*[=:]\s*)([^\s,;&]+)"
+)
+AUTHORIZATION_VALUE_RE = re.compile(r"(?i)\bauthorization(\s*[=:]\s*)([^,;&]+)")
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -19,13 +30,59 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
 
+def debug_log(event: str, **fields: Any) -> None:
+    if os.environ.get("PYMSS_STUDIO_DEBUG_LOG") != "1":
+        return
+    path = os.environ.get("PYMSS_STUDIO_SESSION_LOG")
+    persistent_path = os.environ.get("PYMSS_STUDIO_PERSISTENT_LOG")
+    if not path and not persistent_path:
+        return
+    try:
+        parts = [now_iso(), "PY", event]
+        for key, value in fields.items():
+            if value in (None, ""):
+                continue
+            if SENSITIVE_KEY_RE.search(key):
+                text = "<redacted>"
+            else:
+                text = _redact_sensitive_text(str(value).replace("\r", " ").replace("\n", " "))
+            if any(ch.isspace() for ch in text) or "=" in text:
+                text = json.dumps(text, ensure_ascii=False)
+            parts.append(f"{key}={text}")
+        line = " ".join(parts)
+        if len(line) > MAX_LOG_LINE_CHARS:
+            line = line[:MAX_LOG_LINE_CHARS] + " ...[truncated]"
+        _write_debug_line(path, line, MAX_LOG_BYTES)
+        _write_debug_line(persistent_path, line, MAX_PERSISTENT_LOG_BYTES)
+    except Exception:
+        pass
+
+
+def _redact_sensitive_text(value: str) -> str:
+    value = URL_CREDENTIALS_RE.sub(r"\1", value)
+    value = AUTHORIZATION_VALUE_RE.sub(lambda match: f"authorization{match.group(1)}<redacted>", value)
+    return SENSITIVE_VALUE_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", value)
+
+
+def _write_debug_line(path: str | None, line: str, max_bytes: int) -> None:
+    if not path:
+        return
+    log_path = Path(path)
+    if log_path.exists() and log_path.stat().st_size >= max_bytes:
+        return
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8", errors="replace") as file:
+        file.write(line + "\n")
+
+
 def emit(event_type: str, payload: dict[str, Any] | None = None, *, request_id: str | None = None, task_id: str | None = None) -> None:
+    payload = payload or {}
     print(json.dumps({
         "type": event_type,
         "requestId": request_id,
         "taskId": task_id,
         "timestamp": now_iso(),
-        "payload": payload or {},
+        "payload": payload,
     }, ensure_ascii=False), flush=True)
 
 

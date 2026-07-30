@@ -4,6 +4,7 @@ mod commands;
 mod error;
 mod model_dir_migration;
 mod python;
+mod session_log;
 mod state;
 mod storage;
 
@@ -35,6 +36,10 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(AppState::new())
+        .setup(|app| {
+            let _ = session_log::init_session_log(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::app_cmd::cancel_task,
             commands::app_cmd::close_current_window,
@@ -65,6 +70,10 @@ fn main() {
             commands::app_cmd::debug_catalog_save,
             commands::app_cmd::debug_catalog_reset,
             commands::app_cmd::debug_model_config,
+            commands::app_cmd::debug_log_clear,
+            commands::app_cmd::debug_log_create_report,
+            commands::app_cmd::debug_log_info,
+            commands::app_cmd::debug_log_read,
             commands::app_cmd::debug_runtime_override_active,
             commands::app_cmd::debug_runtime_pointers,
             commands::app_cmd::debug_runtime_restore_file,

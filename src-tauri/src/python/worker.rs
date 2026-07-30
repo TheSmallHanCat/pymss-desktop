@@ -1,5 +1,6 @@
 use crate::error::{AppError, AppResult};
 use crate::python::protocol::WorkerEnvelope;
+use crate::session_log;
 use crate::state::AppState;
 use crate::storage;
 use serde::Deserialize;
@@ -337,6 +338,8 @@ fn build_worker_command(
     } else {
         active_runtime_python_path(app)?.unwrap_or_else(|| bootstrap_python.clone())
     };
+    let python_for_log = python.clone();
+    let worker_for_log = worker.clone();
     let mut cmd = Command::new(python);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -350,6 +353,13 @@ fn build_worker_command(
             "PYMSS_STUDIO_DEFAULT_OUTPUT_DIR",
             default_output_dir(app)?.to_string_lossy().to_string(),
         );
+    if let Some(path) = session_log::log_env_path(app) {
+        cmd.env("PYMSS_STUDIO_SESSION_LOG", path)
+            .env("PYMSS_STUDIO_DEBUG_LOG", "1");
+    }
+    if let Some(path) = session_log::persistent_log_env_path(app) {
+        cmd.env("PYMSS_STUDIO_PERSISTENT_LOG", path);
+    }
     if let Ok(dir) = storage::runtime_envs_dir(app) {
         cmd.env("PYMSS_STUDIO_RUNTIME_ENVS_DIR", dir.to_string_lossy().to_string());
     }
@@ -397,6 +407,22 @@ fn build_worker_command(
     if let Some(path) = payload_file {
         cmd.arg("--payload").arg(path);
     }
+    session_log::append(
+        app,
+        "INFO",
+        "worker.command",
+        vec![
+            ("command", command.to_string()),
+            ("python", python_for_log),
+            ("worker", worker_for_log.to_string_lossy().to_string()),
+            (
+                "payloadFile",
+                payload_file
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            ),
+        ],
+    );
     Ok(cmd)
 }
 
@@ -457,6 +483,12 @@ fn apply_proxy_env(app: &AppHandle, cmd: &mut Command) {
 }
 
 fn emit_worker_stderr(app: &AppHandle, line: String) {
+    session_log::append(
+        app,
+        "WARN",
+        "worker.stderr",
+        vec![("message", line.clone())],
+    );
     let _ = app.emit(
         "pymss://worker-event",
         serde_json::json!({
@@ -467,6 +499,12 @@ fn emit_worker_stderr(app: &AppHandle, line: String) {
 }
 
 fn emit_task_log(app: &AppHandle, task_id: &str, level: &str, message: String) {
+    session_log::append(
+        app,
+        if level.eq_ignore_ascii_case("error") { "ERROR" } else { "WARN" },
+        "worker.stderr",
+        vec![("taskId", task_id.to_string()), ("message", message.clone())],
+    );
     let _ = app.emit(
         "pymss://worker-event",
         serde_json::json!({
@@ -500,6 +538,90 @@ fn worker_error_message(envelope: &WorkerEnvelope) -> String {
         .filter(|message| !message.trim().is_empty())
         .unwrap_or("Worker failed")
         .to_string()
+}
+
+fn log_worker_event(app: &AppHandle, command: &str, envelope: &WorkerEnvelope) {
+    let level = if envelope.event_type == "error" {
+        "ERROR"
+    } else if is_noisy_worker_event(&envelope.event_type) {
+        "DEBUG"
+    } else {
+        "INFO"
+    };
+    if level == "DEBUG" && !cfg!(debug_assertions) {
+        return;
+    }
+    let payload = &envelope.payload;
+    session_log::append(
+        app,
+        level,
+        "worker.event",
+        vec![
+            ("command", command.to_string()),
+            ("type", envelope.event_type.clone()),
+            ("taskId", envelope.task_id.clone().unwrap_or_default()),
+            ("requestId", envelope.request_id.clone().unwrap_or_default()),
+            ("code", payload.get("code").and_then(Value::as_str).unwrap_or_default().to_string()),
+            ("stage", payload.get("stage").and_then(Value::as_str).unwrap_or_default().to_string()),
+            ("message", payload.get("message").and_then(Value::as_str).unwrap_or_default().to_string()),
+            ("logPath", payload.get("logPath").and_then(Value::as_str).unwrap_or_default().to_string()),
+        ],
+    );
+}
+
+fn is_noisy_worker_event(event_type: &str) -> bool {
+    let lower = event_type.to_ascii_lowercase();
+    lower.contains("progress") || lower.contains("chunk") || lower.contains("heartbeat")
+}
+
+fn summarize_payload(payload: &Value) -> String {
+    let Some(object) = payload.as_object() else {
+        return payload_type(payload).to_string();
+    };
+    let mut parts = Vec::new();
+    parts.push(format!("keys={}", object.len()));
+    for key in ["taskId", "model", "modelName", "backend", "device", "outputFormat", "saveMode"] {
+        if let Some(value) = object.get(key).and_then(Value::as_str).filter(|value| !value.is_empty()) {
+            parts.push(format!("{key}={value}"));
+        }
+    }
+    for key in ["inputs", "tasks", "models"] {
+        if let Some(count) = object.get(key).and_then(Value::as_array).map(|items| items.len()) {
+            parts.push(format!("{key}Count={count}"));
+        }
+    }
+    parts.join(" ")
+}
+
+fn payload_type(payload: &Value) -> &'static str {
+    match payload {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn log_worker_parse_error(
+    app: &AppHandle,
+    command: &str,
+    task_id: Option<&str>,
+    err: &serde_json::Error,
+    line: &str,
+) {
+    session_log::append(
+        app,
+        "ERROR",
+        "worker.invalid_stdout",
+        vec![
+            ("command", command.to_string()),
+            ("taskId", task_id.unwrap_or_default().to_string()),
+            ("error", err.to_string()),
+            ("raw", line.to_string()),
+        ],
+    );
 }
 
 #[cfg(debug_assertions)]
@@ -605,11 +727,20 @@ pub fn run_worker_with_payload(
     command: &str,
     payload: Option<Value>,
 ) -> AppResult<Value> {
+    let payload_summary = payload.as_ref().map(summarize_payload).unwrap_or_else(|| "none".to_string());
+    session_log::append(
+        app,
+        "INFO",
+        "worker.request",
+        vec![("command", command.to_string()), ("payload", payload_summary)],
+    );
     let payload_file = match payload {
         Some(value) => Some(make_payload_file(command, None, value)?),
         None => None,
     };
     let mut cmd = build_worker_command(app, command, payload_file.as_ref())?;
+    let started_at = std::time::Instant::now();
+    session_log::append(app, "INFO", "worker.spawn", vec![("command", command.to_string())]);
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
 
     let stdout = child
@@ -646,6 +777,7 @@ pub fn run_worker_with_payload(
         match serde_json::from_str::<WorkerEnvelope>(&line) {
             Ok(envelope) => {
                 last_payload = envelope.payload.clone();
+                log_worker_event(app, command, &envelope);
                 #[cfg(debug_assertions)]
                 debug_log_worker_event(command, &envelope);
                 let _ = app.emit("pymss://worker-event", &envelope);
@@ -661,6 +793,7 @@ pub fn run_worker_with_payload(
                 }
             }
             Err(err) => {
+                log_worker_parse_error(app, command, None, &err, &line);
                 #[cfg(debug_assertions)]
                 debug_log_worker_parse_error(command, None, &err, &line);
                 worker_error = Some(AppError::Worker(format!(
@@ -669,19 +802,31 @@ pub fn run_worker_with_payload(
             }
         }
     });
-    if let Some(err) = worker_error {
-        if let Some(path) = payload_file.as_ref() {
-            let _ = std::fs::remove_file(path);
-        }
-        return Err(err);
-    }
-
     let status = child.wait()?;
+    session_log::append(
+        app,
+        if status.success() { "INFO" } else { "ERROR" },
+        "worker.exit",
+        vec![
+            ("command", command.to_string()),
+            ("status", status.to_string()),
+            ("durationMs", started_at.elapsed().as_millis().to_string()),
+        ],
+    );
     if let Some(handle) = stderr_handle {
         let _ = handle.join();
     }
     if let Some(path) = payload_file.as_ref() {
         let _ = std::fs::remove_file(path);
+    }
+    if let Some(err) = worker_error {
+        session_log::append(
+            app,
+            "ERROR",
+            "worker.error",
+            vec![("command", command.to_string()), ("message", err.to_string())],
+        );
+        return Err(err);
     }
     if !status.success() {
         let detail = stderr_lines
@@ -729,8 +874,26 @@ pub fn spawn_worker_background(
     }
 
     let command_name = command.to_string();
+    let payload_summary = summarize_payload(&payload);
+    session_log::append(
+        &app,
+        "INFO",
+        "worker.request",
+        vec![
+            ("command", command.to_string()),
+            ("taskId", task_id.clone()),
+            ("payload", payload_summary),
+        ],
+    );
     let payload_file = make_payload_file(command, Some(&task_id), payload)?;
     let mut cmd = build_worker_command(&app, command, Some(&payload_file))?;
+    let started_at = std::time::Instant::now();
+    session_log::append(
+        &app,
+        "INFO",
+        "worker.spawn",
+        vec![("command", command.to_string()), ("taskId", task_id.clone())],
+    );
     let mut child: Child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let stdout = child
         .stdout
@@ -785,9 +948,11 @@ pub fn spawn_worker_background(
                     }
                     #[cfg(debug_assertions)]
                     debug_log_worker_event(&command_name, &envelope);
+                    log_worker_event(&app, &command_name, &envelope);
                     let _ = app.emit("pymss://worker-event", &envelope);
                 }
                 Err(err) => {
+                    log_worker_parse_error(&app, &command_name, Some(&task_id), &err, &line);
                     #[cfg(debug_assertions)]
                     debug_log_worker_parse_error(&command_name, Some(&task_id), &err, &line);
                     emit_task_error_to_all(
@@ -804,6 +969,26 @@ pub fn spawn_worker_background(
         } else {
             None
         };
+        session_log::append(
+            &app,
+            match exit_status.as_ref() {
+                Some(status) if status.success() => "INFO",
+                _ => "ERROR",
+            },
+            "worker.exit",
+            vec![
+                ("command", command_name.clone()),
+                ("taskId", task_id.clone()),
+                (
+                    "status",
+                    exit_status
+                        .as_ref()
+                        .map(|status| status.to_string())
+                        .unwrap_or_else(|| "missing".to_string()),
+                ),
+                ("durationMs", started_at.elapsed().as_millis().to_string()),
+            ],
+        );
         let missing_terminal_task_ids = registered_task_ids
             .iter()
             .filter(|task_id| !terminal_task_ids.contains(*task_id))

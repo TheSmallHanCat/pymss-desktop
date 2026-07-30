@@ -3012,10 +3012,6 @@ async function retryCurrentTask() {
   flex-direction: column;
   gap: 12px;
 }
-.target-pane--ensemble .target-list {
-  flex: 0 0 auto;
-  max-height: 230px;
-}
 .stage-head__extra { flex: 0 0 auto; }
 .model-mode-select { width: 156px; }
 .model-mode-select :deep(.n-base-selection-label) { white-space: nowrap; }

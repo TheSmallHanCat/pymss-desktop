@@ -34,7 +34,7 @@ const { developerMode, dataRoot, modelDir, outputDir, settingsDir, editorProject
 const { activeWorkerTasks, runningTasks } = storeToRefs(task)
 const { downloadTasks } = storeToRefs(modelStore)
 
-type DebugTab = 'overview' | 'runtime' | 'models' | 'events' | 'paths'
+type DebugTab = 'overview' | 'runtime' | 'models' | 'events' | 'logs' | 'paths'
 type CatalogEditMode = 'simple' | 'advanced'
 type DebugCatalogInfo = {
   baseCatalogPath: string
@@ -104,6 +104,32 @@ type DebugWorkerEventGroup = {
   typeCounts: Record<string, number>
   events: DebugWorkerEvent[]
 }
+type DebugLogInfo = {
+  path: string
+  logsDir: string
+  exists: boolean
+  sizeBytes: number
+  persistentPath: string
+  persistentExists: boolean
+  persistentSizeBytes: number
+  debugBuild: boolean
+  maxBytes: number
+  persistentMaxBytes: number
+  reportPath: string
+  reportExists: boolean
+  reportSizeBytes: number
+}
+type DebugLogContent = {
+  path: string
+  content: string
+  sizeBytes: number
+  truncated: boolean
+}
+type DebugLogReport = {
+  path: string
+  exists: boolean
+  sizeBytes: number
+}
 
 const activeTab = ref<DebugTab>('overview')
 const debugCatalogLoading = ref(false)
@@ -132,6 +158,11 @@ const runtimeDebugEditingPath = ref('')
 const runtimeDebugEditingContent = ref('')
 const runtimeOverrideBackend = ref('cuda')
 const runtimeOverridePythonPath = ref('')
+const debugLogLoading = ref(false)
+const debugLogClearing = ref(false)
+const debugLogReportLoading = ref(false)
+const debugLogInfo = ref<DebugLogInfo | null>(null)
+const debugLogContent = ref<DebugLogContent | null>(null)
 
 const diagnostics = computed(() => app.diagnostics)
 const env = computed(() => app.envInfo)
@@ -141,6 +172,7 @@ const debugTabs = computed(() => [
   { key: 'runtime', label: t('debug.tabRuntime') },
   { key: 'models', label: t('debug.tabModels') },
   { key: 'events', label: t('debug.tabEvents') },
+  { key: 'logs', label: t('debug.tabLogs') },
   { key: 'paths', label: t('debug.tabPaths') },
 ] as Array<{ key: DebugTab; label: string }>)
 const debugModelOptions = computed(() => modelStore.models
@@ -467,6 +499,15 @@ const runtimeBackendOptions = [
   { label: 'ROCm', value: 'rocm' },
   { label: 'MLX', value: 'mlx' },
 ]
+const debugLogRows = computed(() => [
+  { label: t('debug.currentLogPath'), value: debugLogInfo.value?.path || '' },
+  { label: t('debug.currentLogSize'), value: `${formatBytes(debugLogInfo.value?.sizeBytes || 0)} / ${formatBytes(debugLogInfo.value?.maxBytes || 0)}` },
+  { label: t('debug.persistentLogPath'), value: debugLogInfo.value?.persistentPath || debugLogContent.value?.path || '' },
+  { label: t('debug.persistentLogSize'), value: `${formatBytes(debugLogInfo.value?.persistentSizeBytes || debugLogContent.value?.sizeBytes || 0)} / ${formatBytes(debugLogInfo.value?.persistentMaxBytes || 0)}` },
+  { label: t('debug.reportPath'), value: debugLogInfo.value?.reportPath || '' },
+  { label: t('debug.reportSize'), value: debugLogInfo.value?.reportExists ? formatBytes(debugLogInfo.value?.reportSizeBytes || 0) : '-' },
+  { label: t('debug.logMode'), value: debugLogInfo.value?.debugBuild ? t('debug.logModeVerbose') : t('debug.logModeRelease') },
+])
 const statusCards = computed(() => [
   { label: t('debug.envStatus'), value: app.envReady ? t('debug.ready') : t('debug.needsAttention'), tone: app.envReady ? 'ok' : 'warn' },
   { label: t('debug.activeWorkerTasks'), value: String(activeWorkerTasks.value.length), tone: activeWorkerTasks.value.length ? 'warn' : 'ok' },
@@ -707,6 +748,65 @@ async function revealPath(path: string) {
   }
 }
 
+async function loadDebugLog() {
+  if (!developerMode.value) return
+  debugLogLoading.value = true
+  try {
+    const [info, content] = await Promise.all([
+      invoke<DebugLogInfo>('debug_log_info'),
+      invoke<DebugLogContent>('debug_log_read'),
+    ])
+    debugLogInfo.value = info
+    debugLogContent.value = content
+  } catch (error) {
+    debugLogInfo.value = null
+    debugLogContent.value = null
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    debugLogLoading.value = false
+  }
+}
+
+async function clearDebugLog() {
+  if (!developerMode.value) return
+  debugLogClearing.value = true
+  try {
+    debugLogInfo.value = await invoke<DebugLogInfo>('debug_log_clear')
+    debugLogContent.value = await invoke<DebugLogContent>('debug_log_read')
+    message.success(t('debug.logCleared'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    debugLogClearing.value = false
+  }
+}
+
+async function copyDebugLog() {
+  const content = debugLogContent.value?.content || ''
+  if (!content) return
+  try {
+    await navigator.clipboard.writeText(content)
+    message.success(t('debug.logCopied'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  }
+}
+
+async function createDebugLogReport() {
+  if (!developerMode.value) return
+  debugLogReportLoading.value = true
+  try {
+    const report = await invoke<DebugLogReport>('debug_log_create_report')
+    message.success(t('debug.reportCreated'))
+    await loadDebugLog()
+    await revealPath(report.path)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    debugLogReportLoading.value = false
+  }
+}
+
 function setRuntimeDebugInfo(info: DebugRuntimePointers) {
   runtimeDebugInfo.value = info
   if (runtimeDebugEditingPath.value && !info.files.some((file) => file.path === runtimeDebugEditingPath.value)) {
@@ -797,6 +897,7 @@ function loadDebugPageData() {
   if (!app.envLoading && !app.envInfo) app.checkEnvInBackground().catch(() => {})
   app.checkRuntimeInfo().catch(() => {})
   loadRuntimeDebugPointers().catch(() => {})
+  loadDebugLog().catch(() => {})
   if (!modelStore.models.length) modelStore.loadModels().catch(() => {})
   loadDebugCatalog().catch(() => {})
 }
@@ -829,6 +930,8 @@ watch(developerMode, (enabled) => {
     runtimeDebugEditorVisible.value = false
     catalogModelDialogVisible.value = false
     runtimeDebugInfo.value = null
+    debugLogInfo.value = null
+    debugLogContent.value = null
   }
 })
 </script>
@@ -1338,6 +1441,46 @@ watch(developerMode, (enabled) => {
         <pre class="worker-event-modal-payload">{{ workerEventGroupPayload(selectedWorkerEvent) }}</pre>
       </n-modal>
     </n-card>
+
+    <n-card v-if="activeTab === 'logs'" class="debug-card debug-card--logs" :bordered="true" size="small">
+      <template #header>
+        <div class="debug-section-title">
+          <n-icon :component="TerminalOutline" />
+          <span>{{ t('debug.sessionLog') }}</span>
+        </div>
+      </template>
+      <div class="debug-log-toolbar">
+        <n-button size="small" secondary :loading="debugLogLoading" @click="loadDebugLog">
+          {{ t('common.refresh') }}
+        </n-button>
+        <n-button size="small" secondary :disabled="!debugLogInfo?.logsDir" @click="revealPath(debugLogInfo?.logsDir || logsDir)">
+          {{ t('debug.openLogsDir') }}
+        </n-button>
+        <n-button size="small" secondary :disabled="!debugLogContent?.content" @click="copyDebugLog">
+          {{ t('debug.copyLog') }}
+        </n-button>
+        <n-button size="small" secondary :loading="debugLogReportLoading" @click="createDebugLogReport">
+          {{ t('debug.createReport') }}
+        </n-button>
+        <n-button size="small" secondary :disabled="!debugLogInfo?.reportExists" @click="revealPath(debugLogInfo?.reportPath || '')">
+          {{ t('debug.openReport') }}
+        </n-button>
+        <n-button size="small" secondary type="warning" :loading="debugLogClearing" @click="clearDebugLog">
+          {{ t('debug.clearLog') }}
+        </n-button>
+      </div>
+      <div class="kv-list debug-log-meta">
+        <div v-for="row in debugLogRows" :key="row.label" class="kv-row">
+          <span>{{ row.label }}</span>
+          <code :title="row.value || '-'">{{ row.value || '-' }}</code>
+        </div>
+      </div>
+      <n-alert v-if="debugLogContent?.truncated" type="warning" :show-icon="true">
+        {{ t('debug.logTailHint') }}
+      </n-alert>
+      <pre v-if="debugLogContent?.content" class="debug-log-content">{{ debugLogContent.content }}</pre>
+      <n-empty v-else :description="t('debug.logEmpty')" />
+    </n-card>
     </div>
   </div>
 </template>
@@ -1781,6 +1924,33 @@ watch(developerMode, (enabled) => {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.debug-log-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.debug-log-meta {
+  margin-bottom: 12px;
+}
+
+.debug-log-content {
+  overflow: auto;
+  max-height: min(58vh, 620px);
+  margin: 12px 0 0;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, #0c111d 92%, var(--surface-1));
+  color: #d9e2f1;
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .runtime-tree__node {

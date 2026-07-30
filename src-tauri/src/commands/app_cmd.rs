@@ -5,6 +5,7 @@ use crate::model_dir_migration::{
     StartModelDirMigrationRequest,
 };
 use crate::python::worker::{run_worker_once, run_worker_with_payload, spawn_worker_background};
+use crate::session_log::{self, DebugLogContent, DebugLogInfo, DebugLogReport};
 use crate::state::{AppState, ProxySettings};
 use crate::storage;
 use serde::{Deserialize, Serialize};
@@ -120,6 +121,30 @@ pub fn get_build_info() -> BuildInfo {
 #[tauri::command]
 pub async fn worker_health(app: AppHandle) -> AppResult<Value> {
     run_worker_once(&app, "health")
+}
+
+#[tauri::command]
+pub async fn debug_log_info(app: AppHandle) -> AppResult<DebugLogInfo> {
+    require_runtime_debug_developer_mode(&app)?;
+    session_log::info(&app)
+}
+
+#[tauri::command]
+pub async fn debug_log_read(app: AppHandle) -> AppResult<DebugLogContent> {
+    require_runtime_debug_developer_mode(&app)?;
+    session_log::read_tail(&app)
+}
+
+#[tauri::command]
+pub async fn debug_log_clear(app: AppHandle) -> AppResult<DebugLogInfo> {
+    require_runtime_debug_developer_mode(&app)?;
+    session_log::clear(&app)
+}
+
+#[tauri::command]
+pub async fn debug_log_create_report(app: AppHandle) -> AppResult<DebugLogReport> {
+    require_runtime_debug_developer_mode(&app)?;
+    session_log::create_diagnostic_report(&app)
 }
 
 #[tauri::command]
@@ -729,6 +754,12 @@ pub async fn start_separation(
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::Worker("missing taskId".into()))?
         .to_string();
+    session_log::append(
+        &app,
+        "INFO",
+        "task.start_requested",
+        vec![("kind", "separation".to_string()), ("taskId", task_id.clone())],
+    );
     spawn_worker_background(app, state, "infer", task_id.clone(), payload)?;
     Ok(serde_json::json!({ "taskId": task_id, "started": true }))
 }
@@ -744,23 +775,48 @@ pub async fn start_workflow_inference(
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::Worker("missing taskId".into()))?
         .to_string();
+    session_log::append(
+        &app,
+        "INFO",
+        "task.start_requested",
+        vec![("kind", "workflow".to_string()), ("taskId", task_id.clone())],
+    );
     spawn_worker_background(app, state, "infer_workflow", task_id.clone(), payload)?;
     Ok(serde_json::json!({ "taskId": task_id, "started": true }))
 }
 
 #[tauri::command]
 pub async fn get_app_paths(app: AppHandle) -> AppResult<storage::AppPathsPayload> {
+    session_log::append(&app, "DEBUG", "app.paths_requested", Vec::new());
     storage::app_paths_payload(&app)
 }
 
 #[tauri::command]
 pub async fn load_app_store(app: AppHandle, name: String) -> AppResult<Value> {
+    session_log::append(&app, "DEBUG", "app.store.load", vec![("name", name.clone())]);
     storage::read_app_store(&app, &name)
 }
 
 #[tauri::command]
 pub async fn save_app_store(app: AppHandle, name: String, data: Value) -> AppResult<()> {
+    session_log::append(
+        &app,
+        "DEBUG",
+        "app.store.save",
+        vec![("name", name.clone()), ("valueType", value_type(&data).to_string())],
+    );
     storage::write_app_store(&app, &name, &data)
+}
+
+fn value_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 fn editor_projects_root(app: &AppHandle) -> AppResult<PathBuf> {
