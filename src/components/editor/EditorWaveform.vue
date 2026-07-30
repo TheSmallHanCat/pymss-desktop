@@ -6,6 +6,8 @@ const MAX_TILE_BUFFER_WIDTH = 4096
 
 const props = defineProps<{
   peaks: number[]
+  channelPeaks?: number[][]
+  channels?: number
   assetDuration: number
   duration: number
   width: number
@@ -49,15 +51,17 @@ function drawTile(canvas: HTMLCanvasElement, tileIndex: number) {
   ctx.setTransform(scaleX, 0, 0, ratio, 0, 0)
   ctx.clearRect(0, 0, tileWidth, totalHeight)
 
-  const peaks = props.peaks
-  if (!peaks?.length || props.assetDuration <= 0 || props.duration <= 0) return
+  const channels = props.channels && props.channels >= 2 && props.channelPeaks?.length
+    ? props.channelPeaks.filter((channel) => channel.length).slice(0, 2)
+    : [props.peaks]
+  const primaryPeaks = channels[0] || []
+  if (!primaryPeaks.length || props.assetDuration <= 0 || props.duration <= 0) return
 
-  const total = peaks.length
+  const total = primaryPeaks.length
   const endRatio = Math.min(1, props.duration / props.assetDuration)
   const startIdx = 0
   const endIdx = Math.min(total, Math.ceil(endRatio * total))
   const span = Math.max(1, endIdx - startIdx)
-  const mid = totalHeight / 2
   const color = resolveColor()
   const barWidth = 2
   const gap = 1
@@ -65,28 +69,42 @@ function drawTile(canvas: HTMLCanvasElement, tileIndex: number) {
 
   ctx.fillStyle = color
 
-  for (let localX = 0; localX < tileWidth; localX += step) {
-    const globalX = tileLeft + localX
-    const colStart = startIdx + Math.floor((globalX / totalWidth) * span)
-    const colEnd = startIdx + Math.floor(((globalX + step) / totalWidth) * span)
-    let peak = 0
+  const drawChannel = (peaks: number[], top: number, height: number) => {
+    const mid = top + height / 2
+    for (let localX = 0; localX < tileWidth; localX += step) {
+      const globalX = tileLeft + localX
+      const colStart = startIdx + Math.floor((globalX / totalWidth) * span)
+      const colEnd = startIdx + Math.floor(((globalX + step) / totalWidth) * span)
+      let peak = 0
 
-    for (let i = colStart; i < Math.max(colStart + 1, colEnd); i += 1) {
-      const value = peaks[i] || 0
-      if (value > peak) peak = value
-    }
+      for (let i = colStart; i < Math.max(colStart + 1, colEnd); i += 1) {
+        const value = peaks[i] || 0
+        if (value > peak) peak = value
+      }
 
-    let envelope = 1
-    const tSec = (globalX / totalWidth) * props.duration
-    if (props.fadeIn && props.fadeIn > 0 && tSec < props.fadeIn) {
-      envelope = Math.min(envelope, tSec / props.fadeIn)
-    }
-    if (props.fadeOut && props.fadeOut > 0 && tSec > props.duration - props.fadeOut) {
-      envelope = Math.min(envelope, (props.duration - tSec) / props.fadeOut)
-    }
+      let envelope = 1
+      const tSec = (globalX / totalWidth) * props.duration
+      if (props.fadeIn && props.fadeIn > 0 && tSec < props.fadeIn) {
+        envelope = Math.min(envelope, tSec / props.fadeIn)
+      }
+      if (props.fadeOut && props.fadeOut > 0 && tSec > props.duration - props.fadeOut) {
+        envelope = Math.min(envelope, (props.duration - tSec) / props.fadeOut)
+      }
 
-    const barHeight = Math.max(1, peak * envelope * (totalHeight * 0.84))
-    ctx.fillRect(localX, mid - barHeight / 2, barWidth, barHeight)
+      const barHeight = Math.max(1, peak * envelope * (height * 0.78))
+      ctx.fillRect(localX, mid - barHeight / 2, barWidth, barHeight)
+    }
+  }
+
+  if (channels.length >= 2) {
+    const laneGap = 3
+    const channelHeight = Math.max(1, (totalHeight - laneGap) / 2)
+    drawChannel(channels[0], 0, channelHeight)
+    drawChannel(channels[1], channelHeight + laneGap, channelHeight)
+    ctx.fillStyle = 'rgba(255,255,255,0.18)'
+    ctx.fillRect(0, channelHeight + laneGap / 2, tileWidth, 1)
+  } else {
+    drawChannel(primaryPeaks, 0, totalHeight)
   }
 
   const fadeInWidth = props.fadeIn && props.duration > 0 ? Math.min(totalWidth, (props.fadeIn / props.duration) * totalWidth) : 0
@@ -139,7 +157,7 @@ function scheduleDraw() {
 }
 
 watch(
-  () => [props.peaks, props.assetDuration, props.duration, props.width, props.height, props.fadeIn, props.fadeOut, props.color, tileCount.value],
+  () => [props.peaks, props.channelPeaks, props.channels, props.assetDuration, props.duration, props.width, props.height, props.fadeIn, props.fadeOut, props.color, tileCount.value],
   scheduleDraw,
   { deep: false },
 )

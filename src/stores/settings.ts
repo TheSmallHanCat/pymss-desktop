@@ -18,7 +18,7 @@ import {
   SCALE_FACTOR_STEP,
 } from '@/utils/appZoom'
 import { normalizeLocaleSetting, setLocale, type LocaleSetting } from '@/i18n'
-import { loadAppStore, saveAppStore } from '@/utils/appStore'
+import { isTauriRuntime, loadAppStore, saveAppStore } from '@/utils/appStore'
 import type { EnvInfo } from '@/stores/app'
 
 type AppPathsPayload = {
@@ -163,6 +163,18 @@ function createEmptyModelDirMigrationState(): ModelDirMigrationState {
   }
 }
 
+function browserAppPaths(): AppPathsPayload {
+  return {
+    dataRoot: '',
+    settingsDir: '',
+    modelsDir: 'models',
+    outputsDir: 'outputs',
+    editorProjectsDir: 'editor-projects',
+    logsDir: 'logs',
+    tempDir: 'temp',
+  }
+}
+
 export type AudioParams = {
   wavBitDepth: string
   flacBitDepth: string
@@ -272,7 +284,7 @@ export const useSettingsStore = defineStore('settings', () => {
   async function initialize() {
     if (initialized.value) return
     const [paths, stored] = await Promise.all([
-      invoke<AppPathsPayload>('get_app_paths'),
+      isTauriRuntime() ? invoke<AppPathsPayload>('get_app_paths') : Promise.resolve(browserAppPaths()),
       loadAppStore<StoredSettings>('app-settings'),
     ])
 
@@ -367,7 +379,7 @@ export const useSettingsStore = defineStore('settings', () => {
   )
 
   async function syncProxyToBackend() {
-    if (!initialized.value) return
+    if (!initialized.value || !isTauriRuntime()) return
     await invoke('update_proxy_settings', {
       payload: {
         mode: proxyMode.value,

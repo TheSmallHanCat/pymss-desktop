@@ -28,13 +28,13 @@ import {
 } from '@vicons/ionicons5'
 import { useModelStore } from '@/stores/model'
 import { useTaskStore, type OutputLayout, type SeparationTask, type StemOutput } from '@/stores/task'
-import { useWorkflowStore } from '@/stores/workflow'
+import { useWorkflowStore, type WorkflowEntry } from '@/stores/workflow'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { buildModelCategoryOptionsFromModels, getModelCategoryLabel } from '@/utils/modelCategory'
 import { matchesModelQuery } from '@/utils/modelSearch'
 import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, workflowValidationErrorMessage, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
-import { getWorkflowDefinitionDefaults } from '@/utils/workflowGraph'
+import { createWorkflowGraphEdgeId, createWorkflowGraphNodeId, getWorkflowDefinitionDefaults } from '@/utils/workflowGraph'
 import { sortStemOutputsByOrder } from '@/utils/stemOrder'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 
@@ -51,6 +51,17 @@ const app = useAppStore()
 
 const {
   inputFiles,
+  separateRunMode: runMode,
+  ensembleEnabled,
+  ensembleModels,
+  ensembleStem,
+  ensembleModelStems,
+  ensembleType,
+  ensembleWeights,
+  separateTemporaryOutputDir: temporaryOutputDir,
+  separateOutputLayout: outputLayout,
+  separateOutputNamingTemplate: outputNamingTemplate,
+  separateCustomStemOrder: customStemOrder,
   useTta,
   debug,
   batch_size,
@@ -71,23 +82,20 @@ const { workflows, selectedWorkflow, selectedWorkflowId } = storeToRefs(workflow
 
 const isDragging = ref(false)
 const showSettingsDrawer = ref(false)
+const showEnsembleModal = ref(false)
 const showNamingModal = ref(false)
 const showLogModal = ref(false)
 const modelSearch = ref('')
 const modelCategoryFilter = ref('')
+const modelPage = ref(1)
+const modelPageSize = ref(12)
 const workflowSearch = ref('')
-const runMode = ref<'model' | 'workflow'>(route.query.mode === 'workflow' ? 'workflow' : 'model')
-const temporaryOutputDir = ref('')
-// Flat by default: most runs produce a handful of stems that are easier to find alongside each
-// other than nested one directory deep per input.
-const outputLayout = ref<OutputLayout>('flat')
+if (route.query.mode === 'workflow') runMode.value = 'workflow'
 const focusedSeparationJobId = ref<string | null>(null)
 const cancellingTaskId = ref<string | null>(null)
 const audioElements = new Map<string, HTMLAudioElement>()
 const playingOutputPath = ref('')
 const outputPlayback = ref<Record<string, { currentTime: number; duration: number }>>({})
-const outputNamingTemplate = ref('%index%_%filename%_%stem%')
-const customStemOrder = ref<string[]>([])
 const draggedInputIndex = ref<number | null>(null)
 const inputDragPointerId = ref<number | null>(null)
 const draggedStemIndex = ref<number | null>(null)
@@ -138,6 +146,10 @@ const m4aCodecOptions = computed(() => [
   { label: t('audio.codecAac'), value: 'aac' },
 ])
 const selectedModelName = computed(() => String(selectedModel.value || ''))
+const ensembleTypeOptions = [
+  'avg_wave', 'median_wave', 'min_wave', 'max_wave',
+  'avg_fft', 'median_fft', 'min_fft', 'max_fft',
+].map(value => ({ label: value, value }))
 const runModeOptions = computed(() => [
   { label: t('separate.runModeModel'), value: 'model' },
   { label: t('separate.runModeWorkflow'), value: 'workflow' },
@@ -210,6 +222,24 @@ function parseModelInstruments(value?: unknown) {
     })
 }
 const availableStemNames = computed(() => parseModelInstruments(currentModelInfo.value?.configInstruments))
+const ensembleModelEntries = computed(() => ensembleModels.value
+  .map(name => listedDownloadedModels.value.find(item => item.name === name))
+  .filter((item): item is (typeof listedDownloadedModels.value)[number] => Boolean(item)))
+const ensembleStemOptionsByModel = computed(() => Object.fromEntries(
+  ensembleModelEntries.value.map(item => [
+    item.name,
+    parseModelInstruments(item.configInstruments).map(stem => ({ label: stem, value: stem })),
+  ]),
+))
+const ensembleReady = computed(() => ensembleEnabled.value
+  && ensembleModels.value.length >= 2
+  && ensembleModelEntries.value.length === ensembleModels.value.length
+  && Boolean(ensembleStem.value.trim())
+  && ensembleModels.value.every((name) => {
+    const selectedStem = String(ensembleModelStems.value[name] || '').trim()
+    const options = ensembleStemOptionsByModel.value[name] || []
+    return Boolean(selectedStem) && options.some(option => option.value.toLowerCase() === selectedStem.toLowerCase())
+  }))
 const selectedStemSummary = computed(() => {
   if (!selectedStems.value.length) return t('separate.allStems')
   return selectedStems.value.join(', ')
@@ -316,9 +346,11 @@ const startStatusText = computed(() => {
   if (runMode.value === 'workflow' && !selectedWorkflow.value) return t('separate.startHintNoWorkflow')
   const validationError = workflowValidationError(selectedWorkflowValidation.value)
   if (validationError) return validationError
+  if (outputDirectoryError.value) return outputDirectoryError.value
   if (workflowUsesBatchInput.value) return t('separate.startHintWorkflowBatchFolder')
   if (!inputFiles.value.length) return t('separate.startHintNoInput')
-  if (runMode.value === 'model' && !modelDownloaded.value) return t('separate.startHintModelMissing')
+  if (runMode.value === 'model' && ensembleEnabled.value && !ensembleReady.value) return t('separate.ensembleNotReady')
+  if (runMode.value === 'model' && !ensembleEnabled.value && !modelDownloaded.value) return t('separate.startHintModelMissing')
   return t('separate.readyToStart')
 })
 const modelCategoryOptions = computed(() => [
@@ -339,6 +371,11 @@ const filteredDownloadedModels = computed(() => {
     return matchesQuery && matchesCategory
   })
 })
+const pagedDownloadedModels = computed(() => {
+  const start = (modelPage.value - 1) * modelPageSize.value
+  return filteredDownloadedModels.value.slice(start, start + modelPageSize.value)
+})
+const modelPageSizeOptions = [8, 12, 24]
 const filteredWorkflows = computed(() => {
   const query = workflowSearch.value.trim().toLowerCase()
   return [...workflows.value]
@@ -350,6 +387,17 @@ const filteredWorkflows = computed(() => {
 })
 
 const normalizedOutputDir = computed(() => (temporaryOutputDir.value || settings.outputDir || 'results').trim() || 'results')
+const outputDirectoryPlatform = computed(() => {
+  const reported = String(app.envInfo?.platform || '').trim().toLowerCase()
+  if (reported === 'win32' || reported === 'windows') return 'windows' as const
+  if (reported === 'darwin' || reported === 'macos' || reported === 'mac') return 'macos' as const
+  if (reported === 'linux') return 'linux' as const
+  const browserPlatform = String(typeof navigator !== 'undefined' ? navigator.platform : '').toLowerCase()
+  if (browserPlatform.includes('win')) return 'windows' as const
+  if (browserPlatform.includes('mac')) return 'macos' as const
+  return 'linux' as const
+})
+const outputDirectoryError = computed(() => validateOutputDirectory(temporaryOutputDir.value, outputDirectoryPlatform.value))
 const outputPreview = computed(() => {
   const base = normalizedOutputDir.value.replace(/[\\/]$/, '')
   const separator = base.includes('\\') ? '\\' : '/'
@@ -385,7 +433,8 @@ const canStart = computed(() => (
   && !workflowBatchInputMissingFolder.value
   && !workflowUtilityInputInvalid.value
   && !workflowStructureInvalid.value
-  && (runMode.value === 'workflow' ? Boolean(selectedWorkflow.value) : modelDownloaded.value)
+  && !outputDirectoryError.value
+  && (runMode.value === 'workflow' ? Boolean(selectedWorkflow.value) : ensembleEnabled.value ? ensembleReady.value : modelDownloaded.value)
 ))
 const newestRunningJob = computed(() => {
   return [...task.allJobs]
@@ -609,6 +658,35 @@ function stopAllPreviewAudio() {
 
 function getFileName(path: string) {
   return path.split(/[/\\]/).filter(Boolean).pop() || path
+}
+
+function validateOutputDirectory(value: string, platform: 'windows' | 'macos' | 'linux') {
+  const path = String(value || '').trim()
+  if (!path) return ''
+  if (/[\u0000-\u001f]/u.test(path)) {
+    return t('separate.outputDirectoryInvalidCharacters')
+  }
+
+  if (platform !== 'windows') {
+    if (path.includes('\0')) return t('separate.outputDirectoryInvalidCharacters')
+    return ''
+  }
+
+  if (/[<>"|?*]/u.test(path)) return t('separate.outputDirectoryInvalidCharacters')
+  const normalized = path.replace(/\//g, '\\')
+  if (/^[A-Za-z]:[^\\]/u.test(normalized)) return t('separate.outputDirectoryIncomplete')
+  const withoutRoot = normalized
+    .replace(/^[A-Za-z]:\\/u, '')
+    .replace(/^\\\\[^\\]+\\[^\\]+\\?/u, '')
+    .replace(/^\\+/u, '')
+  const segments = withoutRoot.split(/\\+/u).filter(Boolean)
+  if (segments.some(segment => segment.includes(':'))) return t('separate.outputDirectoryInvalidCharacters')
+  if (segments.some(segment => /[ .]$/u.test(segment))) return t('separate.outputDirectoryTrailingCharacter')
+  if (segments.some(segment => WINDOWS_RESERVED_FILENAMES.has(segment.split('.', 1)[0].toUpperCase()))) {
+    return t('separate.outputDirectoryReservedName')
+  }
+  if (/^[A-Za-z]:$/u.test(path) || /^\\\\[^\\]+$/u.test(path)) return t('separate.outputDirectoryIncomplete')
+  return ''
 }
 
 function stripFileExtension(path: string) {
@@ -905,6 +983,14 @@ function progressTitle(item: SeparationTask) {
   return statusLabel(item.status)
 }
 
+function formatProgressTime(seconds: number) {
+  const total = Math.max(0, Math.round(seconds))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const rest = total % 60
+  return `${padNumber(hours)}:${padNumber(minutes)}:${padNumber(rest)}`
+}
+
 function progressDetail(item: SeparationTask) {
   if (
     item.status === 'separating'
@@ -912,7 +998,7 @@ function progressDetail(item: SeparationTask) {
     && typeof item.progressTotal === 'number'
     && item.progressTotal > 0
   ) {
-    return `${Math.round(item.progressCurrent)} / ${Math.round(item.progressTotal)}`
+    return `${formatProgressTime(item.progressCurrent)} / ${formatProgressTime(item.progressTotal)}`
   }
   return ''
 }
@@ -931,6 +1017,13 @@ function taskDuration(item: SeparationTask) {
 }
 
 function handleSelectModel(item: (typeof listedDownloadedModels.value)[number]) {
+  if (ensembleEnabled.value) {
+    const next = ensembleModels.value.includes(item.name)
+      ? ensembleModels.value.filter(name => name !== item.name)
+      : [...ensembleModels.value, item.name]
+    ensembleModels.value = next
+    return
+  }
   model.selectModel(item).catch(() => {})
 }
 
@@ -940,8 +1033,72 @@ function prefetchSelectedModelAdvancedParams() {
   model.selectModel(selectedModelName.value).catch(() => {})
 }
 
-watch(selectedModelName, () => {
-  selectedStems.value = []
+watch(selectedModelName, (name, previousName) => {
+  if (previousName && previousName !== name) task.saveCurrentModelState(previousName)
+})
+
+watch(ensembleModels, (models) => {
+  const next = { ...ensembleWeights.value }
+  const nextStems = { ...ensembleModelStems.value }
+  models.forEach(name => {
+    if (!Number.isFinite(Number(next[name])) || Number(next[name]) < 0) next[name] = 1
+    const options = ensembleStemOptionsByModel.value[name] || []
+    if (!options.length) delete nextStems[name]
+    else {
+      const savedStem = String(nextStems[name] || '').trim()
+      const savedOption = options.find(option => option.value.toLowerCase() === savedStem.toLowerCase())
+      const legacyStem = ensembleStem.value
+      const legacyOption = options.find(option => option.value.toLowerCase() === legacyStem.toLowerCase())
+      nextStems[name] = savedOption?.value || legacyOption?.value || options[0].value
+    }
+  })
+  Object.keys(next).forEach(name => {
+    if (!models.includes(name)) delete next[name]
+  })
+  Object.keys(nextStems).forEach(name => {
+    if (!models.includes(name)) delete nextStems[name]
+  })
+  ensembleWeights.value = next
+  ensembleModelStems.value = nextStems
+  if (!ensembleStem.value.trim()) {
+    const firstStem = models.map(name => nextStems[name]).find(Boolean)
+    if (firstStem) ensembleStem.value = firstStem
+  }
+}, { deep: true, immediate: true })
+
+watch(ensembleStemOptionsByModel, () => {
+  const models = ensembleModels.value
+  if (!models.length) return
+  const nextStems = { ...ensembleModelStems.value }
+  let changed = false
+  models.forEach((name) => {
+    const options = ensembleStemOptionsByModel.value[name] || []
+    if (!options.length) {
+      if (name in nextStems) {
+        delete nextStems[name]
+        changed = true
+      }
+      return
+    }
+    const savedStem = String(nextStems[name] || '').trim()
+    const savedOption = options.find(option => option.value.toLowerCase() === savedStem.toLowerCase())
+    if (!savedOption || savedOption.value !== nextStems[name]) {
+      const legacyStem = ensembleStem.value
+      const legacyOption = options.find(option => option.value.toLowerCase() === legacyStem.toLowerCase())
+      nextStems[name] = savedOption?.value || legacyOption?.value || options[0].value
+      changed = true
+    }
+  })
+  if (changed) ensembleModelStems.value = nextStems
+}, { deep: true, immediate: true })
+
+watch([modelSearch, modelCategoryFilter, modelPageSize], () => {
+  modelPage.value = 1
+})
+
+watch(() => filteredDownloadedModels.value.length, (count) => {
+  const pageCount = Math.max(1, Math.ceil(count / modelPageSize.value))
+  if (modelPage.value > pageCount) modelPage.value = pageCount
 })
 
 watch(
@@ -966,7 +1123,7 @@ watch(
   currentModelInfo,
   (info) => {
     if (!info || info.name !== selectedModelName.value) return
-    task.applySelectedModelDefaults(info.defaultInferenceParams, info.modelType)
+    task.applySelectedModelDefaults(info.defaultInferenceParams, info.modelType, task.getSavedModelState(info.name))
   },
   { immediate: true },
 )
@@ -1057,7 +1214,136 @@ async function pickTemporaryOutputDir() {
   if (folder) temporaryOutputDir.value = folder
 }
 
+function positiveInferenceNumber(value: number | null | undefined) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+}
+
+function nonNegativeInferenceNumber(value: number | null | undefined) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+}
+
+function buildEnsembleInferenceParams(modelType?: string | null) {
+  const normalizedModelType = String(modelType || '').trim().toLowerCase()
+  const vrModel = normalizedModelType === 'vr'
+  const apolloModel = normalizedModelType === 'apollo'
+  const params: Record<string, unknown> = {
+    standardize: standardize.value,
+    normalize: normalize.value,
+  }
+  const batchSizeValue = positiveInferenceNumber(batch_size.value)
+  if (batchSizeValue !== null) params.batch_size = batchSizeValue
+
+  if (vrModel) {
+    const windowSizeValue = positiveInferenceNumber(window_size.value)
+    const aggressionValue = nonNegativeInferenceNumber(aggression.value)
+    const postProcessThresholdValue = nonNegativeInferenceNumber(post_process_threshold.value)
+    if (windowSizeValue !== null) params.window_size = windowSizeValue
+    if (aggressionValue !== null) params.aggression = aggressionValue
+    params.enable_post_process = enable_post_process.value
+    if (postProcessThresholdValue !== null) params.post_process_threshold = postProcessThresholdValue
+    params.high_end_process = high_end_process.value
+    return params
+  }
+
+  const overlapSizeValue = positiveInferenceNumber(overlap_size.value)
+  const numOverlapValue = apolloModel ? null : positiveInferenceNumber(num_overlap.value)
+  const chunkSizeValue = positiveInferenceNumber(chunk_size.value)
+  if (overlapSizeValue !== null) params.overlap_size = overlapSizeValue
+  if (numOverlapValue !== null) params.num_overlap = numOverlapValue
+  if (chunkSizeValue !== null) params.chunk_size = chunkSizeValue
+  return params
+}
+
+function buildEnsembleWorkflow(): WorkflowEntry {
+  const outputStem = ensembleStem.value.trim()
+  const runtimeDevice = settings.getRuntimeDeviceConfig(app.envInfo)
+  const stepNodes = ensembleModels.value.map((modelName, index) => {
+    const entry = ensembleModelEntries.value.find(item => item.name === modelName) || null
+    const stem = String(ensembleModelStems.value[modelName] || '').trim()
+    return {
+      id: createWorkflowGraphNodeId('ensemble_model'),
+      type: 'separate' as const,
+      position: { x: 360 + index * 260, y: 100 + (index % 2) * 180 },
+      data: {
+        model: modelName,
+        stems: [stem],
+        overlapSize: null,
+        modelKind: null,
+        customModelType: null,
+        inferenceParams: buildEnsembleInferenceParams(entry?.modelType),
+      },
+    }
+  })
+  const ensembleId = createWorkflowGraphNodeId('ensemble')
+  const edges = stepNodes.flatMap((node, index) => [
+    {
+      id: createWorkflowGraphEdgeId('ensemble_input'),
+      source: { nodeId: 'input', portId: 'audio' },
+      target: { nodeId: node.id, portId: 'input' },
+    },
+    {
+      id: createWorkflowGraphEdgeId('ensemble_output'),
+      source: { nodeId: node.id, portId: `stem:${node.data.stems[0] || ''}` },
+      target: { nodeId: ensembleId, portId: `input:${index}` },
+    },
+  ])
+  const ensembleOutputRef = `utility:${ensembleId}`
+  edges.push({
+    id: createWorkflowGraphEdgeId('ensemble_save'),
+    source: { nodeId: ensembleId, portId: 'audio' },
+    target: { nodeId: 'save', portId: `save:${ensembleOutputRef}` },
+  })
+  return {
+    id: 'temporary-ensemble',
+    name: t('separate.ensembleWorkflowName'),
+    description: t('separate.ensembleWorkflowDescription'),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    definition: {
+      version: 2,
+      kind: 'pymss-studio-graph',
+      defaults: {
+        device: runtimeDevice.device,
+        output_format: effectiveFormat.value,
+        model_dir: settings.modelDir || null,
+        inference_params: {},
+      },
+      graph: {
+        viewport: { x: 0, y: 0, k: 1 },
+        nodes: [
+          { id: 'input', type: 'input_audio' as const, position: { x: 72, y: 210 }, data: {} },
+          ...stepNodes,
+          {
+            id: ensembleId,
+            type: 'audio_ensemble' as const,
+            position: { x: 680, y: 210 },
+            data: {
+              inputCount: stepNodes.length,
+              ensembleType: ensembleType.value,
+              weights: stepNodes.map((node) => {
+                const weight = Number(ensembleWeights.value[node.data.model])
+                return Number.isFinite(weight) ? weight : 1
+              }),
+              inputs: stepNodes.map(node => `${node.id}.${node.data.stems[0] || ''}`),
+            },
+          },
+          { id: 'save', type: 'save_outputs' as const, position: { x: 980, y: 210 }, data: { outputs: { [ensembleOutputRef]: outputStem } } },
+        ],
+        edges,
+      },
+    } as Record<string, unknown>,
+  }
+}
+
 async function start() {
+  if (outputDirectoryError.value) {
+    message.warning(outputDirectoryError.value)
+    return
+  }
+  if (runMode.value === 'model' && ensembleEnabled.value && !ensembleReady.value) {
+    message.warning(t('separate.ensembleNotReady'))
+    return
+  }
   if (runMode.value === 'workflow' && !selectedWorkflow.value) {
     message.warning(t('separate.startHintNoWorkflow'))
     return
@@ -1083,14 +1369,16 @@ async function start() {
     message.warning(t('separate.startHintNoInput'))
     return
   }
-  if (runMode.value === 'model' && !modelDownloaded.value) {
+  if (runMode.value === 'model' && !ensembleEnabled.value && !modelDownloaded.value) {
     message.warning(t('separate.startHintModelMissing'))
     return
   }
   try {
     const result = runMode.value === 'workflow' && selectedWorkflow.value
       ? await task.startWorkflowInference(selectedWorkflow.value, { outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value, outputNaming: outputNamingConfig.value })
-      : await task.startSeparation({ outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value, outputNaming: outputNamingConfig.value })
+      : ensembleEnabled.value
+        ? await task.startWorkflowInference(buildEnsembleWorkflow(), { outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value, outputNaming: outputNamingConfig.value })
+        : await task.startSeparation({ outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value, outputNaming: outputNamingConfig.value })
     focusedSeparationJobId.value = result?.jobId || newestRunningJob.value?.id || focusedSeparationJobId.value
     task.clearInputFiles()
     if (result && result.failed > 0) {
@@ -1282,11 +1570,12 @@ async function retryCurrentTask() {
             <label class="ofield">
               <span class="ofield__label">{{ t('separate.temporaryOutputDir') }}</span>
               <div class="dir-input">
-                <n-input v-model:value="temporaryOutputDir" size="small" :placeholder="settings.outputDir || t('separate.outputDefault')" :disabled="isRunModeLocked" clearable />
+                <n-input v-model:value="temporaryOutputDir" size="small" :status="outputDirectoryError ? 'error' : undefined" :placeholder="settings.outputDir || t('separate.outputDefault')" :disabled="isRunModeLocked" clearable />
                 <n-button secondary size="small" class="dir-input__browse" :title="t('separate.chooseOutput')" :disabled="isRunModeLocked" @click="pickTemporaryOutputDir">
                   <template #icon><n-icon :component="FolderOutline" /></template>
                 </n-button>
               </div>
+              <small v-if="outputDirectoryError" class="output-directory-error">{{ outputDirectoryError }}</small>
             </label>
 
             <div class="ofield-row">
@@ -1463,7 +1752,7 @@ async function retryCurrentTask() {
               </section>
             </div>
             <div class="stage-actions">
-              <n-button v-if="taskPanelState === 'done'" secondary size="large" @click="task.revealPath(currentJob?.output || currentTask.output)">
+              <n-button v-if="taskPanelState === 'done'" secondary size="large" @click="task.revealPath(currentTask.outputs[0]?.path || currentTask.output)">
                 <template #icon><n-icon :component="OpenOutline" /></template>
                 {{ t('separate.openOutput') }}
               </n-button>
@@ -1489,10 +1778,23 @@ async function retryCurrentTask() {
                   <p>{{ runMode === 'workflow' ? t('separate.workflowPanelHint') : t('separate.modelPanelHint') }}</p>
                 </div>
               </div>
+              <div v-if="runMode === 'model'" class="stage-head__extra">
+                <n-select
+                  :value="ensembleEnabled ? 'ensemble' : 'single'"
+                  size="small"
+                  :options="[
+                    { label: t('separate.singleModelMode'), value: 'single' },
+                    { label: t('separate.ensembleMode'), value: 'ensemble' },
+                  ]"
+                  class="model-mode-select"
+                  :aria-label="t('separate.modelModeLabel')"
+                  @update:value="(value: string | number) => { ensembleEnabled = value === 'ensemble' }"
+                />
+              </div>
             </div>
 
             <transition name="stage-swap" mode="out-in">
-              <div v-if="runMode === 'model'" key="model" class="target-pane">
+              <div v-if="runMode === 'model'" key="model" class="target-pane" :class="{ 'target-pane--ensemble': ensembleEnabled }">
                 <template v-if="downloadedModels.length">
                   <div class="target-toolbar">
                     <n-input
@@ -1509,15 +1811,25 @@ async function retryCurrentTask() {
                       :options="modelCategoryOptions"
                     />
                   </div>
-                  <div v-if="filteredDownloadedModels.length" class="target-list" role="listbox" :aria-label="t('separate.model')">
+                  <div v-if="ensembleEnabled" class="ensemble-summary-bar">
+                    <div class="ensemble-summary-bar__info">
+                      <strong>{{ t('separate.ensembleMode') }}</strong>
+                      <span>{{ ensembleModels.length ? t('separate.ensembleSelectedCount', { count: ensembleModels.length }) : t('separate.ensembleNeedModels') }}</span>
+                    </div>
+                    <n-button size="small" secondary :disabled="!ensembleModels.length" @click="showEnsembleModal = true">
+                      <template #icon><n-icon :component="SettingsOutline" /></template>
+                      {{ t('separate.ensembleConfigure') }}
+                    </n-button>
+                  </div>
+                  <div v-if="pagedDownloadedModels.length" class="target-list" role="listbox" :aria-label="t('separate.model')">
                     <button
-                      v-for="item in filteredDownloadedModels"
+                      v-for="item in pagedDownloadedModels"
                       :key="item.name"
                       type="button"
                       role="option"
-                      :aria-selected="selectedModelName === item.name"
-                      class="target-row"
-                      :class="{ 'target-row--active': selectedModelName === item.name }"
+                       :aria-selected="ensembleEnabled ? ensembleModels.includes(item.name) : selectedModelName === item.name"
+                       class="target-row"
+                       :class="{ 'target-row--active': ensembleEnabled ? ensembleModels.includes(item.name) : selectedModelName === item.name }"
                       @click="handleSelectModel(item)"
                     >
                       <span class="target-row__radio"></span>
@@ -1535,12 +1847,23 @@ async function retryCurrentTask() {
                           :title="modelNote(item.name)"
                         >{{ modelNote(item.name) }}</span>
                       </span>
-                      <n-icon v-if="selectedModelName === item.name" class="target-row__check" :component="CheckmarkCircle" />
+                     <n-icon v-if="ensembleEnabled ? ensembleModels.includes(item.name) : selectedModelName === item.name" class="target-row__check" :component="CheckmarkCircle" />
                     </button>
                   </div>
                   <div v-else class="stage-empty">
                     <div class="stage-empty__glyph"><n-icon :component="SearchOutline" /></div>
                     <strong>{{ t('separate.modelSearchEmpty') }}</strong>
+                  </div>
+                  <div v-if="filteredDownloadedModels.length" class="model-pagination">
+                    <span>{{ t('separate.modelPageSummary', { total: filteredDownloadedModels.length }) }}</span>
+                    <n-pagination
+                      v-model:page="modelPage"
+                      v-model:page-size="modelPageSize"
+                      :item-count="filteredDownloadedModels.length"
+                      :page-sizes="modelPageSizeOptions"
+                      show-size-picker
+                      size="small"
+                    />
                   </div>
                   <div v-if="selectedModelName && !modelDownloaded" class="stage-alert">
                     {{ t('separate.startHintModelMissing') }}
@@ -1611,7 +1934,7 @@ async function retryCurrentTask() {
                 </div>
               </div>
               <div class="launch-bar__actions">
-                <n-button quaternary class="launch-bar__reveal" :title="t('separate.openOutput')" @click="task.revealPath(normalizedOutputDir)">
+                <n-button quaternary class="launch-bar__reveal" :title="t('separate.openOutput')" @click="task.revealPath(currentTask?.outputs[0]?.path || normalizedOutputDir)">
                   <template #icon><n-icon :component="OpenOutline" /></template>
                   {{ t('separate.openOutput') }}
                 </n-button>
@@ -1625,6 +1948,51 @@ async function retryCurrentTask() {
         </transition>
       </main>
     </div>
+
+    <n-modal v-model:show="showEnsembleModal" :mask-closable="true">
+      <n-card
+        class="ensemble-modal"
+        :title="t('separate.ensembleConfigureTitle')"
+        :bordered="false"
+        closable
+        role="dialog"
+        aria-modal="true"
+        @close="showEnsembleModal = false"
+      >
+        <div class="ensemble-modal__intro">
+          <span>{{ t('separate.ensembleHint') }}</span>
+          <strong>{{ t('separate.ensembleSelectedCount', { count: ensembleModels.length }) }}</strong>
+        </div>
+        <div class="ensemble-config__fields">
+          <label>
+            <span>{{ t('separate.ensembleStem') }}</span>
+            <n-input v-model:value="ensembleStem" :placeholder="t('separate.ensembleStemPlaceholder')" />
+          </label>
+          <label>
+            <span>{{ t('separate.ensembleType') }}</span>
+            <n-select v-model:value="ensembleType" :options="ensembleTypeOptions" />
+          </label>
+        </div>
+        <n-divider title-placement="left">{{ t('separate.ensembleWeights') }}</n-divider>
+        <div class="ensemble-modal__weights">
+          <div v-for="name in ensembleModels" :key="name" class="ensemble-modal__weight">
+            <span class="ensemble-modal__model-name" :title="name">{{ name }}</span>
+            <n-select
+              v-model:value="ensembleModelStems[name]"
+              size="small"
+              :options="ensembleStemOptionsByModel[name] || []"
+              :placeholder="t('separate.ensembleModelStemPlaceholder')"
+              :disabled="!(ensembleStemOptionsByModel[name] || []).length"
+            />
+            <n-slider v-model:value="ensembleWeights[name]" :min="0" :max="1" :step="0.05" />
+            <n-input-number v-model:value="ensembleWeights[name]" class="ensemble-modal__weight-input" size="small" :min="0" :max="1" :step="0.05" />
+          </div>
+        </div>
+        <template #footer>
+          <n-button type="primary" @click="showEnsembleModal = false">{{ t('common.close') }}</n-button>
+        </template>
+      </n-card>
+    </n-modal>
 
     <n-modal v-model:show="showSettingsDrawer">
       <n-card
@@ -1684,6 +2052,11 @@ async function retryCurrentTask() {
                   <n-select v-model:value="settings.m4aCodec" :options="m4aCodecOptions" />
                 </div>
               </n-grid-item>
+              <n-grid-item v-if="runMode === 'workflow' || showNormalizeField">
+                <div class="field-block field-block--inline-check">
+                  <n-checkbox v-model:checked="normalize">{{ t('inference.normalize') }}</n-checkbox>
+                </div>
+              </n-grid-item>
             </n-grid>
           </div>
 
@@ -1741,7 +2114,6 @@ async function retryCurrentTask() {
                 </n-grid>
                 <div class="check-list check-list--spaced">
                   <n-checkbox v-if="runMode === 'workflow' || showStandardizeField" v-model:checked="standardize">{{ t('inference.standardize') }}</n-checkbox>
-                  <n-checkbox v-if="runMode === 'workflow' || showNormalizeField" v-model:checked="normalize">{{ t('inference.normalize') }}</n-checkbox>
                   <n-checkbox v-if="runMode === 'model' && hasInferenceField('enable_post_process')" v-model:checked="enable_post_process">{{ t('inference.vrEnablePostProcess') }}</n-checkbox>
                   <n-checkbox v-if="runMode === 'model' && hasInferenceField('high_end_process')" v-model:checked="high_end_process">{{ t('inference.vrHighEndProcess') }}</n-checkbox>
                 </div>
@@ -2576,6 +2948,46 @@ async function retryCurrentTask() {
   flex-direction: column;
   gap: 12px;
 }
+.target-pane--ensemble .target-list {
+  flex: 0 0 auto;
+  max-height: 230px;
+}
+.stage-head__extra { flex: 0 0 auto; }
+.model-mode-select { width: 156px; }
+.model-mode-select :deep(.n-base-selection-label) { white-space: nowrap; }
+
+.model-mode-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, auto));
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--outline);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+}
+.model-mode-control__tab {
+  min-width: 86px;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--on-surface-muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease;
+}
+.model-mode-control__tab:hover { color: var(--on-surface); background: color-mix(in srgb, var(--surface-1) 72%, transparent); }
+.model-mode-control__tab:active { transform: translateY(1px); }
+.model-mode-control__tab:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.model-mode-control__tab--active {
+  color: var(--on-surface);
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--outline));
+  background: var(--surface-1);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--primary) 12%, transparent);
+}
 
 .target-toolbar {
   flex: 0 0 auto;
@@ -2585,6 +2997,54 @@ async function retryCurrentTask() {
 }
 .target-toolbar--single { grid-template-columns: minmax(0, 1fr); }
 .target-toolbar__filter { min-width: 0; }
+
+.ensemble-summary-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 10px;
+  border: 1px solid var(--outline);
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+.ensemble-summary-bar__info { display: grid; gap: 2px; min-width: 0; }
+.ensemble-summary-bar__info strong { font-size: 12px; }
+.ensemble-summary-bar__info span,
+.ensemble-weights > span { color: var(--on-surface-muted); font-size: 12px; }
+.model-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding-top: 2px;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+}
+.model-pagination :deep(.n-pagination) { flex: 0 0 auto; }
+.ensemble-config__fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.ensemble-config__fields label { display: grid; gap: 5px; }
+.ensemble-config__fields label > span { color: var(--on-surface-muted); font-size: 12px; }
+.ensemble-weights { display: grid; gap: 5px; max-height: 78px; overflow-y: auto; padding-right: 4px; }
+.ensemble-weight { display: grid; grid-template-columns: minmax(0, 1fr) 120px; align-items: center; gap: 10px; }
+.ensemble-modal { width: min(720px, 92vw); }
+.ensemble-modal__intro { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 16px; color: var(--on-surface-muted); font-size: 12px; }
+.ensemble-modal__intro strong { color: var(--primary-strong); white-space: nowrap; }
+.ensemble-modal__weights { display: grid; gap: 12px; max-height: 220px; overflow-y: auto; padding-right: 5px; }
+.ensemble-modal__weight { display: grid; grid-template-columns: minmax(130px, 0.9fr) minmax(120px, 0.8fr) minmax(120px, 1fr) 96px; align-items: center; gap: 10px; }
+.ensemble-modal__weight-input { width: 96px; }
+.ensemble-modal__model-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--on-surface);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.output-directory-error { display: block; margin-top: 5px; color: var(--danger); font-size: 11px; line-height: 1.35; }
 
 .target-list {
   flex: 1 1 auto;
@@ -3391,6 +3851,12 @@ async function retryCurrentTask() {
   color: var(--on-surface-muted);
 }
 
+.field-block--inline-check {
+  min-height: 56px;
+  align-content: end;
+  padding-bottom: 7px;
+}
+
 .summary-static-value {
   min-height: 34px;
   display: flex;
@@ -3551,6 +4017,10 @@ async function retryCurrentTask() {
 }
 
 @media (max-width: 640px) {
+  .stage-head { align-items: flex-start; flex-direction: column; }
+  .stage-head__extra { width: 100%; }
+  .model-mode-control { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .model-mode-control__tab { min-width: 0; }
   .console-topbar {
     flex-direction: column;
     align-items: stretch;
@@ -3579,6 +4049,17 @@ async function retryCurrentTask() {
   .target-toolbar {
     grid-template-columns: minmax(0, 1fr);
   }
+  .model-mode-control {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ensemble-config__fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ensemble-summary-bar { grid-template-columns: minmax(0, 1fr); }
+  .model-pagination { align-items: flex-start; flex-direction: column; }
+  .ensemble-modal__weight { grid-template-columns: minmax(0, 1fr) 96px; }
+  .ensemble-modal__weight .n-select { grid-column: 1 / -1; }
+  .ensemble-modal__weight .n-slider { grid-column: 1 / -1; }
   .stage-actions { justify-content: stretch; }
   .stage-actions .n-button { flex: 1 1 160px; }
   .preview-track { grid-template-columns: minmax(0, 1fr) auto; }

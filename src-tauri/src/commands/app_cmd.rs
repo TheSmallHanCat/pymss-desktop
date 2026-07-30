@@ -1984,9 +1984,26 @@ pub async fn list_audio_files(path: String) -> AppResult<Vec<String>> {
     Ok(scan_audio_paths(vec![path]).await?.files)
 }
 
+fn resolve_reveal_path(app: &AppHandle, path: &str) -> AppResult<PathBuf> {
+    let target = PathBuf::from(path);
+    if target.is_absolute() {
+        return Ok(target);
+    }
+
+    // Worker output paths may be entered as a relative directory. Keep this
+    // resolution identical to the worker's PYMSS_STUDIO_DEFAULT_OUTPUT_DIR
+    // handling so Explorer opens the directory where inference wrote files.
+    let output_root = storage::outputs_dir(app)?;
+    Ok(output_root
+        .parent()
+        .unwrap_or(output_root.as_path())
+        .join(target))
+}
+
 #[tauri::command]
-pub async fn reveal_path(path: String) -> AppResult<()> {
-    let target = Path::new(&path);
+pub async fn reveal_path(app: AppHandle, path: String) -> AppResult<()> {
+    let resolved = resolve_reveal_path(&app, &path)?;
+    let target = resolved.as_path();
     let reveal_target = if target.is_file() {
         target.parent().unwrap_or(target)
     } else {

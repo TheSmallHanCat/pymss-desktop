@@ -95,6 +95,39 @@ type PersistedTaskState = {
   tasks?: Partial<SeparationTask>[]
 }
 
+type PersistedSeparateModelState = {
+  batch_size?: number | null
+  overlap_size?: number | null
+  num_overlap?: number | null
+  chunk_size?: number | null
+  standardize?: boolean
+  normalize?: boolean
+  window_size?: number | null
+  aggression?: number | null
+  enable_post_process?: boolean
+  post_process_threshold?: number | null
+  high_end_process?: boolean
+  selectedStems?: string[]
+}
+
+type PersistedSeparateState = {
+  version?: number
+  runMode?: 'model' | 'workflow'
+  ensembleEnabled?: boolean
+  ensembleModels?: string[]
+  ensembleStem?: string
+  ensembleModelStems?: Record<string, string>
+  ensembleType?: string
+  ensembleWeights?: Record<string, number>
+  temporaryOutputDir?: string
+  outputLayout?: OutputLayout
+  outputNamingTemplate?: string
+  customStemOrder?: string[]
+  useTta?: boolean
+  debug?: boolean
+  inferenceParamsByModel?: Record<string, PersistedSeparateModelState>
+}
+
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus']
 const VIDEO_EXTENSIONS = ['mp4', 'mkv', 'mov', 'avi', 'webm', 'flv']
 const CURRENT_INFERENCE_PARAMS_VERSION = 3
@@ -132,6 +165,25 @@ function normalizeStatus(status: unknown): TaskStatus {
 
 function normalizeOutputLayout(value: unknown): OutputLayout {
   return value === 'flat' ? 'flat' : 'folders'
+}
+
+function normalizePersistedModelState(value: unknown): PersistedSeparateModelState {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const raw = value as Record<string, unknown>
+  const numberFields = ['batch_size', 'overlap_size', 'num_overlap', 'chunk_size', 'window_size', 'aggression', 'post_process_threshold']
+  const next: PersistedSeparateModelState = {}
+  numberFields.forEach((key) => {
+    const item = raw[key]
+    if (item === null) (next as Record<string, unknown>)[key] = null
+    else if (typeof item === 'number' && Number.isFinite(item)) (next as Record<string, unknown>)[key] = item
+  })
+  ;['standardize', 'normalize', 'enable_post_process', 'high_end_process'].forEach((key) => {
+    if (typeof raw[key] === 'boolean') (next as Record<string, unknown>)[key] = raw[key]
+  })
+  next.selectedStems = Array.isArray(raw.selectedStems)
+    ? raw.selectedStems.map(item => String(item || '').trim()).filter(Boolean)
+    : []
+  return next
 }
 
 function normalizeOutputNaming(value: unknown): OutputNamingConfig | undefined {
@@ -392,6 +444,17 @@ export const useTaskStore = defineStore('task', () => {
   const focusedResultTaskId = ref<string | null>(null)
   const focusedTaskId = ref<string | null>(null)
   const inputFiles = ref<string[]>([])
+  const separateRunMode = ref<'model' | 'workflow'>('model')
+  const ensembleEnabled = ref(false)
+  const ensembleModels = ref<string[]>([])
+  const ensembleStem = ref('')
+  const ensembleModelStems = ref<Record<string, string>>({})
+  const ensembleType = ref('avg_wave')
+  const ensembleWeights = ref<Record<string, number>>({})
+  const separateTemporaryOutputDir = ref('')
+  const separateOutputLayout = ref<OutputLayout>('flat')
+  const separateOutputNamingTemplate = ref('%index%_%filename%_%stem%')
+  const separateCustomStemOrder = ref<string[]>([])
   const useTta = ref(false)
   const debug = ref(false)
   const batch_size = ref<number | null>(1)
@@ -408,6 +471,7 @@ export const useTaskStore = defineStore('task', () => {
   const high_end_process = ref(false)
   const selectedModelDefaults = ref<ModelDefaultInferenceParams>({})
   const selectedModelType = ref<string | null>(null)
+  const persistedSeparateModelState = ref<Record<string, PersistedSeparateModelState>>({})
 
   const inputPath = computed(() => inputFiles.value[0] || '')
   const activeTask = computed(() => tasks.value.find((task) => task.id === activeTaskId.value) || null)
@@ -425,6 +489,67 @@ export const useTaskStore = defineStore('task', () => {
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null
   let progressPersistTimer: ReturnType<typeof setTimeout> | null = null
+  let separateStateSaveTimer: ReturnType<typeof setTimeout> | null = null
+
+  function separateStateSnapshot(): PersistedSeparateState {
+    return {
+      version: 1,
+      runMode: separateRunMode.value,
+      ensembleEnabled: ensembleEnabled.value,
+      ensembleModels: [...ensembleModels.value],
+      ensembleStem: ensembleStem.value,
+      ensembleModelStems: { ...ensembleModelStems.value },
+      ensembleType: ensembleType.value,
+      ensembleWeights: { ...ensembleWeights.value },
+      temporaryOutputDir: separateTemporaryOutputDir.value,
+      outputLayout: separateOutputLayout.value,
+      outputNamingTemplate: separateOutputNamingTemplate.value,
+      customStemOrder: [...separateCustomStemOrder.value],
+      useTta: useTta.value,
+      debug: debug.value,
+      inferenceParamsByModel: JSON.parse(JSON.stringify(persistedSeparateModelState.value)),
+    }
+  }
+
+  function persistSeparateState() {
+    if (!initialized.value) return
+    void saveAppStore('separate-state', separateStateSnapshot()).catch((error) => {
+      console.warn('Failed to persist separate settings', error)
+    })
+  }
+
+  function queueSeparateStatePersist() {
+    if (!initialized.value) return
+    if (separateStateSaveTimer) clearTimeout(separateStateSaveTimer)
+    separateStateSaveTimer = setTimeout(() => {
+      separateStateSaveTimer = null
+      persistSeparateState()
+    }, 120)
+  }
+
+  function saveCurrentModelState(modelName: string) {
+    const name = String(modelName || '').trim()
+    if (!name) return
+    persistedSeparateModelState.value[name] = {
+      batch_size: batch_size.value,
+      overlap_size: overlap_size.value,
+      num_overlap: num_overlap.value,
+      chunk_size: chunk_size.value,
+      standardize: standardize.value,
+      normalize: normalize.value,
+      window_size: window_size.value,
+      aggression: aggression.value,
+      enable_post_process: enable_post_process.value,
+      post_process_threshold: post_process_threshold.value,
+      high_end_process: high_end_process.value,
+      selectedStems: [...selectedStems.value],
+    }
+    queueSeparateStatePersist()
+  }
+
+  function getSavedModelState(modelName: string) {
+    return persistedSeparateModelState.value[String(modelName || '').trim()]
+  }
 
   function taskJobId(task: SeparationTask) {
     return task.jobId || task.batchId || task.id
@@ -504,11 +629,58 @@ export const useTaskStore = defineStore('task', () => {
 
   async function initialize() {
     if (initialized.value) return
-    const stored = await loadAppStore<PersistedTaskState>('task-history')
+    const [stored, separateStored] = await Promise.all([
+      loadAppStore<PersistedTaskState>('task-history'),
+      loadAppStore<PersistedSeparateState>('separate-state'),
+    ])
     tasks.value = (stored?.tasks || []).map((task) => normalizeTask(task))
     activeTaskId.value = tasks.value[0]?.id || null
+    separateRunMode.value = separateStored?.runMode === 'workflow' ? 'workflow' : 'model'
+    ensembleEnabled.value = separateStored?.ensembleEnabled === true
+    ensembleModels.value = Array.isArray(separateStored?.ensembleModels)
+      ? separateStored.ensembleModels.map(item => String(item || '').trim()).filter(Boolean)
+      : []
+    ensembleStem.value = String(separateStored?.ensembleStem || '')
+    ensembleModelStems.value = Object.fromEntries(
+      Object.entries(separateStored?.ensembleModelStems || {}).flatMap(([name, value]) => {
+        const stem = String(value || '').trim()
+        return stem ? [[name, stem]] : []
+      }),
+    )
+    ensembleType.value = String(separateStored?.ensembleType || 'avg_wave')
+    ensembleWeights.value = Object.fromEntries(
+      Object.entries(separateStored?.ensembleWeights || {}).flatMap(([name, value]) => {
+        const weight = Number(value)
+        return Number.isFinite(weight) && weight >= 0 ? [[name, weight]] : []
+      }),
+    )
+    separateTemporaryOutputDir.value = String(separateStored?.temporaryOutputDir || '')
+    separateOutputLayout.value = normalizeOutputLayout(separateStored?.outputLayout)
+    separateOutputNamingTemplate.value = String(separateStored?.outputNamingTemplate || '%index%_%filename%_%stem%')
+    separateCustomStemOrder.value = Array.isArray(separateStored?.customStemOrder)
+      ? separateStored.customStemOrder.map(item => String(item || '').trim()).filter(Boolean)
+      : []
+    useTta.value = separateStored?.useTta === true
+    debug.value = separateStored?.debug === true
+    persistedSeparateModelState.value = Object.fromEntries(
+      Object.entries(separateStored?.inferenceParamsByModel || {})
+        .map(([name, value]) => [name, normalizePersistedModelState(value)]),
+    )
     initialized.value = true
   }
+
+  watch(
+    [separateRunMode, ensembleEnabled, ensembleModels, ensembleStem, ensembleModelStems, ensembleType, ensembleWeights, separateTemporaryOutputDir,
+      separateOutputLayout, separateOutputNamingTemplate, separateCustomStemOrder, useTta, debug,
+      batch_size, overlap_size, num_overlap, chunk_size, standardize, normalize, selectedStems, window_size, aggression, enable_post_process,
+      post_process_threshold, high_end_process],
+    () => {
+      const modelStore = useModelStore()
+      if (modelStore.selectedModel) saveCurrentModelState(modelStore.selectedModel)
+      else queueSeparateStatePersist()
+    },
+    { deep: true },
+  )
 
   watch(() => useSettingsStore().maxConcurrentSeparations, () => {
     scheduleQueue()
@@ -518,21 +690,26 @@ export const useTaskStore = defineStore('task', () => {
     task.updatedAt = Date.now()
   }
 
-  function applySelectedModelDefaults(defaults: ModelDefaultInferenceParams | undefined, modelType?: string | null) {
+  function applySelectedModelDefaults(defaults: ModelDefaultInferenceParams | undefined, modelType?: string | null, saved?: PersistedSeparateModelState) {
     selectedModelDefaults.value = defaults ? { ...defaults } : {}
     selectedModelType.value = modelType ?? null
     const next = applyModelDefaultsToUi(defaults, modelType)
-    batch_size.value = next.batch_size ?? 1
-    overlap_size.value = next.overlap_size ?? 0
-    num_overlap.value = next.num_overlap ?? 0
-    chunk_size.value = next.chunk_size ?? 0
-    standardize.value = next.standardize ?? false
-    normalize.value = next.normalize ?? false
-    window_size.value = next.window_size ?? 0
-    aggression.value = next.aggression ?? 0
-    enable_post_process.value = next.enable_post_process ?? false
-    post_process_threshold.value = next.post_process_threshold ?? 0
-    high_end_process.value = next.high_end_process ?? false
+    const savedValue = <K extends keyof PersistedSeparateModelState>(key: K, fallback: PersistedSeparateModelState[K]) => (
+      saved && Object.prototype.hasOwnProperty.call(saved, key) ? saved[key] : fallback
+    )
+    const valueOrDefault = <T>(value: T | undefined, fallback: T): T => value === undefined ? fallback : value
+    batch_size.value = valueOrDefault(savedValue('batch_size', next.batch_size ?? 1), 1)
+    overlap_size.value = valueOrDefault(savedValue('overlap_size', next.overlap_size ?? 0), 0)
+    num_overlap.value = valueOrDefault(savedValue('num_overlap', next.num_overlap ?? 0), 0)
+    chunk_size.value = valueOrDefault(savedValue('chunk_size', next.chunk_size ?? 0), 0)
+    standardize.value = valueOrDefault(savedValue('standardize', next.standardize ?? false), false)
+    normalize.value = valueOrDefault(savedValue('normalize', next.normalize ?? false), false)
+    window_size.value = valueOrDefault(savedValue('window_size', next.window_size ?? 0), 0)
+    aggression.value = valueOrDefault(savedValue('aggression', next.aggression ?? 0), 0)
+    enable_post_process.value = valueOrDefault(savedValue('enable_post_process', next.enable_post_process ?? false), false)
+    post_process_threshold.value = valueOrDefault(savedValue('post_process_threshold', next.post_process_threshold ?? 0), 0)
+    high_end_process.value = valueOrDefault(savedValue('high_end_process', next.high_end_process ?? false), false)
+    selectedStems.value = saved?.selectedStems ? [...saved.selectedStems] : []
   }
 
   function getCurrentUiInferenceDefaults() {
@@ -1028,7 +1205,10 @@ export const useTaskStore = defineStore('task', () => {
       task.progressTotal = undefined
       task.progressDetail = undefined
       task.files = event.payload?.files || []
-      if (event.payload?.outputDir) task.output = event.payload.outputDir
+      if (event.payload?.outputDir) {
+        task.output = event.payload.outputDir
+        if (task.runConfig?.outputLayout === 'flat') task.jobOutput = event.payload.outputDir
+      }
       task.outputs = event.payload?.outputs?.length
         ? event.payload.outputs
         : outputsFromFiles(task.output, task.files, event.payload?.outputFormat || 'wav', task.outputPrefix)
@@ -1469,6 +1649,17 @@ export const useTaskStore = defineStore('task', () => {
     focusedTaskId,
     inputFiles,
     inputPath,
+    separateRunMode,
+    ensembleEnabled,
+    ensembleModels,
+    ensembleStem,
+    ensembleModelStems,
+    ensembleType,
+    ensembleWeights,
+    separateTemporaryOutputDir,
+    separateOutputLayout,
+    separateOutputNamingTemplate,
+    separateCustomStemOrder,
     useTta,
     debug,
     batch_size,
@@ -1515,6 +1706,8 @@ export const useTaskStore = defineStore('task', () => {
     retryTask,
     scheduleQueue,
     applySelectedModelDefaults,
+    saveCurrentModelState,
+    getSavedModelState,
     normalizeInferenceInputsBeforeSubmit,
   }
 })

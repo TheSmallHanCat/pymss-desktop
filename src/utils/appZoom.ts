@@ -12,5 +12,6 @@ export function normalizeScaleFactor(value: unknown, fallback = DEFAULT_SCALE_FA
 }
 
 export async function applyScaleFactor(value: number) {
+  if (typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)) return
   await getCurrentWebview().setZoom(normalizeScaleFactor(value))
 }

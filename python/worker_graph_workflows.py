@@ -401,6 +401,9 @@ def _execute_separate_node(
         raise ValueError(f"Workflow node {node_id} has no stems configured.")
 
     inference_params = dict(workflow_defaults.get("inference_params") or {})
+    node_inference_params = node_data.get("inferenceParams")
+    if isinstance(node_inference_params, dict):
+        inference_params.update(node_inference_params)
     overlap_size = node_data.get("overlapSize")
     if isinstance(overlap_size, (int, float)) and int(overlap_size) > 0:
         inference_params["overlap_size"] = int(overlap_size)
@@ -521,7 +524,8 @@ def _save_targets_for_graph(
     }
     for edge in edges:
         target = edge.get("target") if isinstance(edge.get("target"), dict) else {}
-        if str(target.get("nodeId") or "").strip() not in save_node_ids:
+        save_node_id = str(target.get("nodeId") or "").strip()
+        if save_node_id not in save_node_ids:
             continue
         source_ref = _source_ref_for_edge(nodes, edge)
         if not source_ref:
@@ -529,7 +533,11 @@ def _save_targets_for_graph(
         chain_label = _resolve_chain_label(source_ref, nodes, edges)
         if not chain_label:
             continue
-        output_label = _safe_filename_part(chain_label)
+        save_node = nodes.get(save_node_id) or {}
+        save_node_data = _node_data(save_node)
+        save_outputs = save_node_data.get("outputs") if isinstance(save_node_data.get("outputs"), dict) else {}
+        configured_label = str(save_outputs.get(source_ref) or "").strip()
+        output_label = _safe_filename_part(configured_label or chain_label)
         # Guard against duplicate labels caused by duplicate save edges.
         if output_label.lower() in seen_labels:
             continue

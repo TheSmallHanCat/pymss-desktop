@@ -11,6 +11,7 @@ export type EditorSource = {
   channels: number
   peaksPath?: string | null
   peaks?: number[]
+  channelPeaks?: number[][]
   originKind?: 'task-result' | 'external' | 'legacy' | string
   originRoot?: string | null
   relativePath?: string | null

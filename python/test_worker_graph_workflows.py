@@ -201,6 +201,30 @@ class ExecutionOrderTests(unittest.TestCase):
         self.assertIn("orphan", order)
 
 
+class SaveTargetTests(unittest.TestCase):
+    def test_save_node_output_name_overrides_utility_label(self):
+        nodes = {
+            "input": node("input", "input_audio"),
+            "save": node("save", "save_outputs", outputs={"utility:join": "merged_vocals"}),
+            "a": node("a", "separate", model="a.ckpt", stems=["vocals"]),
+            "b": node("b", "separate", model="b.ckpt", stems=["vocals"]),
+            "join": node("join", "audio_ensemble", inputs=["", ""], inputCount=2),
+        }
+        edges = [
+            edge("input", "audio", "a", "input"),
+            edge("input", "audio", "b", "input"),
+            edge("a", "stem:vocals", "join", "input:0"),
+            edge("b", "stem:vocals", "join", "input:1"),
+            edge("join", "audio", "save", "save:utility:join"),
+        ]
+
+        targets = gw._save_targets_for_graph(nodes, edges)
+
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0].source_ref, "utility:join")
+        self.assertEqual(targets[0].output_label, "merged_vocals")
+
+
 class PortRuleTests(unittest.TestCase):
     """Port availability is what both the editor and the runtime validate against."""
 

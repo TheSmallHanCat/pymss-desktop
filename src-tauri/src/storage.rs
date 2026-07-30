@@ -163,6 +163,7 @@ fn store_file_name(name: &str) -> AppResult<&'static str> {
         "model-state" => Ok("model-cache.json"),
         "editor-ui" => Ok("editor-ui.json"),
         "workflow-state" => Ok("workflows.json"),
+        "separate-state" => Ok("separate.json"),
         _ => Err(AppError::Worker(format!("unknown app store: {name}"))),
     }
 }
@@ -197,11 +198,16 @@ fn write_json_file(path: &Path, data: &Value) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_data_root;
+    use super::{resolve_data_root, store_file_name};
     use std::path::PathBuf;
 
     fn path(name: &str) -> PathBuf {
         PathBuf::from(name)
+    }
+
+    #[test]
+    fn separate_state_has_a_store_file() {
+        assert_eq!(store_file_name("separate-state").unwrap(), "separate.json");
     }
 
     #[test]

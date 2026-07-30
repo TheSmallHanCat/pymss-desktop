@@ -50,14 +50,18 @@ def _audio_metadata(path: Path) -> dict[str, Any]:
             raise
 
 
-def _load_audio_mono(path: Path, sample_rate: int = 8000) -> tuple[Any, int]:
+def _load_audio_channels(path: Path, sample_rate: int = 8000) -> tuple[Any, int]:
     import librosa  # type: ignore
+    import numpy as np  # type: ignore
 
-    audio, sr = librosa.load(str(path), sr=sample_rate, mono=True)
+    audio, sr = librosa.load(str(path), sr=sample_rate, mono=False)
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim == 1:
+        audio = audio.reshape(1, -1)
     return audio, int(sr)
 
 
-def _waveform_peaks_soundfile(path: Path, resolution: int) -> tuple[list[float], dict[str, Any]]:
+def _waveform_peaks_soundfile(path: Path, resolution: int) -> tuple[list[float], list[list[float]], dict[str, Any]]:
     import numpy as np  # type: ignore
     import soundfile as sf  # type: ignore
 
@@ -68,13 +72,18 @@ def _waveform_peaks_soundfile(path: Path, resolution: int) -> tuple[list[float],
         duration = frames / sample_rate if sample_rate else 0.0
         bucket = max(1, math.ceil(max(1, frames) / max(1, resolution)))
         peaks: list[float] = []
+        channel_peaks: list[list[float]] = [[] for _ in range(max(1, channels))]
         while True:
             block = audio_file.read(bucket, dtype="float32", always_2d=True)
             if block.size == 0:
                 break
             peak = float(np.max(np.abs(block))) if block.size else 0.0
             peaks.append(round(peak, 5))
-    return peaks, {
+            per_channel = np.max(np.abs(block), axis=0) if block.size else []
+            for index in range(len(channel_peaks)):
+                value = float(per_channel[index]) if index < len(per_channel) else 0.0
+                channel_peaks[index].append(round(value, 5))
+    return peaks, channel_peaks, {
         "path": str(path),
         "name": path.name,
         "duration": max(0.0, duration),
@@ -155,7 +164,7 @@ def cmd_waveform_peaks(payload: dict[str, Any]) -> int:
     cache_dir = Path(payload.get("cacheDir") or path.parent / ".pymss-peaks")
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_key = hashlib.sha1(str(path.resolve()).encode("utf-8", errors="replace")).hexdigest()[:16]
-    cache_name = f"{path.stem}_{cache_key}_{resolution}.json"
+    cache_name = f"{path.stem}_{cache_key}_{resolution}_v2.json"
     peaks_path = cache_dir / cache_name
     try:
         if peaks_path.is_file() and peaks_path.stat().st_mtime >= path.stat().st_mtime:
@@ -166,31 +175,39 @@ def cmd_waveform_peaks(payload: dict[str, Any]) -> int:
         import numpy as np  # type: ignore
 
         try:
-            peaks, metadata = _waveform_peaks_soundfile(path, resolution)
+            peaks, channel_peaks, metadata = _waveform_peaks_soundfile(path, resolution)
             sr = int(metadata.get("sampleRate") or 0)
         except Exception:
-            audio, sr = _load_audio_mono(path)
+            audio, sr = _load_audio_channels(path)
             total = int(audio.shape[-1])
 
-            def build_peaks(target_resolution: int) -> list[float]:
+            def build_channel_peaks(target_resolution: int) -> list[list[float]]:
                 if total <= 0 or target_resolution <= 0:
                     return []
                 bucket = max(1, math.ceil(total / target_resolution))
                 padded = int(math.ceil(total / bucket) * bucket)
                 work = audio
                 if padded > total:
-                    work = np.pad(audio, (0, padded - total))
-                shaped = work.reshape(-1, bucket)
-                maxima = np.max(np.abs(shaped), axis=1)
-                return [round(float(value), 5) for value in maxima]
+                    work = np.pad(audio, ((0, 0), (0, padded - total)))
+                shaped = work.reshape(work.shape[0], -1, bucket)
+                maxima = np.max(np.abs(shaped), axis=2)
+                return [
+                    [round(float(value), 5) for value in channel]
+                    for channel in maxima
+                ]
 
-            peaks = build_peaks(resolution)
+            channel_peaks = build_channel_peaks(resolution)
+            peaks = [
+                round(float(value), 5)
+                for value in (np.max(np.asarray(channel_peaks, dtype=np.float32), axis=0) if channel_peaks else [])
+            ]
             metadata = _audio_metadata(path)
 
         data = {
             "path": str(path),
             "peaksPath": str(peaks_path),
             "peaks": peaks,
+            "channelPeaks": channel_peaks,
             "resolution": resolution,
             "duration": metadata.get("duration", 0),
             "sampleRate": metadata.get("sampleRate") or sr,
@@ -387,4 +404,3 @@ def cmd_export_editor_mix(payload: dict[str, Any]) -> int:
         return 0
     except Exception as exc:
         return emit_error("EDITOR_EXPORT_FAILED", str(exc), traceback.format_exc())
-

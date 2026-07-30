@@ -205,10 +205,6 @@ function payload(): SimpleWorkflowSavePayload {
         <span>{{ t('workflows.defaultFormat') }}</span>
         <n-select v-model:value="defaultFormat" :options="formatOptions" />
       </label>
-      <label class="simple-creator__normalize">
-        <span>{{ t('workflows.normalize') }}</span>
-        <n-switch v-model:value="defaultNormalize" />
-      </label>
       <label class="simple-creator__description">
         <span>{{ t('workflows.description') }}</span>
         <n-input
@@ -352,12 +348,11 @@ function payload(): SimpleWorkflowSavePayload {
 
 .simple-creator__defaults {
   display: grid;
-  grid-template-columns: minmax(220px, 1.4fr) minmax(150px, 0.8fr) minmax(150px, 0.8fr) auto;
+  grid-template-columns: minmax(220px, 1.4fr) minmax(150px, 0.8fr) minmax(150px, 0.8fr);
   gap: 10px 12px;
 }
 
 .simple-creator label { min-width: 0; display: grid; gap: 5px; }
-.simple-creator__normalize { align-content: end; padding-bottom: 6px; }
 .simple-creator__description { grid-column: 1 / -1; }
 .simple-creator__steps-head > div { display: grid; gap: 4px; }
 

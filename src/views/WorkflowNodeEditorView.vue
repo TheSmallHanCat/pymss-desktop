@@ -378,10 +378,6 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
           <span>{{ t('workflows.defaultFormat') }}</span>
           <n-select v-model:value="defaultFormat" size="small" :options="formatOptions" />
         </label>
-        <label class="config-field config-field--switch">
-          <span>{{ t('workflows.normalize') }}</span>
-          <n-switch v-model:value="defaultNormalize" size="small" />
-        </label>
       </div>
     </section>
 
@@ -549,7 +545,7 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
 
 .config-grid {
   display: grid;
-  grid-template-columns: minmax(132px, 156px) minmax(132px, 156px) minmax(92px, auto);
+  grid-template-columns: minmax(132px, 156px) minmax(132px, 156px);
   gap: 8px;
   align-items: end;
 }
@@ -565,9 +561,6 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
   font-weight: 700;
 }
 
-.config-field--switch {
-  justify-items: start;
-}
 
 @media (max-width: 1100px) {
   .workflow-node-editor-topbar {

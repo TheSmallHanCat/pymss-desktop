@@ -124,6 +124,14 @@ function sourceMissing(track: EditorTrack) {
   return Boolean(sourceFor(track)?.missing)
 }
 
+function trackChannels(track: EditorTrack) {
+  return sourceFor(track)?.channels || 0
+}
+
+function trackWaveHeight(track: EditorTrack) {
+  return trackChannels(track) >= 2 ? 64 : 42
+}
+
 function trackWaveWidth(track: EditorTrack) {
   const source = sourceFor(track)
   return Math.max(1, Math.ceil((source?.duration || 0) * props.pixelsPerSecond))
@@ -160,6 +168,7 @@ function rowClass(track: EditorTrack) {
     'track-row--selected': track.id === props.selectedTrackId,
     'track-row--dimmed': track.muted || (hasSolo.value && !track.solo),
     'track-row--offline': sourceMissing(track),
+    'track-row--stereo': trackChannels(track) >= 2,
   }
 }
 
@@ -354,10 +363,12 @@ defineExpose({
                 <EditorWaveform
                   v-if="sourceFor(track) && !sourceMissing(track)"
                   :peaks="sourceFor(track)?.peaks || []"
+                  :channel-peaks="sourceFor(track)?.channelPeaks || []"
+                  :channels="trackChannels(track)"
                   :asset-duration="sourceFor(track)?.duration || 0"
                   :duration="sourceFor(track)?.duration || 0"
                   :width="trackWaveWidth(track)"
-                  :height="42"
+                  :height="trackWaveHeight(track)"
                   :fade-in="track.fadeIn"
                   :fade-out="track.fadeOut"
                   :color="track.color || '#7aa2ff'"
@@ -518,6 +529,10 @@ defineExpose({
   min-height: 54px;
   border-bottom: 1px solid color-mix(in srgb, var(--outline) 64%, transparent);
   background: transparent;
+}
+
+.track-row--stereo {
+  min-height: 76px;
 }
 
 .tracks {

@@ -71,9 +71,15 @@ type WaveformPeaks = {
   path: string
   peaksPath: string
   peaks: number[]
+  channelPeaks?: number[][]
   duration: number
   sampleRate: number
   channels: number
+}
+
+type LoadedWaveformPeaks = {
+  peaks: number[]
+  channelPeaks: number[][]
 }
 
 type ExportResult = {
@@ -195,6 +201,11 @@ function normalizeSource(source: Partial<EditorSource>): EditorSource {
     channels: Number(source.channels || 0),
     peaksPath: source.peaksPath ? String(source.peaksPath) : null,
     peaks: Array.isArray(source.peaks) ? source.peaks.map((value) => Number(value || 0)) : [],
+    channelPeaks: Array.isArray(source.channelPeaks)
+      ? source.channelPeaks
+          .filter((channel) => Array.isArray(channel))
+          .map((channel) => channel.map((value) => Number(value || 0)))
+      : [],
     originKind: source.originKind ? String(source.originKind) : undefined,
     originRoot: source.originRoot ? String(source.originRoot) : null,
     relativePath: source.relativePath ? String(source.relativePath) : null,
@@ -226,13 +237,19 @@ async function loadPeaksFromCache(path?: string | null, sourcePath?: string | nu
   try {
     const response = await fetch(resolveAssetUrl(path))
     if (!response.ok) return null
-    const data = await response.json() as { path?: unknown, peaks?: unknown }
+    const data = await response.json() as { path?: unknown, peaks?: unknown, channelPeaks?: unknown }
     if (sourcePath && typeof data.path === 'string' && normalizePathKey(data.path) !== normalizePathKey(sourcePath)) {
       return null
     }
-    return Array.isArray(data.peaks)
-      ? data.peaks.map((value) => Number(value || 0))
-      : null
+    if (!Array.isArray(data.peaks)) return null
+    return {
+      peaks: data.peaks.map((value) => Number(value || 0)),
+      channelPeaks: Array.isArray(data.channelPeaks)
+        ? data.channelPeaks
+            .filter((channel) => Array.isArray(channel))
+            .map((channel) => channel.map((value) => Number(value || 0)))
+        : [],
+    }
   } catch {
     return null
   }
@@ -286,11 +303,20 @@ function toPersistedSession(session: EditorSession) {
     sources: session.sources.map((source) => ({
       ...source,
       peaks: [],
+      channelPeaks: [],
     })),
   }
 }
 
 const hasPeaks = (p?: number[]) => p !== undefined && p.length > 0 && !(p.length === 1 && p[0] === -1)
+
+function hasRenderablePeaks(source: EditorSource) {
+  return hasPeaks(source.peaks) && (source.channels < 2 || (source.channelPeaks?.length || 0) >= 2)
+}
+
+function cachedPeaksMatchSource(source: EditorSource, peaks: LoadedWaveformPeaks) {
+  return source.channels < 2 || peaks.channelPeaks.length >= 2
+}
 
 function sourceToExportAsset(source: EditorSource) {
   return {
@@ -676,11 +702,12 @@ export const useEditorStore = defineStore('editor', () => {
   async function ensurePeaks(sourceId: string) {
     if (!session.value) return null
     const source = session.value.sources.find((item) => item.id === sourceId)
-    if (!source || source.missing || hasPeaks(source.peaks)) return source || null
+    if (!source || source.missing || hasRenderablePeaks(source)) return source || null
 
     const cachedPeaks = await loadPeaksFromCache(source.peaksPath, source.path)
-    if (cachedPeaks?.length) {
-      source.peaks = cachedPeaks
+    if (cachedPeaks?.peaks.length && cachedPeaksMatchSource(source, cachedPeaks)) {
+      source.peaks = cachedPeaks.peaks
+      source.channelPeaks = cachedPeaks.channelPeaks
       return source
     }
 
@@ -700,6 +727,7 @@ export const useEditorStore = defineStore('editor', () => {
         const current = session.value.sources.find((item) => item.id === sourceId)
         if (!current) return source
         current.peaks = result.peaks?.length ? result.peaks : [-1]
+        current.channelPeaks = result.channelPeaks || []
         current.peaksPath = result.peaksPath
         current.duration = Number(result.duration || current.duration)
         current.sampleRate = Number(result.sampleRate || current.sampleRate)
@@ -826,10 +854,11 @@ export const useEditorStore = defineStore('editor', () => {
     if (!session.value || !projectId || session.value.id !== projectId) return
     const sources = [...session.value.sources]
     await Promise.allSettled(sources.map(async (source) => {
-      if (hasPeaks(source.peaks)) return
+      if (hasRenderablePeaks(source)) return
       const cachedPeaks = await loadPeaksFromCache(source.peaksPath, source.path)
-      if (cachedPeaks?.length && session.value?.id === projectId) {
-        source.peaks = cachedPeaks
+      if (cachedPeaks?.peaks.length && cachedPeaksMatchSource(source, cachedPeaks) && session.value?.id === projectId) {
+        source.peaks = cachedPeaks.peaks
+        source.channelPeaks = cachedPeaks.channelPeaks
       }
     }))
   }

@@ -247,9 +247,6 @@ function updateSelectedDefaultFormat(value: string | number | null) {
   void updateSelectedWorkflowDefaults({ defaultFormat: String(value || 'wav') })
 }
 
-function updateSelectedDefaultNormalize(value: boolean) {
-  void updateSelectedWorkflowDefaults({ defaultNormalize: value })
-}
 
 // ---- Selection + quick meta edit ----
 function editWorkflow(item: WorkflowEntry) {
@@ -817,14 +814,6 @@ watch(workflows, (items) => {
                     @update:value="updateSelectedDefaultFormat"
                   />
                 </div>
-                <div class="wf-param">
-                  <span>{{ t('workflows.normalize') }}</span>
-                  <n-switch
-                    :value="selectedDraft.defaultNormalize"
-                    :disabled="isNodeEditorOpen"
-                    @update:value="updateSelectedDefaultNormalize"
-                  />
-                </div>
               </div>
             </section>
 
@@ -1378,7 +1367,7 @@ watch(workflows, (items) => {
 
 .wf-param-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 

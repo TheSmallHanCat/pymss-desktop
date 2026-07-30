@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { createFreshRunner } from '@/utils/async'
+import { isTauriRuntime } from '@/utils/appStore'
 
 export type EnvInfo = {
   pythonVersion?: string
@@ -211,6 +212,13 @@ export const useAppStore = defineStore('app', () => {
   async function checkEnv() {
     envLoading.value = true
     lastError.value = null
+    if (!isTauriRuntime()) {
+      const result: EnvInfo = { platform: navigator.platform }
+      envInfo.value = result
+      envCheckedOnce.value = true
+      envLoading.value = false
+      return result
+    }
     try {
       const result = await invoke<EnvInfo>('get_env_info')
       envInfo.value = result
@@ -226,6 +234,10 @@ export const useAppStore = defineStore('app', () => {
 
   async function checkEnvInBackground() {
     if (envLoading.value) return
+    if (!isTauriRuntime()) {
+      envCheckedOnce.value = true
+      return
+    }
     envLoading.value = true
     lastError.value = null
     try {
@@ -242,6 +254,11 @@ export const useAppStore = defineStore('app', () => {
   // Callers refresh right after an install or a delete, so a caller must never be handed the
   // result of a walk that started before the change it is refreshing for.
   const measureRuntimeEnvSizes = createFreshRunner(async () => {
+    if (!isTauriRuntime()) {
+      runtimeEnvSizes.value = {}
+      runtimeIncompleteBackends.value = []
+      return runtimeEnvSizes.value
+    }
     const result = await invoke<{
       sizes?: Record<string, number>
       incompleteBackends?: string[]
@@ -269,6 +286,10 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function checkRuntimeInfo(backend?: RuntimeBackend) {
+    if (!isTauriRuntime()) {
+      runtimeInfo.value = { ready: false, backend: backend || null, platform: navigator.platform }
+      return runtimeInfo.value
+    }
     runtimeInfo.value = await invoke<RuntimeInfo>('runtime_info', { payload: backend ? { backend } : {} })
     return runtimeInfo.value
   }

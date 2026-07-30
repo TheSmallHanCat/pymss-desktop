@@ -108,7 +108,7 @@ function resultCardId(item: Pick<ResultGroup, 'id'>) {
 }
 
 function openResultDir(group: ResultGroup) {
-  task.revealPath(group.output)
+  task.revealPath(group.primary.outputs[0]?.path || group.output)
 }
 
 async function openInEditor(item: SeparationTask) {
@@ -572,7 +572,7 @@ function formatTime(value: number) {
                     <template #icon><n-icon :component="ColorWandOutline" /></template>
                     {{ t('results.openInEditor') }}
                   </n-button>
-                  <n-button size="tiny" tertiary @click.stop="task.revealPath(result.output)">
+                  <n-button size="tiny" tertiary @click.stop="task.revealPath(result.outputs[0]?.path || result.output)">
                     <template #icon><n-icon :component="FolderOpenOutline" /></template>
                     {{ t('results.openDirectory') }}
                   </n-button>
