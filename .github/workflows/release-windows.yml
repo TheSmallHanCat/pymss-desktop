@@ -105,6 +105,7 @@ jobs:
           Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
           Copy-Item "runtime-envs" "$stage/runtime-envs" -Recurse
           Copy-Item "release/bin" "$stage/bin" -Recurse
+          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
           @"
           Pymss Studio $version Windows x64 CUDA
           Author: TheSmallHanCat
@@ -120,6 +121,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Staged CUDA env_info failed with exit code $LASTEXITCODE" }
           & "$stage\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
           if ($LASTEXITCODE -ne 0) { throw "Staged CUDA list_models failed with exit code $LASTEXITCODE" }
+          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
+          $workspacePattern = [regex]::Escape((Resolve-Path ".").Path)
+          $leakedConfig = Get-ChildItem "$stage/runtime-envs" -Recurse -Filter pyvenv.cfg | Select-String -Pattern $workspacePattern -List
+          if ($leakedConfig) { throw "CI workspace path leaked into staged CUDA pyvenv.cfg" }
 
       - name: Upload CUDA stage artifact
         uses: actions/upload-artifact@v4
@@ -520,6 +525,7 @@ jobs:
           Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
           Copy-Item "runtime-envs" "$stage/runtime-envs" -Recurse
           Copy-Item "release/bin" "$stage/bin" -Recurse
+          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
           @"
           Pymss Studio ${{ steps.meta.outputs.version }} Windows x64 ROCm
           This package includes a base Python runtime and a pre-installed ROCm environment.
@@ -533,6 +539,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Staged ROCm env_info failed" }
           & "$stage\runtime-envs\rocm\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
           if ($LASTEXITCODE -ne 0) { throw "Staged ROCm list_models failed" }
+          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
+          $workspacePattern = [regex]::Escape((Resolve-Path ".").Path)
+          $leakedConfig = Get-ChildItem "$stage/runtime-envs" -Recurse -Filter pyvenv.cfg | Select-String -Pattern $workspacePattern -List
+          if ($leakedConfig) { throw "CI workspace path leaked into staged ROCm pyvenv.cfg" }
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.meta.outputs.stage_artifact }}

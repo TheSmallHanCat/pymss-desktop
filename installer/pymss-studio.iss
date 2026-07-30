@@ -95,6 +95,41 @@ begin
   RemoveIfExists(ExpandConstant('{app}') + '\python-runtime\libs');
 end;
 
+procedure RepairVenvConfig(Backend: string);
+var
+  EnvDir: string;
+  ConfigPath: string;
+  PythonRuntimeDir: string;
+  PythonExe: string;
+  Content: string;
+begin
+  EnvDir := ExpandConstant('{app}') + '\runtime-envs\' + Backend;
+  ConfigPath := EnvDir + '\pyvenv.cfg';
+  PythonRuntimeDir := ExpandConstant('{app}') + '\python-runtime';
+  PythonExe := PythonRuntimeDir + '\python.exe';
+
+  if (not FileExists(ConfigPath)) or (not FileExists(PythonExe)) then
+  begin
+    Exit;
+  end;
+
+  Content :=
+    'home = ' + PythonRuntimeDir + #13#10 +
+    'include-system-site-packages = false' + #13#10 +
+    'executable = ' + PythonExe + #13#10 +
+    'command = ' + PythonExe + ' -m venv ' + EnvDir + #13#10;
+  if not SaveStringToFile(ConfigPath, Content, False) then
+  begin
+    RaiseException('Failed to write Python venv config: ' + ConfigPath);
+  end;
+end;
+
+procedure RepairBundledRuntimeEnvs();
+begin
+  RepairVenvConfig('cuda');
+  RepairVenvConfig('rocm');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then
@@ -104,6 +139,7 @@ begin
 
   if CurStep = ssPostInstall then
   begin
+    RepairBundledRuntimeEnvs();
     CleanupInstallTree();
   end;
 end;

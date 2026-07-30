@@ -153,9 +153,69 @@ fn try_resolve_active_runtime(file: &PathBuf) -> Option<String> {
     // Relative path – resolve against the directory containing the file
     let parent = file.parent()?;
     let resolved = parent.join(&python);
-    resolved
-        .is_file()
-        .then(|| resolved.to_string_lossy().to_string())
+    resolved.is_file().then(|| resolved.to_string_lossy().to_string())
+}
+
+fn materialize_bundled_runtime_env_templates(app: &AppHandle) -> AppResult<()> {
+    if let Ok(dirs) = bundled_runtime_envs_dirs(app) {
+        for envs_dir in dirs {
+            let Ok(entries) = std::fs::read_dir(envs_dir) else {
+                continue;
+            };
+            for entry in entries {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                let env_dir = entry.path();
+                if env_dir.is_dir() {
+                    materialize_windows_venv_template(&env_dir)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn materialize_windows_venv_template(env_dir: &PathBuf) -> AppResult<()> {
+    let cfg = env_dir.join("pyvenv.cfg");
+    if !cfg.is_file() {
+        return Ok(());
+    }
+    let Some(runtime_envs_dir) = env_dir.parent() else {
+        return Ok(());
+    };
+    let Some(package_dir) = runtime_envs_dir.parent() else {
+        return Ok(());
+    };
+    let runtime_dir = package_dir.join("python-runtime");
+    let runtime_python = runtime_dir.join("python.exe");
+    if !runtime_python.is_file() {
+        return Ok(());
+    }
+
+    let Ok(existing) = std::fs::read_to_string(&cfg) else {
+        return Ok(());
+    };
+    if !existing.contains("__PYMSS_STUDIO_PYTHON_RUNTIME__")
+        && !existing.contains("__PYMSS_STUDIO_RUNTIME_ENV__")
+    {
+        return Ok(());
+    }
+    let desired_home = format!("home = {}", runtime_dir.to_string_lossy());
+    let desired_executable = format!("executable = {}", runtime_python.to_string_lossy());
+    let content = format!(
+        "{desired_home}\r\ninclude-system-site-packages = false\r\n{desired_executable}\r\ncommand = {} -m venv {}\r\n",
+        runtime_python.to_string_lossy(),
+        env_dir.to_string_lossy()
+    );
+    std::fs::write(&cfg, content)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn materialize_windows_venv_template(_env_dir: &PathBuf) -> AppResult<()> {
+    Ok(())
 }
 
 fn active_runtime_python_path(app: &AppHandle) -> AppResult<Option<String>> {
@@ -261,6 +321,7 @@ fn build_worker_command(
 ) -> AppResult<Command> {
     let worker = worker_path(app)?;
     let bootstrap_python = bootstrap_python_path(app)?;
+    materialize_bundled_runtime_env_templates(app)?;
     // Runtime management must never run inside the environment it is managing: the bootstrap
     // interpreter is the only one guaranteed to exist while an environment is being built,
     // switched, or deleted.
@@ -786,4 +847,49 @@ pub fn spawn_worker_background(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{materialize_windows_venv_template, try_resolve_active_runtime};
+    use std::path::PathBuf;
+
+    #[cfg(windows)]
+    #[test]
+    fn packaged_venv_template_materializes_to_current_package_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "pymss-worker-template-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let env_dir = root.join("runtime-envs").join("cuda");
+        let scripts_dir = env_dir.join("Scripts");
+        let runtime_dir = root.join("python-runtime");
+        std::fs::create_dir_all(&scripts_dir).unwrap();
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        std::fs::write(scripts_dir.join("python.exe"), "stub").unwrap();
+        std::fs::write(runtime_dir.join("python.exe"), "stub").unwrap();
+        std::fs::write(
+            env_dir.join("pyvenv.cfg"),
+            "home = __PYMSS_STUDIO_PYTHON_RUNTIME__\r\ninclude-system-site-packages = false\r\nexecutable = __PYMSS_STUDIO_PYTHON_RUNTIME__\\python.exe\r\ncommand = __PYMSS_STUDIO_PYTHON_RUNTIME__\\python.exe -m venv __PYMSS_STUDIO_RUNTIME_ENV__\r\n",
+        )
+        .unwrap();
+        let active_file = root.join("runtime-envs").join("active-runtime.json");
+        std::fs::write(
+            &active_file,
+            r#"{"pythonPath":"cuda\\Scripts\\python.exe"}"#,
+        )
+        .unwrap();
+
+        materialize_windows_venv_template(&env_dir).unwrap();
+        let resolved = try_resolve_active_runtime(&active_file).unwrap();
+        let cfg = std::fs::read_to_string(env_dir.join("pyvenv.cfg")).unwrap();
+        assert_eq!(PathBuf::from(resolved), scripts_dir.join("python.exe"));
+        assert!(cfg.contains(&format!("home = {}", runtime_dir.to_string_lossy())));
+        assert!(!cfg.contains("__PYMSS_STUDIO"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

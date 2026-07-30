@@ -6,7 +6,10 @@ param(
     [string]$TorchVersion = "2.7.1",
     [string]$TorchIndexUrl = "https://download.pytorch.org/whl/cu128",
     [switch]$Minimal,
-    [string]$PreinstallBackend = ""
+    [string]$PreinstallBackend = "",
+    [string]$RuntimeEnvsDir = "runtime-envs",
+    [switch]$RewriteRuntimeEnvConfigs,
+    [switch]$TemplateRuntimeEnvConfigs
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +28,49 @@ function Invoke-NativeChecked {
     if ($LASTEXITCODE -ne 0) {
         throw "$FilePath failed with exit code $LASTEXITCODE"
     }
+}
+
+function Rewrite-WindowsRuntimeEnvConfigs {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$EnvsDir,
+        [Parameter(Mandatory = $true)]
+        [string]$PythonRuntimeDir,
+        [switch]$Template
+    )
+
+    $resolvedEnvsDir = Resolve-Path -LiteralPath $EnvsDir
+    $resolvedRuntimeDir = if ($Template) { "__PYMSS_STUDIO_PYTHON_RUNTIME__" } else { (Resolve-Path -LiteralPath $PythonRuntimeDir).Path }
+    $pythonExe = Join-Path $resolvedRuntimeDir "python.exe"
+    if (!$Template -and !(Test-Path -LiteralPath $pythonExe)) {
+        throw "python.exe not found at $pythonExe"
+    }
+
+    Get-ChildItem -LiteralPath $resolvedEnvsDir -Directory | ForEach-Object {
+        $cfg = Join-Path $_.FullName "pyvenv.cfg"
+        if (Test-Path -LiteralPath $cfg) {
+            $envDir = if ($Template) { "__PYMSS_STUDIO_RUNTIME_ENV__" } else { $_.FullName }
+            $content = @(
+                "home = $resolvedRuntimeDir"
+                "include-system-site-packages = false"
+                "executable = $pythonExe"
+                "command = $pythonExe -m venv $envDir"
+                ""
+            ) -join "`r`n"
+
+            [System.IO.File]::WriteAllText($cfg, $content, [System.Text.UTF8Encoding]::new($false))
+            if ($Template) {
+                Write-Host "Templated $cfg"
+            } else {
+                Write-Host "Rewrote $cfg"
+            }
+        }
+    }
+}
+
+if ($RewriteRuntimeEnvConfigs -or $TemplateRuntimeEnvConfigs) {
+    Rewrite-WindowsRuntimeEnvConfigs -EnvsDir $RuntimeEnvsDir -PythonRuntimeDir $RuntimeDir -Template:$TemplateRuntimeEnvConfigs
+    exit 0
 }
 
 # ---------------------------------------------------------------------------
