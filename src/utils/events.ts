@@ -16,7 +16,8 @@ export function registerWorkerEvents() {
     const tasks = useTaskStore()
     const models = useModelStore()
     const workerEvent = event.payload as WorkerEvent
-    app.pushWorkerEvent(workerEvent)
+    app.handleWorkerEvent(workerEvent)
+    if (settings.developerMode) app.recordWorkerEvent(workerEvent)
     void settings.handleWorkerEvent(workerEvent)
     app.handleRuntimeEvent(workerEvent)
     tasks.handleWorkerEvent(workerEvent)

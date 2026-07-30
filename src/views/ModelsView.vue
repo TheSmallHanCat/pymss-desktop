@@ -135,6 +135,11 @@ function modelNote(modelOrName: ModelEntry | string | null | undefined) {
   return name ? modelPreferences.value[name]?.note || '' : ''
 }
 
+function modelUseCount(modelOrName: ModelEntry | string | null | undefined) {
+  const name = typeof modelOrName === 'string' ? modelOrName : modelOrName?.name
+  return name ? modelStore.getModelUseCount(name) : 0
+}
+
 function toggleFavorite(model: ModelEntry, event?: MouseEvent) {
   event?.stopPropagation()
   modelStore.toggleModelFavorite(model.name)
@@ -246,6 +251,18 @@ watch(selectedInfo, (info) => {
 
 function categoryLabel(model: ModelEntry) {
   return getModelCategoryLabel(model, locale.value, '—')
+}
+
+function targetStemLabel(model: ModelEntry | null | undefined) {
+  const direct = String(model?.targetStem || '').trim()
+  if (direct) return direct
+  const configTarget = String(model?.configTargetInstrument || '').trim()
+  if (configTarget) return configTarget
+  return String(model?.configInstruments || '')
+    .split('|')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join(' / ')
 }
 
 function normalizedTagValue(value: string | null | undefined) {
@@ -880,11 +897,15 @@ onMounted(() => {
           <div class="mc-meta">
             <div class="mc-meta-item">
               <span class="mc-label">{{ t('models.targetStem') }}</span>
-              <span class="mc-value">{{ model.targetStem || '—' }}</span>
+              <span class="mc-value">{{ targetStemLabel(model) || '—' }}</span>
             </div>
             <div class="mc-meta-item">
               <span class="mc-label">{{ t('models.category') }}</span>
               <span class="mc-value">{{ categoryLabel(model) || '—' }}</span>
+            </div>
+            <div class="mc-meta-item mc-meta-item--usage">
+              <span class="mc-label">{{ t('models.useCountLabel') }}</span>
+              <span class="mc-value">{{ t('models.useCountValue', { count: modelUseCount(model) }) }}</span>
             </div>
           </div>
 
@@ -1051,7 +1072,7 @@ onMounted(() => {
               </div>
               <div class="detail-row">
                 <span class="detail-label">{{ t('models.targetStem') }}</span>
-                <span class="detail-val">{{ selectedInfo.targetStem || '—' }}</span>
+                <span class="detail-val">{{ targetStemLabel(selectedInfo) || '—' }}</span>
               </div>
               <div class="detail-row">
                 <span class="detail-label">{{ t('models.size') }}</span>

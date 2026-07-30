@@ -196,6 +196,7 @@ class UserModelSerializationTests(unittest.TestCase):
         payload = worker_models.model_to_dict(FakeUserModelEntry("my_model", self.weights, self.config))
         self.assertEqual(payload["configInstruments"], "vocals|instrumental")
         self.assertEqual(payload["configTargetInstrument"], "vocals")
+        self.assertEqual(payload["targetStem"], "")
 
 
 class DebugCatalogPayloadValidationTests(unittest.TestCase):

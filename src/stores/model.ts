@@ -201,6 +201,8 @@ export type ModelStorageSummary = {
 export type ModelPreference = {
   favorite?: boolean
   note?: string
+  useCount?: number
+  lastUsedAt?: number
   updatedAt?: number
 }
 
@@ -294,10 +296,18 @@ function normalizeModelPreferences(input?: Record<string, ModelPreference>) {
     if (!name || !value || typeof value !== 'object') return
     const note = typeof value.note === 'string' ? value.note : ''
     const favorite = Boolean(value.favorite)
-    if (!favorite && !note.trim()) return
+    const useCount = typeof value.useCount === 'number' && Number.isFinite(value.useCount)
+      ? Math.max(0, Math.trunc(value.useCount))
+      : 0
+    const lastUsedAt = typeof value.lastUsedAt === 'number' && Number.isFinite(value.lastUsedAt)
+      ? Math.max(0, value.lastUsedAt)
+      : 0
+    if (!favorite && !note.trim() && !useCount && !lastUsedAt) return
     next[name] = {
       favorite,
       note,
+      useCount,
+      lastUsedAt,
       updatedAt: typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now(),
     }
   })
@@ -633,6 +643,10 @@ export const useModelStore = defineStore('model', () => {
     return modelPreferences.value[name]?.note || ''
   }
 
+  function getModelUseCount(name: string) {
+    return modelPreferences.value[name]?.useCount || 0
+  }
+
   function setModelPreference(name: string, patch: ModelPreference) {
     const previous = modelPreferences.value[name] || {}
     // Keep the note verbatim (including newlines) so the controlled textarea
@@ -642,9 +656,15 @@ export const useModelStore = defineStore('model', () => {
       ...previous,
       ...patch,
       note,
+      useCount: typeof patch.useCount === 'number' && Number.isFinite(patch.useCount)
+        ? Math.max(0, Math.trunc(patch.useCount))
+        : previous.useCount,
+      lastUsedAt: typeof patch.lastUsedAt === 'number' && Number.isFinite(patch.lastUsedAt)
+        ? Math.max(0, patch.lastUsedAt)
+        : previous.lastUsedAt,
       updatedAt: Date.now(),
     }
-    if (!next.favorite && !(next.note || '').trim()) {
+    if (!next.favorite && !(next.note || '').trim() && !next.useCount && !next.lastUsedAt) {
       const { [name]: _, ...rest } = modelPreferences.value
       modelPreferences.value = rest
     } else {
@@ -666,6 +686,15 @@ export const useModelStore = defineStore('model', () => {
 
   function setModelNote(name: string, note: string) {
     setModelPreference(name, { note })
+  }
+
+  function recordModelUse(name: string) {
+    const key = String(name || '').trim()
+    if (!key) return
+    setModelPreference(key, {
+      useCount: getModelUseCount(key) + 1,
+      lastUsedAt: Date.now(),
+    })
   }
 
   function isDeleteTaskTerminal(task?: DeleteTask | null) {
@@ -1474,9 +1503,11 @@ export const useModelStore = defineStore('model', () => {
     getModelPreference,
     isModelFavorite,
     getModelNote,
+    getModelUseCount,
     setModelFavorite,
     toggleModelFavorite,
     setModelNote,
+    recordModelUse,
     deleteModel,
     downloadModel,
     cancelDownload,

@@ -189,9 +189,12 @@ export const useAppStore = defineStore('app', () => {
     return true
   }
 
-  function pushWorkerEvent(event: any) {
+  function recordWorkerEvent(event: any) {
     workerEvents.value.unshift(event)
     workerEvents.value = workerEvents.value.slice(0, 100)
+  }
+
+  function handleWorkerEvent(event: any) {
     if (event?.type === 'env_info') {
       envInfo.value = event.payload
       envLoading.value = false
@@ -210,6 +213,10 @@ export const useAppStore = defineStore('app', () => {
       envLoading.value = false
       envCheckedOnce.value = true
     }
+  }
+
+  function clearWorkerEvents() {
+    workerEvents.value = []
   }
 
   async function checkEnv() {
@@ -387,7 +394,9 @@ export const useAppStore = defineStore('app', () => {
     envIssueCount,
     runtimeInstalledBackend,
     runtimeReadyForBackend,
-    pushWorkerEvent,
+    recordWorkerEvent,
+    handleWorkerEvent,
+    clearWorkerEvents,
     checkEnv,
     checkEnvInBackground,
     runtimeInfo,

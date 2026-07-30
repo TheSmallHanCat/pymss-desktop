@@ -425,6 +425,17 @@ onMounted(() => {
 function formatTime(value: number) {
   return new Date(value).toLocaleString()
 }
+
+function taskDurationMs(item: SeparationTask) {
+  if (typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) return item.durationMs
+  if (item.startedAt && item.finishedAt) return Math.max(0, item.finishedAt - item.startedAt)
+  return Math.max(0, item.updatedAt - item.createdAt)
+}
+
+function formatDurationMs(value: number | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return t('results.durationUnknown')
+  return t('results.durationSeconds', { seconds: Math.max(0, Math.round(value / 1000)) })
+}
 </script>
 
 <template>
@@ -530,6 +541,7 @@ function formatTime(value: number) {
               <span>{{ item.model }}</span>
               <span>{{ item.inputCount }} {{ t('results.inputUnit') }}</span>
               <span>{{ item.outputCount }} {{ t('results.stemUnit') }}</span>
+              <span>{{ formatDurationMs(item.durationMs) }}</span>
               <span class="result-row__time"><n-icon :component="TimeOutline" /> {{ formatTime(item.updatedAt) }}</span>
             </span>
             <span class="result-row__path">{{ shortenPath(item.output) }}</span>
@@ -565,7 +577,7 @@ function formatTime(value: number) {
               <div v-if="item.items.length > 1" class="result-detail-card__head">
                 <div>
                   <strong>{{ getFileName(result.input) }}</strong>
-                  <span>{{ result.outputs.length }} {{ t('results.stemUnit') }}</span>
+                  <span>{{ result.outputs.length }} {{ t('results.stemUnit') }} · {{ formatDurationMs(taskDurationMs(result)) }}</span>
                 </div>
                 <div class="result-detail-card__actions">
                   <n-button size="tiny" secondary @click.stop="openInEditor(result)">

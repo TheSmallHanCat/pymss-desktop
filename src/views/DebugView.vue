@@ -10,6 +10,7 @@ import {
   CloudDownloadOutline,
   FolderOpenOutline,
   InformationCircleOutline,
+  LockClosedOutline,
   PulseOutline,
   RefreshOutline,
   TerminalOutline,
@@ -86,6 +87,23 @@ type RuntimeDebugEnvironmentRow = {
   editablePath: string
   editableFile: DebugRuntimeFileInfo | null
 }
+type DebugWorkerEvent = {
+  type?: string
+  taskId?: string
+  timestamp?: string
+  payload?: unknown
+}
+type DebugWorkerEventGroup = {
+  key: string
+  taskId: string | null
+  latestType: string
+  firstTimestamp?: string
+  lastTimestamp?: string
+  eventCount: number
+  latestPayload?: unknown
+  typeCounts: Record<string, number>
+  events: DebugWorkerEvent[]
+}
 
 const activeTab = ref<DebugTab>('overview')
 const debugCatalogLoading = ref(false)
@@ -117,7 +135,7 @@ const runtimeOverridePythonPath = ref('')
 
 const diagnostics = computed(() => app.diagnostics)
 const env = computed(() => app.envInfo)
-const recentWorkerEvents = computed(() => app.workerEvents.slice(0, 40))
+const recentWorkerEventGroups = computed(() => groupWorkerEvents(app.workerEvents as DebugWorkerEvent[]).slice(0, 40))
 const debugTabs = computed(() => [
   { key: 'overview', label: t('debug.tabOverview') },
   { key: 'runtime', label: t('debug.tabRuntime') },
@@ -474,6 +492,97 @@ function shortTaskId(value: unknown) {
   return text.length > 28 ? `${text.slice(0, 14)}…${text.slice(-10)}` : text
 }
 
+function groupWorkerEvents(events: DebugWorkerEvent[]): DebugWorkerEventGroup[] {
+  const groups: DebugWorkerEventGroup[] = []
+  const taskGroups = new Map<string, DebugWorkerEventGroup>()
+
+  for (const event of events) {
+    const type = String(event?.type || 'unknown')
+    const taskId = String(event?.taskId || '').trim()
+    const timestamp = event?.timestamp
+    if (!taskId) {
+      groups.push({
+        key: `event:${groups.length}:${timestamp || ''}:${type}`,
+        taskId: null,
+        latestType: type,
+        firstTimestamp: timestamp,
+        lastTimestamp: timestamp,
+        eventCount: 1,
+        latestPayload: event?.payload,
+        typeCounts: { [type]: 1 },
+        events: [event],
+      })
+      continue
+    }
+
+    let group = taskGroups.get(taskId)
+    if (!group) {
+      group = {
+        key: `task:${taskId}`,
+        taskId,
+        latestType: type,
+        firstTimestamp: timestamp,
+        lastTimestamp: timestamp,
+        eventCount: 0,
+        latestPayload: event?.payload,
+        typeCounts: {},
+        events: [],
+      }
+      taskGroups.set(taskId, group)
+      groups.push(group)
+    }
+
+    group.eventCount += 1
+    group.typeCounts[type] = (group.typeCounts[type] || 0) + 1
+    group.events.push(event)
+    if (group.events.length === 1 || isNewerTimestamp(timestamp, group.lastTimestamp)) {
+      group.latestType = type
+      group.lastTimestamp = timestamp
+      group.latestPayload = event?.payload
+    }
+    if (!group.firstTimestamp || isNewerTimestamp(group.firstTimestamp, timestamp)) {
+      group.firstTimestamp = timestamp
+    }
+  }
+
+  return groups
+}
+
+function isNewerTimestamp(left: unknown, right: unknown) {
+  const leftTime = Date.parse(String(left || ''))
+  const rightTime = Date.parse(String(right || ''))
+  if (!Number.isFinite(leftTime)) return false
+  if (!Number.isFinite(rightTime)) return true
+  return leftTime > rightTime
+}
+
+function workerEventGroupTitle(group: DebugWorkerEventGroup | null) {
+  if (!group) return t('debug.workerEvents')
+  return group.taskId ? t('debug.workerEventTaskGroup') : group.latestType
+}
+
+function workerEventGroupSummary(group: DebugWorkerEventGroup | null) {
+  if (!group) return ''
+  return Object.entries(group.typeCounts)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([type, count]) => `${type}: ${count}`)
+    .join(' · ')
+}
+
+function workerEventGroupPayload(group: DebugWorkerEventGroup | null) {
+  if (!group) return ''
+  if (!group.taskId) return formatPayload(group.latestPayload)
+  return formatPayload({
+    taskId: group.taskId,
+    eventCount: group.eventCount,
+    firstEventAt: group.firstTimestamp,
+    latestEventAt: group.lastTimestamp,
+    latestType: group.latestType,
+    typeCounts: group.typeCounts,
+    latestPayload: group.latestPayload,
+  })
+}
+
 function formatPayload(payload: unknown) {
   if (!payload || typeof payload !== 'object') return ''
   try {
@@ -484,6 +593,7 @@ function formatPayload(payload: unknown) {
 }
 
 async function checkEnv() {
+  if (!developerMode.value) return
   try {
     await app.checkEnv()
     message.success(t('debug.envCheckDone'))
@@ -492,8 +602,8 @@ async function checkEnv() {
   }
 }
 
-function openWorkerEvent(event: unknown) {
-  selectedWorkerEvent.value = event
+function openWorkerEvent(group: DebugWorkerEventGroup) {
+  selectedWorkerEvent.value = group
   workerEventDialogVisible.value = true
 }
 
@@ -682,17 +792,21 @@ async function overrideActiveRuntimePointer() {
   }
 }
 
-onMounted(() => {
-  if (!app.envInfo && !app.envLoading) {
-    app.checkEnvInBackground().catch(() => {})
-  }
+function loadDebugPageData() {
+  if (!developerMode.value) return
+  if (!app.envLoading && !app.envInfo) app.checkEnvInBackground().catch(() => {})
   app.checkRuntimeInfo().catch(() => {})
-  if (developerMode.value) loadRuntimeDebugPointers().catch(() => {})
+  loadRuntimeDebugPointers().catch(() => {})
   if (!modelStore.models.length) modelStore.loadModels().catch(() => {})
   loadDebugCatalog().catch(() => {})
+}
+
+onMounted(() => {
+  loadDebugPageData()
 })
 
 watch(selectedDebugModel, () => {
+  if (!developerMode.value) return
   loadDebugModelConfig().catch(() => {})
 })
 
@@ -705,15 +819,22 @@ watch(debugModelOptions, (options) => {
 })
 
 watch(developerMode, (enabled) => {
-  if (enabled) loadRuntimeDebugPointers().catch(() => {})
+  if (enabled) {
+    loadDebugPageData()
+  }
   else {
+    app.clearWorkerEvents()
+    workerEventDialogVisible.value = false
+    selectedWorkerEvent.value = null
+    runtimeDebugEditorVisible.value = false
+    catalogModelDialogVisible.value = false
     runtimeDebugInfo.value = null
   }
 })
 </script>
 
 <template>
-  <div class="page debug-page">
+  <div class="page debug-page" :class="{ 'debug-page--locked': !developerMode }">
     <div class="page-header-compact debug-page__header">
       <div>
         <h1>{{ t('debug.title') }}</h1>
@@ -725,10 +846,19 @@ watch(developerMode, (enabled) => {
       </n-button>
     </div>
 
-    <n-alert v-if="!developerMode" type="warning" :show-icon="true">
-      {{ t('debug.disabledHint') }}
-    </n-alert>
+    <div v-if="!developerMode" class="debug-page__lock" aria-live="polite">
+      <section class="debug-lock-card" aria-labelledby="debug-lock-title">
+        <div class="debug-lock-card__icon">
+          <n-icon :component="LockClosedOutline" />
+        </div>
+        <div class="debug-lock-card__copy">
+          <strong id="debug-lock-title">{{ t('debug.disabledTitle') }}</strong>
+          <p>{{ t('debug.disabledHint') }}</p>
+        </div>
+      </section>
+    </div>
 
+    <div class="debug-page__content" :class="{ 'debug-page__content--locked': !developerMode }" :inert="!developerMode || undefined">
     <nav class="debug-tabs" aria-label="Debug sections">
       <button
         v-for="tab in debugTabs"
@@ -1179,39 +1309,118 @@ watch(developerMode, (enabled) => {
       </template>
       <div class="worker-event-list">
         <button
-          v-for="(event, index) in recentWorkerEvents"
-          :key="`${event?.timestamp || ''}-${index}`"
+          v-for="group in recentWorkerEventGroups"
+          :key="group.key"
           type="button"
           class="worker-event-row"
-          @click="openWorkerEvent(event)"
+          @click="openWorkerEvent(group)"
         >
-          <code>{{ event?.type || '-' }}</code>
-          <span>{{ shortTaskId(event?.taskId) }}</span>
-          <time>{{ eventTime(event?.timestamp) }}</time>
+          <code>{{ group.taskId ? t('debug.workerEventTaskGroup') : group.latestType }}</code>
+          <span>{{ shortTaskId(group.taskId) }}</span>
+          <span>{{ workerEventGroupSummary(group) }}</span>
+          <time>{{ eventTime(group.lastTimestamp) }}</time>
+          <strong>{{ group.eventCount }}</strong>
         </button>
-        <n-empty v-if="!recentWorkerEvents.length" :description="t('settings.developerNoWorkerEvents')" />
+        <n-empty v-if="!recentWorkerEventGroups.length" :description="t('settings.developerNoWorkerEvents')" />
       </div>
       <n-modal
         v-model:show="workerEventDialogVisible"
         preset="card"
-        :title="selectedWorkerEvent?.type || t('debug.workerEvents')"
+        :title="workerEventGroupTitle(selectedWorkerEvent)"
         :style="{ width: 'min(920px, calc(100vw - 48px))' }"
       >
         <div class="worker-event-modal-meta">
           <span>{{ shortTaskId(selectedWorkerEvent?.taskId) }}</span>
-          <time>{{ eventTime(selectedWorkerEvent?.timestamp) }}</time>
+          <span>{{ t('debug.workerEventCount', { count: selectedWorkerEvent?.eventCount || 0 }) }}</span>
+          <span>{{ workerEventGroupSummary(selectedWorkerEvent) }}</span>
+          <time>{{ eventTime(selectedWorkerEvent?.lastTimestamp) }}</time>
         </div>
-        <pre class="worker-event-modal-payload">{{ formatPayload(selectedWorkerEvent?.payload) }}</pre>
+        <pre class="worker-event-modal-payload">{{ workerEventGroupPayload(selectedWorkerEvent) }}</pre>
       </n-modal>
     </n-card>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .debug-page {
+  position: relative;
   display: grid;
   gap: 14px;
   max-width: var(--page-max-width);
+}
+
+.debug-page--locked::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 18% 8%, color-mix(in srgb, var(--primary) 10%, transparent), transparent 34%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 64%, transparent), color-mix(in srgb, var(--surface-1) 88%, transparent));
+  backdrop-filter: blur(6px) saturate(0.85);
+  pointer-events: auto;
+}
+
+.debug-page__lock {
+  position: absolute;
+  z-index: 4;
+  top: min(24vh, 180px);
+  left: 50%;
+  width: min(520px, calc(100% - 48px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.debug-lock-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--outline) 62%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface-1) 92%, transparent);
+  box-shadow: 0 18px 52px color-mix(in srgb, #27324a 14%, transparent);
+  pointer-events: auto;
+}
+
+.debug-lock-card__icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+  font-size: 22px;
+}
+
+.debug-lock-card__copy {
+  display: grid;
+  gap: 5px;
+}
+
+.debug-lock-card__copy strong {
+  color: var(--on-surface);
+  font-size: 16px;
+}
+
+.debug-lock-card__copy p {
+  margin: 0;
+  color: var(--on-surface-muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.debug-page__content {
+  display: grid;
+  gap: 14px;
+}
+
+.debug-page__content--locked {
+  user-select: none;
 }
 
 .debug-page__header {
@@ -1776,7 +1985,7 @@ watch(developerMode, (enabled) => {
 
 .worker-event-row {
   display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(100px, 0.8fr) auto;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(100px, 0.7fr) minmax(180px, 1.4fr) auto auto;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -1791,12 +2000,28 @@ watch(developerMode, (enabled) => {
 
 .worker-event-row span,
 .worker-event-row time {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--on-surface-muted);
   font-size: 12px;
 }
 
+.worker-event-row strong {
+  justify-self: end;
+  min-width: 28px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+  font-size: 12px;
+  text-align: center;
+}
+
 .worker-event-modal-meta {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 12px;
   color: var(--on-surface-muted);
@@ -1856,6 +2081,17 @@ watch(developerMode, (enabled) => {
   .runtime-tree__head em {
     width: 100%;
     margin-left: 26px;
+  }
+
+  .debug-page__lock {
+    top: 96px;
+    width: calc(100% - 28px);
+  }
+
+  .debug-lock-card {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
   }
 }
 </style>

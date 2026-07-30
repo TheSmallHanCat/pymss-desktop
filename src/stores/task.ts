@@ -13,6 +13,7 @@ import { getWorkflowDefinitionDefaults, readWorkflowGraphDefinition } from '@/ut
 export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
 
 export type OutputLayout = 'folders' | 'flat'
+export type ModelListSortMode = 'usage' | 'recent' | 'favorite' | 'name-asc' | 'name-desc'
 
 export type StemOutput = { stem: string; path: string }
 
@@ -63,6 +64,9 @@ export type SeparationTask = {
   message: string
   createdAt: number
   updatedAt: number
+  startedAt?: number
+  finishedAt?: number
+  durationMs?: number
   progress: number
   stageLabel: string
   progressCurrent?: number
@@ -87,6 +91,9 @@ export type SeparationJob = {
   outputCount: number
   createdAt: number
   updatedAt: number
+  startedAt?: number
+  finishedAt?: number
+  durationMs?: number
   status: TaskStatus
   progress: number
 }
@@ -124,6 +131,7 @@ type PersistedSeparateState = {
   outputNamingTemplate?: string
   customStemOrder?: string[]
   modelListViewMode?: 'card' | 'list'
+  modelListSortMode?: ModelListSortMode
   useTta?: boolean
   debug?: boolean
   inferenceParamsByModel?: Record<string, PersistedSeparateModelState>
@@ -205,6 +213,14 @@ function normalizeOutputPath(value?: string | null) {
   return value && value.trim() ? value : 'outputs'
 }
 
+function normalizeTimestamp(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+function normalizeDurationMs(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.max(0, Math.round(value)) : undefined
+}
+
 function joinOutputPath(base: string, child: string) {
   const separator = base.includes('\\') ? '\\' : '/'
   return `${base.replace(/[\\/]$/, '')}${separator}${child}`
@@ -245,6 +261,16 @@ function getLogLimit(developerMode: boolean) {
   return developerMode ? DEVELOPER_LOG_LIMIT : NORMAL_LOG_LIMIT
 }
 
+function markTaskStarted(task: SeparationTask, at = Date.now()) {
+  if (!task.startedAt) task.startedAt = at
+}
+
+function markTaskFinished(task: SeparationTask, at = Date.now()) {
+  task.finishedAt = at
+  const startedAt = task.startedAt || task.createdAt
+  task.durationMs = Math.max(0, at - startedAt)
+}
+
 function resolveStageProgress(status: TaskStatus, current?: number, total?: number) {
   const meta = STAGE_META[status]
   if (status !== 'separating') return meta.progress
@@ -274,6 +300,10 @@ function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
     ? task.outputs
     : outputsFromFiles(normalizedOutput, normalizedFiles, normalizedRunConfig?.outputFormat || 'wav', task.outputPrefix)
   const meta = STAGE_META[status]
+  const startedAt = normalizeTimestamp(task.startedAt)
+  const finishedAt = normalizeTimestamp(task.finishedAt)
+  const persistedDurationMs = normalizeDurationMs(task.durationMs)
+  const durationMs = persistedDurationMs ?? (startedAt && finishedAt ? Math.max(0, finishedAt - startedAt) : undefined)
   const progress = typeof task.progress === 'number'
     ? Math.max(meta.progress, Math.min(100, task.progress))
     : meta.progress
@@ -291,6 +321,9 @@ function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
     message: interrupted ? '上次运行未完成' : (task.message || meta.label),
     createdAt: task.createdAt || Date.now(),
     updatedAt: task.updatedAt || task.createdAt || Date.now(),
+    startedAt,
+    finishedAt,
+    durationMs,
     progress: TERMINAL_STATUSES.includes(status) ? 100 : progress,
     stageLabel: interrupted ? '已中断' : (task.stageLabel || meta.label),
     progressCurrent: typeof task.progressCurrent === 'number' ? task.progressCurrent : undefined,
@@ -457,6 +490,7 @@ export const useTaskStore = defineStore('task', () => {
   const separateOutputNamingTemplate = ref('%index%_%filename%_%stem%')
   const separateCustomStemOrder = ref<string[]>([])
   const modelListViewMode = ref<'card' | 'list'>('card')
+  const modelListSortMode = ref<ModelListSortMode>('usage')
   const useTta = ref(false)
   const debug = ref(false)
   const batch_size = ref<number | null>(1)
@@ -508,6 +542,7 @@ export const useTaskStore = defineStore('task', () => {
       outputNamingTemplate: separateOutputNamingTemplate.value,
       customStemOrder: [...separateCustomStemOrder.value],
       modelListViewMode: modelListViewMode.value,
+      modelListSortMode: modelListSortMode.value,
       useTta: useTta.value,
       debug: debug.value,
       inferenceParamsByModel: JSON.parse(JSON.stringify(persistedSeparateModelState.value)),
@@ -574,6 +609,10 @@ export const useTaskStore = defineStore('task', () => {
         return sum + Math.max(0, Math.min(99, Number(item.progress || 0)))
       }, 0)
       const status = resolveJobStatus(sorted)
+      const startedValues = sorted.map(item => item.startedAt || item.createdAt).filter((value): value is number => typeof value === 'number')
+      const finishedValues = sorted.map(item => item.finishedAt || item.updatedAt).filter((value): value is number => typeof value === 'number')
+      const startedAt = startedValues.length ? Math.min(...startedValues) : undefined
+      const finishedAt = TERMINAL_STATUSES.includes(status) && finishedValues.length ? Math.max(...finishedValues) : undefined
       return {
         id,
         output,
@@ -584,6 +623,9 @@ export const useTaskStore = defineStore('task', () => {
         outputCount: sorted.reduce((sum, item) => sum + item.outputs.length, 0),
         createdAt: Math.min(...sorted.map(item => item.createdAt)),
         updatedAt: Math.max(...sorted.map(item => item.updatedAt)),
+        startedAt,
+        finishedAt,
+        durationMs: startedAt && finishedAt ? Math.max(0, finishedAt - startedAt) : undefined,
         status,
         progress: Math.round(progressTotal / sorted.length),
       }
@@ -664,6 +706,9 @@ export const useTaskStore = defineStore('task', () => {
       ? separateStored.customStemOrder.map(item => String(item || '').trim()).filter(Boolean)
       : []
     modelListViewMode.value = separateStored?.modelListViewMode === 'list' ? 'list' : 'card'
+    modelListSortMode.value = ['recent', 'favorite', 'name-asc', 'name-desc'].includes(String(separateStored?.modelListSortMode))
+      ? separateStored?.modelListSortMode as ModelListSortMode
+      : 'usage'
     useTta.value = separateStored?.useTta === true
     debug.value = separateStored?.debug === true
     persistedSeparateModelState.value = Object.fromEntries(
@@ -675,7 +720,7 @@ export const useTaskStore = defineStore('task', () => {
 
   watch(
     [separateRunMode, ensembleEnabled, ensembleModels, ensembleStem, ensembleModelStems, ensembleType, ensembleWeights, separateTemporaryOutputDir,
-      separateOutputLayout, separateOutputNamingTemplate, separateCustomStemOrder, modelListViewMode, useTta, debug,
+      separateOutputLayout, separateOutputNamingTemplate, separateCustomStemOrder, modelListViewMode, modelListSortMode, useTta, debug,
       batch_size, overlap_size, num_overlap, chunk_size, standardize, normalize, selectedStems, window_size, aggression, enable_post_process,
       post_process_threshold, high_end_process],
     () => {
@@ -998,6 +1043,7 @@ export const useTaskStore = defineStore('task', () => {
       task.stageLabel = STAGE_META.failed.label
       task.progress = 100
       appendTaskLogs(task, `error: ${task.error}`)
+      markTaskFinished(task)
       queuePersist()
       scheduleQueue()
       return false
@@ -1051,6 +1097,7 @@ export const useTaskStore = defineStore('task', () => {
         task.stageLabel = STAGE_META.failed.label
         task.progress = 100
         appendTaskLogs(task, `error: ${message}`)
+        markTaskFinished(task)
       })
       queuePersist()
       scheduleQueue()
@@ -1101,6 +1148,7 @@ export const useTaskStore = defineStore('task', () => {
         task.stageLabel = STAGE_META.failed.label
         task.progress = 100
         appendTaskLogs(task, `error: ${message}`)
+        markTaskFinished(task)
       })
       queuePersist()
       scheduleQueue()
@@ -1126,6 +1174,7 @@ export const useTaskStore = defineStore('task', () => {
     if (!task) return
     if (TERMINAL_STATUSES.includes(task.status) && !TERMINAL_STATUSES.includes(status)) return
     const meta = STAGE_META[status]
+    if (status !== 'queued') markTaskStarted(task)
     task.status = status
     task.stageLabel = meta.label
     task.message = message || meta.label
@@ -1144,6 +1193,7 @@ export const useTaskStore = defineStore('task', () => {
     task.logs.push(`${new Date().toLocaleTimeString()} ${task.message}`)
     task.logs = task.logs.slice(-getLogLimit(settings.developerMode))
     touch(task)
+    if (TERMINAL_STATUSES.includes(status)) markTaskFinished(task, task.updatedAt)
     queuePersist()
   }
 
@@ -1163,6 +1213,7 @@ export const useTaskStore = defineStore('task', () => {
       const total = Number(event.payload?.total)
       const detail = typeof event.payload?.message === 'string' ? event.payload.message : undefined
       task.status = stage
+      if (stage !== 'queued') markTaskStarted(task)
       task.stageLabel = STAGE_META[stage].label
       task.message = detail || STAGE_META[stage].label
       task.progressCurrent = Number.isFinite(done) ? done : undefined
@@ -1199,9 +1250,11 @@ export const useTaskStore = defineStore('task', () => {
         task.stageLabel = STAGE_META.failed.label
         task.progress = 100
       }
+      if (!recoverable) markTaskFinished(task)
       appendTaskLogs(task, [`error: ${code}${message}`, detail ? `traceback:\n${detail}` : ''])
     } else if (event.type === 'task_done') {
       task.status = 'done'
+      markTaskStarted(task)
       task.message = 'Done'
       task.stageLabel = STAGE_META.done.label
       task.progress = 100
@@ -1218,9 +1271,11 @@ export const useTaskStore = defineStore('task', () => {
         : outputsFromFiles(task.output, task.files, event.payload?.outputFormat || 'wav', task.outputPrefix)
       task.error = undefined
       touch(task)
+      markTaskFinished(task, task.updatedAt)
       queuePersist()
     } else if (event.type === 'task_cancelled') {
       task.status = 'cancelled'
+      markTaskStarted(task)
       task.message = event.payload?.message || 'Cancelled'
       task.stageLabel = STAGE_META.cancelled.label
       task.progress = 100
@@ -1228,6 +1283,7 @@ export const useTaskStore = defineStore('task', () => {
       task.progressTotal = undefined
       task.progressDetail = undefined
       touch(task)
+      markTaskFinished(task, task.updatedAt)
       queuePersist()
     }
     if (TERMINAL_STATUSES.includes(task.status)) scheduleQueue()
@@ -1450,6 +1506,7 @@ export const useTaskStore = defineStore('task', () => {
       task.message = 'Cancelled'
       task.stageLabel = STAGE_META.cancelled.label
       task.progress = 100
+      markTaskFinished(task)
       appendTaskLogs(task, 'Cancelled before execution')
       queuePersist()
       scheduleQueue()
@@ -1462,6 +1519,7 @@ export const useTaskStore = defineStore('task', () => {
       task.stageLabel = STAGE_META.cancelled.label
       task.progress = 100
       touch(task)
+      markTaskFinished(task, task.updatedAt)
       queuePersist()
       scheduleQueue()
     }
@@ -1548,6 +1606,7 @@ export const useTaskStore = defineStore('task', () => {
       outputLayout,
       outputNaming,
     ))
+    modelStore.recordModelUse(model)
     if (batchMode) {
       void startBatchWorker(createdTasks)
     } else {
@@ -1665,6 +1724,7 @@ export const useTaskStore = defineStore('task', () => {
     separateOutputNamingTemplate,
     separateCustomStemOrder,
     modelListViewMode,
+    modelListSortMode,
     useTta,
     debug,
     batch_size,

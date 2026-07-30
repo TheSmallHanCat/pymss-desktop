@@ -29,7 +29,7 @@ import {
   ListOutline,
 } from '@vicons/ionicons5'
 import { useModelStore } from '@/stores/model'
-import { useTaskStore, type OutputLayout, type SeparationTask, type StemOutput } from '@/stores/task'
+import { useTaskStore, type ModelListSortMode, type OutputLayout, type SeparationTask, type StemOutput } from '@/stores/task'
 import { useWorkflowStore, type WorkflowEntry } from '@/stores/workflow'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
@@ -79,6 +79,7 @@ const {
   high_end_process,
   selectedStems,
   modelListViewMode,
+  modelListSortMode,
 } = storeToRefs(task)
 const { selectedModel, downloadedModels, models: modelEntries, isLoading, detailLoading, modelPreferences } = storeToRefs(model)
 const { workflows, selectedWorkflow, selectedWorkflowId } = storeToRefs(workflow)
@@ -157,6 +158,13 @@ const runModeOptions = computed(() => [
   { label: t('separate.runModeModel'), value: 'model' },
   { label: t('separate.runModeWorkflow'), value: 'workflow' },
 ])
+const modelSortOptions = computed(() => [
+  { label: t('separate.modelSortUsage'), value: 'usage' },
+  { label: t('separate.modelSortRecent'), value: 'recent' },
+  { label: t('separate.modelSortFavorite'), value: 'favorite' },
+  { label: t('separate.modelSortNameAsc'), value: 'name-asc' },
+  { label: t('separate.modelSortNameDesc'), value: 'name-desc' },
+] as Array<{ label: string; value: ModelListSortMode }>)
 const saveAsFolder = computed({
   get: () => outputLayout.value === 'folders',
   set: (value: boolean) => {
@@ -164,11 +172,22 @@ const saveAsFolder = computed({
   },
 })
 const effectiveOutputLayout = computed<OutputLayout>(() => outputLayout.value)
+function compareModelName(a: string, b: string) {
+  return a.localeCompare(b, locale.value === 'zh-CN' ? 'zh-CN' : 'en')
+}
+
 const listedDownloadedModels = computed(() => {
   return [...downloadedModels.value].sort((a, b) => {
-    const favoriteDelta = Number(Boolean(modelPreferences.value[b.name]?.favorite)) - Number(Boolean(modelPreferences.value[a.name]?.favorite))
-    if (favoriteDelta) return favoriteDelta
-    return a.name.localeCompare(b.name, locale.value === 'zh-CN' ? 'zh-CN' : 'en')
+    const prefA = modelPreferences.value[a.name] || {}
+    const prefB = modelPreferences.value[b.name] || {}
+    const favoriteDelta = Number(Boolean(prefB.favorite)) - Number(Boolean(prefA.favorite))
+    const useDelta = Number(prefB.useCount || 0) - Number(prefA.useCount || 0)
+    const recentDelta = Number(prefB.lastUsedAt || 0) - Number(prefA.lastUsedAt || 0)
+    if (modelListSortMode.value === 'favorite') return favoriteDelta || recentDelta || compareModelName(a.name, b.name)
+    if (modelListSortMode.value === 'recent') return recentDelta || useDelta || favoriteDelta || compareModelName(a.name, b.name)
+    if (modelListSortMode.value === 'name-desc') return compareModelName(b.name, a.name)
+    if (modelListSortMode.value === 'name-asc') return compareModelName(a.name, b.name)
+    return useDelta || recentDelta || favoriteDelta || compareModelName(a.name, b.name)
   })
 })
 const selectedModelListItem = computed(() => listedDownloadedModels.value.find(item => item.name === selectedModelName.value) || null)
@@ -915,6 +934,10 @@ function modelNote(name: string) {
   return modelPreferences.value[name]?.note || ''
 }
 
+function modelUseCount(name: string) {
+  return model.getModelUseCount(name)
+}
+
 function modelMetaLine(item: {
   targetStem?: string
   configTargetInstrument?: string
@@ -1383,6 +1406,9 @@ async function start() {
         ? await task.startWorkflowInference(buildEnsembleWorkflow(), { outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value, outputNaming: outputNamingConfig.value })
         : await task.startSeparation({ outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value, outputNaming: outputNamingConfig.value })
     focusedSeparationJobId.value = result?.jobId || newestRunningJob.value?.id || focusedSeparationJobId.value
+    if (runMode.value === 'model' && ensembleEnabled.value && result) {
+      ensembleModels.value.forEach((name) => model.recordModelUse(name))
+    }
     task.clearInputFiles()
     if (result && result.failed > 0) {
       message.warning(t('separate.batchPartial', { succeeded: result.succeeded, failed: result.failed }))
@@ -1813,6 +1839,12 @@ async function retryCurrentTask() {
                       :menu-props="{ class: 'model-picker__category-menu' }"
                       :options="modelCategoryOptions"
                     />
+                    <n-select
+                      v-model:value="modelListSortMode"
+                      class="target-toolbar__sort"
+                      :options="modelSortOptions"
+                      :aria-label="t('separate.modelSortLabel')"
+                    />
                     <div class="view-toggle target-toolbar__view" role="group" :aria-label="t('models.viewMode')">
                       <button
                         type="button"
@@ -1869,6 +1901,7 @@ async function retryCurrentTask() {
                         <span class="target-row__meta">
                           <span class="target-row__tag" :title="categoryLabel(item)">{{ categoryLabel(item) }}</span>
                           <span class="target-row__desc" :title="modelMetaLine(item)">{{ modelMetaLine(item) }}</span>
+                          <span class="target-row__usage">{{ t('models.useCountValue', { count: modelUseCount(item.name) }) }}</span>
                         </span>
                         <!-- Shown because it is searchable: matching on text the user cannot see
                              would make the result list look wrong. -->
@@ -3059,12 +3092,13 @@ async function retryCurrentTask() {
 .target-toolbar {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 190px auto;
+  grid-template-columns: minmax(0, 1fr) 170px 170px auto;
   align-items: center;
   gap: 10px;
 }
 .target-toolbar--single { grid-template-columns: minmax(0, 1fr); }
-.target-toolbar__filter { min-width: 0; }
+.target-toolbar__filter,
+.target-toolbar__sort { min-width: 0; }
 .target-toolbar__view { justify-self: end; }
 
 .ensemble-summary-bar {
@@ -3230,6 +3264,14 @@ async function retryCurrentTask() {
   font-size: 11px;
   color: var(--on-surface-muted);
   line-height: 1.4;
+}
+
+.target-row__usage {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--on-surface-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* The user's own note. Distinguished from the generated meta line by the accent bar, so a row
