@@ -63,9 +63,22 @@ const app = useAppStore()
 const modelStore = useModelStore()
 const task = useTaskStore()
 type SettingsSection = 'about' | 'appearance' | 'runtime' | 'paths' | 'defaults'
+type BuildInfo = {
+  version: string
+  gitCommit: string
+  gitTag: string
+  gitRef: string
+  runId: string
+  runAttempt: string
+  buildTime: string
+  target: string
+  variant: string
+  official: boolean
+}
 const activeSection = ref<SettingsSection>('appearance')
-const appVersion = computed(() => packageMeta.version || '0.0.0')
-const repoUrl = 'https://github.com/pymss-project/pymss-desktop'
+const buildInfo = ref<BuildInfo | null>(null)
+const appVersion = computed(() => buildInfo.value?.version || packageMeta.version || '0.0.0')
+const repoUrl = 'https://github.com/pymss-project/pymss-studio'
 const coreRepoUrl = 'https://github.com/pymss-project/pymss'
 const licenseUrl = 'https://www.gnu.org/licenses/agpl-3.0.html'
 const coreLicenseUrl = 'https://github.com/pymss-project/pymss/blob/main/LICENSE'
@@ -509,6 +522,40 @@ const pymssCoreVersion = computed(() => {
   return app.envInfo.pymssVersion || t('common.unknown')
 })
 const workerVersion = computed(() => app.envInfo?.workerVersion || t('common.unknown'))
+const buildCommitShort = computed(() => buildInfo.value?.gitCommit ? buildInfo.value.gitCommit.slice(0, 7) : '')
+const buildRunLabel = computed(() => {
+  const info = buildInfo.value
+  if (!info?.runId) return ''
+  return info.runAttempt ? `#${info.runId}.${info.runAttempt}` : `#${info.runId}`
+})
+const buildFingerprint = computed(() => {
+  const info = buildInfo.value
+  if (!info) return t('common.unknown')
+  const parts = [info.gitTag || info.gitRef, buildCommitShort.value, info.variant, buildRunLabel.value].filter(Boolean)
+  return parts.length ? parts.join(' · ') : t('settings.buildFingerprintUnavailable')
+})
+const buildVerification = computed(() => {
+  const info = buildInfo.value
+  if (!info) {
+    return {
+      label: t('settings.buildStatusUnknown'),
+      tone: 'unknown',
+      description: t('settings.buildStatusUnknownDesc'),
+    }
+  }
+  if (info.official && info.gitCommit && info.runId) {
+    return {
+      label: t('settings.buildStatusOfficial'),
+      tone: 'official',
+      description: t('settings.buildStatusOfficialDesc'),
+    }
+  }
+  return {
+    label: t('settings.buildStatusDevelopment'),
+    tone: 'development',
+    description: t('settings.buildStatusDevelopmentDesc'),
+  }
+})
 const aboutVersionItems = computed(() => [
   { label: t('settings.softwareVersion'), value: appVersion.value, meta: 'Pymss Studio' },
   { label: t('settings.pymssCoreVersion'), value: pymssCoreVersion.value, meta: t('settings.coreRuntime') },
@@ -525,6 +572,14 @@ const aboutLinks = computed(() => [
   { label: t('settings.licenseLink'), url: licenseUrl, icon: DocumentTextOutline },
   { label: t('settings.coreLicenseLink'), url: coreLicenseUrl, icon: DocumentTextOutline },
 ])
+
+async function loadBuildInfo() {
+  try {
+    buildInfo.value = await invoke<BuildInfo>('get_build_info')
+  } catch {
+    buildInfo.value = null
+  }
+}
 const SCALE_FACTOR_PRESET_VALUES = [0.75, 0.9, 1, 1.1, 1.25, 1.5] as const
 const scaleFactorPercent = computed(() => formatScaleFactorLabel(scaleFactor.value))
 const scaleSliderIndex = computed({
@@ -749,6 +804,7 @@ async function resolveModelDirConflict(action: 'overwrite' | 'skip' | 'abort') {
 
 onMounted(() => {
   if (route.query.section === 'runtime') activeSection.value = 'runtime'
+  void loadBuildInfo()
   if (!app.envInfo && !app.envLoading) {
     app.checkEnvInBackground().catch(() => {})
   }
@@ -802,6 +858,18 @@ onMounted(() => {
                 <strong class="about-stat__value">{{ item.value }}</strong>
                 <small class="about-stat__meta">{{ item.meta }}</small>
               </div>
+            </div>
+          </article>
+
+          <article class="about-build-card" :class="`about-build-card--${buildVerification.tone}`">
+            <div class="about-build-card__head">
+              <span>{{ t('settings.officialVerification') }}</span>
+              <strong>{{ buildVerification.label }}</strong>
+            </div>
+            <p>{{ buildVerification.description }}</p>
+            <div class="about-build-fingerprint">
+              <span>{{ t('settings.buildFingerprint') }}</span>
+              <code>{{ buildFingerprint }}</code>
             </div>
           </article>
 
@@ -1867,6 +1935,64 @@ onMounted(() => {
   line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.about-build-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in srgb, var(--outline) 36%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-2) 38%, transparent);
+}
+
+.about-build-card--official {
+  border-color: color-mix(in srgb, #22c55e 34%, var(--outline));
+  background: color-mix(in srgb, #22c55e 8%, var(--surface-2));
+}
+
+.about-build-card--development {
+  border-color: color-mix(in srgb, #f2c94c 38%, var(--outline));
+  background: color-mix(in srgb, #f2c94c 8%, var(--surface-2));
+}
+
+.about-build-card__head,
+.about-build-fingerprint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+}
+
+.about-build-card__head span,
+.about-build-fingerprint span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.about-build-card__head strong {
+  color: var(--on-surface);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.about-build-card p {
+  margin: 0;
+  color: var(--on-surface-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.about-build-fingerprint code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--on-surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
 }
 
 .about-detail-grid {

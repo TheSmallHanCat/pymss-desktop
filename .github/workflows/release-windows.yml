@@ -48,6 +48,15 @@ jobs:
         run: ./scripts/sync-build-version.ps1
 
       - name: Build Tauri production app
+        env:
+          PYMSS_BUILD_GIT_COMMIT: ${{ github.sha }}
+          PYMSS_BUILD_GIT_TAG: v${{ steps.meta.outputs.version }}
+          PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
+          PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
+          PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PYMSS_BUILD_TARGET: windows-x64
+          PYMSS_BUILD_VARIANT: windows-x64-cuda
+          PYMSS_BUILD_OFFICIAL: 'true'
         run: pnpm tauri build --no-bundle
 
       - name: Prepare Windows bundled tools
@@ -204,6 +213,15 @@ jobs:
         run: ./scripts/sync-build-version.ps1
 
       - name: Build Tauri production app
+        env:
+          PYMSS_BUILD_GIT_COMMIT: ${{ github.sha }}
+          PYMSS_BUILD_GIT_TAG: v${{ steps.meta.outputs.version }}
+          PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
+          PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
+          PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PYMSS_BUILD_TARGET: windows-x64
+          PYMSS_BUILD_VARIANT: windows-x64-cpu
+          PYMSS_BUILD_OFFICIAL: 'true'
         run: pnpm tauri build --no-bundle
 
       - name: Prepare Windows bundled tools
@@ -348,6 +366,15 @@ jobs:
           PYMSS_VERSION: ${{ steps.meta.outputs.version }}
         run: ./scripts/sync-build-version.ps1
       - name: Build Tauri production app
+        env:
+          PYMSS_BUILD_GIT_COMMIT: ${{ github.sha }}
+          PYMSS_BUILD_GIT_TAG: v${{ steps.meta.outputs.version }}
+          PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
+          PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
+          PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PYMSS_BUILD_TARGET: windows-x64
+          PYMSS_BUILD_VARIANT: windows-x64-online
+          PYMSS_BUILD_OFFICIAL: 'true'
         run: pnpm tauri build --no-bundle
       - name: Prepare Windows bundled tools
         shell: pwsh
@@ -459,6 +486,15 @@ jobs:
           PYMSS_VERSION: ${{ steps.meta.outputs.version }}
         run: ./scripts/sync-build-version.ps1
       - name: Build Tauri production app
+        env:
+          PYMSS_BUILD_GIT_COMMIT: ${{ github.sha }}
+          PYMSS_BUILD_GIT_TAG: v${{ steps.meta.outputs.version }}
+          PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
+          PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
+          PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PYMSS_BUILD_TARGET: windows-x64
+          PYMSS_BUILD_VARIANT: windows-x64-rocm
+          PYMSS_BUILD_OFFICIAL: 'true'
         run: pnpm tauri build --no-bundle
       - name: Prepare ROCm portable tools
         shell: pwsh

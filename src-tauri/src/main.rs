@@ -53,6 +53,7 @@ fn main() {
             commands::app_cmd::get_app_paths,
             commands::app_cmd::get_env_info,
             commands::app_cmd::generate_waveform_peaks,
+            commands::app_cmd::get_build_info,
             commands::app_cmd::get_audio_metadata,
             commands::app_cmd::get_model_info,
             commands::app_cmd::get_model_storage_summary,

@@ -21,6 +21,7 @@ if ($NormalizedVersion -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
 $Root = Split-Path -Parent $PSScriptRoot
 $PackageJsonPath = Join-Path $Root 'package.json'
 $TauriConfigPath = Join-Path $Root 'src-tauri\tauri.conf.json'
+$CargoTomlPath = Join-Path $Root 'src-tauri\Cargo.toml'
 
 function Update-JsonVersion {
   param(
@@ -37,6 +38,11 @@ function Update-JsonVersion {
 Update-JsonVersion -Path $PackageJsonPath
 Update-JsonVersion -Path $TauriConfigPath
 
+$CargoToml = Get-Content -Path $CargoTomlPath -Raw
+$CargoToml = [regex]::Replace($CargoToml, '(?m)^(version\s*=\s*)"[^"]+"', "`${1}`"$NormalizedVersion`"", 1)
+[System.IO.File]::WriteAllText($CargoTomlPath, $CargoToml, [System.Text.UTF8Encoding]::new($false))
+
 Write-Host "Synchronized build version to $NormalizedVersion"
 Write-Host " - $PackageJsonPath"
 Write-Host " - $TauriConfigPath"
+Write-Host " - $CargoTomlPath"

@@ -15,6 +15,21 @@ use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildInfo {
+    version: &'static str,
+    git_commit: &'static str,
+    git_tag: &'static str,
+    git_ref: &'static str,
+    run_id: &'static str,
+    run_attempt: &'static str,
+    build_time: &'static str,
+    target: &'static str,
+    variant: &'static str,
+    official: bool,
+}
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -31,6 +46,22 @@ fn kill_process_tree(pid: u32) {
     let _ = Command::new("pkill")
         .args(["-TERM", "-P", &pid.to_string()])
         .status();
+}
+
+#[tauri::command]
+pub fn get_build_info() -> BuildInfo {
+    BuildInfo {
+        version: env!("CARGO_PKG_VERSION"),
+        git_commit: option_env!("PYMSS_BUILD_GIT_COMMIT").unwrap_or(""),
+        git_tag: option_env!("PYMSS_BUILD_GIT_TAG").unwrap_or(""),
+        git_ref: option_env!("PYMSS_BUILD_GIT_REF").unwrap_or(""),
+        run_id: option_env!("PYMSS_BUILD_RUN_ID").unwrap_or(""),
+        run_attempt: option_env!("PYMSS_BUILD_RUN_ATTEMPT").unwrap_or(""),
+        build_time: option_env!("PYMSS_BUILD_TIME").unwrap_or(""),
+        target: option_env!("PYMSS_BUILD_TARGET").unwrap_or("dev"),
+        variant: option_env!("PYMSS_BUILD_VARIANT").unwrap_or("development"),
+        official: option_env!("PYMSS_BUILD_OFFICIAL") == Some("true"),
+    }
 }
 
 #[tauri::command]

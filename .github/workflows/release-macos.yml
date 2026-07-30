@@ -34,6 +34,7 @@ jobs:
           fi
           python3 - "$VERSION" <<'PY'
           import json
+          import re
           import sys
           from pathlib import Path
 
@@ -43,6 +44,10 @@ jobs:
               data = json.loads(path.read_text(encoding="utf-8"))
               data["version"] = version
               path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          cargo = Path("src-tauri/Cargo.toml")
+          text = cargo.read_text(encoding="utf-8")
+          text = re.sub(r'(?m)^(version\s*=\s*)"[^"]+"', rf'\1"{version}"', text, count=1)
+          cargo.write_text(text, encoding="utf-8")
           PY
 
       - name: Prepare embedded Python runtime with PyTorch + MLX support
@@ -77,6 +82,15 @@ jobs:
 
       - name: Build Tauri app bundle
         working-directory: .
+        env:
+          PYMSS_BUILD_GIT_COMMIT: ${{ github.sha }}
+          PYMSS_BUILD_GIT_TAG: ${{ startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version) }}
+          PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
+          PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
+          PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PYMSS_BUILD_TARGET: macos-arm64
+          PYMSS_BUILD_VARIANT: macos-arm64-mlx
+          PYMSS_BUILD_OFFICIAL: 'true'
         run: |
           python3 - <<'PY' > src-tauri/tauri.bundle.resources.json
           import json
