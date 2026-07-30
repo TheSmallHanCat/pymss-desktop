@@ -99,6 +99,7 @@ const {
   logsDir,
   defaultDevice,
   downloadSource,
+  downloadMethod,
   maxConcurrentSeparations,
   modelDirMigrationState,
   isModelDirMigrating,
@@ -402,6 +403,10 @@ const proxyModeOptions = computed(() => [
   { value: 'none' as const, label: t('settings.proxyModeNone') },
   { value: 'system' as const, label: t('settings.proxyModeSystem') },
   { value: 'custom' as const, label: t('settings.proxyModeCustom') },
+])
+const downloadMethodOptions = computed(() => [
+  { value: 'aria2c' as const, label: t('settings.downloadMethodAria2c') },
+  { value: 'urllib' as const, label: t('settings.downloadMethodUrllib') },
 ])
 
 function buildProxyTestSuggestion(error: string, mode: string): string {
@@ -1379,6 +1384,14 @@ onMounted(() => {
                     { label: 'HF Mirror', value: 'hf-mirror' },
                   ]"
                 />
+              </div>
+              <div class="setting-field">
+                <label class="text-muted text-sm">{{ t('settings.downloadMethod') }}</label>
+                <n-select
+                  v-model:value="downloadMethod"
+                  :options="downloadMethodOptions"
+                />
+                <p class="text-muted text-sm setting-field__hint">{{ t('settings.downloadMethodHint') }}</p>
               </div>
             </section>
 

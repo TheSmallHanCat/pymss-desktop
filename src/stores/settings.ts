@@ -88,6 +88,7 @@ type StoredSettings = {
   defaultDevice?: string
   defaultFormat?: string
   downloadSource?: string
+  downloadMethod?: DownloadMethod
   maxConcurrentSeparations?: number
   wavBitDepth?: string
   flacBitDepth?: string
@@ -102,9 +103,11 @@ type StoredSettings = {
 }
 
 export type ProxyMode = 'system' | 'none' | 'custom'
+export type DownloadMethod = 'aria2c' | 'urllib'
 
 const DEFAULT_LOCALE: LocaleSetting = 'system'
 const DEFAULT_DOWNLOAD_SOURCE = 'modelscope'
+const DEFAULT_DOWNLOAD_METHOD: DownloadMethod = 'aria2c'
 const DEFAULT_DEFAULT_DEVICE = 'auto'
 const DEFAULT_DEFAULT_FORMAT = 'wav'
 const DEFAULT_CONCURRENT_SEPARATIONS = 1
@@ -163,6 +166,10 @@ function createEmptyModelDirMigrationState(): ModelDirMigrationState {
   }
 }
 
+function normalizeDownloadMethod(value: unknown): DownloadMethod {
+  return value === 'urllib' ? 'urllib' : DEFAULT_DOWNLOAD_METHOD
+}
+
 function browserAppPaths(): AppPathsPayload {
   return {
     dataRoot: '',
@@ -215,6 +222,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const defaultDevice = ref(DEFAULT_DEFAULT_DEVICE)
   const defaultFormat = ref(DEFAULT_DEFAULT_FORMAT)
   const downloadSource = ref(DEFAULT_DOWNLOAD_SOURCE)
+  const downloadMethod = ref<DownloadMethod>(DEFAULT_DOWNLOAD_METHOD)
   const maxConcurrentSeparations = ref(DEFAULT_CONCURRENT_SEPARATIONS)
   const wavBitDepth = ref(DEFAULT_WAV_BIT_DEPTH)
   const flacBitDepth = ref(DEFAULT_FLAC_BIT_DEPTH)
@@ -247,6 +255,7 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultDevice: defaultDevice.value,
     defaultFormat: defaultFormat.value,
     downloadSource: downloadSource.value,
+    downloadMethod: downloadMethod.value,
     maxConcurrentSeparations: maxConcurrentSeparations.value,
     wavBitDepth: wavBitDepth.value,
     flacBitDepth: flacBitDepth.value,
@@ -300,6 +309,7 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultDevice.value = stored?.defaultDevice || DEFAULT_DEFAULT_DEVICE
     defaultFormat.value = stored?.defaultFormat || DEFAULT_DEFAULT_FORMAT
     downloadSource.value = stored?.downloadSource || DEFAULT_DOWNLOAD_SOURCE
+    downloadMethod.value = normalizeDownloadMethod(stored?.downloadMethod)
     maxConcurrentSeparations.value = Number.isFinite(Number(stored?.maxConcurrentSeparations))
       ? Math.min(MAX_CONCURRENT_SEPARATIONS, Math.max(1, Math.trunc(Number(stored?.maxConcurrentSeparations))))
       : DEFAULT_CONCURRENT_SEPARATIONS
@@ -364,6 +374,7 @@ export const useSettingsStore = defineStore('settings', () => {
       defaultDevice,
       defaultFormat,
       downloadSource,
+      downloadMethod,
       maxConcurrentSeparations,
       wavBitDepth,
       flacBitDepth,
@@ -824,6 +835,7 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultDevice,
     defaultFormat,
     downloadSource,
+    downloadMethod,
     maxConcurrentSeparations,
     MAX_CONCURRENT_SEPARATIONS,
     SCALE_FACTOR_MIN,

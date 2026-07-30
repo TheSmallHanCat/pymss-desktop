@@ -379,6 +379,7 @@ def _prepare_separator(
     model_dir = payload.get("modelDir") or None
     download = bool(payload.get("download", True))
     source = payload.get("source") or "modelscope"
+    download_method = payload.get("downloadMethod") or "aria2c"
     endpoint = payload.get("endpoint") or None
     device, device_ids, resolved_device_label = _resolve_separator_device(
         payload.get("device"), payload.get("deviceIds")
@@ -413,7 +414,7 @@ def _prepare_separator(
         from pymss.model_download import download_model  # type: ignore
         from worker_download import _aria2_args_for_current_proxy, download_studio_model, files_for_studio_model, prepare_pymss_download
         emit("task_stage", {"stage": "downloading_model", "message": "Downloading model files"}, task_id=task_id)
-        prepare_pymss_download(pymss_model_download, task_id, download_model)
+        prepare_pymss_download(pymss_model_download, task_id, download_model, download_method)
         _entry, files = files_for_studio_model(model_name, model_dir)
         download_studio_model(
             pymss_model_download,
@@ -422,6 +423,7 @@ def _prepare_separator(
             source=source,
             endpoint=endpoint,
             aria2_args=_aria2_args_for_current_proxy(),
+            task_id=task_id,
         )
         resolved = _resolve_studio_model(model_name, model_dir, require_supported=True, require_exists=True)
     if not isinstance(resolved, dict):
@@ -753,6 +755,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
     model_dir = payload.get("modelDir") or None
     download = bool(payload.get("download", True))
     source = payload.get("source") or "modelscope"
+    download_method = payload.get("downloadMethod") or "aria2c"
     endpoint = payload.get("endpoint") or None
     try:
         device, device_ids, resolved_device_label = _resolve_separator_device(
@@ -842,7 +845,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
 
             try:
                 emit("task_stage", {"stage": "downloading_model", "message": "Downloading model files"}, task_id=task_id)
-                prepare_pymss_download(pymss_model_download, task_id, download_model)
+                prepare_pymss_download(pymss_model_download, task_id, download_model, download_method)
                 _entry, files = files_for_studio_model(model_name, model_dir)
                 download_studio_model(
                     pymss_model_download,
@@ -851,6 +854,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
                     source=source,
                     endpoint=endpoint,
                     aria2_args=_aria2_args_for_current_proxy(),
+                    task_id=task_id,
                 )
                 resolved = _resolve_studio_model(model_name, model_dir, require_supported=True, require_exists=True)
             except Exception as exc:

@@ -27,6 +27,7 @@ export type SeparationRunConfig = {
   runMode?: 'model' | 'workflow'
   modelDir: string | null
   downloadSource: string
+  downloadMethod: string
   workflowId?: string
   workflowName?: string
   workflowDefinition?: Record<string, unknown>
@@ -345,6 +346,7 @@ function normalizeRunConfig(runConfig?: SeparationRunConfig): SeparationRunConfi
   if (!runConfig) return undefined
   const next: SeparationRunConfig = {
     ...runConfig,
+    downloadMethod: runConfig.downloadMethod || 'aria2c',
     outputLayout: normalizeOutputLayout(runConfig.outputLayout),
     outputNaming: normalizeOutputNaming(runConfig.outputNaming),
     selectedStems: Array.isArray(runConfig.selectedStems)
@@ -829,6 +831,7 @@ export const useTaskStore = defineStore('task', () => {
       runMode: 'model',
       modelDir: settings.modelDir || null,
       downloadSource: settings.downloadSource,
+      downloadMethod: settings.downloadMethod,
       modelType: modelType ?? null,
       outputLayout,
       outputNaming: normalizeOutputNaming(outputNaming),
@@ -898,6 +901,7 @@ export const useTaskStore = defineStore('task', () => {
       runMode: 'workflow',
       modelDir: workflowModelDir,
       downloadSource: settings.downloadSource,
+      downloadMethod: settings.downloadMethod,
       workflowId: workflow.id,
       workflowName: workflow.name,
       workflowDefinition: buildWorkflowDefinitionForRun(workflow, workflowFormat),
@@ -1000,6 +1004,7 @@ export const useTaskStore = defineStore('task', () => {
             output: config.outputLayout === 'folders' ? (task.jobOutput || task.output) : task.output,
             modelDir: config.modelDir ?? (settings.modelDir || null),
             source: config.downloadSource || settings.downloadSource,
+            downloadMethod: config.downloadMethod || settings.downloadMethod,
             device: config.device,
             deviceIds: config.deviceIds,
             outputFormat: config.outputFormat,
@@ -1021,6 +1026,7 @@ export const useTaskStore = defineStore('task', () => {
           modelDir: config.modelDir ?? (settings.modelDir || null),
           download: true,
           source: config.downloadSource || settings.downloadSource,
+          downloadMethod: config.downloadMethod || settings.downloadMethod,
           endpoint: null,
           device: config.device,
           deviceIds: config.deviceIds,
@@ -1073,6 +1079,7 @@ export const useTaskStore = defineStore('task', () => {
           modelDir: config.modelDir ?? (settings.modelDir || null),
           download: true,
           source: config.downloadSource || settings.downloadSource,
+          downloadMethod: config.downloadMethod || settings.downloadMethod,
           endpoint: null,
           device: config.device,
           deviceIds: config.deviceIds,
@@ -1128,6 +1135,7 @@ export const useTaskStore = defineStore('task', () => {
           })),
           modelDir: config.modelDir ?? (settings.modelDir || null),
           source: config.downloadSource || settings.downloadSource,
+          downloadMethod: config.downloadMethod || settings.downloadMethod,
           device: config.device,
           deviceIds: config.deviceIds,
           outputFormat: config.outputFormat,

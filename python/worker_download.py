@@ -61,6 +61,7 @@ def _align_aria2_with_proxy(pymss_download: Any, task_id: str | None) -> None:
     Returns:
         None: This callable completes for its side effects."""
     if not pymss_download.ARIA2C_PATH:
+        _emit_download_log(task_id, "info", "aria2c is unavailable; downloading via urllib")
         return
 
     config = load_proxy_config()
@@ -106,6 +107,45 @@ def _aria2_args_for_current_proxy() -> tuple[str, ...]:
     return tuple(aria2_proxy_args(load_proxy_config()))
 
 
+def _normalize_download_method(value: Any) -> str:
+    return "urllib" if str(value or "").strip().lower() == "urllib" else "aria2c"
+
+
+def _should_fallback_from_aria2_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "aria2c" in message or "ossl_provider" in message or "provider_load" in message
+
+
+def _download_file_with_aria2_env(
+    pymss_download: Any,
+    download_file: Any,
+    url: str,
+    dest: Path,
+    expected_size: Any,
+    expected_sha256: Any,
+    download_kwargs: dict[str, Any],
+) -> None:
+    overrides = {}
+    if getattr(pymss_download, "ARIA2C_PATH", None):
+        openssl_conf = os.environ.get("PYMSS_STUDIO_OPENSSL_CONF")
+        openssl_modules = os.environ.get("PYMSS_STUDIO_OPENSSL_MODULES")
+        if openssl_conf:
+            overrides["OPENSSL_CONF"] = openssl_conf
+        if openssl_modules:
+            overrides["OPENSSL_MODULES"] = openssl_modules
+    previous = {name: os.environ.get(name) for name in overrides}
+    try:
+        for name, value in overrides.items():
+            os.environ[name] = value
+        download_file(url, dest, expected_size, expected_sha256, **download_kwargs)
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def files_for_studio_model(model_name: str, model_dir: str | None = None) -> tuple[Any, list[tuple[str, Path]]]:
     entry = get_any_model_entry(model_name)
     if is_user_model_entry(entry):
@@ -130,6 +170,7 @@ def download_studio_model(
     timeout: int = 30,
     progress_callback: Any = None,
     aria2_args: tuple[str, ...] = (),
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     remote_url = pymss_download.remote_url
     download_file = pymss_download._download_file
@@ -153,7 +194,15 @@ def download_studio_model(
             download_kwargs["progress_callback"] = progress_callback
         if "aria2_args" in download_file_params:
             download_kwargs["aria2_args"] = normalized_aria2_args
-        download_file(remote_url(relpath, source=source, endpoint=endpoint), dest, expected_size, expected_sha256, **download_kwargs)
+        url = remote_url(relpath, source=source, endpoint=endpoint)
+        try:
+            _download_file_with_aria2_env(pymss_download, download_file, url, dest, expected_size, expected_sha256, download_kwargs)
+        except Exception as exc:
+            if not getattr(pymss_download, "ARIA2C_PATH", None) or not _should_fallback_from_aria2_error(exc):
+                raise
+            pymss_download.ARIA2C_PATH = None
+            _emit_download_log(task_id, "warning", f"aria2c failed; retrying with urllib: {exc}")
+            _download_file_with_aria2_env(pymss_download, download_file, url, dest, expected_size, expected_sha256, download_kwargs)
         downloaded.append(str(dest))
 
     return {"downloaded": downloaded, "skipped": skipped}
@@ -172,13 +221,23 @@ def _pymss_reports_progress(download_model: Any) -> bool:
         return False
 
 
-def prepare_pymss_download(pymss_download: Any, task_id: str | None, download_model: Any | None = None) -> None:
+def prepare_pymss_download(
+    pymss_download: Any,
+    task_id: str | None,
+    download_model: Any | None = None,
+    download_method: str = "aria2c",
+) -> None:
     """Prepare pymss's downloader for this worker process.
 
     This is shared by the model-library download command and the automatic download path used
     before separation. Both invoke pymss directly, so both need the same child-process proxy and
     stdout-protocol guards.
     """
+    if _normalize_download_method(download_method) == "urllib":
+        pymss_download.ARIA2C_PATH = None
+        _emit_download_log(task_id, "info", "Downloading via urllib by user setting")
+        return
+
     _align_aria2_with_proxy(pymss_download, task_id)
     config = load_proxy_config()
     supports_variadic_args = bool(download_model) and any(
@@ -340,6 +399,7 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
     task_id = payload.get("taskId") or f"download_{model_name}"
     model_dir = payload.get("modelDir") or None
     source = payload.get("source") or "modelscope"
+    download_method = _normalize_download_method(payload.get("downloadMethod"))
     endpoint = payload.get("endpoint") or None
     force = bool(payload.get("force", False))
     timeout = _safe_int(payload.get("timeout"), 30)
@@ -358,7 +418,7 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
     stop_watching = threading.Event()
     watcher: threading.Thread | None = None
     try:
-        prepare_pymss_download(pymss_model_download, task_id, download_model)
+        prepare_pymss_download(pymss_model_download, task_id, download_model, download_method)
 
         entry, files = files_for_studio_model(model_name, model_dir)
         total_files = max(1, len(files))
@@ -475,6 +535,7 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
             timeout=timeout,
             progress_callback=download_kwargs.get("progress_callback"),
             aria2_args=_aria2_args_for_current_proxy(),
+            task_id=task_id,
         )
     except KeyError as exc:
         # An unknown model name is the caller's mistake, not a transfer failure, and the UI tells

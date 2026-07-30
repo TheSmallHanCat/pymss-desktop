@@ -247,6 +247,11 @@ fn bundled_bin_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     dirs.push(exe_dir.join("bin"));
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(PathBuf::from("/opt/homebrew/bin"));
+        dirs.push(PathBuf::from("/usr/local/bin"));
+    }
 
     Ok(dirs.into_iter().filter(|dir| dir.is_dir()).collect())
 }

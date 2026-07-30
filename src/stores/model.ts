@@ -1077,6 +1077,7 @@ export const useModelStore = defineStore('model', () => {
           model: name,
           modelDir: settings.modelDir || null,
           source: settings.downloadSource,
+          downloadMethod: settings.downloadMethod,
           endpoint: null,
           force,
         },

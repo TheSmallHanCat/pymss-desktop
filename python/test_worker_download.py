@@ -13,6 +13,7 @@ from worker_download import (
     _make_pymss_progress_adapter,
     _pymss_reports_progress,
     _watch_download_progress,
+    download_studio_model,
     files_for_studio_model,
     prepare_pymss_download,
 )
@@ -129,6 +130,19 @@ class PymssCapabilityTest(unittest.TestCase):
 
         self.assertEqual(module.ARIA2C_PATH, "C:/bin/aria2c.exe")
 
+    def test_user_can_force_urllib(self):
+        def new_style(model_name, model_dir=None, progress_callback=None):
+            pass
+
+        module = SimpleNamespace(ARIA2C_PATH="C:/bin/aria2c.exe")
+        proxy = parse_proxy_config({"mode": "system", "url": "", "bypass": ""})
+        with mock.patch("worker_download.load_proxy_config", return_value=proxy), \
+             mock.patch("worker_download.urllib.request.getproxies", return_value={}), \
+             mock.patch("worker_download.emit"):
+            prepare_pymss_download(module, "task", new_style, "urllib")
+
+        self.assertIsNone(module.ARIA2C_PATH)
+
 
 class StudioModelFileResolutionTest(unittest.TestCase):
     def test_uses_studio_catalog_entry_paths(self):
@@ -151,6 +165,41 @@ class StudioModelFileResolutionTest(unittest.TestCase):
             ("debug/debug_model.yaml", root / "debug" / "debug_model.yaml"),
             ("debug/debug_model.json", root / "debug" / "debug_model.json"),
         ])
+
+
+class Aria2FallbackTest(unittest.TestCase):
+    def test_retries_with_urllib_when_aria2_fails(self):
+        calls: list[str | None] = []
+        openssl_env: list[tuple[str | None, str | None]] = []
+
+        def download_file(_url, _dest, _expected_size, _expected_sha256, **_kwargs):
+            calls.append(module.ARIA2C_PATH)
+            openssl_env.append((os.environ.get("OPENSSL_CONF"), os.environ.get("OPENSSL_MODULES")))
+            if module.ARIA2C_PATH:
+                raise RuntimeError("aria2c failed with exit code 1: OSSL_PROVIDER_load 'legacy' failed")
+
+        module = SimpleNamespace(
+            ARIA2C_PATH="/app/bin/aria2c",
+            remote_url=lambda relpath, source="modelscope", endpoint=None: f"https://example.test/{relpath}",
+            _download_file=download_file,
+            _already_valid=lambda *_args: False,
+            _expected_size_and_hash=lambda *_args: (1, "sha256"),
+            fetch_modelscope_file_index=lambda timeout=30: {},
+        )
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, True))
+
+        with mock.patch("worker_download.emit"), \
+             mock.patch.dict(os.environ, {
+                 "PYMSS_STUDIO_OPENSSL_CONF": "/app/bin/openssl/openssl.cnf",
+                 "PYMSS_STUDIO_OPENSSL_MODULES": "/app/bin/openssl/ossl-modules",
+             }, clear=True):
+            result = download_studio_model(module, "model", [("model.th", root / "model.th")], task_id="task")
+
+        self.assertEqual(calls, ["/app/bin/aria2c", None])
+        self.assertEqual(openssl_env, [("/app/bin/openssl/openssl.cnf", "/app/bin/openssl/ossl-modules"), (None, None)])
+        self.assertIsNone(module.ARIA2C_PATH)
+        self.assertEqual(result["downloaded"], [str(root / "model.th")])
 
 
 class ProgressAdapterTest(unittest.TestCase):

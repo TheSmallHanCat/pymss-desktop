@@ -30,7 +30,7 @@ const settings = useSettingsStore()
 const task = useTaskStore()
 const modelStore = useModelStore()
 
-const { developerMode, dataRoot, modelDir, outputDir, settingsDir, editorProjectsDir, logsDir, tempDir, defaultDevice, downloadSource, maxConcurrentSeparations } = storeToRefs(settings)
+const { developerMode, dataRoot, modelDir, outputDir, settingsDir, editorProjectsDir, logsDir, tempDir, defaultDevice, downloadSource, downloadMethod, maxConcurrentSeparations } = storeToRefs(settings)
 const { activeWorkerTasks, runningTasks } = storeToRefs(task)
 const { downloadTasks } = storeToRefs(modelStore)
 
@@ -412,6 +412,7 @@ const runtimeRows = computed(() => [
   { label: t('debug.defaultDevice'), value: defaultDevice.value },
   { label: t('debug.resolvedDevice'), value: `${runtimeDevice.value.device} [${runtimeDevice.value.deviceIds.join(', ')}]` },
   { label: t('debug.downloadSource'), value: downloadSource.value },
+  { label: t('debug.downloadMethod'), value: downloadMethod.value },
   { label: t('debug.maxConcurrent'), value: String(maxConcurrentSeparations.value) },
 ])
 const pathRows = computed(() => [
