@@ -25,6 +25,8 @@ import {
   ReorderFourOutline,
   ChevronUpOutline,
   ChevronDownOutline,
+  GridOutline,
+  ListOutline,
 } from '@vicons/ionicons5'
 import { useModelStore } from '@/stores/model'
 import { useTaskStore, type OutputLayout, type SeparationTask, type StemOutput } from '@/stores/task'
@@ -76,6 +78,7 @@ const {
   post_process_threshold,
   high_end_process,
   selectedStems,
+  modelListViewMode,
 } = storeToRefs(task)
 const { selectedModel, downloadedModels, models: modelEntries, isLoading, detailLoading, modelPreferences } = storeToRefs(model)
 const { workflows, selectedWorkflow, selectedWorkflowId } = storeToRefs(workflow)
@@ -1810,6 +1813,28 @@ async function retryCurrentTask() {
                       :menu-props="{ class: 'model-picker__category-menu' }"
                       :options="modelCategoryOptions"
                     />
+                    <div class="view-toggle target-toolbar__view" role="group" :aria-label="t('models.viewMode')">
+                      <button
+                        type="button"
+                        class="view-toggle__button"
+                        :class="{ 'view-toggle__button--active': modelListViewMode === 'list' }"
+                        :aria-pressed="modelListViewMode === 'list'"
+                        :title="t('models.viewList')"
+                        @click="modelListViewMode = 'list'"
+                      >
+                        <n-icon :component="ListOutline" />
+                      </button>
+                      <button
+                        type="button"
+                        class="view-toggle__button"
+                        :class="{ 'view-toggle__button--active': modelListViewMode === 'card' }"
+                        :aria-pressed="modelListViewMode === 'card'"
+                        :title="t('models.viewCard')"
+                        @click="modelListViewMode = 'card'"
+                      >
+                        <n-icon :component="GridOutline" />
+                      </button>
+                    </div>
                   </div>
                   <div v-if="ensembleEnabled" class="ensemble-summary-bar">
                     <div class="ensemble-summary-bar__info">
@@ -1821,7 +1846,13 @@ async function retryCurrentTask() {
                       {{ t('separate.ensembleConfigure') }}
                     </n-button>
                   </div>
-                  <div v-if="pagedDownloadedModels.length" class="target-list" role="listbox" :aria-label="t('separate.model')">
+                  <div
+                    v-if="pagedDownloadedModels.length"
+                    class="target-list target-list--models"
+                    :class="`target-list--${modelListViewMode}`"
+                    role="listbox"
+                    :aria-label="t('separate.model')"
+                  >
                     <button
                       v-for="item in pagedDownloadedModels"
                       :key="item.name"
@@ -2956,6 +2987,42 @@ async function retryCurrentTask() {
 .model-mode-select { width: 156px; }
 .model-mode-select :deep(.n-base-selection-label) { white-space: nowrap; }
 
+.view-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 55%, transparent);
+}
+
+.view-toggle__button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--on-surface-muted);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.view-toggle__button:hover { color: var(--on-surface); }
+
+.view-toggle__button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.view-toggle__button--active {
+  background: var(--surface-1);
+  color: var(--primary);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
 .model-mode-control {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, auto));
@@ -2992,11 +3059,13 @@ async function retryCurrentTask() {
 .target-toolbar {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 190px;
+  grid-template-columns: minmax(0, 1fr) 190px auto;
+  align-items: center;
   gap: 10px;
 }
 .target-toolbar--single { grid-template-columns: minmax(0, 1fr); }
 .target-toolbar__filter { min-width: 0; }
+.target-toolbar__view { justify-self: end; }
 
 .ensemble-summary-bar {
   display: grid;
@@ -3060,6 +3129,10 @@ async function retryCurrentTask() {
   padding-right: 6px;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--outline) 120%, transparent) transparent;
+}
+.target-list--list {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
 }
 .target-list::-webkit-scrollbar { width: 7px; }
 .target-list::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--outline) 130%, transparent); }
@@ -3177,6 +3250,27 @@ async function retryCurrentTask() {
 }
 
 .target-row__check { flex: 0 0 auto; font-size: 18px; color: var(--primary); }
+
+.target-list--list .target-row {
+  min-height: 48px;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.target-list--list .target-row__body {
+  grid-template-columns: minmax(160px, 0.9fr) minmax(180px, 1.1fr);
+  align-items: center;
+  gap: 4px 14px;
+}
+
+.target-list--list .target-row__name { font-size: 13px; }
+
+.target-list--list .target-row__meta { min-width: 0; }
+
+.target-list--list .target-row__note {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
 
 .stage-empty {
   flex: 1 1 auto;
@@ -4048,6 +4142,11 @@ async function retryCurrentTask() {
   }
   .target-toolbar {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .target-toolbar__view { justify-self: start; }
+  .target-list--list .target-row__body {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
   }
   .model-mode-control {
     grid-template-columns: minmax(0, 1fr);

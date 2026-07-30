@@ -54,6 +54,38 @@ type DebugModelConfig = {
   effectiveContent: string
   downloadedConfigExists: boolean
 }
+type DebugRuntimeFileInfo = {
+  kind: string
+  source: string
+  path: string
+  exists: boolean
+  editable: boolean
+  content?: string | null
+  backupPath: string
+  backupExists: boolean
+}
+type DebugRuntimePointers = {
+  runtimeEnvsDir: string
+  activeRuntimeFile: string
+  bundledRuntimeEnvsDir?: string | null
+  files: DebugRuntimeFileInfo[]
+}
+type RuntimeTreeChild = {
+  name: string
+  role: string
+  path: string
+}
+type RuntimeTreeNode = RuntimeTreeChild & {
+  source: string
+  children: RuntimeTreeChild[]
+}
+type RuntimeDebugEnvironmentRow = {
+  backend: string
+  source: string
+  pythonPath: string
+  editablePath: string
+  editableFile: DebugRuntimeFileInfo | null
+}
 
 const activeTab = ref<DebugTab>('overview')
 const debugCatalogLoading = ref(false)
@@ -74,6 +106,14 @@ const debugModelConfig = ref<DebugModelConfig | null>(null)
 const debugConfigText = ref('')
 const workerEventDialogVisible = ref(false)
 const selectedWorkerEvent = ref<any | null>(null)
+const runtimeDebugLoading = ref(false)
+const runtimeDebugSaving = ref('')
+const runtimeDebugInfo = ref<DebugRuntimePointers | null>(null)
+const runtimeDebugEditorVisible = ref(false)
+const runtimeDebugEditingPath = ref('')
+const runtimeDebugEditingContent = ref('')
+const runtimeOverrideBackend = ref('cuda')
+const runtimeOverridePythonPath = ref('')
 
 const diagnostics = computed(() => app.diagnostics)
 const env = computed(() => app.envInfo)
@@ -334,7 +374,7 @@ const pathRows = computed(() => [
   { label: t('debug.tempDir'), value: tempDir.value },
   { label: t('debug.debugDir'), value: debugCatalogInfo.value?.debugDir || '' },
 ])
-const runtimeTree = computed(() => {
+const runtimeTree = computed<RuntimeTreeNode[]>(() => {
   const info = app.runtimeInfo
   const environments = info?.installedEnvironments || []
   return [
@@ -379,6 +419,36 @@ const runtimeTree = computed(() => {
     }] : []),
   ]
 })
+const runtimeDebugRows = computed(() => [
+  { label: t('debug.runtimeDebugUserRoot'), value: runtimeDebugInfo.value?.runtimeEnvsDir || app.runtimeInfo?.runtimeEnvsDir || '' },
+  { label: t('debug.runtimeDebugUserActive'), value: runtimeDebugInfo.value?.activeRuntimeFile || app.runtimeInfo?.activeRuntimeFile || '' },
+  { label: t('debug.runtimeDebugBundledRoot'), value: runtimeDebugInfo.value?.bundledRuntimeEnvsDir || app.runtimeInfo?.bundledRuntimeEnvsDir || '' },
+  { label: t('debug.runtimeDebugInstallState'), value: app.runtimeInfo?.installState?.pythonPath || app.runtimeInfo?.installedBackend || '' },
+])
+const runtimeDebugFiles = computed(() => runtimeDebugInfo.value?.files || [])
+const runtimeDebugActiveFile = computed(() => runtimeDebugFiles.value.find((file) => file.kind === 'active-runtime') || null)
+const runtimeDebugFileLookup = computed(() => new Map(runtimeDebugFiles.value.map((file) => [file.path, file])))
+const runtimeDebugEnvironments = computed<RuntimeDebugEnvironmentRow[]>(() => (app.runtimeInfo?.installedEnvironments || []).map((entry) => {
+  const pythonPath = String(entry.pythonPath || '')
+  const separator = pythonPath.includes('\\') ? '\\' : '/'
+  const editablePath = pythonPath
+    .replace(/[\\/]Scripts[\\/]python(?:\.exe)?$/i, `${separator}pyvenv.cfg`)
+    .replace(/[\\/]bin[\\/]python(?:\d+(?:\.\d+)?)?$/i, `${separator}pyvenv.cfg`)
+  const editableFile = editablePath !== pythonPath ? runtimeDebugFileLookup.value.get(editablePath) || null : null
+  return {
+    backend: String(entry.backend || '-'),
+    source: String(entry.source || '-'),
+    pythonPath,
+    editablePath: editableFile?.path || editablePath,
+    editableFile,
+  }
+}))
+const runtimeBackendOptions = [
+  { label: 'CPU', value: 'cpu' },
+  { label: 'CUDA', value: 'cuda' },
+  { label: 'ROCm', value: 'rocm' },
+  { label: 'MLX', value: 'mlx' },
+]
 const statusCards = computed(() => [
   { label: t('debug.envStatus'), value: app.envReady ? t('debug.ready') : t('debug.needsAttention'), tone: app.envReady ? 'ok' : 'warn' },
   { label: t('debug.activeWorkerTasks'), value: String(activeWorkerTasks.value.length), tone: activeWorkerTasks.value.length ? 'warn' : 'ok' },
@@ -527,11 +597,97 @@ async function revealPath(path: string) {
   }
 }
 
+function setRuntimeDebugInfo(info: DebugRuntimePointers) {
+  runtimeDebugInfo.value = info
+  if (runtimeDebugEditingPath.value && !info.files.some((file) => file.path === runtimeDebugEditingPath.value)) {
+    runtimeDebugEditorVisible.value = false
+    runtimeDebugEditingPath.value = ''
+    runtimeDebugEditingContent.value = ''
+  }
+}
+
+async function loadRuntimeDebugPointers() {
+  if (!developerMode.value) {
+    runtimeDebugInfo.value = null
+    return
+  }
+  runtimeDebugLoading.value = true
+  try {
+    const info = await invoke<DebugRuntimePointers>('debug_runtime_pointers')
+    setRuntimeDebugInfo(info)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    runtimeDebugLoading.value = false
+  }
+}
+
+function openRuntimeDebugEditor(file: DebugRuntimeFileInfo) {
+  if (!developerMode.value || !file.editable) return
+  runtimeDebugEditingPath.value = file.path
+  runtimeDebugEditingContent.value = file.content || ''
+  runtimeDebugEditorVisible.value = true
+}
+
+async function saveRuntimeDebugEditor() {
+  const path = runtimeDebugEditingPath.value
+  if (!path) return
+  runtimeDebugSaving.value = path
+  try {
+    const info = await invoke<DebugRuntimePointers>('debug_runtime_write_file', {
+      payload: { path, content: runtimeDebugEditingContent.value || '', backup: true },
+    })
+    setRuntimeDebugInfo(info)
+    runtimeDebugEditorVisible.value = false
+    runtimeDebugEditingPath.value = ''
+    runtimeDebugEditingContent.value = ''
+    await app.checkRuntimeInfo().catch(() => {})
+    message.success(t('debug.runtimeDebugSaved'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    runtimeDebugSaving.value = ''
+  }
+}
+
+async function restoreRuntimeDebugFile(file: DebugRuntimeFileInfo) {
+  if (!developerMode.value || !file.backupExists) return
+  runtimeDebugSaving.value = file.path
+  try {
+    const info = await invoke<DebugRuntimePointers>('debug_runtime_restore_file', { payload: { path: file.path } })
+    setRuntimeDebugInfo(info)
+    await app.checkRuntimeInfo().catch(() => {})
+    message.success(t('debug.runtimeDebugRestored'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    runtimeDebugSaving.value = ''
+  }
+}
+
+async function overrideActiveRuntimePointer() {
+  if (!developerMode.value || !runtimeOverrideBackend.value || !runtimeOverridePythonPath.value.trim()) return
+  runtimeDebugSaving.value = 'active-runtime'
+  try {
+    const info = await invoke<DebugRuntimePointers>('debug_runtime_override_active', {
+      payload: { backend: runtimeOverrideBackend.value, pythonPath: runtimeOverridePythonPath.value.trim(), source: 'debug' },
+    })
+    setRuntimeDebugInfo(info)
+    await app.checkRuntimeInfo().catch(() => {})
+    message.success(t('debug.runtimeDebugOverrideSaved'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    runtimeDebugSaving.value = ''
+  }
+}
+
 onMounted(() => {
   if (!app.envInfo && !app.envLoading) {
     app.checkEnvInBackground().catch(() => {})
   }
   app.checkRuntimeInfo().catch(() => {})
+  if (developerMode.value) loadRuntimeDebugPointers().catch(() => {})
   if (!modelStore.models.length) modelStore.loadModels().catch(() => {})
   loadDebugCatalog().catch(() => {})
 })
@@ -545,6 +701,13 @@ watch(debugModelOptions, (options) => {
     selectedDebugModel.value = ''
     debugModelConfig.value = null
     debugConfigText.value = ''
+  }
+})
+
+watch(developerMode, (enabled) => {
+  if (enabled) loadRuntimeDebugPointers().catch(() => {})
+  else {
+    runtimeDebugInfo.value = null
   }
 })
 </script>
@@ -656,6 +819,62 @@ watch(debugModelOptions, (options) => {
           <span>{{ t('debug.runtimeTreeTitle') }}</span>
         </div>
       </template>
+      <section class="runtime-debug-panel">
+        <div class="runtime-debug-toolbar">
+          <strong>{{ t('debug.runtimeDebugPointerTitle') }}</strong>
+          <n-button size="tiny" secondary :loading="runtimeDebugLoading" @click="loadRuntimeDebugPointers">
+            {{ t('common.refresh') }}
+          </n-button>
+        </div>
+        <div class="kv-list">
+          <div v-for="row in runtimeDebugRows" :key="row.label" class="kv-row">
+            <span>{{ row.label }}</span>
+            <code :title="row.value || '-'">{{ row.value || '-' }}</code>
+          </div>
+        </div>
+        <div class="runtime-override-form">
+          <n-select v-model:value="runtimeOverrideBackend" size="small" :options="runtimeBackendOptions" />
+          <n-input v-model:value="runtimeOverridePythonPath" size="small" :placeholder="t('debug.runtimeDebugPythonPathPlaceholder')" />
+          <n-button size="small" type="primary" secondary :loading="runtimeDebugSaving === 'active-runtime'" :disabled="!developerMode || !runtimeOverridePythonPath.trim()" @click="overrideActiveRuntimePointer">
+            {{ t('debug.runtimeDebugOverrideActive') }}
+          </n-button>
+        </div>
+      </section>
+      <section class="runtime-file-editor-list">
+        <article v-if="runtimeDebugActiveFile" class="runtime-file-editor">
+          <div class="runtime-file-editor__head">
+            <div class="runtime-file-editor__title">
+              <strong>active-runtime</strong>
+              <span>{{ runtimeDebugActiveFile.source }} · {{ runtimeDebugActiveFile.exists ? t('debug.runtimeDebugFileExists') : t('debug.runtimeDebugFileMissing') }}</span>
+            </div>
+            <div class="runtime-file-editor__actions">
+              <n-button size="tiny" secondary :disabled="!runtimeDebugActiveFile.path" @click="revealPath(runtimeDebugActiveFile.path)">{{ t('common.open') }}</n-button>
+              <n-button size="tiny" secondary :disabled="!developerMode || !runtimeDebugActiveFile.editable" @click="openRuntimeDebugEditor(runtimeDebugActiveFile)">{{ t('debug.runtimeDebugEdit') }}</n-button>
+              <n-button size="tiny" secondary :disabled="!developerMode || !runtimeDebugActiveFile.backupExists" :loading="runtimeDebugSaving === runtimeDebugActiveFile.path" @click="restoreRuntimeDebugFile(runtimeDebugActiveFile)">{{ t('debug.runtimeDebugRestore') }}</n-button>
+            </div>
+          </div>
+          <button type="button" class="runtime-file-editor__path-button" :disabled="!developerMode || !runtimeDebugActiveFile.editable" :title="t('debug.runtimeDebugEdit')" @click="openRuntimeDebugEditor(runtimeDebugActiveFile)">
+            <code class="runtime-file-editor__path">{{ runtimeDebugActiveFile.path }}</code>
+          </button>
+        </article>
+        <article v-for="envItem in runtimeDebugEnvironments" :key="`${envItem.backend}-${envItem.pythonPath}`" class="runtime-file-editor">
+          <div class="runtime-file-editor__head">
+            <div class="runtime-file-editor__title">
+              <strong>{{ envItem.backend }}</strong>
+              <span>{{ envItem.source }} · {{ envItem.editableFile ? t('debug.runtimeDebugConfigFile') : t('debug.runtimeDebugNoConfigFile') }}</span>
+            </div>
+            <div class="runtime-file-editor__actions">
+              <n-button size="tiny" secondary :disabled="!envItem.pythonPath" @click="revealPath(envItem.pythonPath)">{{ t('common.open') }}</n-button>
+              <n-button size="tiny" secondary :disabled="!developerMode || !envItem.editableFile?.editable" @click="envItem.editableFile && openRuntimeDebugEditor(envItem.editableFile)">{{ t('debug.runtimeDebugEdit') }}</n-button>
+              <n-button size="tiny" secondary :disabled="!developerMode || !envItem.editableFile?.backupExists" :loading="runtimeDebugSaving === envItem.editablePath" @click="envItem.editableFile && restoreRuntimeDebugFile(envItem.editableFile)">{{ t('debug.runtimeDebugRestore') }}</n-button>
+            </div>
+          </div>
+          <button v-if="envItem.editableFile" type="button" class="runtime-file-editor__path-button" :disabled="!developerMode || !envItem.editableFile.editable" :title="t('debug.runtimeDebugEdit')" @click="openRuntimeDebugEditor(envItem.editableFile)">
+            <code class="runtime-file-editor__path runtime-file-editor__path--config">{{ envItem.editablePath }}</code>
+          </button>
+        </article>
+        <n-empty v-if="!runtimeDebugActiveFile && !runtimeDebugEnvironments.length" :description="t('debug.runtimeDebugNoFiles')" />
+      </section>
       <div class="runtime-tree">
         <div v-for="node in runtimeTree" :key="node.name" class="runtime-tree__node">
           <div class="runtime-tree__head">
@@ -681,6 +900,38 @@ watch(debugModelOptions, (options) => {
         <n-empty v-if="!app.runtimeInfo" :description="t('debug.envNotChecked')" />
       </div>
     </n-card>
+
+    <n-modal v-model:show="runtimeDebugEditorVisible" preset="card" style="width: min(760px, 92vw)" :mask-closable="true" @after-leave="runtimeDebugEditingPath = ''; runtimeDebugEditingContent = ''">
+      <template #header>
+        <div class="debug-section-title">
+          <n-icon :component="TerminalOutline" />
+          <span>{{ t('debug.runtimeDebugEditorTitle') }}</span>
+        </div>
+      </template>
+      <div class="runtime-debug-editor-modal">
+        <div class="kv-list">
+          <div class="kv-row">
+            <span>{{ t('debug.runtimeDebugEditPath') }}</span>
+            <code :title="runtimeDebugEditingPath">{{ runtimeDebugEditingPath || '-' }}</code>
+          </div>
+        </div>
+        <n-input
+          v-model:value="runtimeDebugEditingContent"
+          type="textarea"
+          size="small"
+          :autosize="{ minRows: 12, maxRows: 24 }"
+          :placeholder="t('debug.runtimeDebugEmptyFile')"
+        />
+      </div>
+      <template #footer>
+        <div class="runtime-debug-editor-modal__footer">
+          <n-button secondary @click="runtimeDebugEditorVisible = false">{{ t('common.close') }}</n-button>
+          <n-button type="primary" secondary :loading="runtimeDebugSaving === runtimeDebugEditingPath" @click="saveRuntimeDebugEditor">
+            {{ t('common.save') }}
+          </n-button>
+        </div>
+      </template>
+    </n-modal>
 
     <section v-if="activeTab === 'models'" class="debug-model-workbench">
       <n-card class="debug-card" :bordered="true" size="small">
@@ -1204,6 +1455,125 @@ watch(debugModelOptions, (options) => {
   font-size: 12px;
 }
 
+.runtime-debug-panel,
+.runtime-file-editor-list {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.runtime-file-editor-list {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 30%, transparent);
+}
+
+.runtime-debug-toolbar,
+.runtime-file-editor__head,
+.runtime-file-editor__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.runtime-debug-toolbar,
+.runtime-file-editor__head {
+  justify-content: space-between;
+}
+
+.runtime-override-form {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.runtime-file-editor {
+  display: grid;
+  gap: 8px;
+  padding: 13px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--outline) 34%, transparent);
+  background: transparent;
+}
+
+.runtime-file-editor:last-of-type {
+  border-bottom: 0;
+}
+
+.runtime-file-editor__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.runtime-file-editor__title strong {
+  min-width: 86px;
+  color: var(--on-surface);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.runtime-file-editor__actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.runtime-file-editor__head span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.runtime-file-editor__path {
+  display: block;
+  overflow: hidden;
+  color: var(--on-surface-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-file-editor__path--config {
+  color: color-mix(in srgb, var(--on-surface-muted) 88%, var(--primary));
+}
+
+.runtime-file-editor__path-button {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.runtime-file-editor__path-button .runtime-file-editor__path {
+  display: block;
+  width: 100%;
+}
+
+.runtime-file-editor__path-button:disabled {
+  cursor: default;
+}
+
+.runtime-file-editor__path-button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.runtime-debug-editor-modal {
+  display: grid;
+  gap: 10px;
+}
+
+.runtime-debug-editor-modal__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .runtime-tree__node {
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
@@ -1463,8 +1833,19 @@ watch(debugModelOptions, (options) => {
   .path-debug-row,
   .task-debug-row,
   .debug-config-controls,
+  .runtime-override-form,
   .worker-event-row {
     grid-template-columns: 1fr;
+  }
+
+  .runtime-file-editor__head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .runtime-file-editor__actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .runtime-tree__head {

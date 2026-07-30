@@ -123,6 +123,7 @@ type PersistedSeparateState = {
   outputLayout?: OutputLayout
   outputNamingTemplate?: string
   customStemOrder?: string[]
+  modelListViewMode?: 'card' | 'list'
   useTta?: boolean
   debug?: boolean
   inferenceParamsByModel?: Record<string, PersistedSeparateModelState>
@@ -455,6 +456,7 @@ export const useTaskStore = defineStore('task', () => {
   const separateOutputLayout = ref<OutputLayout>('flat')
   const separateOutputNamingTemplate = ref('%index%_%filename%_%stem%')
   const separateCustomStemOrder = ref<string[]>([])
+  const modelListViewMode = ref<'card' | 'list'>('card')
   const useTta = ref(false)
   const debug = ref(false)
   const batch_size = ref<number | null>(1)
@@ -505,6 +507,7 @@ export const useTaskStore = defineStore('task', () => {
       outputLayout: separateOutputLayout.value,
       outputNamingTemplate: separateOutputNamingTemplate.value,
       customStemOrder: [...separateCustomStemOrder.value],
+      modelListViewMode: modelListViewMode.value,
       useTta: useTta.value,
       debug: debug.value,
       inferenceParamsByModel: JSON.parse(JSON.stringify(persistedSeparateModelState.value)),
@@ -660,6 +663,7 @@ export const useTaskStore = defineStore('task', () => {
     separateCustomStemOrder.value = Array.isArray(separateStored?.customStemOrder)
       ? separateStored.customStemOrder.map(item => String(item || '').trim()).filter(Boolean)
       : []
+    modelListViewMode.value = separateStored?.modelListViewMode === 'list' ? 'list' : 'card'
     useTta.value = separateStored?.useTta === true
     debug.value = separateStored?.debug === true
     persistedSeparateModelState.value = Object.fromEntries(
@@ -671,7 +675,7 @@ export const useTaskStore = defineStore('task', () => {
 
   watch(
     [separateRunMode, ensembleEnabled, ensembleModels, ensembleStem, ensembleModelStems, ensembleType, ensembleWeights, separateTemporaryOutputDir,
-      separateOutputLayout, separateOutputNamingTemplate, separateCustomStemOrder, useTta, debug,
+      separateOutputLayout, separateOutputNamingTemplate, separateCustomStemOrder, modelListViewMode, useTta, debug,
       batch_size, overlap_size, num_overlap, chunk_size, standardize, normalize, selectedStems, window_size, aggression, enable_post_process,
       post_process_threshold, high_end_process],
     () => {
@@ -1660,6 +1664,7 @@ export const useTaskStore = defineStore('task', () => {
     separateOutputLayout,
     separateOutputNamingTemplate,
     separateCustomStemOrder,
+    modelListViewMode,
     useTta,
     debug,
     batch_size,

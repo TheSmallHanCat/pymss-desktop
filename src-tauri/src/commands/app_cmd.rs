@@ -7,7 +7,7 @@ use crate::model_dir_migration::{
 use crate::python::worker::{run_worker_once, run_worker_with_payload, spawn_worker_background};
 use crate::state::{AppState, ProxySettings};
 use crate::storage;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,6 +29,59 @@ pub struct BuildInfo {
     variant: &'static str,
     official: bool,
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugRuntimeFileInfo {
+    kind: String,
+    source: String,
+    path: String,
+    exists: bool,
+    editable: bool,
+    content: Option<String>,
+    backup_path: String,
+    backup_exists: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugRuntimePointersPayload {
+    runtime_envs_dir: String,
+    active_runtime_file: String,
+    bundled_runtime_envs_dir: Option<String>,
+    files: Vec<DebugRuntimeFileInfo>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugRuntimeWriteRequest {
+    path: String,
+    content: String,
+    backup: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugRuntimeRestoreRequest {
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugActiveRuntimeOverrideRequest {
+    backend: String,
+    python_path: String,
+    source: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DebugRuntimeBackup {
+    existed: bool,
+    content: Option<String>,
+}
+
+const DEBUG_RUNTIME_MAX_FILE_BYTES: usize = 256 * 1024;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -448,6 +501,214 @@ pub async fn activate_runtime(app: AppHandle, payload: Value) -> AppResult<Value
 #[tauri::command]
 pub async fn delete_runtime(app: AppHandle, payload: Value) -> AppResult<Value> {
     run_worker_with_payload(&app, "delete_runtime", Some(payload))
+}
+
+fn debug_bundled_runtime_envs_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
+    let mut dirs = Vec::new();
+    if let Ok(resource) = app.path().resource_dir() {
+        dirs.push(resource.join("runtime-envs"));
+        dirs.push(resource.join("_up_").join("runtime-envs"));
+        dirs.push(resource.join("resources").join("runtime-envs"));
+    }
+    let exe_dir = std::env::current_exe()?
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    dirs.push(exe_dir.join("runtime-envs"));
+    Ok(dirs.into_iter().filter(|dir| dir.is_dir()).collect())
+}
+
+fn debug_runtime_backup_path(path: &Path) -> AppResult<PathBuf> {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| AppError::Worker("invalid runtime debug path".into()))?;
+    Ok(path.with_file_name(format!("{name}.debug-backup.json")))
+}
+
+fn debug_runtime_allowed_roots(app: &AppHandle) -> AppResult<Vec<(PathBuf, String)>> {
+    let mut roots = vec![(storage::runtime_envs_dir(app)?, "user".to_string())];
+    for dir in debug_bundled_runtime_envs_dirs(app)? {
+        roots.push((dir, "bundled".to_string()));
+    }
+    Ok(roots)
+}
+
+fn require_runtime_debug_developer_mode(app: &AppHandle) -> AppResult<()> {
+    let settings = storage::read_app_store(app, "app-settings")?;
+    if settings.get("developerMode").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    Err(AppError::Worker("runtime debug commands require developer mode".into()))
+}
+
+fn debug_runtime_file_kind(root: &Path, path: &Path) -> Option<&'static str> {
+    if path == root.join("active-runtime.json") {
+        return Some("active-runtime");
+    }
+    let relative = path.strip_prefix(root).ok()?;
+    let parts = relative.components().collect::<Vec<_>>();
+    if parts.len() == 2 && relative.file_name().and_then(|value| value.to_str()) == Some("pyvenv.cfg") {
+        return Some("pyvenv");
+    }
+    None
+}
+
+fn canonicalize_debug_runtime_path(path: &Path) -> AppResult<PathBuf> {
+    if path.is_file() {
+        Ok(std::fs::canonicalize(path)?)
+    } else {
+        let parent = path
+            .parent()
+            .ok_or_else(|| AppError::Worker("invalid runtime debug path".into()))?;
+        let canonical_parent = std::fs::canonicalize(parent)?;
+        Ok(canonical_parent.join(path.file_name().ok_or_else(|| AppError::Worker("invalid runtime debug path".into()))?))
+    }
+}
+
+fn resolve_debug_runtime_path(app: &AppHandle, value: &str) -> AppResult<(PathBuf, String, String)> {
+    let path = PathBuf::from(value.trim());
+    if path.components().any(|component| matches!(component, std::path::Component::ParentDir)) {
+        return Err(AppError::Worker("runtime debug path must not contain parent traversal".into()));
+    }
+    for (root, source) in debug_runtime_allowed_roots(app)? {
+        if !path.starts_with(&root) {
+            continue;
+        }
+        let canonical_root = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+        let canonical_path = canonicalize_debug_runtime_path(&path)?;
+        if !canonical_path.starts_with(&canonical_root) {
+            return Err(AppError::Worker("runtime debug path resolves outside allowed runtime files".into()));
+        }
+        if let Some(kind) = debug_runtime_file_kind(&canonical_root, &canonical_path) {
+            return Ok((canonical_path, kind.to_string(), source));
+        }
+    }
+    Err(AppError::Worker("runtime debug path is outside allowed runtime files".into()))
+}
+
+fn debug_runtime_file_info(kind: &str, source: &str, path: PathBuf) -> AppResult<DebugRuntimeFileInfo> {
+    let backup = debug_runtime_backup_path(&path)?;
+    let exists = path.is_file();
+    let content = if exists { std::fs::read_to_string(&path).ok() } else { None };
+    Ok(DebugRuntimeFileInfo {
+        kind: kind.to_string(),
+        source: source.to_string(),
+        path: path.to_string_lossy().to_string(),
+        exists,
+        editable: !exists || content.is_some(),
+        content,
+        backup_path: backup.to_string_lossy().to_string(),
+        backup_exists: backup.is_file(),
+    })
+}
+
+fn collect_debug_runtime_files(app: &AppHandle) -> AppResult<Vec<DebugRuntimeFileInfo>> {
+    let mut files = Vec::new();
+    for (root, source) in debug_runtime_allowed_roots(app)? {
+        files.push(debug_runtime_file_info("active-runtime", &source, root.join("active-runtime.json"))?);
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let env_dir = entry.path();
+                if env_dir.is_dir() {
+                    files.push(debug_runtime_file_info("pyvenv", &source, env_dir.join("pyvenv.cfg"))?);
+                }
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn create_debug_runtime_backup(path: &Path) -> AppResult<()> {
+    let backup_path = debug_runtime_backup_path(path)?;
+    if backup_path.is_file() {
+        return Ok(());
+    }
+    let backup = if path.is_file() {
+        DebugRuntimeBackup { existed: true, content: Some(std::fs::read_to_string(path)?) }
+    } else {
+        DebugRuntimeBackup { existed: false, content: None }
+    };
+    if let Some(parent) = backup_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(backup_path, serde_json::to_string_pretty(&backup)?)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn debug_runtime_pointers(app: AppHandle) -> AppResult<DebugRuntimePointersPayload> {
+    require_runtime_debug_developer_mode(&app)?;
+    let bundled = debug_bundled_runtime_envs_dirs(&app)?.into_iter().next();
+    Ok(DebugRuntimePointersPayload {
+        runtime_envs_dir: storage::runtime_envs_dir(&app)?.to_string_lossy().to_string(),
+        active_runtime_file: storage::active_runtime_file(&app)?.to_string_lossy().to_string(),
+        bundled_runtime_envs_dir: bundled.map(|path| path.to_string_lossy().to_string()),
+        files: collect_debug_runtime_files(&app)?,
+    })
+}
+
+#[tauri::command]
+pub async fn debug_runtime_write_file(app: AppHandle, payload: DebugRuntimeWriteRequest) -> AppResult<DebugRuntimePointersPayload> {
+    require_runtime_debug_developer_mode(&app)?;
+    if payload.content.len() > DEBUG_RUNTIME_MAX_FILE_BYTES {
+        return Err(AppError::Worker("runtime debug file is too large".into()));
+    }
+    let (path, _kind, _source) = resolve_debug_runtime_path(&app, &payload.path)?;
+    if payload.backup.unwrap_or(true) {
+        create_debug_runtime_backup(&path)?;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, payload.content)?;
+    debug_runtime_pointers(app).await
+}
+
+#[tauri::command]
+pub async fn debug_runtime_restore_file(app: AppHandle, payload: DebugRuntimeRestoreRequest) -> AppResult<DebugRuntimePointersPayload> {
+    require_runtime_debug_developer_mode(&app)?;
+    let (path, _kind, _source) = resolve_debug_runtime_path(&app, &payload.path)?;
+    let backup_path = debug_runtime_backup_path(&path)?;
+    if !backup_path.is_file() {
+        return Err(AppError::Worker("runtime debug backup does not exist".into()));
+    }
+    let backup: DebugRuntimeBackup = serde_json::from_str(&std::fs::read_to_string(&backup_path)?)?;
+    if backup.existed {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, backup.content.unwrap_or_default())?;
+    } else if path.is_file() {
+        std::fs::remove_file(&path)?;
+    }
+    std::fs::remove_file(backup_path)?;
+    debug_runtime_pointers(app).await
+}
+
+#[tauri::command]
+pub async fn debug_runtime_override_active(app: AppHandle, payload: DebugActiveRuntimeOverrideRequest) -> AppResult<DebugRuntimePointersPayload> {
+    require_runtime_debug_developer_mode(&app)?;
+    let backend = payload.backend.trim().to_lowercase();
+    let python_path = payload.python_path.trim().to_string();
+    if !matches!(backend.as_str(), "cpu" | "cuda" | "rocm" | "mlx") {
+        return Err(AppError::Worker("runtime debug backend is unsupported".into()));
+    }
+    if python_path.is_empty() {
+        return Err(AppError::Worker("runtime debug python path is required".into()));
+    }
+    let path = storage::active_runtime_file(&app)?;
+    create_debug_runtime_backup(&path)?;
+    let content = serde_json::json!({
+        "backend": backend,
+        "pythonPath": python_path,
+        "source": payload.source.unwrap_or_else(|| "debug".to_string()),
+    });
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&content)?)?;
+    debug_runtime_pointers(app).await
 }
 
 fn chrono_like_timestamp() -> u128 {

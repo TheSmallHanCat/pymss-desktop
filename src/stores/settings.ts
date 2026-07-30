@@ -349,6 +349,14 @@ export const useSettingsStore = defineStore('settings', () => {
   watch(animationsEnabled, () => {
     queuePersist()
   })
+  watch(developerMode, async () => {
+    if (!initialized.value) return
+    try {
+      await saveAppStore('app-settings', persistable.value)
+    } catch (error) {
+      console.warn('Failed to persist app settings', error)
+    }
+  })
   watch(
     [
       modelDir,
@@ -362,7 +370,6 @@ export const useSettingsStore = defineStore('settings', () => {
       mp3BitRate,
       m4aBitRate,
       m4aCodec,
-      developerMode,
       proxyMode,
       proxyUrl,
       proxyBypass,

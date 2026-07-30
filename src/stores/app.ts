@@ -47,6 +47,9 @@ export type RuntimeInfo = {
     pythonVersion?: string
     torchVersion?: string | null
     torchBackend?: string | null
+    pythonPath?: string
+    logPath?: string
+    source?: string
     packages?: Record<string, boolean>
   } | null
   installedEnvironments?: InstalledRuntime[]
