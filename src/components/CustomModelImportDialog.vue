@@ -26,6 +26,7 @@ const step = ref(STEP_FILE)
 const inspecting = ref(false)
 const inspection = ref<CustomModelInspection | null>(null)
 const inspectError = ref('')
+const inspectionRunId = ref(0)
 
 const modelPath = ref('')
 const configPath = ref('')
@@ -38,17 +39,6 @@ const force = ref(false)
 
 const importState = computed(() => modelStore.customImportState)
 const importing = computed(() => importState.value.status === 'importing')
-
-/**
- * Whether the chosen architecture needs a YAML config.
- *
- * Read from the worker rather than hardcoded: only 5 of the 16 registrable types can go without
- * one, and which 5 is pymss's business, not the UI's.
- */
-const configRequired = computed(() => {
-  const optional = inspection.value?.configOptionalModelTypes || []
-  return Boolean(modelType.value) && !optional.includes(modelType.value)
-})
 
 const modelTypeOptions = computed(() => {
   const known = inspection.value?.knownModelTypes || []
@@ -74,13 +64,14 @@ const aliases = computed(() => aliasText.value.split(',').map((item) => item.tri
 const aliasError = computed(() =>
   aliases.value.some((alias) => /\s/.test(alias)) ? t('models.customAliasNoSpace') : '')
 
-const canLeaveFileStep = computed(() => Boolean(modelPath.value) && !inspecting.value && !inspectError.value)
-const canLeaveTypeStep = computed(() => Boolean(modelType.value))
+const canLeaveFileStep = computed(() => Boolean(modelPath.value && configPath.value))
+const canLeaveTypeStep = computed(() => Boolean(modelType.value) && !inspecting.value && !inspectError.value)
 const canLeaveDetailStep = computed(() =>
-  !nameError.value && !aliasError.value && (!configRequired.value || Boolean(configPath.value)))
+  !nameError.value && !aliasError.value)
 
 function reset() {
   step.value = STEP_FILE
+  inspectionRunId.value += 1
   inspecting.value = false
   inspection.value = null
   inspectError.value = ''
@@ -95,6 +86,14 @@ function reset() {
   modelStore.resetCustomImportState()
 }
 
+function clearInspectionForFileChange() {
+  inspectionRunId.value += 1
+  inspecting.value = false
+  inspection.value = null
+  inspectError.value = ''
+  modelType.value = ''
+}
+
 watch(() => props.show, (visible) => {
   if (visible) reset()
 })
@@ -105,7 +104,7 @@ async function pickWeights() {
   })
   if (!picked) return
   modelPath.value = picked
-  await runInspection()
+  clearInspectionForFileChange()
 }
 
 async function pickConfig() {
@@ -114,27 +113,31 @@ async function pickConfig() {
   })
   if (!picked) return
   configPath.value = picked
-  // Re-inspect: the config is the stronger architecture signal, so adding one can sharpen or
-  // correct the suggestion made from the weights alone.
-  await runInspection()
+  clearInspectionForFileChange()
 }
 
 async function runInspection() {
   if (!modelPath.value) return
+  const runId = inspectionRunId.value + 1
+  const inspectedModelPath = modelPath.value
+  const inspectedConfigPath = configPath.value || null
+  inspectionRunId.value = runId
   inspecting.value = true
   inspectError.value = ''
   try {
-    const result = await modelStore.inspectCustomModel(modelPath.value, configPath.value || null)
+    const result = await modelStore.inspectCustomModel(inspectedModelPath, inspectedConfigPath)
+    if (runId !== inspectionRunId.value || inspectedModelPath !== modelPath.value || inspectedConfigPath !== (configPath.value || null)) return
     inspection.value = result
     // Only prefill; never overwrite something the user already typed or chose.
     if (!name.value) name.value = result.suggestedName
     if (!modelType.value && result.suggestedModelType) modelType.value = result.suggestedModelType
     if (!configPath.value && result.configPath) configPath.value = result.configPath
   } catch (err) {
+    if (runId !== inspectionRunId.value) return
     inspectError.value = err instanceof Error ? err.message : String(err)
     inspection.value = null
   } finally {
-    inspecting.value = false
+    if (runId === inspectionRunId.value) inspecting.value = false
   }
 }
 
@@ -189,8 +192,11 @@ watch(() => importState.value.status, (status) => {
   }
 })
 
-function goNext() {
-  if (step.value === STEP_FILE && canLeaveFileStep.value) step.value = STEP_TYPE
+async function goNext() {
+  if (step.value === STEP_FILE && canLeaveFileStep.value) {
+    step.value = STEP_TYPE
+    await runInspection()
+  }
   else if (step.value === STEP_TYPE && canLeaveTypeStep.value) step.value = STEP_DETAILS
   else if (step.value === STEP_DETAILS && canLeaveDetailStep.value) void startImport()
 }
@@ -245,56 +251,65 @@ const nextDisabled = computed(() => {
             {{ t('models.customBrowse') }}
           </n-button>
         </div>
-        <n-spin v-if="inspecting" size="small" class="cmi-spin">
-          <template #description>{{ t('models.customInspecting') }}</template>
-        </n-spin>
-        <n-alert v-else-if="inspectError" type="error" :bordered="false" class="cmi-alert">
-          {{ inspectError }}
-        </n-alert>
-        <div v-else-if="inspection" class="cmi-facts">
-          <div class="cmi-fact">
-            <span>{{ t('models.customFactSize') }}</span>
-            <strong>{{ formatBytes(inspection.sizeBytes) }}</strong>
-          </div>
-          <div v-if="inspection.instruments.length" class="cmi-fact">
-            <span>{{ t('models.customFactStems') }}</span>
-            <strong>{{ inspection.instruments.join(' / ') }}</strong>
-          </div>
-          <n-alert v-if="!inspection.stateDictReadable" type="warning" :bordered="false" class="cmi-alert">
-            {{ t('models.customWeightsUnreadable') }}
-          </n-alert>
+        <div class="cmi-file-row">
+          <n-input v-model:value="configPath" :placeholder="t('models.customConfigPlaceholder')" readonly />
+          <n-button secondary @click="pickConfig">
+            <template #icon><n-icon :component="DocumentAttachOutline" /></template>
+            {{ t('models.customBrowse') }}
+          </n-button>
         </div>
       </section>
 
       <!-- Step 2: architecture -->
       <section v-else-if="step === STEP_TYPE" class="cmi-section">
         <p class="cmi-hint">{{ t('models.customTypeHint') }}</p>
-        <div v-if="inspection?.suggestions?.length" class="cmi-suggestions">
-          <button
-            v-for="item in inspection.suggestions"
-            :key="item.modelType"
-            type="button"
-            class="cmi-suggestion"
-            :class="{ 'cmi-suggestion--active': modelType === item.modelType }"
-            @click="applySuggestion(item.modelType)"
-          >
-            <span class="cmi-suggestion__type">{{ item.modelType }}</span>
-            <span class="cmi-suggestion__basis">{{ suggestionBasis(item.basisCode, item.basisDetail) }}</span>
-          </button>
-        </div>
-        <n-alert v-else type="info" :bordered="false" class="cmi-alert">
-          {{ t('models.customNoSuggestion') }}
+        <n-spin v-if="inspecting" size="small" class="cmi-spin">
+          <template #description>{{ t('models.customInspecting') }}</template>
+        </n-spin>
+        <n-alert v-else-if="inspectError" type="error" :bordered="false" class="cmi-alert">
+          {{ inspectError }}
         </n-alert>
-        <div class="cmi-field">
-          <label>{{ t('models.customTypeLabel') }}</label>
-          <n-select
-            v-model:value="modelType"
-            :options="modelTypeOptions"
-            filterable
-            :placeholder="t('models.customTypePlaceholder')"
-          />
-        </div>
-        <p class="cmi-hint cmi-hint--muted">{{ t('models.customTypeVerifyNote') }}</p>
+        <template v-else>
+          <div v-if="inspection" class="cmi-facts">
+            <div class="cmi-fact">
+              <span>{{ t('models.customFactSize') }}</span>
+              <strong>{{ formatBytes(inspection.sizeBytes) }}</strong>
+            </div>
+            <div v-if="inspection.instruments.length" class="cmi-fact">
+              <span>{{ t('models.customFactStems') }}</span>
+              <strong>{{ inspection.instruments.join(' / ') }}</strong>
+            </div>
+            <n-alert v-if="!inspection.stateDictReadable" type="warning" :bordered="false" class="cmi-alert">
+              {{ t('models.customWeightsUnreadable') }}
+            </n-alert>
+          </div>
+          <div v-if="inspection?.suggestions?.length" class="cmi-suggestions">
+            <button
+              v-for="item in inspection.suggestions"
+              :key="item.modelType"
+              type="button"
+              class="cmi-suggestion"
+              :class="{ 'cmi-suggestion--active': modelType === item.modelType }"
+              @click="applySuggestion(item.modelType)"
+            >
+              <span class="cmi-suggestion__type">{{ item.modelType }}</span>
+              <span class="cmi-suggestion__basis">{{ suggestionBasis(item.basisCode, item.basisDetail) }}</span>
+            </button>
+          </div>
+          <n-alert v-else type="info" :bordered="false" class="cmi-alert">
+            {{ t('models.customNoSuggestion') }}
+          </n-alert>
+          <div class="cmi-field">
+            <label>{{ t('models.customTypeLabel') }}</label>
+            <n-select
+              v-model:value="modelType"
+              :options="modelTypeOptions"
+              filterable
+              :placeholder="t('models.customTypePlaceholder')"
+            />
+          </div>
+          <p class="cmi-hint cmi-hint--muted">{{ t('models.customTypeVerifyNote') }}</p>
+        </template>
       </section>
 
       <!-- Step 3: name / config / import mode -->
@@ -312,28 +327,6 @@ const nextDisabled = computed(() => {
             :placeholder="t('models.customAliasPlaceholder')"
           />
           <span v-if="aliasError" class="cmi-error">{{ aliasError }}</span>
-        </div>
-        <div class="cmi-field">
-          <label>
-            {{ t('models.customConfigLabel') }}
-            <span v-if="configRequired" class="cmi-required">{{ t('models.customRequired') }}</span>
-            <span v-else class="cmi-optional">{{ t('models.customOptional') }}</span>
-          </label>
-          <div class="cmi-file-row">
-            <n-input
-              v-model:value="configPath"
-              :status="configRequired && !configPath ? 'error' : undefined"
-              :placeholder="t('models.customConfigPlaceholder')"
-              readonly
-            />
-            <n-button secondary @click="pickConfig">
-              <template #icon><n-icon :component="DocumentAttachOutline" /></template>
-              {{ t('models.customBrowse') }}
-            </n-button>
-          </div>
-          <span v-if="configRequired && !configPath" class="cmi-error">
-            {{ t('models.customConfigRequiredFor', { type: modelType }) }}
-          </span>
         </div>
         <div class="cmi-field">
           <label>{{ t('models.customImportModeLabel') }}</label>

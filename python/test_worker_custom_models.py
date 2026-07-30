@@ -109,14 +109,14 @@ class StateDictDetectionTests(unittest.TestCase):
 
 
 class SuggestionMergeTests(unittest.TestCase):
-    def test_state_dict_findings_outrank_the_config(self):
-        # A hyperace checkpoint carries a plain bs_roformer config, so the refinement can only
-        # come from the weights and must be offered first.
+    def test_config_findings_outrank_state_dict_findings(self):
+        # The config is the architecture pymss will construct, so keep it ahead of refinements
+        # inferred from tensor names.
         merged = ccm.merge_suggestions(
             ccm.detect_from_config({"model": {"freqs_per_bands": [2]}}),
             ccm.detect_from_state_dict_keys(["a.segm.weight"]),
         )
-        self.assertEqual(types_of(merged), ["bs_roformer_hyperace", "bs_roformer"])
+        self.assertEqual(types_of(merged), ["bs_roformer", "bs_roformer_hyperace"])
 
     def test_the_family_survives_as_a_second_choice(self):
         # Registering the family still works — pymss promotes at load time — so it must remain
@@ -132,7 +132,7 @@ class SuggestionMergeTests(unittest.TestCase):
         config = [ccm._suggestion("vr", "high", "config_model_key", "whatever")]
         merged = ccm.merge_suggestions(config, state)
         self.assertEqual(len(merged), 1)
-        self.assertEqual(merged[0]["basisCode"], "state_dict_key")
+        self.assertEqual(merged[0]["basisCode"], "config_model_key")
 
     def test_no_signal_yields_no_suggestion(self):
         self.assertEqual(ccm.merge_suggestions([], []), [])
@@ -213,6 +213,14 @@ class InspectCommandTests(unittest.TestCase):
         # The filename had a space in it; the suggested name must be registrable.
         self.assertEqual(payload["suggestedName"], "my_model")
         self.assertIs(payload["configRequired"], True)
+
+    def test_config_suggestion_beats_weight_marker_when_both_exist(self):
+        code, event = self._run(
+            {"modelPath": str(self.weights), "configPath": str(self.config)},
+            state_dict_keys=["stg1_low_band_net.enc1.weight"],
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(event["payload"]["suggestedModelType"], "mel_band_roformer")
 
     def test_a_config_optional_suggestion_says_so(self):
         code, event = self._run(

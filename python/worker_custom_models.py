@@ -178,12 +178,12 @@ def merge_suggestions(
 ) -> list[dict[str, Any]]:
     """Combine both signals, most trustworthy first.
 
-    State-dict findings lead: the one architecture they identify within a family
-    (bs_roformer_hyperace) is a refinement the config cannot express, and VR is identifiable
-    only this way. Duplicates collapse to their first, highest-ranked occurrence."""
+    Config findings lead because the YAML describes the architecture pymss will construct.
+    State-dict findings remain useful for config-optional models and refinements the config cannot
+    express. Duplicates collapse to their first, highest-ranked occurrence."""
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in [*state_dict_suggestions, *config_suggestions]:
+    for item in [*config_suggestions, *state_dict_suggestions]:
         model_type = str(item.get("modelType") or "")
         if not model_type or model_type in seen:
             continue
