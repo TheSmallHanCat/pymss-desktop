@@ -1012,21 +1012,28 @@ fn write_editor_project(app: &AppHandle, project: &Value) -> AppResult<Value> {
     Ok(project.clone())
 }
 
+fn percent_encode_query(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len() * 3);
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push('%');
+                encoded.push_str(&format!("{:02X}", byte));
+            }
+        }
+    }
+    encoded
+}
+
 
 #[tauri::command]
 pub async fn close_current_window(window: tauri::WebviewWindow) -> AppResult<()> {
-    let label = window.label().to_string();
-    let app_handle = window.app_handle().clone();
     window
         .destroy()
         .map_err(|error| AppError::Worker(error.to_string()))?;
-    if label.starts_with("workflow-node-editor") {
-        let _ = app_handle.emit_to(
-            "main",
-            "pymss://workflow-node-editor-closed",
-            serde_json::json!({ "label": label }),
-        );
-    }
     Ok(())
 }
 
@@ -1099,7 +1106,7 @@ pub async fn open_workflow_node_editor_window(app: AppHandle, payload: Value) ->
             "index.html#/workflow-node-editor".to_string()
         }
     } else {
-        format!("index.html#/workflow-node-editor?workflowId={}", workflow_id)
+        format!("index.html#/workflow-node-editor?workflowId={}", percent_encode_query(&workflow_id))
     };
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
         .title("Pymss Studio Workflow Node Editor")

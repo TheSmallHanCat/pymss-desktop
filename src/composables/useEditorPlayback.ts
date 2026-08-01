@@ -166,9 +166,11 @@ export function useEditorPlayback(options: PlaybackOptions) {
 
   function stereoGainForPan(pan: number) {
     const normalized = clamp(Number(pan || 0), -1, 1)
+    if (Math.abs(normalized) <= 1e-6) return { left: 1, right: 1 }
+    const angle = (normalized + 1.0) / 2.0
     return {
-      left: normalized <= 0 ? 1 : 1 - normalized,
-      right: normalized >= 0 ? 1 : 1 + normalized,
+      left: Math.cos(angle * Math.PI / 2.0),
+      right: Math.sin(angle * Math.PI / 2.0),
     }
   }
 
