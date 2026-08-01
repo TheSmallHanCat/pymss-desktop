@@ -66,6 +66,8 @@ jobs:
       RELEASE_VERSION_INPUT: ${{ github.event.inputs.version || github.ref_name }}
       QUARK_COOKIE: ${{ secrets.QUARK_COOKIE }}
       QUARKPAN_VERSION: "0.4.0"
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      MODELSCOPE_API_TOKEN: ${{ secrets.MODELSCOPE_API_TOKEN }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -181,3 +183,21 @@ jobs:
           echo "Uploading pms/${RELEASE_VERSION}/ to Quark netdisk (root → pms/${RELEASE_VERSION})"
           "$QUARKPAN_BIN" upload-dir --dir pms --pdir-fid 0 -c -o
           echo "Quark netdisk upload completed."
+
+      - name: Upload release files to HuggingFace dataset
+        if: ${{ env.HF_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Uploading pms/${RELEASE_VERSION}/ to HuggingFace dataset HuanLin/Pymss-Studio-Dist:${RELEASE_VERSION}"
+          uvx hf upload --type dataset HuanLin/Pymss-Studio-Dist "pms/${RELEASE_VERSION}" "${RELEASE_VERSION}"
+          echo "HuggingFace dataset upload completed."
+
+      - name: Upload release files to ModelScope dataset
+        if: ${{ env.MODELSCOPE_API_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Uploading pms/${RELEASE_VERSION}/ to ModelScope dataset huanlinoto/Pymss-Studio-Dist:${RELEASE_VERSION}"
+          uvx modelscope upload --repo-type dataset huanlinoto/Pymss-Studio-Dist "pms/${RELEASE_VERSION}" "${RELEASE_VERSION}"
+          echo "ModelScope dataset upload completed."
