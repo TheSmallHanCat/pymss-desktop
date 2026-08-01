@@ -349,7 +349,7 @@ def _derive_overlap_size_from_num_overlap(chunk_size: Any, num_overlap: Any) -> 
     if chunk_value <= 0 or overlap_count <= 0:
         return None
     if overlap_count == 1:
-        return 0
+        return None
     step = int(chunk_value // overlap_count)
     overlap_size = int(chunk_value - step)
     if overlap_size < 0 or overlap_size >= chunk_value:
@@ -1009,7 +1009,7 @@ def _path_size(path: Path) -> int:
         if path.is_file():
             return int(path.stat().st_size)
         if path.is_dir():
-            return sum(_path_size(child) for child in path.rglob("*") if child.is_file())
+            return sum(int(f.stat().st_size) for f in path.rglob("*") if f.is_file())
     except Exception:
         return 0
     return 0
