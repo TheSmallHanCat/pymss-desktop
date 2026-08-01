@@ -1041,7 +1041,6 @@
     "deleteNode": "删除节点",
     "duplicateNode": "复制节点",
     "useAllStems": "使用全部 stems",
-    "resetInput": "重置输入",
     "clearStems": "清空 stems",
     "fitView": "适应内容",
     "resetView": "重置视图",
@@ -1133,6 +1132,10 @@
     "runParams": "运行参数",
     "statusReady": "配置就绪",
     "runWorkflowAction": "运行",
-    "connectionCycleBlocked": "无法连接：该连线会形成循环依赖。"
+    "connectionCycleBlocked": "无法连接：该连线会形成循环依赖。",
+    "createNodeFromConnection": "从连线创建节点",
+    "createNodePanelHint": "选择要创建的节点类型，新节点会自动与当前连线相连。",
+    "collapseNode": "折叠节点",
+    "expandNode": "展开节点"
   }
 }
