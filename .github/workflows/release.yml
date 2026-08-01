@@ -90,6 +90,7 @@ jobs:
             echo "RELEASE_PRERELEASE=${{ github.event_name == 'workflow_dispatch' && inputs.prerelease == true }}" >> "$GITHUB_ENV"
           fi
       - name: Stage artifacts for Quark netdisk upload
+        if: ${{ env.QUARK_COOKIE != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -157,6 +158,9 @@ jobs:
           url="https://github.com/HuanLinOTO/quarkpan-rs/releases/download/v${QUARKPAN_VERSION}/${asset}"
           echo "Downloading $url"
           curl -L -f --retry 3 -o "$asset" "$url"
+          curl -L -f --retry 3 -o "$asset.sha256" "$url.sha256"
+          # Verify integrity of the downloaded tarball against the published SHA256.
+          sha256sum -c "$asset.sha256"
           tar -xzf "$asset"
           quarkpan_bin="$(find . -maxdepth 2 -type f -name quarkpan | head -n1)"
           if [ -z "$quarkpan_bin" ]; then
@@ -173,6 +177,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # quarkpan reads QUARK_COOKIE from the environment via clap's env attribute.
           echo "Uploading pms/${RELEASE_VERSION}/ to Quark netdisk (root → pms/${RELEASE_VERSION})"
           "$QUARKPAN_BIN" upload-dir --dir pms --pdir-fid 0 -c -o
           echo "Quark netdisk upload completed."
