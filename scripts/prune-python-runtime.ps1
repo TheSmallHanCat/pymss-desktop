@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$RuntimeDir,
-    [switch]$KeepScripts
+    [switch]$KeepScripts,
+    [switch]$KeepVenv
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,12 +15,13 @@ $removeDirs = @(
     "libs",
     "share",
     "tcl",
-    "Lib\ensurepip",
     "Lib\idlelib",
     "Lib\lib2to3",
-    "Lib\tkinter",
-    "Lib\venv"
+    "Lib\tkinter"
 )
+if (!$KeepVenv) {
+    $removeDirs += @("Lib\ensurepip", "Lib\venv")
+}
 if (-not $KeepScripts) {
     $removeDirs += "Scripts"
 }

@@ -7,7 +7,6 @@ import platform
 import re
 import subprocess
 import sys
-import venv
 import time
 from pathlib import Path
 from typing import Any
@@ -620,6 +619,8 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
     Cancellation is not handled here: the desktop shell kills this process and its whole tree
     (see cancel_task in app_cmd.rs), which takes pip down with it. The interrupted venv is left
     on disk on purpose — _incomplete_env_backends() reports it so the space can be reclaimed."""
+    import venv
+
     task_id = str(payload.get("taskId") or f"runtime_install_{int(time.time() * 1000)}")
     backend = str(payload.get("backend") or "cpu").strip().lower()
     mirror = str(payload.get("mirror") or "auto").strip().lower()
