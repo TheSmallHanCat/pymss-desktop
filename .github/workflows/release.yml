@@ -22,7 +22,7 @@ on:
         default: false
         type: boolean
       prerelease:
-        description: "Mark the GitHub Release as a pre-release"
+        description: "Publish and mark the GitHub Release as a pre-release"
         required: true
         default: false
         type: boolean
@@ -54,7 +54,7 @@ jobs:
       always() &&
       (
         startsWith(github.ref, 'refs/tags/') ||
-        (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+        (github.event_name == 'workflow_dispatch' && (inputs.publish == true || inputs.prerelease == true))
       ) &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
