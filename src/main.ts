@@ -7,6 +7,7 @@ import { initTheme } from './utils/theme'
 import { registerWorkerEvents } from './utils/events'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
+import { useUpdateStore } from '@/stores/update'
 import './styles/global.scss'
 
 async function bootstrap() {
@@ -22,8 +23,12 @@ async function bootstrap() {
 
   const settings = useSettingsStore(pinia)
   const appState = useAppStore(pinia)
+  const updates = useUpdateStore(pinia)
   await settings.initialize().catch((error) => {
     console.warn('Failed to initialize settings', error)
+  })
+  await updates.initialize().catch((error) => {
+    console.warn('Failed to initialize update store', error)
   })
   const tasks = await import('@/stores/task').then((mod) => mod.useTaskStore(pinia))
   await tasks.initialize().catch((error) => {
@@ -36,6 +41,17 @@ async function bootstrap() {
   await Promise.allSettled([models.initialize(), workflows.initialize()])
   initTheme(settings.themeMode, settings.themeAccent)
   registerWorkerEvents()
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const buildInfo = await invoke<{ version?: string; variant?: string }>('get_build_info')
+    appState.buildInfoVersion = buildInfo.version || ''
+    appState.buildInfoVariant = buildInfo.variant || ''
+  } catch (error: unknown) {
+    console.warn('Failed to load build info version', error)
+  }
+  if (appState.buildInfoVersion && updates.hasPendingDeferredVersion(appState.buildInfoVersion)) {
+    updates.status = 'ready'
+  }
   appState.checkRuntimeInfo().then((runtime) => {
     if (runtime.ready) {
       return models.loadModels()
@@ -43,6 +59,9 @@ async function bootstrap() {
     return undefined
   }).catch((error) => {
     console.warn('Failed to preload model metadata', error)
+  })
+  void updates.checkForUpdates().catch((error) => {
+    console.warn('Failed to check for updates', error)
   })
 }
 

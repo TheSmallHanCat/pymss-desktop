@@ -16,6 +16,8 @@
     "core:webview:allow-set-webview-zoom",
     "dialog:default",
     "shell:default",
+    "process:default",
+    "updater:default",
     "store:default"
   ]
 }

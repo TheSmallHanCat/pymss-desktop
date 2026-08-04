@@ -112,6 +112,8 @@ export const useAppStore = defineStore('app', () => {
   // Backends whose venv exists but never finished installing — leftover disk usage the user
   // can reclaim.
   const runtimeIncompleteBackends = ref<string[]>([])
+  const buildInfoVersion = ref('')
+  const buildInfoVariant = ref('')
 
   const diagnostics = computed<DiagnosticItem[]>(() => {
     const env = envInfo.value
@@ -408,6 +410,8 @@ export const useAppStore = defineStore('app', () => {
     runtimeEnvSizes,
     runtimeEnvSizesLoading,
     runtimeIncompleteBackends,
+    buildInfoVersion,
+    buildInfoVariant,
     loadRuntimeEnvSizes,
     checkRuntimeInfo,
     installRuntime,
