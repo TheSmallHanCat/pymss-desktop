@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import i18n from '@/i18n'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
@@ -440,6 +440,17 @@ function resolveBooleanOverride(defaults: ModelDefaultInferenceParams | undefine
   return current ? true : null
 }
 
+function preferCurrentOverride<T>(
+  currentOverride: T | null,
+  modelOverrides: ModelDefaultInferenceParams,
+  key: keyof ModelDefaultInferenceParams,
+  useModelOverrideFallback: boolean,
+) {
+  if (currentOverride !== null) return currentOverride
+  if (!useModelOverrideFallback) return null
+  return Object.prototype.hasOwnProperty.call(modelOverrides, key) ? modelOverrides[key] as T : null
+}
+
 function applyModelDefaultsToUi(
   defaults: ModelDefaultInferenceParams | undefined,
   modelType?: string | null,
@@ -508,7 +519,10 @@ export const useTaskStore = defineStore('task', () => {
   const post_process_threshold = ref<number | null>(0)
   const high_end_process = ref(false)
   const selectedModelDefaults = ref<ModelDefaultInferenceParams>({})
+  const selectedModelUiDefaults = ref<ModelDefaultInferenceParams>({})
+  const selectedModelOverrides = ref<ModelDefaultInferenceParams>({})
   const selectedModelType = ref<string | null>(null)
+  const inferenceParamsDirty = ref(false)
   const persistedSeparateModelState = ref<Record<string, PersistedSeparateModelState>>({})
 
   const inputPath = computed(() => inputFiles.value[0] || '')
@@ -528,6 +542,7 @@ export const useTaskStore = defineStore('task', () => {
   let saveTimer: ReturnType<typeof setTimeout> | null = null
   let progressPersistTimer: ReturnType<typeof setTimeout> | null = null
   let separateStateSaveTimer: ReturnType<typeof setTimeout> | null = null
+  let applyingModelDefaults = false
 
   function separateStateSnapshot(): PersistedSeparateState {
     return {
@@ -570,18 +585,9 @@ export const useTaskStore = defineStore('task', () => {
   function saveCurrentModelState(modelName: string) {
     const name = String(modelName || '').trim()
     if (!name) return
+    const current = persistedSeparateModelState.value[name] || {}
     persistedSeparateModelState.value[name] = {
-      batch_size: batch_size.value,
-      overlap_size: overlap_size.value,
-      num_overlap: num_overlap.value,
-      chunk_size: chunk_size.value,
-      standardize: standardize.value,
-      normalize: normalize.value,
-      window_size: window_size.value,
-      aggression: aggression.value,
-      enable_post_process: enable_post_process.value,
-      post_process_threshold: post_process_threshold.value,
-      high_end_process: high_end_process.value,
+      ...current,
       selectedStems: [...selectedStems.value],
     }
     queueSeparateStatePersist()
@@ -715,17 +721,37 @@ export const useTaskStore = defineStore('task', () => {
     debug.value = separateStored?.debug === true
     persistedSeparateModelState.value = Object.fromEntries(
       Object.entries(separateStored?.inferenceParamsByModel || {})
-        .map(([name, value]) => [name, normalizePersistedModelState(value)]),
+        .map(([name, value]) => {
+          const normalized = normalizePersistedModelState(value)
+          return [name, { selectedStems: normalized.selectedStems || [] }]
+        }),
     )
     initialized.value = true
   }
 
   watch(
     [separateRunMode, ensembleEnabled, ensembleModels, ensembleStem, ensembleModelStems, ensembleType, ensembleWeights, separateTemporaryOutputDir,
-      separateOutputLayout, separateOutputNamingTemplate, separateCustomStemOrder, modelListViewMode, modelListSortMode, useTta, debug,
-      batch_size, overlap_size, num_overlap, chunk_size, standardize, normalize, selectedStems, window_size, aggression, enable_post_process,
+      separateOutputLayout, separateOutputNamingTemplate, separateCustomStemOrder, modelListViewMode, modelListSortMode, useTta, debug],
+    () => {
+      if (applyingModelDefaults) return
+      queueSeparateStatePersist()
+    },
+    { deep: true },
+  )
+
+  watch(
+    [batch_size, overlap_size, num_overlap, chunk_size, standardize, normalize, window_size, aggression, enable_post_process,
       post_process_threshold, high_end_process],
     () => {
+      if (applyingModelDefaults) return
+      inferenceParamsDirty.value = true
+    },
+  )
+
+  watch(
+    selectedStems,
+    () => {
+      if (applyingModelDefaults) return
       const modelStore = useModelStore()
       if (modelStore.selectedModel) saveCurrentModelState(modelStore.selectedModel)
       else queueSeparateStatePersist()
@@ -741,30 +767,58 @@ export const useTaskStore = defineStore('task', () => {
     task.updatedAt = Date.now()
   }
 
-  function applySelectedModelDefaults(defaults: ModelDefaultInferenceParams | undefined, modelType?: string | null, saved?: PersistedSeparateModelState) {
-    selectedModelDefaults.value = defaults ? { ...defaults } : {}
+  function applySelectedModelDefaults(
+    baseDefaults: ModelDefaultInferenceParams | undefined,
+    modelType?: string | null,
+    saved?: PersistedSeparateModelState,
+    modelOverrides?: ModelDefaultInferenceParams,
+    options: { force?: boolean } = {},
+  ) {
+    selectedModelDefaults.value = baseDefaults ? { ...baseDefaults } : {}
+    selectedModelOverrides.value = modelOverrides ? { ...modelOverrides } : {}
     selectedModelType.value = modelType ?? null
-    const next = applyModelDefaultsToUi(defaults, modelType)
-    const savedValue = <K extends keyof PersistedSeparateModelState>(key: K, fallback: PersistedSeparateModelState[K]) => (
-      saved && Object.prototype.hasOwnProperty.call(saved, key) ? saved[key] : fallback
+    const next = applyModelDefaultsToUi(baseDefaults, modelType)
+    const modelOverrideValue = <K extends keyof ModelDefaultInferenceParams>(key: K) => (
+      modelOverrides && Object.prototype.hasOwnProperty.call(modelOverrides, key) ? modelOverrides[key] : undefined
     )
     const valueOrDefault = <T>(value: T | undefined, fallback: T): T => value === undefined ? fallback : value
-    batch_size.value = valueOrDefault(savedValue('batch_size', next.batch_size ?? 1), 1)
-    overlap_size.value = valueOrDefault(savedValue('overlap_size', next.overlap_size ?? 0), 0)
-    num_overlap.value = valueOrDefault(savedValue('num_overlap', next.num_overlap ?? 0), 0)
-    chunk_size.value = valueOrDefault(savedValue('chunk_size', next.chunk_size ?? 0), 0)
-    standardize.value = valueOrDefault(savedValue('standardize', next.standardize ?? false), false)
-    normalize.value = valueOrDefault(savedValue('normalize', next.normalize ?? false), false)
-    window_size.value = valueOrDefault(savedValue('window_size', next.window_size ?? 0), 0)
-    aggression.value = valueOrDefault(savedValue('aggression', next.aggression ?? 0), 0)
-    enable_post_process.value = valueOrDefault(savedValue('enable_post_process', next.enable_post_process ?? false), false)
-    post_process_threshold.value = valueOrDefault(savedValue('post_process_threshold', next.post_process_threshold ?? 0), 0)
-    high_end_process.value = valueOrDefault(savedValue('high_end_process', next.high_end_process ?? false), false)
+    const resolvedDefaults = {
+      batch_size: valueOrDefault(modelOverrideValue('batch_size') ?? next.batch_size, 1),
+      overlap_size: valueOrDefault(modelOverrideValue('overlap_size') ?? next.overlap_size, 0),
+      num_overlap: valueOrDefault(modelOverrideValue('num_overlap') ?? next.num_overlap, 0),
+      chunk_size: valueOrDefault(modelOverrideValue('chunk_size') ?? next.chunk_size, 0),
+      standardize: valueOrDefault(modelOverrideValue('standardize') ?? next.standardize, false),
+      normalize: valueOrDefault(modelOverrideValue('normalize') ?? next.normalize, false),
+      window_size: valueOrDefault(modelOverrideValue('window_size') ?? next.window_size, 0),
+      aggression: valueOrDefault(modelOverrideValue('aggression') ?? next.aggression, 0),
+      enable_post_process: valueOrDefault(modelOverrideValue('enable_post_process') ?? next.enable_post_process, false),
+      post_process_threshold: valueOrDefault(modelOverrideValue('post_process_threshold') ?? next.post_process_threshold, 0),
+      high_end_process: valueOrDefault(modelOverrideValue('high_end_process') ?? next.high_end_process, false),
+    }
+    selectedModelUiDefaults.value = { ...resolvedDefaults }
+    if (inferenceParamsDirty.value && !options.force) return
+
+    applyingModelDefaults = true
+    batch_size.value = resolvedDefaults.batch_size
+    overlap_size.value = resolvedDefaults.overlap_size
+    num_overlap.value = resolvedDefaults.num_overlap
+    chunk_size.value = resolvedDefaults.chunk_size
+    standardize.value = resolvedDefaults.standardize
+    normalize.value = resolvedDefaults.normalize
+    window_size.value = resolvedDefaults.window_size
+    aggression.value = resolvedDefaults.aggression
+    enable_post_process.value = resolvedDefaults.enable_post_process
+    post_process_threshold.value = resolvedDefaults.post_process_threshold
+    high_end_process.value = resolvedDefaults.high_end_process
     selectedStems.value = saved?.selectedStems ? [...saved.selectedStems] : []
+    inferenceParamsDirty.value = false
+    void nextTick(() => {
+      applyingModelDefaults = false
+    })
   }
 
   function getCurrentUiInferenceDefaults() {
-    return applyModelDefaultsToUi(selectedModelDefaults.value, selectedModelType.value)
+    return applyModelDefaultsToUi(selectedModelUiDefaults.value, selectedModelType.value)
   }
 
   function restoreInferenceNumberFallback(field: InferenceNumberField) {
@@ -1537,19 +1591,56 @@ export const useTaskStore = defineStore('task', () => {
   function buildInferenceParams(modelType?: string | null): Record<string, unknown> {
     const inferenceParams: Record<string, unknown> = {}
     const defaults = selectedModelDefaults.value
+    const modelOverrides = selectedModelOverrides.value
+    const useModelOverrideFallback = !inferenceParamsDirty.value
     const vrModel = isVrModelType(modelType)
     const apolloModel = isApolloModelType(modelType)
 
-    const batchSizeOverride = resolveNumberOverride(defaults, 'batch_size', batch_size.value, { zeroMeansUnset: true })
+    const batchSizeOverride = preferCurrentOverride(
+      resolveNumberOverride(defaults, 'batch_size', batch_size.value, { zeroMeansUnset: true }),
+      modelOverrides,
+      'batch_size',
+      useModelOverrideFallback,
+    )
     if (batchSizeOverride !== null) inferenceParams.batch_size = batchSizeOverride
 
     if (vrModel) {
-      const windowSizeOverride = resolveNumberOverride(defaults, 'window_size', window_size.value, { zeroMeansUnset: true })
-      const aggressionOverride = resolveNumberOverride(defaults, 'aggression', aggression.value)
-      const enablePostProcessOverride = resolveBooleanOverride(defaults, 'enable_post_process', enable_post_process.value)
-      const postProcessThresholdOverride = resolveNumberOverride(defaults, 'post_process_threshold', post_process_threshold.value)
-      const highEndProcessOverride = resolveBooleanOverride(defaults, 'high_end_process', high_end_process.value)
-      const normalizeOverride = resolveBooleanOverride(defaults, 'normalize', normalize.value)
+      const windowSizeOverride = preferCurrentOverride(
+        resolveNumberOverride(defaults, 'window_size', window_size.value, { zeroMeansUnset: true }),
+        modelOverrides,
+        'window_size',
+        useModelOverrideFallback,
+      )
+      const aggressionOverride = preferCurrentOverride(
+        resolveNumberOverride(defaults, 'aggression', aggression.value),
+        modelOverrides,
+        'aggression',
+        useModelOverrideFallback,
+      )
+      const enablePostProcessOverride = preferCurrentOverride(
+        resolveBooleanOverride(defaults, 'enable_post_process', enable_post_process.value),
+        modelOverrides,
+        'enable_post_process',
+        useModelOverrideFallback,
+      )
+      const postProcessThresholdOverride = preferCurrentOverride(
+        resolveNumberOverride(defaults, 'post_process_threshold', post_process_threshold.value),
+        modelOverrides,
+        'post_process_threshold',
+        useModelOverrideFallback,
+      )
+      const highEndProcessOverride = preferCurrentOverride(
+        resolveBooleanOverride(defaults, 'high_end_process', high_end_process.value),
+        modelOverrides,
+        'high_end_process',
+        useModelOverrideFallback,
+      )
+      const normalizeOverride = preferCurrentOverride(
+        resolveBooleanOverride(defaults, 'normalize', normalize.value),
+        modelOverrides,
+        'normalize',
+        useModelOverrideFallback,
+      )
 
       if (windowSizeOverride !== null) inferenceParams.window_size = windowSizeOverride
       if (aggressionOverride !== null) inferenceParams.aggression = aggressionOverride
@@ -1560,13 +1651,38 @@ export const useTaskStore = defineStore('task', () => {
       return inferenceParams
     }
 
-    const overlapSizeOverride = resolveNumberOverride(defaults, 'overlap_size', overlap_size.value, { zeroMeansUnset: true })
+    const overlapSizeOverride = preferCurrentOverride(
+      resolveNumberOverride(defaults, 'overlap_size', overlap_size.value, { zeroMeansUnset: true }),
+      modelOverrides,
+      'overlap_size',
+      useModelOverrideFallback,
+    )
     const numOverlapOverride = apolloModel
       ? null
-      : resolveNumberOverride(defaults, 'num_overlap', num_overlap.value, { zeroMeansUnset: true })
-    const chunkSizeOverride = resolveNumberOverride(defaults, 'chunk_size', chunk_size.value, { zeroMeansUnset: true })
-    const standardizeOverride = resolveBooleanOverride(defaults, 'standardize', standardize.value)
-    const normalizeOverride = resolveBooleanOverride(defaults, 'normalize', normalize.value)
+      : preferCurrentOverride(
+          resolveNumberOverride(defaults, 'num_overlap', num_overlap.value, { zeroMeansUnset: true }),
+          modelOverrides,
+          'num_overlap',
+          useModelOverrideFallback,
+        )
+    const chunkSizeOverride = preferCurrentOverride(
+      resolveNumberOverride(defaults, 'chunk_size', chunk_size.value, { zeroMeansUnset: true }),
+      modelOverrides,
+      'chunk_size',
+      useModelOverrideFallback,
+    )
+    const standardizeOverride = preferCurrentOverride(
+      resolveBooleanOverride(defaults, 'standardize', standardize.value),
+      modelOverrides,
+      'standardize',
+      useModelOverrideFallback,
+    )
+    const normalizeOverride = preferCurrentOverride(
+      resolveBooleanOverride(defaults, 'normalize', normalize.value),
+      modelOverrides,
+      'normalize',
+      useModelOverrideFallback,
+    )
 
     if (overlapSizeOverride !== null) inferenceParams.overlap_size = overlapSizeOverride
     if (numOverlapOverride !== null) inferenceParams.num_overlap = numOverlapOverride

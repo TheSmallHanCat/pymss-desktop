@@ -1147,9 +1147,15 @@ watch(
 
 watch(
   currentModelInfo,
-  (info) => {
+  (info, previousInfo) => {
     if (!info || info.name !== selectedModelName.value) return
-    task.applySelectedModelDefaults(info.defaultInferenceParams, info.modelType, task.getSavedModelState(info.name))
+    task.applySelectedModelDefaults(
+      model.getModelBaseInferenceDefaults(info.name) || info.defaultInferenceParams,
+      info.modelType,
+      task.getSavedModelState(info.name),
+      model.getModelInferenceOverrides(info.name),
+      { force: info.name !== previousInfo?.name },
+    )
   },
   { immediate: true },
 )
