@@ -92,5 +92,6 @@ export type EditorExportAudioParams = {
 
 export type EditorExportOptions = {
   format?: EditorExportFormat
+  exportDir?: string
   audioParams?: EditorExportAudioParams
 }

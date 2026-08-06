@@ -8,6 +8,7 @@ import AppBrandMark from '@/components/AppBrandMark.vue'
 import StartupOnboarding from '@/components/StartupOnboarding.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
+import { useUpdateStore } from '@/stores/update'
 import { getResolvedThemeTokens, getThemeOverrides, resolvedIsDark } from '@/utils/theme'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -15,11 +16,16 @@ import { useWorkflowStore } from '@/stores/workflow'
 
 const settings = useSettingsStore()
 const app = useAppStore()
+const updates = useUpdateStore()
 const workflow = useWorkflowStore()
 const route = useRoute()
 const { t } = useI18n()
 const bootReady = ref(false)
 const backgroundWarmupsStarted = ref(false)
+const deferredPromptShown = ref(false)
+const deferredUpdateModalVisible = ref(false)
+const deferredUpdateInstalling = ref(false)
+const deferredUpdateError = ref('')
 let unlistenNodeEditorClosed: UnlistenFn | undefined
 
 const isDark = computed(() => resolvedIsDark(settings.themeMode))
@@ -61,6 +67,37 @@ function startBackgroundWarmups() {
   })
 }
 
+function showDeferredUpdatePrompt() {
+  if (deferredPromptShown.value) return
+  if (!updates.shouldShowDeferred || !updates.latestVersion) return
+  deferredPromptShown.value = true
+  deferredUpdateError.value = ''
+  deferredUpdateModalVisible.value = true
+}
+
+async function installDeferredUpdate() {
+  if (deferredUpdateInstalling.value) return
+  deferredUpdateInstalling.value = true
+  deferredUpdateError.value = ''
+  try {
+    await updates.downloadAndInstall()
+  } catch (error) {
+    deferredUpdateError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    deferredUpdateInstalling.value = false
+  }
+}
+
+async function keepDeferredUpdateForNextLaunch() {
+  deferredUpdateError.value = ''
+  try {
+    await updates.deferUntilNextLaunch()
+    deferredUpdateModalVisible.value = false
+  } catch (error) {
+    deferredUpdateError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
 onMounted(async () => {
   window.setTimeout(() => {
     bootReady.value = true
@@ -79,6 +116,10 @@ onUnmounted(() => {
 
 watch([bootReady, showStartupOnboarding], () => {
   startBackgroundWarmups()
+}, { immediate: true })
+
+watch([bootReady, () => updates.shouldShowDeferred, () => updates.latestVersion], () => {
+  if (bootReady.value) showDeferredUpdatePrompt()
 }, { immediate: true })
 
 const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, settings.themeAccent))
@@ -114,6 +155,23 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
           </transition>
           <StartupOnboarding v-if="showStartupOnboarding" />
         </div>
+        <n-modal v-model:show="deferredUpdateModalVisible" preset="dialog" type="warning" :mask-closable="false" :closable="false">
+          <template #header>
+            {{ t('settings.updateDeferred') }}
+          </template>
+          <div>{{ t('settings.updateDeferredPrompt', { version: updates.latestVersion }) }}</div>
+          <n-alert v-if="deferredUpdateError" type="error" :bordered="false" style="margin-top: 12px">
+            {{ deferredUpdateError }}
+          </n-alert>
+          <template #action>
+            <n-button secondary :disabled="deferredUpdateInstalling" @click="keepDeferredUpdateForNextLaunch">
+              {{ t('settings.updateNextLaunch') }}
+            </n-button>
+            <n-button type="primary" :loading="deferredUpdateInstalling" @click="installDeferredUpdate">
+              {{ t('settings.installUpdate') }}
+            </n-button>
+          </template>
+        </n-modal>
         </n-dialog-provider>
       </n-message-provider>
     </n-notification-provider>

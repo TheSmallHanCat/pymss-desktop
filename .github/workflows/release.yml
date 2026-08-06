@@ -22,7 +22,7 @@ on:
         default: false
         type: boolean
       prerelease:
-        description: "Mark the GitHub Release as a pre-release"
+        description: "Publish and mark the GitHub Release as a pre-release"
         required: true
         default: false
         type: boolean
@@ -54,7 +54,7 @@ jobs:
       always() &&
       (
         startsWith(github.ref, 'refs/tags/') ||
-        (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+        (github.event_name == 'workflow_dispatch' && (inputs.publish == true || inputs.prerelease == true))
       ) &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
@@ -143,6 +143,40 @@ jobs:
           Download all parts for the same filename before merging.
           EOF
           fi
+      - name: Generate updater metadata
+        if: needs.windows.result == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          sig="artifacts/Pymss-Studio-${version}-windows-x64-online-updater.exe.sig"
+          exe="artifacts/Pymss-Studio-${version}-windows-x64-online-updater.exe"
+          if [ ! -f "$sig" ] || [ ! -f "$exe" ]; then
+            echo "Online updater artifact or signature not found" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          tag = os.environ["RELEASE_TAG"]
+          signature = Path(f"artifacts/Pymss-Studio-{version}-windows-x64-online-updater.exe.sig").read_text(encoding="utf-8").strip()
+          data = {
+              "version": version,
+              "notes": "See the GitHub release notes for details.",
+              "pub_date": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+              "platforms": {
+                  "windows-x86_64": {
+                      "signature": signature,
+                      "url": f"https://github.com/pymss-project/pymss-studio/releases/download/{tag}/Pymss-Studio-{version}-windows-x64-online-updater.exe",
+                  }
+              },
+          }
+          Path("artifacts/latest.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}

@@ -231,14 +231,16 @@ function clearTransportPressed() {
             </div>
           </div>
         </div>
-        <n-button secondary size="small" :loading="saving" :disabled="disabled" @click="emit('save')">
-          <template #icon><n-icon :component="SaveOutline" /></template>
-          {{ t('editor.save') }}
-        </n-button>
-        <n-button type="primary" size="small" :loading="exporting" :disabled="disabled" @click="emit('export')">
-          <template #icon><n-icon :component="DownloadOutline" /></template>
-          {{ t('editor.export') }}
-        </n-button>
+        <div class="transport-actions__buttons">
+          <n-button secondary size="small" :loading="saving" :disabled="disabled" @click="emit('save')">
+            <template #icon><n-icon :component="SaveOutline" /></template>
+            {{ t('editor.save') }}
+          </n-button>
+          <n-button type="primary" size="small" :loading="exporting" :disabled="disabled" @click="emit('export')">
+            <template #icon><n-icon :component="DownloadOutline" /></template>
+            {{ t('editor.export') }}
+          </n-button>
+        </div>
       </div>
 
       <div v-if="(missingAssetCount || 0) > 0" class="editor-offline-banner">
@@ -272,11 +274,11 @@ function clearTransportPressed() {
 
 .editor-transport {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto minmax(240px, 1fr);
+  grid-template-columns: minmax(190px, 1fr) minmax(0, 1.1fr) minmax(300px, 1fr);
   align-items: center;
-  gap: 14px;
-  min-height: 58px;
-  padding: 6px 14px;
+  gap: 10px;
+  min-height: 50px;
+  padding: 4px 12px;
   border-bottom: 1px solid var(--outline);
   background: var(--surface);
 }
@@ -364,7 +366,7 @@ function clearTransportPressed() {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
   justify-self: center;
 }
@@ -383,8 +385,8 @@ function clearTransportPressed() {
 }
 
 .transport-chip {
-  width: 28px;
-  height: 28px;
+  width: 25px;
+  height: 25px;
   display: grid;
   place-items: center;
   border-radius: 6px;
@@ -421,8 +423,8 @@ function clearTransportPressed() {
 }
 
 .transport-play {
-  width: 34px;
-  height: 34px;
+  width: 31px;
+  height: 31px;
   display: grid;
   place-items: center;
   position: relative;
@@ -471,33 +473,40 @@ function clearTransportPressed() {
 }
 
 .transport-timecode code {
-  padding: 4px 10px;
+  padding: 4px 9px;
   border-radius: 6px;
   background: color-mix(in srgb, var(--surface-2) 88%, transparent);
   color: color-mix(in srgb, var(--on-surface) 88%, var(--on-surface-muted));
   font-family: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
 }
 
 .editor-transport__actions {
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
   justify-self: end;
 }
 
 .master-strip {
-  min-width: 220px;
+  min-width: 200px;
   display: grid;
   gap: 2px;
-  padding: 5px 8px;
+  padding: 4px 8px;
   border: 1px solid color-mix(in srgb, var(--outline) 44%, transparent);
   border-radius: 8px;
   background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+}
+
+.transport-actions__buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .master-strip__row {
@@ -509,7 +518,7 @@ function clearTransportPressed() {
 
 .master-strip__label {
   color: var(--on-surface-muted);
-  font-size: 10px;
+  font-size: 9px;
   white-space: nowrap;
 }
 

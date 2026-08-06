@@ -11,6 +11,7 @@ import appLogo from '@/assets/app-logo-symbol-canvas.png'
 import { SYSTEM_LOCALE, setLocale, type LocaleSetting } from '@/i18n'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore, type RuntimeBackend } from '@/stores/app'
+import { useUpdateStore } from '@/stores/update'
 import {
   detectRuntimePlatform,
   isBuiltInRuntimeSource,
@@ -23,6 +24,7 @@ import {
 import { useModelStore } from '@/stores/model'
 import { useTaskStore } from '@/stores/task'
 import { formatBytes } from '@/utils/format'
+import { formatDateTime } from '@/utils/time'
 import { DEFAULT_SCALE_FACTOR, normalizeScaleFactor } from '@/utils/appZoom'
 import {
   applyTheme,
@@ -52,6 +54,8 @@ import {
   PlayOutline,
   HardwareChipOutline,
   LockClosedOutline,
+  CloudDownloadOutline,
+  RefreshOutline,
 } from '@vicons/ionicons5'
 
 const { t, locale: currentLocale } = useI18n()
@@ -60,6 +64,7 @@ const dialog = useDialog()
 const route = useRoute()
 const settings = useSettingsStore()
 const app = useAppStore()
+const updates = useUpdateStore()
 const modelStore = useModelStore()
 const task = useTaskStore()
 type SettingsSection = 'about' | 'appearance' | 'runtime' | 'paths' | 'defaults'
@@ -77,6 +82,8 @@ type BuildInfo = {
 }
 const activeSection = ref<SettingsSection>('appearance')
 const buildInfo = ref<BuildInfo | null>(null)
+const updateChecking = ref(false)
+const updateInstalling = ref(false)
 const appVersion = computed(() => buildInfo.value?.version || packageMeta.version || '0.0.0')
 const repoUrl = 'https://github.com/pymss-project/pymss-studio'
 const coreRepoUrl = 'https://github.com/pymss-project/pymss'
@@ -566,11 +573,45 @@ const aboutVersionItems = computed(() => [
   { label: t('settings.pymssCoreVersion'), value: pymssCoreVersion.value, meta: t('settings.coreRuntime') },
   { label: t('settings.workerVersion'), value: workerVersion.value, meta: t('settings.pythonWorker') },
 ])
+const updateStatusLabel = computed(() => {
+  if (!updateSupported.value) return t('settings.updateUnsupported')
+  if (updates.shouldShowDeferred) return t('settings.updateDeferred')
+  if (updates.status === 'checking') return t('settings.updateChecking')
+  if (updates.status === 'downloading') return t('settings.updateDownloading')
+  if (updates.status === 'installing') return t('settings.updateInstalling')
+  if (updates.status === 'available') return t('settings.updateAvailable')
+  if (updates.status === 'failed') return t('settings.updateCheckFailed')
+  return t('settings.updateIdle')
+})
+const updateBadgeTone = computed(() => {
+  if (!updateSupported.value) return 'default'
+  if (updates.shouldShowDeferred) return 'warning'
+  if (updates.status === 'available') return 'success'
+  if (updates.status === 'failed') return 'error'
+  if (updates.status === 'checking' || updates.status === 'downloading' || updates.status === 'installing') return 'warning'
+  return 'default'
+})
+const updateBadgeType = computed(() => {
+  if (updateBadgeTone.value === 'success') return 'success'
+  if (updateBadgeTone.value === 'error') return 'error'
+  if (updateBadgeTone.value === 'warning') return 'warning'
+  return 'default'
+})
+const updateSupported = computed(() => {
+  const variant = buildInfo.value?.variant || app.buildInfoVariant || ''
+  return variant.includes('online')
+})
+const updateLastCheckedLabel = computed(() => {
+  return formatDateTime(updates.lastCheckedAt) || t('settings.updateNeverChecked')
+})
 const runtimeSummaryItems = computed(() => [
   { label: t('settings.runtimeCurrentLabel'), value: runtimeCurrentLabel.value, meta: t('settings.runtimeCurrentMeta') },
   { label: 'Torch', value: app.runtimeInfo?.torchVersion || app.envInfo?.torchVersion || t('common.unknown'), meta: t('settings.runtimeTorchMeta') },
   { label: 'pymss', value: app.envInfo?.pymssVersion || t('common.unknown'), meta: t('settings.runtimePymssMeta') },
 ])
+const updateReleaseDateLabel = computed(() => {
+  return formatDateTime(updates.releaseDate)
+})
 const aboutLinks = computed(() => [
   { label: t('settings.desktopRepository'), url: repoUrl, icon: LogoGithub },
   { label: t('settings.coreRepository'), url: coreRepoUrl, icon: LinkOutline },
@@ -581,8 +622,69 @@ const aboutLinks = computed(() => [
 async function loadBuildInfo() {
   try {
     buildInfo.value = await invoke<BuildInfo>('get_build_info')
+    app.buildInfoVersion = buildInfo.value?.version || ''
+    app.buildInfoVariant = buildInfo.value?.variant || ''
   } catch {
     buildInfo.value = null
+  }
+}
+
+async function checkForUpdates(manual = false) {
+  if (updateChecking.value) return
+  updateChecking.value = true
+  try {
+    await updates.checkForUpdates(manual)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    updateChecking.value = false
+  }
+}
+
+async function installUpdate() {
+  if (updateInstalling.value || !updates.hasUpdate) return
+  if (updates.shouldShowDeferred && updates.latestVersion) {
+    const confirmed = await confirmRuntimeAction(
+      t('settings.updateInstallTitle'),
+      t('settings.updateInstallDeferredContent', { version: updates.latestVersion }),
+      t('settings.updateInstallConfirm'),
+    )
+    if (!confirmed) return
+    try {
+      updateInstalling.value = true
+      await updates.downloadAndInstall()
+      message.success(t('settings.updateDeferredSaved'))
+      return
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : String(error))
+      return
+    } finally {
+      updateInstalling.value = false
+    }
+  }
+  const confirmed = await confirmRuntimeAction(
+    t('settings.updateInstallTitle'),
+    t('settings.updateInstallContent', { version: updates.latestVersion || appVersion.value }),
+    t('settings.updateInstallConfirm'),
+  )
+  if (!confirmed) return
+  updateInstalling.value = true
+  try {
+    await updates.downloadAndInstall()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    updateInstalling.value = false
+  }
+}
+
+async function deferUpdate() {
+  if (!updates.hasUpdate) return
+  try {
+    await updates.deferUntilNextLaunch()
+    message.success(t('settings.updateDeferredSaved'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
   }
 }
 const SCALE_FACTOR_PRESET_VALUES = [0.75, 0.9, 1, 1.1, 1.25, 1.5] as const
@@ -807,9 +909,12 @@ async function resolveModelDirConflict(action: 'overwrite' | 'skip' | 'abort') {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   if (route.query.section === 'runtime') activeSection.value = 'runtime'
-  void loadBuildInfo()
+  await loadBuildInfo()
+  if (updateSupported.value) {
+    void checkForUpdates(false)
+  }
   if (!app.envInfo && !app.envLoading) {
     app.checkEnvInBackground().catch(() => {})
   }
@@ -875,6 +980,48 @@ onMounted(() => {
             <div class="about-build-fingerprint">
               <span>{{ t('settings.buildFingerprint') }}</span>
               <code>{{ buildFingerprint }}</code>
+            </div>
+          </article>
+
+          <article class="about-info-card about-info-card--update">
+            <div class="section-title section-title--plain">
+              <span class="section-title__icon">
+                <n-icon :component="RefreshOutline" size="18" />
+              </span>
+              <span>{{ t('settings.update') }}</span>
+            </div>
+            <div class="update-panel">
+              <div class="update-panel__headline">
+                <div>
+                  <strong>{{ updateStatusLabel }}</strong>
+                  <p>{{ updateSupported ? t('settings.updateStatusHint') : t('settings.updateUnsupportedHint') }}</p>
+                </div>
+                <n-tag :type="updateBadgeType" size="small">{{ updates.latestVersion || appVersion }}</n-tag>
+              </div>
+              <div class="update-panel__meta">
+                <span>{{ t('settings.updateCurrentVersion', { version: appVersion }) }}</span>
+                <span>{{ t('settings.updateLastChecked', { time: updateLastCheckedLabel }) }}</span>
+                <span v-if="updateReleaseDateLabel">{{ t('settings.updateReleaseDate', { time: updateReleaseDateLabel }) }}</span>
+              </div>
+              <p v-if="updates.releaseNotes" class="update-panel__notes">{{ updates.releaseNotes }}</p>
+              <p v-else class="update-panel__notes update-panel__notes--muted">{{ t('settings.updateNoNotes') }}</p>
+              <div class="update-panel__actions">
+                <n-button secondary :loading="updateChecking" :disabled="!updateSupported || updates.isBusy" @click="checkForUpdates(true)">
+                  <template #icon>
+                    <n-icon :component="RefreshOutline" />
+                  </template>
+                  {{ t('settings.checkForUpdates') }}
+                </n-button>
+                <n-button type="primary" :loading="updateInstalling" :disabled="!updateSupported || !updates.hasUpdate || updates.isBusy" @click="installUpdate">
+                  <template #icon>
+                    <n-icon :component="CloudDownloadOutline" />
+                  </template>
+                  {{ t('settings.installUpdate') }}
+                </n-button>
+                <n-button secondary :disabled="!updateSupported || !updates.hasUpdate || updates.isBusy" @click="deferUpdate">
+                  {{ t('settings.updateNextLaunch') }}
+                </n-button>
+              </div>
             </div>
           </article>
 
@@ -2006,6 +2153,68 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 700;
   text-align: right;
+}
+
+.about-info-card--update {
+  display: grid;
+  gap: 12px;
+}
+
+.update-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.update-panel__headline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.update-panel__headline strong {
+  display: block;
+  color: var(--on-surface);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.update-panel__headline p {
+  margin: 4px 0 0;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.update-panel__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.update-panel__notes {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 42%, transparent);
+  color: var(--on-surface);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.update-panel__notes--muted {
+  color: var(--on-surface-muted);
+}
+
+.update-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .about-detail-grid {

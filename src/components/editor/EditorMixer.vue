@@ -125,7 +125,9 @@ function sourceMissing(track: EditorTrack) {
 }
 
 function trackChannels(track: EditorTrack) {
-  return sourceFor(track)?.channels || 0
+  const source = sourceFor(track)
+  const peakChannels = source?.channelPeaks?.filter(channel => channel.length).length || 0
+  return Math.max(Number(source?.channels || 0), peakChannels)
 }
 
 function trackWaveHeight(track: EditorTrack) {
@@ -419,7 +421,7 @@ defineExpose({
   min-width: 0;
   min-height: 0;
   display: block;
-  background: color-mix(in srgb, var(--surface-1) 76%, var(--surface-2));
+  background: color-mix(in srgb, var(--surface-1) 82%, var(--surface-2));
 }
 
 .editor-mixer__scroll {
@@ -430,8 +432,8 @@ defineExpose({
   background:
     linear-gradient(
       180deg,
-      color-mix(in srgb, var(--surface-1) 84%, var(--surface-2)),
-      color-mix(in srgb, var(--surface-1) 62%, var(--surface-2))
+      color-mix(in srgb, var(--surface-1) 88%, var(--surface-2)),
+      color-mix(in srgb, var(--surface-1) 68%, var(--surface-2))
     );
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--surface-4, var(--surface-3)) 82%, rgba(255,255,255,0.14))
@@ -473,7 +475,7 @@ defineExpose({
   grid-template-columns: 180px auto;
   width: max-content;
   min-width: 100%;
-  height: 30px;
+  height: 28px;
   border-bottom: 1px solid var(--outline);
   background: color-mix(in srgb, var(--surface) 84%, var(--surface-1));
 }
@@ -526,20 +528,20 @@ defineExpose({
   grid-template-columns: 180px auto;
   width: max-content;
   min-width: 100%;
-  min-height: 54px;
+  min-height: 50px;
   border-bottom: 1px solid color-mix(in srgb, var(--outline) 64%, transparent);
   background: transparent;
 }
 
 .track-row--stereo {
-  min-height: 76px;
+  min-height: 70px;
 }
 
 .tracks {
   position: relative;
   width: max-content;
   min-width: 100%;
-  min-height: calc(100% - 30px);
+  min-height: calc(100% - 28px);
   background-image:
     linear-gradient(90deg, transparent 179px, color-mix(in srgb, var(--outline) 82%, transparent) 179px 180px, transparent 180px),
     linear-gradient(90deg, transparent 0 calc(var(--lane-step) - 1px), color-mix(in srgb, var(--outline) 18%, transparent) calc(var(--lane-step) - 1px) var(--lane-step));

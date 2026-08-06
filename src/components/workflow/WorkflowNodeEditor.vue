@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
-import { AddOutline, ArrowRedoOutline, ArrowUndoOutline, CloseOutline, CopyOutline, SearchOutline, SettingsOutline, TrashOutline } from '@vicons/ionicons5'
+import { AddOutline, ArrowRedoOutline, ArrowUndoOutline, ChevronDownOutline, CloseOutline, CopyOutline, SearchOutline, SettingsOutline } from '@vicons/ionicons5'
 import type { ModelEntry } from '@/stores/model'
 import type {
   WorkflowCanvasPoint,
@@ -85,6 +85,18 @@ type DragState = {
   selectionKeys?: string[]
   initialSelectionPoints?: Record<string, WorkflowCanvasPoint>
 }
+type PendingConnectionOrigin = {
+  kind: 'step' | 'utility'
+  stepId?: string
+  utilityId?: string
+  utilityPortId?: string
+}
+type PendingConnection = {
+  value: string
+  label: string
+  direction: 'out' | 'in'
+  origin?: PendingConnectionOrigin
+}
 type ContextMenuState = {
   show: boolean
   x: number
@@ -151,7 +163,11 @@ let clipboardPasteCount = 0
 
 const selectedGraphNode = ref('input')
 const selectedGraphNodes = ref<string[]>(['input'])
-const pendingConnection = ref<{ value: string; label: string } | null>(null)
+const pendingConnection = ref<PendingConnection | null>(null)
+let pendingConnectionStartClient: { clientX: number; clientY: number } | null = null
+let pendingConnectionMoved = false
+let suppressStepInputClickStepId = ''
+let suppressStepInputClickTimer: ReturnType<typeof setTimeout> | null = null
 const hoveredEdgeId = ref('')
 const canvasViewportRef = ref<HTMLElement | null>(null)
 const minimapRef = ref<HTMLElement | null>(null)
@@ -163,7 +179,14 @@ const selectionMarquee = ref<{ left: number; top: number; width: number; height:
 const paletteOpen = ref(false)
 const paletteSearch = ref('')
 const paletteInsertWorld = ref<WorkflowCanvasPoint | null>(null)
-const stepConfigModalStepId = ref('')
+const createNodePanelOpen = ref(false)
+const createNodePanelPos = ref<{ left: number; top: number } | null>(null)
+const createNodeWorld = ref<WorkflowCanvasPoint | null>(null)
+const createNodeSearch = ref('')
+const stepModelMenuOpenId = ref('')
+const stepModelSearch = ref('')
+const stepInputMenuOpenId = ref('')
+const stepInputSearch = ref('')
 const utilityConfigModalId = ref('')
 const saveConfigOpen = ref(false)
 const hasMultipleSelection = computed(() => selectedGraphNodes.value.length > 1)
@@ -176,6 +199,12 @@ const canUndo = computed(() => undoStack.value.length > 0)
 const canRedo = computed(() => redoStack.value.length > 0)
 const canPasteGraphNodes = computed(() => Boolean(graphClipboard.value && (graphClipboard.value.steps.length || graphClipboard.value.utilities.length || graphClipboard.value.notes.length)))
 const pendingConnectionTargetLabel = computed(() => {
+  const pending = pendingConnection.value
+  if (!pending) return ''
+  if (pending.direction === 'in') {
+    const source = pendingConnectionSourceTarget.value
+    return source ? source.label : ''
+  }
   const target = pendingConnectionTarget.value
   if (!target) return ''
   if (target.kind === 'step' && target.stepId) {
@@ -308,6 +337,7 @@ const utilityConfigData = computed<Record<string, unknown>>(() => utilityConfigN
 const utilityConfigInputCount = computed(() => Math.max(2, Math.min(10, Number(utilityConfigData.value.inputCount) || 2)))
 const batchInputNodes = computed(() => utilityNodes.value.filter(node => node.kind === 'load_audio_batch'))
 const validationSummary = computed(() => getWorkflowValidationSummary(currentDefinitionSnapshot()))
+const warningExpanded = ref(true)
 const workflowValidationIssues = computed<WorkflowValidationIssue[]>(() => {
   const issues: WorkflowValidationIssue[] = []
   if (validationSummary.value.batchInputMultipleUnsupported) {
@@ -336,16 +366,21 @@ const workflowValidationIssues = computed<WorkflowValidationIssue[]>(() => {
   }
   return issues
 })
-const stepConfigStep = computed(() => steps.value.find(step => step.id === stepConfigModalStepId.value) || null)
-const stepConfigStepIndex = computed(() => steps.value.findIndex(step => step.id === stepConfigModalStepId.value))
-const stepConfigStepId = computed(() => stepConfigStep.value?.id || '')
-const stepConfigStepModel = computed(() => stepConfigStep.value?.model || '')
-const stepConfigStepInput = computed(() => stepConfigStep.value?.input || '')
-const stepConfigStepOverlap = computed<number | null>(() => stepConfigStep.value?.overlapSize ?? null)
-const stepConfigStepStems = computed(() => stepConfigStep.value?.stems || [])
-const stepConfigStepInputOptions = computed(() => stepConfigStepIndex.value >= 0 ? inputOptions(stepConfigStepIndex.value) : [])
-const stepConfigStepStemOptions = computed(() => stepConfigStep.value ? modelStemOptions(stepConfigStep.value.model) : [])
-const stepConfigStepAvailableStemValues = computed(() => stepConfigStepStemOptions.value.map(item => item.value))
+const currentStepMenuIndex = computed(() => {
+  const id = stepModelMenuOpenId.value || stepInputMenuOpenId.value
+  return steps.value.findIndex(step => step.id === id)
+})
+const filteredStepModelOptions = computed(() => {
+  const keyword = stepModelSearch.value.trim().toLowerCase()
+  if (!keyword) return props.modelOptions
+  return props.modelOptions.filter(item => item.label.toLowerCase().includes(keyword))
+})
+const filteredStepInputOptions = computed(() => {
+  const keyword = stepInputSearch.value.trim().toLowerCase()
+  const options = currentStepMenuIndex.value >= 0 ? inputOptions(currentStepMenuIndex.value) : []
+  if (!keyword) return options
+  return options.filter(item => `${item.label} ${item.value}`.toLowerCase().includes(keyword))
+})
 const utilityBatchPreview = ref<ScanAudioPathsResult | null>(null)
 const utilityBatchPreviewLoading = ref(false)
 const utilityBatchPreviewError = ref('')
@@ -406,31 +441,6 @@ function mutateDraft(mutator: (draft: WorkflowDefinitionDraft) => void) {
   const nextDefinition = buildWorkflowDefinition(next)
   if (JSON.stringify(nextDefinition) === currentSerialized) return
   graphDefinition.value = readWorkflowGraphDefinition(nextDefinition)
-}
-
-function updateStepConfigModel(value: string) {
-  if (!stepConfigStepId.value) return
-  updateStepModel(stepConfigStepId.value, value)
-}
-
-function updateStepConfigInput(value: string) {
-  const stepId = stepConfigStepId.value
-  if (!stepId) return
-  mutateDraft((next) => {
-    const target = next.steps.find(item => item.id === stepId)
-    if (!target) return
-    target.input = value
-  })
-}
-
-function updateStepConfigOverlap(value: number | null) {
-  if (!stepConfigStepId.value) return
-  updateStepOverlap(stepConfigStepId.value, value)
-}
-
-function updateStepConfigStems(value: string[]) {
-  if (!stepConfigStepId.value) return
-  updateStepStems(stepConfigStepId.value, value)
 }
 
 const viewport = computed({
@@ -577,6 +587,7 @@ const graphConnections = computed<GraphConnection[]>(() => {
     const source = outputPortForValue(step.input)
     const target = stepInputPort(index)
     if (!source || !target) return
+    if (isRewiringOrigin('step', step.id)) return
     connections.push({
       id: `input-${step.id}`,
       path: connectionPath(source, target),
@@ -591,6 +602,7 @@ const graphConnections = computed<GraphConnection[]>(() => {
       const source = outputPortForValue(value)
       const target = utilityInputPort(node, portId)
       if (!source || !target) return
+      if (isRewiringOriginPort(node.id, portId)) return
       connections.push({
         id: `utility-${node.id}-${portId}`,
         path: connectionPath(source, target),
@@ -613,13 +625,23 @@ const graphConnections = computed<GraphConnection[]>(() => {
     })
   })
   if (pendingConnection.value && canvasMouseWorld.value) {
-    const source = outputPortForValue(pendingConnection.value.value)
-    if (source) {
+    const pending = pendingConnection.value
+    let pendingSource: GraphPoint | null = null
+    let pendingEnd: GraphPoint = canvasMouseWorld.value
+    if (pending.direction === 'in') {
+      pendingSource = originPortPoint(pending.origin)
+    } else {
+      pendingSource = outputPortForValue(pending.value)
       const pendingTarget = pendingConnectionTarget.value
+      if (pendingTarget) pendingEnd = pendingTarget.point
+    }
+    if (pendingSource) {
       connections.push({
         id: 'pending',
-        path: connectionPath(source, pendingTarget?.point || canvasMouseWorld.value),
-        className: 'workflow-edge workflow-edge--pending',
+        path: connectionPath(pendingSource, pendingEnd),
+        className: pending.direction === 'in'
+          ? 'workflow-edge workflow-edge--rewire'
+          : 'workflow-edge workflow-edge--pending',
         kind: 'pending',
       })
     }
@@ -660,6 +682,36 @@ const pendingConnectionTarget = computed<{ kind: 'step' | 'utility'; stepId?: st
     })
   })
   return bestTarget && bestPoint ? bestTarget : null
+})
+const pendingConnectionSourceTarget = computed<{ value: string; label: string; point: GraphPoint } | null>(() => {
+  const pending = pendingConnection.value
+  if (!pending || pending.direction !== 'in' || !canvasMouseWorld.value) return null
+  const threshold = 32 / Math.max(viewport.value.k, 0.35)
+  let best: { value: string; label: string; point: GraphPoint } | null = null
+  let bestDistance = Number.POSITIVE_INFINITY
+  const candidates: Array<{ value: string; label: string; point: GraphPoint | null }> = []
+  const inputPoint = measuredPort('out:input')
+  if (inputPoint) candidates.push({ value: 'input', label: t('workflows.originalInput'), point: inputPoint })
+  steps.value.forEach((step, index) => {
+    step.stems.forEach((stem) => {
+      candidates.push({ value: stepStemValue(step, stem), label: stepStemLabelByIndex(index, stem), point: stepStemPort(index, stem) })
+    })
+  })
+  utilityNodes.value.forEach((node) => {
+    candidates.push({ value: utilityOutputValue(node.id), label: utilityNodeDisplayLabel(node), point: utilityOutputPort(node) })
+  })
+  candidates.forEach((candidate) => {
+    const point = candidate.point
+    if (!point) return
+    if (candidate.value === pending.value) return
+    const dx = point.x - canvasMouseWorld.value!.x
+    const dy = point.y - canvasMouseWorld.value!.y
+    const distance = Math.sqrt(dx * dx + dy * dy)
+    if (distance > threshold || distance >= bestDistance) return
+    best = { value: candidate.value, label: candidate.label, point }
+    bestDistance = distance
+  })
+  return best
 })
 const minimapViewportRect = computed(() => {
   const scale = viewport.value.k || 1
@@ -822,6 +874,7 @@ watch(() => steps.value.map(step => step.id).join('|'), () => {
 }, { immediate: true })
 
 watch(() => steps.value.map(step => `${step.id}:${step.model}:${step.input}:${step.stems.join(',')}`).join('|'), schedulePortMeasure, { flush: 'post' })
+watch(() => editorUi.value.collapsedStepIds.join('|'), schedulePortMeasure, { flush: 'post' })
 watch(() => graphDefinition.value.graph.nodes.map(node => `${node.id}:${node.position.x}:${node.position.y}`), schedulePortMeasure, { deep: true, flush: 'post' })
 watch(() => `${viewport.value.x}:${viewport.value.y}:${viewport.value.k}`, schedulePortMeasure, { flush: 'post' })
 watch(notes, () => {
@@ -867,8 +920,11 @@ watch(
   { flush: 'post' },
 )
 watch(() => steps.value.map(step => step.id).join('|'), () => {
-  if (stepConfigModalStepId.value && !steps.value.some(step => step.id === stepConfigModalStepId.value)) {
-    stepConfigModalStepId.value = ''
+  if (stepModelMenuOpenId.value && !steps.value.some(step => step.id === stepModelMenuOpenId.value)) {
+    closeStepMenus()
+  }
+  if (stepInputMenuOpenId.value && !steps.value.some(step => step.id === stepInputMenuOpenId.value)) {
+    closeStepMenus()
   }
 })
 
@@ -877,7 +933,7 @@ onMounted(() => {
   window.addEventListener('keyup', handleGlobalKeyup)
   window.addEventListener('blur', cleanupPointerInteraction)
   window.addEventListener('resize', refreshViewportMetrics)
-  window.addEventListener('mousedown', handleWindowPointerDown)
+  window.addEventListener('pointerdown', handleWindowPointerDown, true)
   ensureUiState()
   schedulePortMeasure()
   void nextTick(async () => {
@@ -893,13 +949,14 @@ onBeforeUnmount(() => {
   if (utilityBatchPreviewTimer) clearTimeout(utilityBatchPreviewTimer)
   if (batchInputNodeCountTimer) clearTimeout(batchInputNodeCountTimer)
   if (historyGroupTimer) clearTimeout(historyGroupTimer)
+  if (suppressStepInputClickTimer) clearTimeout(suppressStepInputClickTimer)
   document.removeEventListener('pointermove', handleGlobalPointerMove, true)
   document.removeEventListener('pointerup', handleGlobalPointerUp, true)
   window.removeEventListener('keydown', handleGlobalKeydown)
   window.removeEventListener('keyup', handleGlobalKeyup)
   window.removeEventListener('blur', cleanupPointerInteraction)
   window.removeEventListener('resize', refreshViewportMetrics)
-  window.removeEventListener('mousedown', handleWindowPointerDown)
+  window.removeEventListener('pointerdown', handleWindowPointerDown, true)
   unbindPendingConnectionPointerUp()
 })
 
@@ -985,13 +1042,77 @@ function stepDisplayId(index: number) {
   return getWorkflowStepDisplayId(index)
 }
 
-function openStepConfig(stepId: string) {
-  stepConfigModalStepId.value = stepId
-  selectedGraphNode.value = stepSelectionKey(stepId)
+function stepCollapsed(step: WorkflowStepDraft) {
+  return editorUi.value.collapsedStepIds.includes(step.id)
 }
 
-function closeStepConfig() {
-  stepConfigModalStepId.value = ''
+function toggleStepCollapsed(stepId: string) {
+  mutateDraft((next) => {
+    const list = next.ui.collapsedStepIds
+    next.ui.collapsedStepIds = list.includes(stepId)
+      ? list.filter(id => id !== stepId)
+      : [...list, stepId]
+  })
+}
+
+function toggleStepCollapsedFromHead(event: MouseEvent, stepId: string) {
+  if ((event.target as HTMLElement).closest('button, input, textarea, .n-base-selection')) return
+  toggleStepCollapsed(stepId)
+}
+
+function closeStepMenus() {
+  stepModelMenuOpenId.value = ''
+  stepInputMenuOpenId.value = ''
+  stepModelSearch.value = ''
+  stepInputSearch.value = ''
+}
+
+function toggleStepModelMenu(step: WorkflowStepDraft, event: MouseEvent) {
+  if (stepInputMenuOpenId.value) closeStepMenus()
+  stepModelMenuOpenId.value = stepModelMenuOpenId.value === step.id ? '' : step.id
+  stepModelSearch.value = ''
+  event.stopPropagation()
+}
+
+function toggleStepInputMenu(step: WorkflowStepDraft, index: number, event: MouseEvent) {
+  if (stepModelMenuOpenId.value) closeStepMenus()
+  stepInputMenuOpenId.value = stepInputMenuOpenId.value === step.id ? '' : step.id
+  stepInputSearch.value = ''
+  selectGraphNode(stepSelectionKey(step.id))
+  event.stopPropagation()
+}
+
+function onStepInputPortClick(step: WorkflowStepDraft, index: number, event: MouseEvent) {
+  if (suppressStepInputClickStepId === step.id) {
+    suppressStepInputClickStepId = ''
+    if (suppressStepInputClickTimer) clearTimeout(suppressStepInputClickTimer)
+    suppressStepInputClickTimer = null
+    return
+  }
+  if (pendingConnection.value?.direction === 'in' && pendingConnection.value.origin?.kind === 'step' && pendingConnection.value.origin.stepId === step.id) {
+    cancelGraphConnection()
+    toggleStepInputMenu(step, index, event)
+    return
+  }
+  if (pendingConnection.value) {
+    connectGraphInput(index)
+    return
+  }
+  toggleStepInputMenu(step, index, event)
+}
+
+function updateStepInput(stepId: string, value: string) {
+  mutateDraft((next) => {
+    const target = next.steps.find(item => item.id === stepId)
+    if (!target) return
+    target.input = value
+  })
+}
+
+function toggleStepStem(step: WorkflowStepDraft, stem: string) {
+  updateStepStems(step.id, step.stems.includes(stem)
+    ? step.stems.filter(item => item !== stem)
+    : [...step.stems, stem])
 }
 
 function openSaveConfig() {
@@ -1001,11 +1122,6 @@ function openSaveConfig() {
 
 function closeSaveConfig() {
   saveConfigOpen.value = false
-}
-
-function stepDisplayIdByStep(step: WorkflowStepDraft) {
-  const index = steps.value.findIndex(item => item.id === step.id)
-  return index >= 0 ? stepDisplayId(index) : step.id
 }
 
 function stepStemValue(step: WorkflowStepDraft, stem: string) {
@@ -1041,7 +1157,9 @@ function updateGraphNodePosition(nodeId: string, point: WorkflowCanvasPoint) {
 
 
 function stepNodeHeight(step: WorkflowStepDraft) {
-  return 168 + Math.max(1, step.stems.length) * 26
+  if (stepCollapsed(step)) return 148
+  const chipRows = Math.max(0, Math.ceil(modelStemOptions(step.model).length / 4))
+  return 196 + chipRows * 28 + Math.max(1, step.stems.length) * 26
 }
 
 function saveNodeHeight() {
@@ -1814,10 +1932,6 @@ function removeSelectedGraphNode() {
 }
 
 function openSelectedGraphNodeConfig() {
-  if (selectedGraphStepId.value) {
-    openStepConfig(selectedGraphStepId.value)
-    return true
-  }
   if (selectedGraphUtilityId.value) {
     openUtilityConfig(selectedGraphUtilityId.value)
     return true
@@ -1966,10 +2080,213 @@ function updateSaveOutputDir(item: { type: 'step' | 'utility'; stepIndex?: numbe
   }
 }
 
-function beginGraphConnection(value: string, label: string) {
-  pendingConnection.value = { value, label }
+function isRewiringOrigin(kind: 'step' | 'utility', nodeId: string) {
+  const pending = pendingConnection.value
+  if (!pending || pending.direction !== 'in' || !pending.origin) return false
+  return pending.origin.kind === kind && (kind === 'step'
+    ? pending.origin.stepId === nodeId
+    : pending.origin.utilityId === nodeId)
+}
+
+function isRewiringOriginPort(nodeId: string, portId: string) {
+  const pending = pendingConnection.value
+  if (!pending || pending.direction !== 'in' || !pending.origin || pending.origin.kind !== 'utility') return false
+  return pending.origin.utilityId === nodeId && pending.origin.utilityPortId === portId
+}
+
+function originPortPoint(origin?: PendingConnectionOrigin): GraphPoint | null {
+  if (!origin) return null
+  if (origin.kind === 'step' && origin.stepId) {
+    const index = steps.value.findIndex(step => step.id === origin.stepId)
+    return index >= 0 ? stepInputPort(index) : null
+  }
+  if (origin.kind === 'utility' && origin.utilityId) {
+    const node = utilityNodes.value.find(item => item.id === origin.utilityId)
+    if (!node || !origin.utilityPortId) return null
+    return utilityInputPort(node, origin.utilityPortId)
+  }
+  return null
+}
+
+function beginGraphConnection(value: string, label: string, event: PointerEvent) {
+  if (event.button !== 0) return
+  if (pendingConnection.value) cancelGraphConnection()
+  pendingConnection.value = { value, label, direction: 'out' }
+  pendingConnectionStartClient = { clientX: event.clientX, clientY: event.clientY }
+  pendingConnectionMoved = false
   closeContextMenu()
+  closeCreateNodePanel(false)
   bindPendingConnectionPointerUp()
+}
+
+function beginInputDragFromStep(step: WorkflowStepDraft, event: PointerEvent) {
+  if (event.button !== 0) return
+  if (pendingConnection.value?.direction === 'out') return
+  const value = String(step.input || '').trim()
+  if (!value) return
+  if (pendingConnection.value) cancelGraphConnection()
+  pendingConnection.value = {
+    value,
+    label: formatConnectionValueLabel(value),
+    direction: 'in',
+    origin: { kind: 'step', stepId: step.id },
+  }
+  pendingConnectionStartClient = { clientX: event.clientX, clientY: event.clientY }
+  pendingConnectionMoved = false
+  closeContextMenu()
+  closeCreateNodePanel(false)
+  bindPendingConnectionPointerUp()
+}
+
+function beginInputDragFromUtility(node: WorkflowUtilityNodeDraft, portId: string, event: PointerEvent) {
+  if (event.button !== 0) return
+  if (pendingConnection.value?.direction === 'out') return
+  const value = String(utilityInputValue(node, portId) || '').trim()
+  if (!value) return
+  if (pendingConnection.value) cancelGraphConnection()
+  pendingConnection.value = {
+    value,
+    label: formatConnectionValueLabel(value),
+    direction: 'in',
+    origin: { kind: 'utility', utilityId: node.id, utilityPortId: portId },
+  }
+  pendingConnectionStartClient = { clientX: event.clientX, clientY: event.clientY }
+  pendingConnectionMoved = false
+  closeContextMenu()
+  closeCreateNodePanel(false)
+  bindPendingConnectionPointerUp()
+}
+
+function onUtilityInputPortClick(node: WorkflowUtilityNodeDraft, portId: string) {
+  const pending = pendingConnection.value
+  if (pending?.direction === 'in'
+    && pending.origin?.kind === 'utility'
+    && pending.origin.utilityId === node.id
+    && pending.origin.utilityPortId === portId) {
+    cancelGraphConnection()
+    return
+  }
+  connectUtilityInput(node.id, portId)
+}
+
+function rewireConnectionFromInput(origin: PendingConnectionOrigin, sourceValue: string) {
+  const targetNodeId = origin.kind === 'step'
+    ? origin.stepId
+    : origin.utilityId
+  if (targetNodeId && wouldConnectionCreateCycle(sourceValue, targetNodeId)) {
+    message.warning(t('workflows.connectionCycleBlocked'))
+    return false
+  }
+  mutateDraft((next) => {
+    if (origin.kind === 'step' && origin.stepId) {
+      const target = next.steps.find(item => item.id === origin.stepId)
+      if (target) target.input = sourceValue
+      return
+    }
+    if (origin.kind === 'utility' && origin.utilityId && origin.utilityPortId) {
+      next.utilityNodes = next.utilityNodes.map((item) => {
+        if (item.id !== origin.utilityId) return item
+        if (item.kind === 'audio_ensemble') {
+          const index = Number(origin.utilityPortId!.split(':')[1])
+          const inputs = Array.isArray(item.data.inputs) ? [...item.data.inputs] : []
+          if (index >= 0 && index < inputs.length) inputs[index] = sourceValue
+          return { ...item, data: { ...item.data, inputs } }
+        }
+        return { ...item, data: { ...item.data, input: sourceValue } }
+      })
+    }
+  })
+  return true
+}
+
+const createNodeItems = computed(() => {
+  const keyword = createNodeSearch.value.trim().toLowerCase()
+  const items: Array<{ kind: 'step' | WorkflowUtilityNodeKind; title: string; desc: string }> = [
+    {
+      kind: 'step',
+      title: t('workflows.addSeparationNode'),
+      desc: t('workflows.paletteStepDesc'),
+    },
+    {
+      kind: 'audio_ensemble',
+      title: t('workflows.audioEnsembleNode'),
+      desc: t('workflows.paletteAudioEnsembleDesc'),
+    },
+    {
+      kind: 'audio_invert_phase',
+      title: t('workflows.invertPhaseNode'),
+      desc: t('workflows.paletteInvertPhaseDesc'),
+    },
+    {
+      kind: 'audio_normalize',
+      title: t('workflows.audioNormalizeNode'),
+      desc: t('workflows.paletteAudioNormalizeDesc'),
+    },
+  ]
+  if (!keyword) return items
+  return items.filter(item => `${item.title} ${item.desc}`.toLowerCase().includes(keyword))
+})
+
+function openCreateNodeFromConnection(event: PointerEvent) {
+  const world = screenToWorld(event.clientX, event.clientY)
+  const rect = canvasViewportRef.value?.getBoundingClientRect()
+  if (!world || !rect) {
+    cancelGraphConnection()
+    return
+  }
+  createNodeWorld.value = world
+  createNodeSearch.value = ''
+  const panelWidth = 248
+  const panelHeight = 320
+  const margin = 14
+  let left = Math.round(Math.max(margin, Math.min(event.clientX - rect.left - 120, viewportMetrics.value.width - panelWidth)))
+  let top = Math.round(Math.max(margin, Math.min(event.clientY - rect.top + 14, viewportMetrics.value.height - panelHeight)))
+  const toolbarRect = canvasViewportRef.value?.querySelector('.canvas-primary-actions')?.getBoundingClientRect()
+  if (toolbarRect) {
+    const toolbarBottom = toolbarRect.bottom - rect.top
+    const toolbarLeft = toolbarRect.left - rect.left
+    const toolbarRight = toolbarRect.right - rect.left
+    const overlapsToolbar = left < toolbarRight + margin && left + panelWidth > toolbarLeft - margin && top < toolbarBottom + margin
+    if (overlapsToolbar) {
+      top = Math.round(Math.max(toolbarBottom + 12, Math.min(top, viewportMetrics.value.height - panelHeight)))
+    }
+  }
+  // Keep connection-created panels below the fixed toolbar even if its measured
+  // bounds are temporarily unavailable during the first render.
+  if (left < 280) top = Math.max(top, 72)
+  createNodePanelPos.value = {
+    left,
+    top,
+  }
+  createNodePanelOpen.value = true
+  closeContextMenu()
+}
+
+function applyCreateNodeItem(kind: 'step' | WorkflowUtilityNodeKind) {
+  const world = createNodeWorld.value
+  const pending = pendingConnection.value
+  if (!world || !pending) return
+  if (kind === 'step') {
+    addGraphStepAt(world, pending.value)
+    closeCreateNodePanel()
+    return
+  }
+  const node = createWorkflowUtilityNodeDraft(kind, world)
+  mutateDraft((next) => {
+    next.utilityNodes = [...next.utilityNodes, node]
+  })
+  selectedGraphNode.value = utilitySelectionKey(node.id)
+  const portId = node.kind === 'audio_ensemble' ? 'input:0' : 'input'
+  connectUtilityInput(node.id, portId)
+  closeCreateNodePanel()
+}
+
+function closeCreateNodePanel(cancelConnection = true) {
+  createNodePanelOpen.value = false
+  createNodePanelPos.value = null
+  createNodeWorld.value = null
+  createNodeSearch.value = ''
+  if (cancelConnection) cancelGraphConnection()
 }
 
 function connectGraphInput(index: number) {
@@ -2019,8 +2336,8 @@ function nodeInputSourceIds(nodeId: string): string[] {
 
 // Would linking pendingConnection (source) into targetNodeId form a cycle?
 // A cycle exists iff the source node already (transitively) depends on target.
-function wouldPendingConnectionCreateCycle(targetNodeId: string): boolean {
-  const sourceId = connectionValueNodeId(pendingConnection.value?.value || '')
+function wouldConnectionCreateCycle(sourceValue: string, targetNodeId: string): boolean {
+  const sourceId = connectionValueNodeId(sourceValue)
   if (!sourceId) return false
   if (sourceId === targetNodeId) return true
   const visited = new Set<string>()
@@ -2035,11 +2352,16 @@ function wouldPendingConnectionCreateCycle(targetNodeId: string): boolean {
   return false
 }
 
+function wouldPendingConnectionCreateCycle(targetNodeId: string): boolean {
+  return wouldConnectionCreateCycle(pendingConnection.value?.value || '', targetNodeId)
+}
+
 function connectPendingToStep(stepId: string) {
   const index = steps.value.findIndex(step => step.id === stepId)
   if (index < 0 || !pendingConnection.value) return false
   if (wouldPendingConnectionCreateCycle(stepId)) {
     message.warning(t('workflows.connectionCycleBlocked'))
+    cancelGraphConnection()
     return false
   }
   mutateDraft((next) => {
@@ -2061,6 +2383,7 @@ function connectUtilityInput(nodeId: string, portId: string) {
   }
   if (wouldPendingConnectionCreateCycle(nodeId)) {
     message.warning(t('workflows.connectionCycleBlocked'))
+    cancelGraphConnection()
     return
   }
   mutateDraft((next) => {
@@ -2161,6 +2484,8 @@ function handleEdgeClick(edge: GraphConnection) {
 
 function cancelGraphConnection() {
   pendingConnection.value = null
+  pendingConnectionStartClient = null
+  pendingConnectionMoved = false
   unbindPendingConnectionPointerUp()
 }
 
@@ -2676,6 +3001,8 @@ function closeContextMenu() {
 function handleWindowPointerDown(event: MouseEvent) {
   const target = event.target as HTMLElement | null
   if (!target?.closest('.node-context-menu')) closeContextMenu()
+  if (createNodePanelOpen.value && !target?.closest('.node-create-panel')) closeCreateNodePanel()
+  if (!target?.closest('.graph-node__menu, .graph-node__select')) closeStepMenus()
   if ((event.ctrlKey || event.metaKey || event.shiftKey) || event.button !== 0) return
   if (target?.closest('.graph-node, .graph-note, .canvas-floating, .node-context-menu')) return
   if (target?.closest('.node-canvas-wrap')) clearGraphSelection('input')
@@ -2717,6 +3044,16 @@ function handleGlobalKeyup(event: KeyboardEvent) {
 
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
+    if (createNodePanelOpen.value) {
+      event.preventDefault()
+      closeCreateNodePanel()
+      return
+    }
+    if (stepModelMenuOpenId.value || stepInputMenuOpenId.value) {
+      event.preventDefault()
+      closeStepMenus()
+      return
+    }
     if (pendingConnection.value) {
       event.preventDefault()
       cancelGraphConnection()
@@ -2897,33 +3234,65 @@ function handleCanvasPointerMove(event: PointerEvent) {
   canvasMouseWorld.value = screenToWorld(event.clientX, event.clientY)
 }
 
-function maybeCreateNodeFromPendingPointer(event: PointerEvent) {
-  if (!pendingConnection.value) return false
-  const target = event.target as HTMLElement | null
-  if (target?.closest('.graph-node, .graph-note, .graph-port, .canvas-floating, .node-context-menu')) return false
-  const world = screenToWorld(event.clientX, event.clientY)
-  if (!world) return false
-  addGraphStepAt(world, pendingConnection.value.value)
-  return true
-}
-
 function handlePendingConnectionPointerMove(event: PointerEvent) {
   canvasMouseWorld.value = screenToWorld(event.clientX, event.clientY)
+  if (pendingConnectionStartClient && Math.hypot(
+    event.clientX - pendingConnectionStartClient.clientX,
+    event.clientY - pendingConnectionStartClient.clientY,
+  ) > 5) {
+    pendingConnectionMoved = true
+  }
 }
 
 function handlePendingConnectionPointerUp(event: PointerEvent) {
-  if (pendingConnectionTarget.value?.kind === 'step' && pendingConnectionTarget.value.stepId && connectPendingToStep(pendingConnectionTarget.value.stepId)) return
-  if (
-    pendingConnectionTarget.value?.kind === 'utility'
-    && pendingConnectionTarget.value.utilityId
-    && pendingConnectionTarget.value.utilityPortId
-    && connectPendingToUtility(pendingConnectionTarget.value.utilityId, pendingConnectionTarget.value.utilityPortId)
-  ) return
-  if (maybeCreateNodeFromPendingPointer(event)) {
-    cancelGraphConnection()
+  const pending = pendingConnection.value
+  if (!pending) return
+  const moved = pendingConnectionMoved || (pendingConnectionStartClient
+    ? Math.hypot(event.clientX - pendingConnectionStartClient.clientX, event.clientY - pendingConnectionStartClient.clientY)
+    : 0) > 5
+  suppressStepInputClickStepId = pending.direction === 'in' && moved && pending.origin?.kind === 'step'
+    ? pending.origin.stepId || ''
+    : ''
+  if (suppressStepInputClickTimer) clearTimeout(suppressStepInputClickTimer)
+  if (suppressStepInputClickStepId) {
+    suppressStepInputClickTimer = setTimeout(() => {
+      suppressStepInputClickStepId = ''
+      suppressStepInputClickTimer = null
+    }, 0)
+  }
+  pendingConnectionStartClient = null
+  pendingConnectionMoved = false
+  if (pending.direction === 'out') {
+    const target = pendingConnectionTarget.value
+    if (target?.kind === 'step' && target.stepId) {
+      connectPendingToStep(target.stepId)
+      return
+    }
+    if (target?.kind === 'utility' && target.utilityId && target.utilityPortId) {
+      connectPendingToUtility(target.utilityId, target.utilityPortId)
+      return
+    }
+    if (moved) {
+      openCreateNodeFromConnection(event)
+      return
+    }
+    // 单击输出端口（未拖动）：保持待连接状态，等待点击目标端口完成连接。
     return
   }
-  cancelGraphConnection()
+  if (pending.direction === 'in') {
+    const source = pendingConnectionSourceTarget.value
+    if (source && pending.origin) {
+      rewireConnectionFromInput(pending.origin, source.value)
+    }
+    cancelGraphConnection()
+    if (source && pending.origin) {
+      if (pending.origin.kind === 'step' && pending.origin.stepId) {
+        selectGraphNode(stepSelectionKey(pending.origin.stepId))
+      } else if (pending.origin.kind === 'utility' && pending.origin.utilityId) {
+        selectGraphNode(utilitySelectionKey(pending.origin.utilityId))
+      }
+    }
+  }
 }
 
 function beginCanvasPan(event: PointerEvent) {
@@ -3169,9 +3538,26 @@ function jumpMinimap(event: MouseEvent) {
           <n-button size="tiny" quaternary @click="cancelGraphConnection">{{ t('common.cancel') }}</n-button>
         </div>
 
-        <div v-if="workflowValidationIssues.length" class="workflow-warning-banner canvas-floating">
-          <strong>{{ t('workflows.workflowValidationTitle') }}</strong>
-          <ul>
+        <div v-if="createNodePanelOpen && createNodePanelPos" class="node-create-panel canvas-floating" :style="createNodePanelPos" @pointerdown.stop>
+          <strong class="node-create-panel__title">{{ t('workflows.createNodeFromConnection') }}</strong>
+          <span class="node-create-panel__hint">{{ t('workflows.createNodePanelHint') }}</span>
+          <n-input v-model:value="createNodeSearch" size="small" clearable :placeholder="t('workflows.searchNodeTypes')" />
+          <div class="node-create-panel__list">
+            <button v-for="item in createNodeItems" :key="item.kind" type="button" class="node-create-panel__item" @click="applyCreateNodeItem(item.kind)">
+              <strong>{{ item.title }}</strong>
+              <span>{{ item.desc }}</span>
+            </button>
+            <div v-if="!createNodeItems.length" class="node-create-panel__empty">{{ t('workflows.noPaletteResults') }}</div>
+          </div>
+          <span v-if="pendingConnection" class="node-create-panel__source">{{ t('workflows.connectingFrom') }}: {{ pendingConnection.label }}</span>
+        </div>
+
+        <div v-if="workflowValidationIssues.length" class="workflow-warning-banner canvas-floating" :class="{ 'workflow-warning-banner--expanded': warningExpanded }">
+          <button type="button" class="workflow-warning-banner__head" @click="warningExpanded = !warningExpanded">
+            <strong>{{ t('workflows.workflowValidationTitle') }} · {{ workflowValidationIssues.length }}</strong>
+            <span class="workflow-warning-banner__chevron">▾</span>
+          </button>
+          <ul v-if="warningExpanded">
             <li v-for="issue in workflowValidationIssues" :key="issue.message">
               <button type="button" @click="focusValidationIssue(issue)">{{ issue.message }}</button>
             </li>
@@ -3219,7 +3605,7 @@ function jumpMinimap(event: MouseEvent) {
                 <span>{{ t('workflows.inputNode') }}</span>
                 <strong>{{ t('workflows.originalInput') }}</strong>
               </div>
-              <button type="button" class="graph-port graph-port--output" @click.stop="beginGraphConnection('input', t('workflows.originalInput'))">
+              <button type="button" class="graph-port graph-port--output" @pointerdown.stop="beginGraphConnection('input', t('workflows.originalInput'), $event)">
                 <span>{{ t('workflows.audioOutput') }}</span>
                 <i data-port-id="out:input" />
               </button>
@@ -3230,12 +3616,17 @@ function jumpMinimap(event: MouseEvent) {
               :key="stepRenderKey(step)"
               :data-selection-key="stepSelectionKey(step.id)"
               class="graph-node graph-node--step"
-              :class="{ 'graph-node--selected': isGraphNodeSelected(stepSelectionKey(step.id)), 'graph-node--pending-target': isPendingTargetStep(step.id) }"
+              :class="{
+                'graph-node--selected': isGraphNodeSelected(stepSelectionKey(step.id)),
+                'graph-node--pending-target': isPendingTargetStep(step.id),
+                'graph-node--collapsed': stepCollapsed(step),
+                'graph-node--menu-open': stepModelMenuOpenId === step.id || stepInputMenuOpenId === step.id,
+              }"
               :style="graphNodeStyle(step.id, { minHeight: `${stepNodeHeight(step)}px` })"
               @pointerdown="beginNodeDrag(step.id, stepSelectionKey(step.id), $event)"
               @click="selectGraphNode(stepSelectionKey(step.id), { append: $event.ctrlKey || $event.metaKey })"
             >
-              <div class="graph-node__head graph-node__head--drag">
+              <div class="graph-node__head graph-node__head--drag" @dblclick.stop="toggleStepCollapsedFromHead($event, step.id)">
                 <div class="graph-node__head-main">
                   <span>{{ t('workflows.separationNode') }}</span>
                   <strong>{{ stepDisplayId(index) }}</strong>
@@ -3244,10 +3635,18 @@ function jumpMinimap(event: MouseEvent) {
                   <button
                     type="button"
                     class="graph-node__head-button graph-node__icon-action"
-                    :title="t('workflows.nodeSettings')"
-                    @click.stop="openStepConfig(step.id)"
+                    :title="stepCollapsed(step) ? t('workflows.expandNode') : t('workflows.collapseNode')"
+                    @click.stop="toggleStepCollapsed(step.id)"
                   >
-                    <n-icon :component="SettingsOutline" />
+                    <n-icon :component="ChevronDownOutline" :class="{ 'graph-node__collapse-icon--rotated': !stepCollapsed(step) }" />
+                  </button>
+                  <button
+                    type="button"
+                    class="graph-node__head-button graph-node__icon-action"
+                    :title="t('workflows.duplicateNode')"
+                    @click.stop="duplicateGraphStep(step)"
+                  >
+                    <n-icon :component="CopyOutline" />
                   </button>
                   <button
                     v-if="steps.length > 1 && !pendingConnection"
@@ -3260,21 +3659,106 @@ function jumpMinimap(event: MouseEvent) {
                   </button>
                 </div>
               </div>
-              <button
-                type="button"
-                class="graph-port graph-port--input"
-                :class="{
-                  'graph-port--armed': pendingConnection,
-                  'graph-port--connected': step.input,
-                  'graph-port--pending-target': isPendingTargetStep(step.id),
-                }"
-                @click.stop="connectGraphInput(index)"
-              >
-                <i :data-port-id="`in:${step.id}`" />
-                <span>{{ step.input ? formatConnectionValueLabel(step.input) : t('workflows.stepInput') }}</span>
-              </button>
-              <div class="graph-node__model" :title="step.model || t('workflows.stepModelPlaceholder')">
-                {{ step.model || t('workflows.stepModelPlaceholder') }}
+              <div class="graph-node__input-wrap">
+                <button
+                  type="button"
+                  class="graph-port graph-port--input"
+                  :class="{
+                    'graph-port--armed': pendingConnection,
+                    'graph-port--connected': step.input,
+                    'graph-port--pending-target': isPendingTargetStep(step.id),
+                  }"
+                  @pointerdown.stop="beginInputDragFromStep(step, $event)"
+                  @click.stop="onStepInputPortClick(step, index, $event)"
+                >
+                  <i :data-port-id="`in:${step.id}`" />
+                  <span>{{ step.input ? formatConnectionValueLabel(step.input) : t('workflows.stepInput') }}</span>
+                  <small class="graph-port__caret">▾</small>
+                </button>
+                <div v-if="stepInputMenuOpenId === step.id" class="graph-node__menu" @pointerdown.stop>
+                  <input v-model="stepInputSearch" class="graph-node__menu-search" :placeholder="t('workflows.searchNodeTypes')" @pointerdown.stop>
+                  <div class="graph-node__menu-list">
+                    <button
+                      v-for="opt in filteredStepInputOptions"
+                      :key="opt.value"
+                      type="button"
+                      class="graph-node__menu-item"
+                      :class="{ 'graph-node__menu-item--active': step.input === opt.value }"
+                      @click.stop="updateStepInput(step.id, opt.value); closeStepMenus()"
+                    >
+                      <span>{{ opt.label }}</span>
+                    </button>
+                    <div v-if="!filteredStepInputOptions.length" class="graph-node__menu-empty">{{ t('workflows.noPaletteResults') }}</div>
+                  </div>
+                </div>
+              </div>
+              <div v-if="!stepCollapsed(step)" class="graph-node__widgets" @pointerdown.stop>
+                <div class="graph-node__widget">
+                  <span class="graph-node__widget-label">{{ t('workflows.stepModel') }}</span>
+                  <button
+                    type="button"
+                    class="graph-node__select"
+                    :class="{ 'graph-node__select--open': stepModelMenuOpenId === step.id }"
+                    @click.stop="toggleStepModelMenu(step, $event)"
+                  >
+                    <span class="graph-node__select-value">{{ step.model || t('workflows.stepModelPlaceholder') }}</span>
+                    <span class="graph-node__select-caret">▾</span>
+                  </button>
+                  <div v-if="stepModelMenuOpenId === step.id" class="graph-node__menu graph-node__menu--select" @pointerdown.stop>
+                    <input v-model="stepModelSearch" class="graph-node__menu-search" :placeholder="t('workflows.searchNodeTypes')" @pointerdown.stop>
+                    <div class="graph-node__menu-list">
+                      <button
+                        v-for="opt in filteredStepModelOptions"
+                        :key="opt.value"
+                        type="button"
+                        class="graph-node__menu-item"
+                        :class="{ 'graph-node__menu-item--active': step.model === opt.value }"
+                        @click.stop="updateStepModel(step.id, opt.value); closeStepMenus()"
+                      >
+                        <span>{{ opt.label }}</span>
+                      </button>
+                      <div v-if="!filteredStepModelOptions.length" class="graph-node__menu-empty">{{ t('workflows.noPaletteResults') }}</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="graph-node__widget">
+                  <div class="graph-node__widget-label-row">
+                    <span class="graph-node__widget-label">{{ t('workflows.stepStems') }}</span>
+                    <button
+                      v-if="modelStemOptions(step.model).length"
+                      type="button"
+                      class="graph-node__chip-action"
+                      @click.stop="step.stems.length === modelStemOptions(step.model).length ? clearStepStems(step) : applyAllModelStems(step)"
+                    >
+                      {{ step.stems.length === modelStemOptions(step.model).length ? t('workflows.clearStems') : t('workflows.useAllStems') }}
+                    </button>
+                  </div>
+                  <div v-if="modelStemOptions(step.model).length" class="graph-node__chip-row">
+                    <button
+                      v-for="opt in modelStemOptions(step.model)"
+                      :key="opt.value"
+                      type="button"
+                      class="graph-node__chip"
+                      :class="{ 'graph-node__chip--active': step.stems.includes(opt.value) }"
+                      @click.stop="toggleStepStem(step, opt.value)"
+                    >
+                      {{ opt.label }}
+                    </button>
+                  </div>
+                  <div v-else class="graph-node__empty-port">{{ t('workflows.stepModelPlaceholder') }}</div>
+                </div>
+                <div class="graph-node__widget graph-node__widget--inline">
+                  <span class="graph-node__widget-label">{{ t('workflows.stepOverlap') }}</span>
+                  <n-input-number
+                    size="tiny"
+                    :value="step.overlapSize"
+                    clearable
+                    :min="0"
+                    :step="1024"
+                    style="width: 100%"
+                    @update:value="updateStepOverlap(step.id, $event)"
+                  />
+                </div>
               </div>
               <div class="graph-node__ports">
                 <button
@@ -3282,7 +3766,7 @@ function jumpMinimap(event: MouseEvent) {
                   :key="stem"
                   type="button"
                   class="graph-port graph-port--output"
-                  @click.stop="beginGraphConnection(stepStemValue(step, stem), stepStemLabelByIndex(index, stem))"
+                  @pointerdown.stop="beginGraphConnection(stepStemValue(step, stem), stepStemLabelByIndex(index, stem), $event)"
                 >
                   <span>{{ stem }}</span>
                   <i :data-port-id="`out:${step.id}.${stem}`" />
@@ -3443,7 +3927,8 @@ function jumpMinimap(event: MouseEvent) {
                   'graph-port--connected': utilityInputValue(node, portId),
                   'graph-port--pending-target': isPendingTargetUtility(node.id, portId),
                 }"
-                @click.stop="connectUtilityInput(node.id, portId)"
+                @pointerdown.stop="beginInputDragFromUtility(node, portId, $event)"
+                @click.stop="onUtilityInputPortClick(node, portId)"
               >
                 <i :data-port-id="utilityInputPortToken(node.id, portId)" />
                 <span>{{ utilityInputLabel(node, portId) }}</span>
@@ -3454,7 +3939,7 @@ function jumpMinimap(event: MouseEvent) {
               <button
                 type="button"
                 class="graph-port graph-port--output"
-                @click.stop="beginGraphConnection(utilityOutputValue(node.id), utilityNodeDisplayLabel(node))"
+                @pointerdown.stop="beginGraphConnection(utilityOutputValue(node.id), utilityNodeDisplayLabel(node), $event)"
               >
                 <span>{{ t('workflows.audioOutput') }}</span>
                 <i :data-port-id="utilityOutputPortToken(node.id)" />
@@ -3608,86 +4093,6 @@ function jumpMinimap(event: MouseEvent) {
             <span>{{ item.desc }}</span>
           </button>
           <div v-if="!paletteItems.length" class="node-palette__empty">{{ t('workflows.noPaletteResults') }}</div>
-        </div>
-      </div>
-    </n-modal>
-
-    <n-modal
-      :show="Boolean(stepConfigStep)"
-      preset="card"
-      class="node-config-modal"
-      style="width: min(560px, calc(100vw - 32px))"
-      :title="stepConfigStep ? `${t('workflows.separationNode')} · ${stepDisplayIdByStep(stepConfigStep)}` : t('workflows.separationNode')"
-      :bordered="false"
-      size="medium"
-      @update:show="(value: boolean) => { if (!value) closeStepConfig() }"
-    >
-      <div v-if="stepConfigStep" class="node-config-form">
-        <div class="node-config-actions">
-          <n-button size="small" secondary @click="duplicateGraphStep(stepConfigStep)">
-            <template #icon><n-icon :component="CopyOutline" /></template>
-            {{ t('workflows.duplicateNode') }}
-          </n-button>
-          <n-button size="small" secondary :disabled="!stepConfigStepAvailableStemValues.length" @click="applyAllModelStems(stepConfigStep)">
-            {{ t('workflows.useAllStems') }}
-          </n-button>
-          <n-button size="small" tertiary type="error" :disabled="steps.length <= 1" @click="removeGraphStep(stepConfigStep); closeStepConfig()">
-            <template #icon><n-icon :component="TrashOutline" /></template>
-            {{ t('workflows.deleteNode') }}
-          </n-button>
-        </div>
-
-        <label>
-          <span>{{ t('workflows.stepModel') }}</span>
-          <n-select
-            :value="stepConfigStepModel"
-            filterable
-            :options="props.modelOptions"
-            :placeholder="t('workflows.stepModelPlaceholder')"
-            @update:value="updateStepConfigModel"
-          />
-        </label>
-
-        <label>
-          <span>{{ t('workflows.stepInput') }}</span>
-          <n-select
-            :value="stepConfigStepInput"
-            filterable
-            tag
-            :options="stepConfigStepInputOptions"
-            :placeholder="t('workflows.stepInputPlaceholder')"
-            @update:value="updateStepConfigInput"
-          />
-        </label>
-
-        <label>
-          <span>{{ t('workflows.stepOverlap') }}</span>
-          <n-input-number
-            :value="stepConfigStepOverlap"
-            clearable
-            :min="0"
-            :step="1024"
-            style="width: 100%"
-            @update:value="updateStepConfigOverlap"
-          />
-        </label>
-
-        <label>
-          <span>{{ t('workflows.stepStems') }}</span>
-          <n-select
-            :value="stepConfigStepStems"
-            multiple
-            filterable
-            tag
-            :options="stepConfigStepStemOptions"
-            :placeholder="t('workflows.stepStemsPlaceholder')"
-            @update:value="updateStepConfigStems"
-          />
-        </label>
-
-        <div class="node-config-actions node-config-actions--secondary">
-          <n-button size="small" quaternary @click="resetStepInput(stepConfigStep, stepConfigStepIndex)">{{ t('workflows.resetInput') }}</n-button>
-          <n-button size="small" quaternary @click="clearStepStems(stepConfigStep)">{{ t('workflows.clearStems') }}</n-button>
         </div>
       </div>
     </n-modal>
@@ -3899,14 +4304,17 @@ function jumpMinimap(event: MouseEvent) {
   position: absolute;
   top: 64px;
   left: 14px;
-  z-index: 10;
-  display: grid;
-  gap: 6px;
-  width: min(280px, calc(100% - 28px));
-  padding: 10px 12px;
+  z-index: 26;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100% - 200px);
+  padding: 6px 8px 6px 12px;
   border: 1px solid color-mix(in srgb, var(--primary) 36%, var(--outline));
-  border-radius: 12px;
+  border-radius: 999px;
   background: color-mix(in srgb, var(--primary-soft) 24%, var(--surface-1));
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.12);
 }
 
 .connection-banner--locked {
@@ -3915,39 +4323,77 @@ function jumpMinimap(event: MouseEvent) {
 }
 
 .connection-banner strong {
+  flex: 0 0 auto;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .connection-banner span {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--primary-strong);
   font-size: 12px;
-  word-break: break-all;
 }
 
 .connection-banner__target {
-  display: block;
   color: color-mix(in srgb, #22c55e 72%, white 8%);
   font-size: 12px;
   line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.connection-banner .n-button {
+  flex: 0 0 auto;
 }
 
 .workflow-warning-banner {
   position: absolute;
-  top: 68px;
   left: 14px;
-  z-index: 11;
+  bottom: 66px;
+  z-index: 21;
   display: grid;
-  gap: 6px;
-  width: min(320px, calc(100% - 28px));
-  padding: 10px 12px;
+  gap: 4px;
+  width: min(340px, calc(100% - 28px));
+  padding: 8px 10px;
   border: 1px solid color-mix(in srgb, #f59e0b 56%, var(--outline));
-  border-radius: 12px;
+  border-radius: 14px;
   background: color-mix(in srgb, #f59e0b 14%, var(--surface-1));
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.12);
 }
 
-.workflow-warning-banner strong {
+.workflow-warning-banner__head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.workflow-warning-banner__head strong {
   font-size: 12px;
+  font-weight: 800;
+}
+
+.workflow-warning-banner__chevron {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--on-surface-muted);
+  transition: transform 140ms ease;
+}
+
+.workflow-warning-banner--expanded .workflow-warning-banner__chevron {
+  transform: rotate(180deg);
 }
 
 .workflow-warning-banner ul {
@@ -4053,8 +4499,8 @@ function jumpMinimap(event: MouseEvent) {
   z-index: 30;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px;
+  gap: 5px;
+  padding: 6px;
   border-radius: 14px;
 }
 
@@ -4106,6 +4552,13 @@ function jumpMinimap(event: MouseEvent) {
   opacity: 0.72;
 }
 
+.workflow-edge--rewire {
+  stroke: var(--danger);
+  stroke-dasharray: 6 6;
+  opacity: 0.88;
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--danger) 30%, transparent));
+}
+
 .workflow-edge-hit {
   stroke: transparent;
   stroke-width: 14;
@@ -4121,6 +4574,7 @@ function jumpMinimap(event: MouseEvent) {
 
 .workflow-edge--hovered {
   opacity: 1;
+  stroke-width: 4;
   stroke: var(--danger);
   filter: drop-shadow(0 0 8px color-mix(in srgb, var(--danger) 36%, transparent));
 }
@@ -4302,6 +4756,18 @@ function jumpMinimap(event: MouseEvent) {
   border-color: color-mix(in srgb, var(--danger) 32%, var(--outline));
 }
 
+.graph-node__collapse-icon--rotated :deep(svg) {
+  transform: rotate(180deg);
+}
+
+.graph-node--collapsed .graph-node__head-main span {
+  color: var(--on-surface-muted);
+}
+
+.graph-node--collapsed .graph-node__head strong {
+  color: var(--primary-strong);
+}
+
 .graph-node__icon-action--danger:hover {
   color: #fff;
   background: var(--danger);
@@ -4320,6 +4786,198 @@ function jumpMinimap(event: MouseEvent) {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+}
+
+.graph-node--menu-open {
+  z-index: 42;
+}
+
+.graph-node__input-wrap,
+.graph-node__widget {
+  position: relative;
+  min-width: 0;
+}
+
+.graph-node__widgets {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--outline) 34%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-1) 48%, transparent);
+}
+
+.graph-node__widget {
+  display: grid;
+  gap: 6px;
+}
+
+.graph-node__widget--inline {
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+}
+
+.graph-node__widget-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.graph-node__widget-label {
+  min-width: 0;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.graph-node__select,
+.graph-node__menu-search {
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--outline) 48%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  color: var(--on-surface);
+  font: inherit;
+  font-size: 12px;
+}
+
+.graph-node__select {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.graph-node__select:hover,
+.graph-node__select--open {
+  border-color: color-mix(in srgb, var(--primary) 48%, var(--outline));
+  background: color-mix(in srgb, var(--primary-soft) 22%, var(--surface-1));
+}
+
+.graph-node__select-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-node__select-caret,
+.graph-port__caret {
+  flex: 0 0 auto;
+  color: var(--on-surface-muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.graph-node__menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 12;
+  width: 100%;
+  display: grid;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid color-mix(in srgb, var(--outline) 62%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 94%, var(--surface-1));
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.24);
+}
+
+.graph-node__menu-search {
+  min-height: 28px;
+  padding: 5px 8px;
+  outline: none;
+}
+
+.graph-node__menu-list {
+  display: grid;
+  gap: 4px;
+  max-height: 178px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.graph-node__menu-item {
+  width: 100%;
+  min-height: 28px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--on-surface);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.graph-node__menu-item:hover,
+.graph-node__menu-item--active {
+  background: color-mix(in srgb, var(--primary-soft) 30%, var(--surface-1));
+  color: var(--primary-strong);
+}
+
+.graph-node__menu-item span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-node__menu-empty {
+  padding: 10px 8px;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.graph-node__chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.graph-node__chip,
+.graph-node__chip-action {
+  border: 1px solid color-mix(in srgb, var(--outline) 48%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2) 58%, transparent);
+  color: var(--on-surface-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.graph-node__chip {
+  min-height: 24px;
+  padding: 5px 8px;
+}
+
+.graph-node__chip:hover,
+.graph-node__chip--active {
+  border-color: color-mix(in srgb, #22c55e 48%, var(--outline));
+  background: color-mix(in srgb, #22c55e 14%, var(--surface-1));
+  color: color-mix(in srgb, #22c55e 82%, var(--on-surface));
+}
+
+.graph-node__chip-action {
+  flex: 0 0 auto;
+  min-height: 20px;
+  padding: 4px 7px;
+}
+
+.graph-node__chip-action:hover {
+  color: var(--primary-strong);
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--outline));
+  background: color-mix(in srgb, var(--primary-soft) 20%, var(--surface-1));
 }
 
 .graph-node__warning {
@@ -4489,6 +5147,12 @@ function jumpMinimap(event: MouseEvent) {
   border-radius: 999px;
   background: #22c55e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #22c55e 18%, transparent);
+  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.graph-port:hover i {
+  transform: scale(1.45);
+  box-shadow: 0 0 0 4px color-mix(in srgb, #22c55e 30%, transparent);
 }
 
 .graph-port--input {
@@ -4702,15 +5366,90 @@ textarea.graph-note__field {
   cursor: not-allowed;
 }
 
+.node-create-panel {
+  position: absolute;
+  z-index: 24;
+  width: 248px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 16px;
+}
+
+.node-create-panel__title {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.node-create-panel__hint,
+.node-create-panel__source {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.node-create-panel__source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-create-panel__list {
+  display: grid;
+  gap: 6px;
+  max-height: 224px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.node-create-panel__item {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--outline) 46%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 56%, transparent);
+  color: var(--on-surface);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.node-create-panel__item:hover {
+  border-color: color-mix(in srgb, var(--primary-strong) 48%, var(--outline));
+  background: color-mix(in srgb, var(--primary-soft) 22%, var(--surface-1));
+}
+
+.node-create-panel__item strong {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.node-create-panel__item span {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.node-create-panel__empty {
+  padding: 18px 10px;
+  border: 1px dashed color-mix(in srgb, var(--outline) 56%, transparent);
+  border-radius: 12px;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
 .canvas-zoom-controls {
   position: absolute;
   left: 14px;
   bottom: 14px;
-  z-index: 9;
+  z-index: 20;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
+  gap: 6px;
+  padding: 6px 8px;
   border-radius: 14px;
 }
 

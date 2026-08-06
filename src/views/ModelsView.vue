@@ -434,7 +434,13 @@ function saveInferenceDefaults() {
   if (!selectedInfo.value) return
   modelStore.setModelInferenceOverrides(selectedInfo.value.name, inferenceDraft.value)
   if (selectedModel.value === selectedInfo.value.name) {
-    taskStore.applySelectedModelDefaults(modelStore.selectedInfo?.defaultInferenceParams, modelStore.selectedInfo?.modelType)
+    taskStore.applySelectedModelDefaults(
+      modelStore.selectedInfo ? modelStore.getModelBaseInferenceDefaults(selectedInfo.value.name) || modelStore.selectedInfo.defaultInferenceParams : undefined,
+      modelStore.selectedInfo?.modelType,
+      taskStore.getSavedModelState(selectedInfo.value.name),
+      modelStore.getModelInferenceOverrides(selectedInfo.value.name),
+      { force: true },
+    )
   }
   message.success(t('models.inferenceDefaultsSaved'))
 }
@@ -446,7 +452,13 @@ function resetInferenceDefaults() {
   }
   syncInferenceDraft(modelStore.selectedInfo)
   if (selectedModel.value === selectedInfo.value?.name) {
-    taskStore.applySelectedModelDefaults(modelStore.selectedInfo?.defaultInferenceParams, modelStore.selectedInfo?.modelType)
+    taskStore.applySelectedModelDefaults(
+      modelStore.selectedInfo ? modelStore.getModelBaseInferenceDefaults(selectedInfo.value.name) || modelStore.selectedInfo.defaultInferenceParams : undefined,
+      modelStore.selectedInfo?.modelType,
+      taskStore.getSavedModelState(selectedInfo.value.name),
+      modelStore.getModelInferenceOverrides(selectedInfo.value.name),
+      { force: true },
+    )
   }
   message.success(t('models.inferenceDefaultsReset'))
 }

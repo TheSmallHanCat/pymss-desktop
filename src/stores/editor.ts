@@ -190,6 +190,12 @@ function cloneTracks(tracks: EditorTrack[]) {
 }
 
 function normalizeSource(source: Partial<EditorSource>): EditorSource {
+  const channelPeaks = Array.isArray(source.channelPeaks)
+    ? source.channelPeaks
+        .filter((channel) => Array.isArray(channel))
+        .map((channel) => channel.map((value) => Number(value || 0)))
+    : []
+  const channelCount = Math.max(Number(source.channels || 0), channelPeaks.length)
   return {
     id: String(source.id || makeId('source')),
     role: source.role === 'reference' ? 'reference' : 'stem',
@@ -198,14 +204,10 @@ function normalizeSource(source: Partial<EditorSource>): EditorSource {
     name: String(source.name || fileName(String(source.path || '')) || 'Untitled'),
     duration: Number(source.duration || 0),
     sampleRate: Number(source.sampleRate || 0),
-    channels: Number(source.channels || 0),
+    channels: channelCount,
     peaksPath: source.peaksPath ? String(source.peaksPath) : null,
     peaks: Array.isArray(source.peaks) ? source.peaks.map((value) => Number(value || 0)) : [],
-    channelPeaks: Array.isArray(source.channelPeaks)
-      ? source.channelPeaks
-          .filter((channel) => Array.isArray(channel))
-          .map((channel) => channel.map((value) => Number(value || 0)))
-      : [],
+    channelPeaks,
     originKind: source.originKind ? String(source.originKind) : undefined,
     originRoot: source.originRoot ? String(source.originRoot) : null,
     relativePath: source.relativePath ? String(source.relativePath) : null,
@@ -377,7 +379,6 @@ export const useEditorStore = defineStore('editor', () => {
   const lastError = ref<string | null>(null)
   const selectedTrackId = ref<string | null>(null)
   const pixelsPerSecond = ref(96)
-  const exportFormat = ref<EditorExportFormat>('wav')
   const projectSummaries = ref<EditorProjectSummary[]>([])
 
   const undoStack = ref<HistorySnapshot[]>([])
@@ -831,7 +832,8 @@ export const useEditorStore = defineStore('editor', () => {
         source.name = metadata.name || source.name
         source.duration = Number(metadata.duration || source.duration)
         source.sampleRate = Number(metadata.sampleRate || source.sampleRate)
-        source.channels = Number(metadata.channels || source.channels)
+        const peakChannels = source.channelPeaks?.filter(channel => channel.length).length || 0
+        source.channels = Math.max(Number(metadata.channels || 0), peakChannels, Number(source.channels || 0))
       }
 
       if (
@@ -1112,13 +1114,14 @@ export const useEditorStore = defineStore('editor', () => {
     const normalized = typeof options === 'string'
       ? { format: options, audioParams: undefined }
       : (options || {})
-    const fmt = normalized.format || exportFormat.value
+    const fmt = normalized.format || 'wav'
     exporting.value = true
     lastError.value = null
     try {
       const result = await invoke<ExportResult>('export_editor_mix', {
         payload: {
           format: fmt,
+          exportDir: normalized.exportDir,
           audioParams: normalized.audioParams || {},
           project: {
             id: session.value.id,
@@ -1168,7 +1171,6 @@ export const useEditorStore = defineStore('editor', () => {
     referenceTracks,
     assetTree,
     pixelsPerSecond,
-    exportFormat,
     masterVolume,
     masterPan,
     canUndo,

@@ -102,11 +102,15 @@ const {
   exportFormatDraft,
   exportWavBitDepthDraft,
   exportFlacBitDepthDraft,
+  exportDirDraft,
+  exportDirPicking,
   openExportDialog,
   setExportDialogVisible,
   setExportFormat,
   setExportWavBitDepth,
   setExportFlacBitDepth,
+  setExportDir,
+  pickExportDir,
   exportMix,
 } = useEditorExport({
   editor,
@@ -448,10 +452,14 @@ watch(
       :format="exportFormatDraft"
       :wav-bit-depth="exportWavBitDepthDraft"
       :flac-bit-depth="exportFlacBitDepthDraft"
+      :export-dir="exportDirDraft"
+      :export-dir-resolving="exportDirPicking"
       @update:show="setExportDialogVisible"
       @update:format="setExportFormat"
       @update:wav-bit-depth="setExportWavBitDepth"
       @update:flac-bit-depth="setExportFlacBitDepth"
+      @update:export-dir="setExportDir"
+      @pick-export-dir="pickExportDir"
       @confirm="exportMix"
     />
   </div>
@@ -605,7 +613,7 @@ watch(
   min-height: 0;
   display: grid;
   overflow: hidden;
-  background: color-mix(in srgb, var(--surface-1) 76%, var(--surface-2));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 78%, var(--surface-2)), color-mix(in srgb, var(--surface-1) 66%, var(--surface-2)));
 }
 
 .editor-shell__inspector {

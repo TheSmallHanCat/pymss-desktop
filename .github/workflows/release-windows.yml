@@ -397,6 +397,46 @@ jobs:
           if (-not $aria2) { throw "aria2c.exe not found" }
           Copy-Item $aria2.FullName "$bin/aria2c.exe" -Force
           Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "$bin/VC_redist.x64.exe"
+      - name: Build Tauri online updater bundle
+        shell: pwsh
+        env:
+          PYMSS_BUILD_GIT_COMMIT: ${{ github.sha }}
+          PYMSS_BUILD_GIT_TAG: v${{ steps.meta.outputs.version }}
+          PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
+          PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
+          PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PYMSS_BUILD_TARGET: windows-x64
+          PYMSS_BUILD_VARIANT: windows-x64-online
+          PYMSS_BUILD_OFFICIAL: 'true'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "TAURI_SIGNING_PRIVATE_KEY secret is required to build updater artifacts"
+          }
+          $root = (Resolve-Path ".").Path
+          $config = @{
+            bundle = @{
+              targets = @("nsis")
+              createUpdaterArtifacts = $true
+              resources = @{
+                (Join-Path $root "python") = "python"
+                (Join-Path $root "python-runtime") = "python-runtime"
+                (Join-Path $root "release/bin") = "bin"
+              }
+            }
+          } | ConvertTo-Json -Depth 20
+          [System.IO.File]::WriteAllText("src-tauri/tauri.online-updater.resources.json", $config, [System.Text.UTF8Encoding]::new($false))
+          pnpm tauri build --bundles nsis --config src-tauri/tauri.online-updater.resources.json
+          $version = '${{ steps.meta.outputs.version }}'
+          $nsisDir = "src-tauri/target/release/bundle/nsis"
+          $installer = Get-ChildItem $nsisDir -File -Filter "*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $installer) { throw "Tauri NSIS updater installer not found" }
+          $signature = Get-Item "$($installer.FullName).sig" -ErrorAction SilentlyContinue
+          if (-not $signature) { throw "Tauri updater signature not found for $($installer.Name)" }
+          New-Item -ItemType Directory -Force -Path "release" | Out-Null
+          Copy-Item $installer.FullName "release/Pymss-Studio-$version-windows-x64-online-updater.exe" -Force
+          Copy-Item $signature.FullName "release/Pymss-Studio-$version-windows-x64-online-updater.exe.sig" -Force
       - name: Stage online portable directory
         shell: pwsh
         run: |
@@ -418,6 +458,13 @@ jobs:
           name: ${{ steps.meta.outputs.stage_artifact }}
           path: release/${{ steps.meta.outputs.stage_name }}
           compression-level: 0
+      - name: Upload online updater artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.stage_artifact }}-updater
+          path: |
+            release/Pymss-Studio-${{ steps.meta.outputs.version }}-windows-x64-online-updater.exe
+            release/Pymss-Studio-${{ steps.meta.outputs.version }}-windows-x64-online-updater.exe.sig
 
   windows-online-7z:
     name: Windows x64 online portable 7z

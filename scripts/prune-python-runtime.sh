@@ -2,6 +2,7 @@
 set -euo pipefail
 
 RUNTIME_DIR="${1:?runtime dir required}"
+KEEP_VENV="${2:-}"
 
 rm -rf \
   "$RUNTIME_DIR/Doc" \
@@ -15,14 +16,25 @@ rm -rf \
   "$RUNTIME_DIR/condabin" \
   "$RUNTIME_DIR/libexec" \
   "$RUNTIME_DIR/shell"
-find "$RUNTIME_DIR/lib" -maxdepth 2 -type d \( \
-  -name 'ensurepip' -o \
-  -name 'idlelib' -o \
-  -name 'lib2to3' -o \
-  -name 'tkinter' -o \
-  -name 'turtledemo' -o \
-  -name 'xmlrpc' \
-\) -prune -exec rm -rf {} + 2>/dev/null || true
+if [[ "$KEEP_VENV" != "--keep-venv" ]]; then
+  find "$RUNTIME_DIR/lib" -maxdepth 2 -type d \( \
+    -name 'ensurepip' -o \
+    -name 'venv' -o \
+    -name 'idlelib' -o \
+    -name 'lib2to3' -o \
+    -name 'tkinter' -o \
+    -name 'turtledemo' -o \
+    -name 'xmlrpc' \
+  \) -prune -exec rm -rf {} + 2>/dev/null || true
+else
+  find "$RUNTIME_DIR/lib" -maxdepth 2 -type d \( \
+    -name 'idlelib' -o \
+    -name 'lib2to3' -o \
+    -name 'tkinter' -o \
+    -name 'turtledemo' -o \
+    -name 'xmlrpc' \
+  \) -prune -exec rm -rf {} + 2>/dev/null || true
+fi
 find "$RUNTIME_DIR/lib" -maxdepth 2 -type f \( -name 'turtle.py' \) -delete 2>/dev/null || true
 find "$RUNTIME_DIR" -type d \( -name '__pycache__' -o -name 'test' -o -name 'tests' -o -name 'testsuite' -o -name 'examples' -o -name 'example' -o -name 'benchmarks' -o -name 'docs' -o -name 'doc' \) \
   -not -path '*/site-packages/torch/testing' \

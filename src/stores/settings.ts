@@ -486,8 +486,16 @@ export const useSettingsStore = defineStore('settings', () => {
   async function refreshModelDataAfterDirChange() {
     const { useModelStore } = await import('@/stores/model')
     const modelStore = useModelStore()
-    await modelStore.loadModels()
-    await modelStore.loadModelStorageSummary({ force: true })
+    try {
+      await modelStore.loadModels()
+    } catch (error) {
+      console.warn('Failed to refresh models after model directory change', error)
+    }
+    try {
+      await modelStore.loadModelStorageSummary({ force: true })
+    } catch (error) {
+      console.warn('Failed to refresh model storage after model directory change', error)
+    }
     const selectedModelName = modelStore.selectedModel
     if (selectedModelName) {
       const nextSelected = modelStore.models.find((item) => item.name === selectedModelName) || null
