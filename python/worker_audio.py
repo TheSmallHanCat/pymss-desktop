@@ -169,6 +169,9 @@ def cmd_waveform_peaks(payload: dict[str, Any]) -> int:
     try:
         if peaks_path.is_file() and peaks_path.stat().st_mtime >= path.stat().st_mtime:
             data = json.loads(peaks_path.read_text(encoding="utf-8"))
+            channel_peaks = data.get("channelPeaks") or []
+            if isinstance(channel_peaks, list):
+                data["channels"] = max(int(data.get("channels") or 0), len(channel_peaks))
             emit("waveform_peaks", data)
             return 0
 
@@ -203,6 +206,7 @@ def cmd_waveform_peaks(payload: dict[str, Any]) -> int:
             ]
             metadata = _audio_metadata(path)
 
+        channel_count = max(int(metadata.get("channels", 0) or 0), len(channel_peaks))
         data = {
             "path": str(path),
             "peaksPath": str(peaks_path),
@@ -211,7 +215,7 @@ def cmd_waveform_peaks(payload: dict[str, Any]) -> int:
             "resolution": resolution,
             "duration": metadata.get("duration", 0),
             "sampleRate": metadata.get("sampleRate") or sr,
-            "channels": metadata.get("channels", 0),
+            "channels": channel_count,
         }
         peaks_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         emit("waveform_peaks", data)

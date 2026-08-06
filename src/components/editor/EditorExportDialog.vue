@@ -12,6 +12,8 @@ const props = defineProps<{
   format: EditorExportFormat
   wavBitDepth: string
   flacBitDepth: string
+  exportDir: string
+  exportDirResolving: boolean
 }>()
 
 const emit = defineEmits<{
@@ -19,6 +21,8 @@ const emit = defineEmits<{
   'update:format': [value: EditorExportFormat]
   'update:wav-bit-depth': [value: string]
   'update:flac-bit-depth': [value: string]
+  'update:export-dir': [value: string]
+  pickExportDir: []
   confirm: []
 }>()
 
@@ -45,6 +49,7 @@ const exportSummaryRows = computed(() => [
   { label: t('editor.tracks'), value: String(props.trackCount) },
   { label: t('editor.exportSampleRateStrategy'), value: t('editor.exportSampleRateStrategyValue') },
 ])
+
 </script>
 
 <template>
@@ -55,7 +60,7 @@ const exportSummaryRows = computed(() => [
     :title="t('editor.exportDialogTitle')"
     :bordered="false"
     size="small"
-    style="width: min(560px, calc(100vw - 32px));"
+    style="width: min(640px, calc(100vw - 32px));"
     @update:show="(value: boolean) => emit('update:show', value)"
   >
     <div class="export-dialog">
@@ -64,50 +69,73 @@ const exportSummaryRows = computed(() => [
         <span>{{ t('editor.exportDialogHint') }}</span>
       </div>
 
-      <div class="export-dialog__form">
-        <label class="export-dialog__field">
-          <span>{{ t('editor.exportFormat') }}</span>
-          <n-select
-            :value="format"
-            :options="exportFormatOptions"
-            size="small"
-            @update:value="(value: EditorExportFormat) => emit('update:format', value)"
-          />
-        </label>
+      <div class="export-dialog__grid">
+        <section class="export-dialog__section export-dialog__section--stacked">
+          <div class="export-dialog__section-title">{{ t('editor.exportParamsSection') }}</div>
+          <div class="export-dialog__form">
+            <label class="export-dialog__field">
+              <span>{{ t('editor.exportFormat') }}</span>
+              <n-select
+                :value="format"
+                :options="exportFormatOptions"
+                size="small"
+                @update:value="(value: EditorExportFormat) => emit('update:format', value)"
+              />
+            </label>
 
-        <label class="export-dialog__field" v-if="format === 'wav'">
-          <span>{{ t('audio.wavBitDepth') }}</span>
-          <n-select
-            :value="wavBitDepth"
-            :options="wavBitDepthOptions"
-            size="small"
-            @update:value="(value: string) => emit('update:wav-bit-depth', value)"
-          />
-        </label>
+            <label class="export-dialog__field" v-if="format === 'wav'">
+              <span>{{ t('audio.wavBitDepth') }}</span>
+              <n-select
+                :value="wavBitDepth"
+                :options="wavBitDepthOptions"
+                size="small"
+                @update:value="(value: string) => emit('update:wav-bit-depth', value)"
+              />
+            </label>
 
-        <label class="export-dialog__field" v-if="format === 'flac'">
-          <span>{{ t('audio.flacBitDepth') }}</span>
-          <n-select
-            :value="flacBitDepth"
-            :options="flacBitDepthOptions"
-            size="small"
-            @update:value="(value: string) => emit('update:flac-bit-depth', value)"
-          />
-        </label>
-      </div>
-
-      <div class="export-dialog__section export-dialog__section--compact">
-        <div class="export-dialog__section-title">{{ t('editor.exportRenderSummary') }}</div>
-        <div class="export-summary">
-          <div v-for="row in exportSummaryRows" :key="row.label" class="export-summary__item">
-            <span>{{ row.label }}</span>
-            <strong>{{ row.value }}</strong>
+            <label class="export-dialog__field" v-if="format === 'flac'">
+              <span>{{ t('audio.flacBitDepth') }}</span>
+              <n-select
+                :value="flacBitDepth"
+                :options="flacBitDepthOptions"
+                size="small"
+                @update:value="(value: string) => emit('update:flac-bit-depth', value)"
+              />
+            </label>
           </div>
-          <div class="export-summary__item export-summary__item--wide">
-            <span>{{ t('editor.exportProcessing') }}</span>
-            <strong>{{ t('editor.exportProcessingValue') }}</strong>
+        </section>
+
+        <section class="export-dialog__section export-dialog__section--stacked export-dialog__section--path">
+          <div class="export-dialog__section-title">{{ t('editor.exportDirSection') }}</div>
+          <div class="export-dir">
+            <div class="export-dir__actions">
+              <n-input
+                :value="exportDir"
+                size="small"
+                clearable
+                :placeholder="t('editor.exportDirPlaceholder')"
+                @update:value="(value: string) => emit('update:export-dir', value)"
+              />
+              <n-button secondary size="small" :loading="exportDirResolving" @click="emit('pickExportDir')">
+                {{ t('editor.exportDirBrowse') }}
+              </n-button>
+            </div>
           </div>
-        </div>
+        </section>
+
+        <section class="export-dialog__section export-dialog__section--compact">
+          <div class="export-dialog__section-title">{{ t('editor.exportRenderSummary') }}</div>
+          <div class="export-summary">
+            <div v-for="row in exportSummaryRows" :key="row.label" class="export-summary__item">
+              <span>{{ row.label }}</span>
+              <strong>{{ row.value }}</strong>
+            </div>
+            <div class="export-summary__item export-summary__item--wide">
+              <span>{{ t('editor.exportProcessing') }}</span>
+              <strong>{{ t('editor.exportProcessingValue') }}</strong>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
 
@@ -122,17 +150,20 @@ const exportSummaryRows = computed(() => [
 
 <style scoped>
 .editor-export-modal :deep(.n-card) {
-  width: min(560px, calc(100vw - 32px)) !important;
-  max-width: min(560px, calc(100vw - 32px)) !important;
-  background:
-    radial-gradient(circle at top right, rgba(255, 123, 84, 0.12), transparent 34%),
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 96%, transparent), var(--surface));
+  width: min(640px, calc(100vw - 32px)) !important;
+  max-width: min(640px, calc(100vw - 32px)) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 96%, transparent), var(--surface));
 }
 
 .export-dialog {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
+}
+
+.export-dialog__grid {
+  display: grid;
+  gap: 10px;
 }
 
 .export-dialog__intro {
@@ -177,8 +208,16 @@ const exportSummaryRows = computed(() => [
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 74%, transparent);
 }
 
+.export-dialog__section--stacked {
+  gap: 10px;
+}
+
 .export-dialog__section--compact {
   padding: 10px;
+}
+
+.export-dialog__section--path {
+  gap: 10px;
 }
 
 .export-dialog__section-title {
@@ -214,6 +253,18 @@ const exportSummaryRows = computed(() => [
 .export-summary__item strong {
   font-size: 12px;
   line-height: 1.3;
+}
+
+.export-dir {
+  display: grid;
+  gap: 8px;
+}
+
+.export-dir__actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
 }
 
 .export-dialog__footer {

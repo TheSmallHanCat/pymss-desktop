@@ -22,6 +22,10 @@ const rootEl = ref<HTMLElement | null>(null)
 const dpr = computed(() => Math.min(window.devicePixelRatio || 1, 2))
 const tileCount = computed(() => Math.max(1, Math.ceil(Math.max(1, props.width) / TILE_CSS_WIDTH)))
 const tileIndexes = computed(() => Array.from({ length: tileCount.value }, (_, index) => index))
+const resolvedChannels = computed(() => {
+  const peakChannels = props.channelPeaks?.filter(channel => channel.length).length || 0
+  return Math.max(Number(props.channels || 0), peakChannels)
+})
 
 function resolveColor(): string {
   if (props.color) return props.color
@@ -51,7 +55,7 @@ function drawTile(canvas: HTMLCanvasElement, tileIndex: number) {
   ctx.setTransform(scaleX, 0, 0, ratio, 0, 0)
   ctx.clearRect(0, 0, tileWidth, totalHeight)
 
-  const channels = props.channels && props.channels >= 2 && props.channelPeaks?.length
+  const channels = resolvedChannels.value >= 2 && props.channelPeaks?.length
     ? props.channelPeaks.filter((channel) => channel.length).slice(0, 2)
     : [props.peaks]
   const primaryPeaks = channels[0] || []

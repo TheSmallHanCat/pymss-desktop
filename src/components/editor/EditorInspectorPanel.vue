@@ -90,13 +90,14 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
     </div>
 
     <div class="editor-inspector__scroll">
-      <section v-if="selectedTrack" class="inspector-group">
+      <section v-if="selectedTrack" class="inspector-group inspector-group--primary">
         <div class="inspector-group__header">
           <strong>{{ t('editor.inspectorSectionCommon') }}</strong>
+          <span>{{ t('editor.inspectorTrackContext') }}</span>
         </div>
 
-        <div class="inspector-group__body">
-          <label class="panel-field">
+        <div class="inspector-group__body inspector-group__body--dense">
+          <label class="panel-field panel-field--compact">
             <span class="panel-field__label">{{ t('editor.inspectorFieldName') }}</span>
             <n-input
               v-model:value="renameDraft"
@@ -106,50 +107,53 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
             />
           </label>
 
-          <label class="panel-field">
-            <div class="panel-field__split panel-field__split--compact">
-              <span class="panel-field__label">{{ t('editor.trackVolume') }}</span>
-              <strong>{{ formatTrackVolume(selectedTrack.volume) }}</strong>
-            </div>
-            <n-slider
-              :value="selectedTrack.volume"
-              :min="0"
-              :max="2"
-              :step="0.01"
-              :tooltip="false"
-              @update:value="(value: number) => selectedTrack && emit('setTrackVolume', selectedTrack.id, value)"
-              @dragstart="emit('beginTrackVolume')"
-              @dragend="emit('commitTrackVolume')"
-            />
-          </label>
+          <div class="dual-fields dual-fields--stacked">
+            <label class="panel-field panel-field--compact">
+              <div class="panel-field__split panel-field__split--compact">
+                <span class="panel-field__label">{{ t('editor.trackVolume') }}</span>
+                <strong>{{ formatTrackVolume(selectedTrack.volume) }}</strong>
+              </div>
+              <n-slider
+                :value="selectedTrack.volume"
+                :min="0"
+                :max="2"
+                :step="0.01"
+                :tooltip="false"
+                @update:value="(value: number) => selectedTrack && emit('setTrackVolume', selectedTrack.id, value)"
+                @dragstart="emit('beginTrackVolume')"
+                @dragend="emit('commitTrackVolume')"
+              />
+            </label>
 
-          <label class="panel-field">
-            <div class="panel-field__split panel-field__split--compact">
-              <span class="panel-field__label">{{ t('editor.balance') }}</span>
-              <strong>{{ formatTrackPan(selectedTrack.pan) }}</strong>
-            </div>
-            <n-slider
-              :value="selectedTrack.pan"
-              :min="-1"
-              :max="1"
-              :step="0.01"
-              :tooltip="false"
-              @update:value="(value: number) => selectedTrack && emit('setTrackPan', selectedTrack.id, value)"
-              @dragstart="emit('beginTrackPan')"
-              @dragend="emit('commitTrackPan')"
-            />
-          </label>
+            <label class="panel-field panel-field--compact">
+              <div class="panel-field__split panel-field__split--compact">
+                <span class="panel-field__label">{{ t('editor.balance') }}</span>
+                <strong>{{ formatTrackPan(selectedTrack.pan) }}</strong>
+              </div>
+              <n-slider
+                :value="selectedTrack.pan"
+                :min="-1"
+                :max="1"
+                :step="0.01"
+                :tooltip="false"
+                @update:value="(value: number) => selectedTrack && emit('setTrackPan', selectedTrack.id, value)"
+                @dragstart="emit('beginTrackPan')"
+                @dragend="emit('commitTrackPan')"
+              />
+            </label>
+          </div>
         </div>
       </section>
 
-      <section v-if="selectedTrack" class="inspector-group">
+      <section v-if="selectedTrack" class="inspector-group inspector-group--secondary">
         <div class="inspector-group__header">
           <strong>{{ t('editor.inspectorSectionAdvanced') }}</strong>
+          <span>{{ t('editor.inspectorTrackTuning') }}</span>
         </div>
 
-        <div class="inspector-group__body">
+        <div class="inspector-group__body inspector-group__body--dense">
           <div class="dual-fields">
-            <label class="panel-field">
+            <label class="panel-field panel-field--compact">
               <span class="panel-field__label">{{ t('editor.fieldFadeIn') }}</span>
               <n-input-number
                 :value="selectedTrack.fadeIn"
@@ -160,7 +164,7 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
                 @update:value="(value: number | null) => selectedTrack && emit('setTrackFades', selectedTrack.id, { fadeIn: numberOrZero(value) })"
               />
             </label>
-            <label class="panel-field">
+            <label class="panel-field panel-field--compact">
               <span class="panel-field__label">{{ t('editor.fieldFadeOut') }}</span>
               <n-input-number
                 :value="selectedTrack.fadeOut"
@@ -175,13 +179,14 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
         </div>
       </section>
 
-      <section v-if="selectedTrack" class="inspector-group">
+      <section v-if="selectedTrack" class="inspector-group inspector-group--source">
         <div class="inspector-group__header">
           <strong>{{ t('editor.inspectorSectionSource') }}</strong>
+          <span>{{ t('editor.inspectorSourceContext') }}</span>
         </div>
 
-        <div class="inspector-group__body">
-          <label class="panel-field">
+        <div class="inspector-group__body inspector-group__body--dense">
+          <label class="panel-field panel-field--compact">
             <span class="panel-field__label">{{ t('editor.trackSourcePath') }}</span>
             <n-input :value="selectedSource?.path || '-'" size="small" readonly />
           </label>
@@ -240,7 +245,7 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
 .editor-inspector__titlebar {
   display: grid;
   gap: 3px;
-  padding: 10px 12px 9px;
+  padding: 9px 12px 8px;
   border-bottom: 1px solid var(--outline);
 }
 
@@ -278,8 +283,8 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
   overflow: auto;
   display: grid;
   align-content: start;
-  gap: 0;
-  padding: 0 12px 10px;
+  gap: 7px;
+  padding: 7px 12px 9px;
 }
 
 .editor-inspector--compact .editor-inspector__scroll {
@@ -288,29 +293,52 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
 
 .inspector-group {
   display: grid;
-  gap: 7px;
-  padding: 9px 0 10px;
-  border-top: 1px solid color-mix(in srgb, var(--outline) 60%, transparent);
+  gap: 8px;
+  padding: 9px 10px 10px;
+  border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-1));
 }
 
 .inspector-group:first-child {
-  border-top: 0;
+  border-top: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
 }
 
 .inspector-group__header strong {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: color-mix(in srgb, var(--on-surface) 88%, var(--on-surface-muted));
 }
 
+.inspector-group__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.inspector-group__header span {
+  color: var(--on-surface-muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
 .inspector-group__body {
   display: grid;
+  gap: 10px;
+}
+
+.inspector-group__body--dense {
   gap: 8px;
 }
 
 .panel-field {
   display: grid;
+  gap: 4px;
+}
+
+.panel-field--compact {
   gap: 3px;
 }
 
@@ -339,7 +367,12 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
 
 .dual-fields {
   display: flex;
-  gap: 6px;
+  gap: 8px;
+}
+
+.dual-fields--stacked {
+  display: grid;
+  grid-template-columns: 1fr;
 }
 
 .dual-fields > .panel-field {
@@ -348,8 +381,8 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  grid-template-columns: 1fr;
+  gap: 4px;
   margin: 0;
 }
 
@@ -362,9 +395,8 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
-  padding: 3px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--outline) 28%, transparent);
-  border-radius: 0;
+  padding: 4px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--outline) 24%, transparent);
   background: transparent;
 }
 
@@ -391,8 +423,8 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
 
 .last-export {
   display: grid;
-  gap: 4px;
-  padding-top: 2px;
+  gap: 5px;
+  padding: 6px 0 0;
 }
 
 .last-export strong {
@@ -410,9 +442,9 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
 .source-missing-card {
   display: grid;
   gap: 5px;
-  padding: 10px;
+  padding: 9px 10px;
   border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 26%, transparent);
   background: color-mix(in srgb, var(--warning) 8%, transparent);
 }
 
@@ -450,6 +482,12 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
 @media (max-width: 1480px) {
   .stats-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1360px) {
+  .inspector-group {
+    padding-inline: 8px;
   }
 }
 </style>
