@@ -64,12 +64,51 @@ jobs:
       contents: write
     env:
       RELEASE_VERSION_INPUT: ${{ github.event.inputs.version || github.ref_name }}
+      QUARK_COOKIE: ${{ secrets.QUARK_COOKIE }}
+      QUARKPAN_VERSION: "0.4.0"
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      MODELSCOPE_API_TOKEN: ${{ secrets.MODELSCOPE_API_TOKEN }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
           pattern: "!*-stage"
+      - name: Resolve release tag
+        shell: bash
+        run: |
+          version="${RELEASE_VERSION_INPUT#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid semantic version: $RELEASE_VERSION_INPUT" >&2
+            exit 1
+          fi
+          version="${version#v}"
+          echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=Pymss Studio v${version}" >> "$GITHUB_ENV"
+          echo "RELEASE_VERSION=${version}" >> "$GITHUB_ENV"
+          if [[ "$version" == *-* ]]; then
+            echo "RELEASE_PRERELEASE=true" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_PRERELEASE=${{ github.event_name == 'workflow_dispatch' && inputs.prerelease == true }}" >> "$GITHUB_ENV"
+          fi
+      - name: Stage artifacts for Quark netdisk upload
+        if: ${{ env.QUARK_COOKIE != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="pms/${RELEASE_VERSION}"
+          mkdir -p "$staging"
+          shopt -s nullglob
+          copied=0
+          for f in artifacts/*; do
+            [ -f "$f" ] || continue
+            # Hard-link to avoid doubling disk usage; the split step below may
+            # delete the artifacts/ entry, but the staged hard link keeps the data.
+            ln -f "$f" "$staging/"
+            copied=$((copied + 1))
+          done
+          echo "Staged $copied file(s) under $staging/"
+          ls -la "$staging"
       - name: Split oversized release assets
         shell: bash
         run: |
@@ -103,22 +142,6 @@ jobs:
 
           Download all parts for the same filename before merging.
           EOF
-          fi
-      - name: Resolve release tag
-        shell: bash
-        run: |
-          version="${RELEASE_VERSION_INPUT#v}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid semantic version: $RELEASE_VERSION_INPUT" >&2
-            exit 1
-          fi
-          version="${version#v}"
-          echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
-          echo "RELEASE_NAME=Pymss Studio v${version}" >> "$GITHUB_ENV"
-          if [[ "$version" == *-* ]]; then
-            echo "RELEASE_PRERELEASE=true" >> "$GITHUB_ENV"
-          else
-            echo "RELEASE_PRERELEASE=${{ github.event_name == 'workflow_dispatch' && inputs.prerelease == true }}" >> "$GITHUB_ENV"
           fi
       - name: Generate updater metadata
         if: needs.windows.result == 'success'
@@ -161,3 +184,54 @@ jobs:
           prerelease: ${{ env.RELEASE_PRERELEASE }}
           generate_release_notes: true
           files: artifacts/*
+
+      - name: Download Quark netdisk CLI
+        if: ${{ env.QUARK_COOKIE != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="quarkpan-x86_64-unknown-linux-gnu.tar.gz"
+          url="https://github.com/HuanLinOTO/quarkpan-rs/releases/download/v${QUARKPAN_VERSION}/${asset}"
+          echo "Downloading $url"
+          curl -L -f --retry 3 -o "$asset" "$url"
+          curl -L -f --retry 3 -o "$asset.sha256" "$url.sha256"
+          # Verify integrity of the downloaded tarball against the published SHA256.
+          sha256sum -c "$asset.sha256"
+          tar -xzf "$asset"
+          quarkpan_bin="$(find . -maxdepth 2 -type f -name quarkpan | head -n1)"
+          if [ -z "$quarkpan_bin" ]; then
+            echo "quarkpan binary not found after extraction" >&2
+            exit 1
+          fi
+          chmod +x "$quarkpan_bin"
+          echo "Using quarkpan at: $quarkpan_bin"
+          "$quarkpan_bin" --version || true
+          echo "QUARKPAN_BIN=$quarkpan_bin" >> "$GITHUB_ENV"
+
+      - name: Upload release files to Quark netdisk
+        if: ${{ env.QUARK_COOKIE != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # quarkpan reads QUARK_COOKIE from the environment via clap's env attribute.
+          echo "Uploading pms/${RELEASE_VERSION}/ to Quark netdisk (root → pms/${RELEASE_VERSION})"
+          "$QUARKPAN_BIN" upload-dir --dir pms --pdir-fid 0 -c -o
+          echo "Quark netdisk upload completed."
+
+      - name: Upload release files to HuggingFace dataset
+        if: ${{ env.HF_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Uploading pms/${RELEASE_VERSION}/ to HuggingFace dataset HuanLin/Pymss-Studio-Dist:${RELEASE_VERSION}"
+          uvx hf upload --type dataset HuanLin/Pymss-Studio-Dist "pms/${RELEASE_VERSION}" "${RELEASE_VERSION}"
+          echo "HuggingFace dataset upload completed."
+
+      - name: Upload release files to ModelScope dataset
+        if: ${{ env.MODELSCOPE_API_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Uploading pms/${RELEASE_VERSION}/ to ModelScope dataset huanlinoto/Pymss-Studio-Dist:${RELEASE_VERSION}"
+          uvx modelscope upload --repo-type dataset huanlinoto/Pymss-Studio-Dist "pms/${RELEASE_VERSION}" "${RELEASE_VERSION}"
+          echo "ModelScope dataset upload completed."

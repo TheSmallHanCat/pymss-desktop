@@ -52,6 +52,9 @@ outputs/
 .env.*
 !.env.example
 
+# Quark netdisk cookie (local only — must be stored as the QUARK_COOKIE repo secret)
+cookie.txt
+
 # Local planning / generated docs not committed for public source release
 *.md
 !README.md
