@@ -91,13 +91,35 @@ function loadWorkflow(item?: WorkflowEntry | null) {
   preservedUi.value = clone(draft.ui)
   expectedUpdatedAt.value = item?.updatedAt
   sourceDefinition.value = item ? clone(item.definition) : undefined
+  reconcileConfiguredStems()
 }
 
 watch(() => props.workflow, item => loadWorkflow(item), { immediate: true })
 
+const modelStemSignature = computed(() => props.models
+  .map(item => [item.name, item.configInstruments, item.configTargetInstrument, item.targetStem].join('\x00'))
+  .join('\x01'))
+watch(modelStemSignature, () => reconcileConfiguredStems())
+
 function configuredStems(modelName: string) {
   const item = props.models.find(modelItem => modelItem.name === modelName)
   return parseModelStems(item?.configInstruments || item?.configTargetInstrument || item?.targetStem)
+}
+
+function reconcileConfiguredStems() {
+  let changed = false
+  steps.value.forEach((step) => {
+    const stems = configuredStems(step.model)
+    if (!stems.length) return
+    if (stems.length === step.stems.length && stems.every((stem, index) => stem === step.stems[index])) return
+    const previousSave = step.save || {}
+    step.stems = stems
+    step.save = Object.fromEntries(stems
+      .filter(stem => Boolean(previousSave[stem]?.trim()))
+      .map(stem => [stem, previousSave[stem]]))
+    changed = true
+  })
+  if (changed) clearInvalidInputs()
 }
 
 function inputOptions(index: number) {
@@ -119,9 +141,21 @@ function clearInvalidInputs() {
 
 function updateStepModel(step: WorkflowStepDraft, modelName: string) {
   step.model = modelName
-  step.stems = configuredStems(modelName)
-  step.save = Object.fromEntries(step.stems.map(stem => [stem, stem]))
+  const stems = configuredStems(modelName)
+  step.stems = stems
+  step.save = Object.fromEntries(stems.map(stem => [stem, step.save?.[stem] || stem]))
   clearInvalidInputs()
+}
+
+function savedStems(step: WorkflowStepDraft) {
+  return step.stems.filter(stem => Boolean(step.save?.[stem]?.trim()))
+}
+
+function updateSavedStems(step: WorkflowStepDraft, values: string[]) {
+  const selected = new Set(values)
+  step.save = Object.fromEntries(step.stems
+    .filter(stem => selected.has(stem))
+    .map(stem => [stem, step.save?.[stem] || stem]))
 }
 
 function addStep() {
@@ -256,14 +290,14 @@ function payload(): SimpleWorkflowSavePayload {
             <n-input-number v-model:value="step.overlapSize" :min="0" :step="1" clearable />
           </label>
           <label class="simple-step__stems">
-            <span>{{ t('workflows.stepStems') }}</span>
+            <span>{{ t('workflows.saveStems') }}</span>
             <n-select
-              v-model:value="step.stems"
+              :value="savedStems(step)"
               multiple
               filterable
-              :options="configuredStems(step.model).map(stem => ({ label: stem, value: stem }))"
-              :placeholder="t('workflows.stepStemsPlaceholder')"
-              @update:value="clearInvalidInputs"
+              :options="step.stems.map(stem => ({ label: stem, value: stem }))"
+              :placeholder="t('workflows.saveStemsPlaceholder')"
+              @update:value="updateSavedStems(step, $event)"
             />
           </label>
         </div>

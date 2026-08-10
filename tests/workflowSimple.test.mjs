@@ -172,6 +172,41 @@ test('round-trips representable fan-out without changing inputs', () => {
   assert.deepEqual(inputTargets, ['step_a', 'step_b'])
 })
 
+test('keeps consumed stems available and saves only selected outputs', () => {
+  const definition = buildSimpleWorkflowDefinition({
+    defaultDevice: 'auto',
+    defaultFormat: 'wav',
+    defaultNormalize: false,
+    steps: [
+      {
+        id: 'step_a', model: 'model-a.ckpt', input: 'input', stems: ['vocals', 'other'],
+        save: { vocals: 'vocals' }, overlapSize: null, modelKind: null, customModelType: null,
+      },
+      {
+        id: 'step_b', model: 'model-b.ckpt', input: 'step_a.other', stems: ['Vocal'],
+        save: { Vocal: 'Vocal' }, overlapSize: null, modelKind: null, customModelType: null,
+      },
+    ],
+    utilityNodes: [], saveTargets: [],
+    ui: { viewport: { x: 0, y: 0, k: 1 }, nodes: {}, notes: [], collapsedStepIds: [] },
+  })
+
+  assert.equal(analyzeSimpleWorkflow(definition).editable, true)
+  const stepA = definition.graph.nodes.find(node => node.id === 'step_a')
+  const saveEdges = definition.graph.edges
+    .filter(edge => edge.target.nodeId === 'save')
+    .map(edge => `${edge.source.nodeId}:${edge.source.portId}`)
+    .sort()
+  assert.deepEqual(stepA.data.stems, ['vocals', 'other'])
+  assert.deepEqual(saveEdges, ['step_a:stem:vocals', 'step_b:stem:Vocal'])
+  assert.ok(definition.graph.edges.some(edge => edge.source.nodeId === 'step_a' && edge.source.portId === 'stem:other' && edge.target.nodeId === 'step_b'))
+
+  const draft = hydrateSimpleWorkflow(definition)
+  assert.deepEqual(draft.steps[0].stems, ['vocals', 'other'])
+  assert.deepEqual(draft.steps[0].save, { vocals: 'vocals' })
+  assert.equal(draft.steps[1].input, 'step_a.other')
+})
+
 test('preserves workflow defaults not managed by simple mode', () => {
   const source = buildSimpleWorkflowDefinition({
     defaultDevice: 'cpu',

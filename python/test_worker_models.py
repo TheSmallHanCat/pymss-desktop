@@ -59,6 +59,30 @@ CATALOG_ENTRY = worker_models.ModelEntry.from_dict({
 })
 
 
+class LegacyCatalogEntry:
+    def __init__(self, name, relpath):
+        self.name = name
+        self.aliases = ()
+        self.model_type = "vr"
+        self.architecture = "vr"
+        self.supported = True
+        self.unsupported_reason = ""
+        self.relpath = relpath
+        self.config_relpath = ""
+        self.auxiliary_relpaths = ()
+        self.size_bytes = 0
+        self.sha256 = ""
+        self.primary_category = "vocal"
+        self.primary_category_cn = "人声"
+        self.secondary_category = ""
+        self.secondary_category_cn = ""
+        self.target_stem = "vocals"
+
+    @property
+    def category_path(self):
+        return self.primary_category
+
+
 class UserModelPathTests(unittest.TestCase):
     """A user entry stores absolute paths and leaves relpath empty, so the catalog computation
     `model_root / relpath` collapses to the model directory itself — an existing path pointing
@@ -198,6 +222,18 @@ class UserModelSerializationTests(unittest.TestCase):
         self.assertEqual(payload["configTargetInstrument"], "vocals")
         self.assertEqual(payload["targetStem"], "")
 
+    def test_legacy_catalog_entries_without_config_stem_fields_serialize(self):
+        entry = LegacyCatalogEntry("old_model.pth", "old_model.pth")
+        (self.root / entry.relpath).write_bytes(b"x")
+
+        payload = worker_models.model_to_dict(entry, str(self.root))
+
+        self.assertEqual(payload["name"], "old_model.pth")
+        self.assertEqual(payload["targetStem"], "vocals")
+        self.assertEqual(payload["configInstruments"], "")
+        self.assertEqual(payload["configTargetInstrument"], "")
+        self.assertTrue(payload["downloaded"])
+
 
 class DebugCatalogPayloadValidationTests(unittest.TestCase):
     def _payload(self, **overrides):
@@ -323,6 +359,30 @@ class DeleteRefusesImportedModelsTests(unittest.TestCase):
         with redirect_stdout(self.stdout):
             self.assertEqual(worker_models.cmd_delete_model({}), 1)
         self.assertEqual(self._events()[-1]["type"], "model_delete_failed")
+
+
+class DeleteLegacyCatalogEntryTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.weights = self.root / "old_model.pth"
+        self.weights.write_bytes(b"x" * 1024)
+        self.stdout = io.StringIO()
+
+    def test_delete_model_reports_model_info_for_legacy_catalog_entries(self):
+        entry = LegacyCatalogEntry("old_model.pth", "old_model.pth")
+        registry = mock.Mock()
+        registry.get_model_entry.return_value = entry
+
+        with mock.patch.dict("sys.modules", {"pymss": mock.Mock(), "pymss.model_registry": registry}), \
+             redirect_stdout(self.stdout):
+            code = worker_models.cmd_delete_model({"model": entry.name, "modelDir": str(self.root)})
+
+        self.assertEqual(code, 0)
+        self.assertFalse(self.weights.exists())
+        event = [json.loads(line) for line in self.stdout.getvalue().strip().splitlines() if line.strip()][-1]
+        self.assertEqual(event["type"], "model_deleted")
+        self.assertEqual(event["payload"]["modelInfo"]["configInstruments"], "")
 
 
 if __name__ == "__main__":

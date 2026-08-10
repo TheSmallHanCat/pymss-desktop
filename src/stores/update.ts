@@ -90,8 +90,7 @@ export const useUpdateStore = defineStore('update', () => {
 
   async function checkForUpdates(manual = false) {
     const app = useAppStore()
-    const variant = app.buildInfoVariant || ''
-    if (!variant.includes('online')) {
+    if (!app.buildInfoUpdateSupported && !app.buildInfoVariant.includes('online')) {
       resetResult()
       status.value = 'idle'
       lastCheckResult.value = 'none'

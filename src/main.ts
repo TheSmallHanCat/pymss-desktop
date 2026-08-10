@@ -43,9 +43,10 @@ async function bootstrap() {
   registerWorkerEvents()
   try {
     const { invoke } = await import('@tauri-apps/api/core')
-    const buildInfo = await invoke<{ version?: string; variant?: string }>('get_build_info')
+    const buildInfo = await invoke<{ version?: string; variant?: string; updateSupported?: boolean }>('get_build_info')
     appState.buildInfoVersion = buildInfo.version || ''
     appState.buildInfoVariant = buildInfo.variant || ''
+    appState.buildInfoUpdateSupported = buildInfo.updateSupported === true
   } catch (error: unknown) {
     console.warn('Failed to load build info version', error)
   }

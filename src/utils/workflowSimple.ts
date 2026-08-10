@@ -36,12 +36,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function expectedSaveSources(draft: WorkflowDefinitionDraft) {
-  const consumed = new Set(draft.steps
-    .map(step => String(step.input || '').trim())
-    .filter(input => input.includes('.')))
   return new Set(draft.steps.flatMap(step => step.stems
-    .map(stem => `${step.id}.${stem}`)
-    .filter(source => !consumed.has(source))))
+    .filter(stem => Boolean(step.save?.[stem]?.trim()))
+    .map(stem => `${step.id}.${stem}`)))
 }
 
 function hasCanonicalInputTopology(definition: Record<string, unknown>) {

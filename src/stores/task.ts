@@ -138,6 +138,10 @@ type PersistedSeparateState = {
   inferenceParamsByModel?: Record<string, PersistedSeparateModelState>
 }
 
+type ModelInferenceUiDefaults = {
+  [K in keyof ModelDefaultInferenceParams]: ModelDefaultInferenceParams[K] | null
+}
+
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus']
 const VIDEO_EXTENSIONS = ['mp4', 'mkv', 'mov', 'avi', 'webm', 'flv']
 const CURRENT_INFERENCE_PARAMS_VERSION = 3
@@ -519,7 +523,7 @@ export const useTaskStore = defineStore('task', () => {
   const post_process_threshold = ref<number | null>(0)
   const high_end_process = ref(false)
   const selectedModelDefaults = ref<ModelDefaultInferenceParams>({})
-  const selectedModelUiDefaults = ref<ModelDefaultInferenceParams>({})
+  const selectedModelUiDefaults = ref<ModelInferenceUiDefaults>({})
   const selectedModelOverrides = ref<ModelDefaultInferenceParams>({})
   const selectedModelType = ref<string | null>(null)
   const inferenceParamsDirty = ref(false)
@@ -833,7 +837,10 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   function getCurrentUiInferenceDefaults() {
-    return applyModelDefaultsToUi(selectedModelUiDefaults.value, selectedModelType.value)
+    const defaults = Object.fromEntries(
+      Object.entries(selectedModelUiDefaults.value).map(([key, value]) => [key, value === null ? undefined : value]),
+    ) as ModelDefaultInferenceParams
+    return applyModelDefaultsToUi(defaults, selectedModelType.value)
   }
 
   function restoreInferenceNumberFallback(field: InferenceNumberField) {

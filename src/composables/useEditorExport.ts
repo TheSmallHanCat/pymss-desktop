@@ -19,7 +19,6 @@ type UseEditorExportOptions = {
 export function useEditorExport(options: UseEditorExportOptions) {
   const { editor, settings, message, t } = options
 
-  let lastExportFormat: EditorExportFormat = 'wav'
   const showExportDialog = ref(false)
   const exportFormatDraft = ref<EditorExportFormat>('wav')
   const exportWavBitDepthDraft = ref('PCM_24')
@@ -32,7 +31,7 @@ export function useEditorExport(options: UseEditorExportOptions) {
   }
 
   function openExportDialog() {
-    exportFormatDraft.value = lastExportFormat
+    exportFormatDraft.value = editor.exportFormat
     exportWavBitDepthDraft.value = settings.wavBitDepth
     exportFlacBitDepthDraft.value = settings.flacBitDepth
     exportDirDraft.value = editor.lastExport?.path
@@ -87,9 +86,9 @@ export function useEditorExport(options: UseEditorExportOptions) {
           flacBitDepth: exportFlacBitDepthDraft.value,
         },
       })
+      editor.exportFormat = exportFormatDraft.value
       settings.wavBitDepth = exportWavBitDepthDraft.value
       settings.flacBitDepth = exportFlacBitDepthDraft.value
-      lastExportFormat = exportFormatDraft.value
       message.success(t('editor.exported', { path: result.path }))
       try {
         await invoke('reveal_path', { path: result.path })

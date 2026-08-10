@@ -1420,7 +1420,7 @@ async function start() {
     if (runMode.value === 'model' && ensembleEnabled.value && result) {
       ensembleModels.value.forEach((name) => model.recordModelUse(name))
     }
-    task.clearInputFiles()
+    if (settings.clearInputAfterSubmit) task.clearInputFiles()
     if (result && result.failed > 0) {
       message.warning(t('separate.batchPartial', { succeeded: result.succeeded, failed: result.failed }))
     } else {
@@ -1591,6 +1591,10 @@ async function retryCurrentTask() {
                 <strong>{{ isDragging ? t('separate.dropHere') : t('separate.candidateEmpty') }}</strong>
               </div>
             </div>
+            <label class="input-retention-toggle">
+              <n-switch v-model:value="settings.clearInputAfterSubmit" size="small" :disabled="isRunModeLocked" />
+              <span>{{ t('separate.clearInputAfterSubmit') }}</span>
+            </label>
           </div>
         </section>
 
@@ -2559,6 +2563,14 @@ async function retryCurrentTask() {
 }
 .picker-btn:active:not(:disabled) { transform: translateY(1px); }
 .picker-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.input-retention-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
 
 /* dropzone / file list */
 .dropzone {

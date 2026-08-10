@@ -78,6 +78,7 @@ type BuildInfo = {
   buildTime: string
   target: string
   variant: string
+  updateSupported?: boolean
   official: boolean
 }
 const activeSection = ref<SettingsSection>('appearance')
@@ -598,8 +599,9 @@ const updateBadgeType = computed(() => {
   return 'default'
 })
 const updateSupported = computed(() => {
-  const variant = buildInfo.value?.variant || app.buildInfoVariant || ''
-  return variant.includes('online')
+  return buildInfo.value?.updateSupported === true
+    || app.buildInfoUpdateSupported
+    || String(buildInfo.value?.variant || app.buildInfoVariant || '').includes('online')
 })
 const updateLastCheckedLabel = computed(() => {
   return formatDateTime(updates.lastCheckedAt) || t('settings.updateNeverChecked')
@@ -624,6 +626,7 @@ async function loadBuildInfo() {
     buildInfo.value = await invoke<BuildInfo>('get_build_info')
     app.buildInfoVersion = buildInfo.value?.version || ''
     app.buildInfoVariant = buildInfo.value?.variant || ''
+    app.buildInfoUpdateSupported = buildInfo.value?.updateSupported === true
   } catch {
     buildInfo.value = null
   }

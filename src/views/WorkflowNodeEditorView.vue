@@ -295,6 +295,7 @@ let unlistenResize: (() => void) | undefined
 let unlistenCloseRequested: (() => void) | undefined
 
 onMounted(async () => {
+  await Promise.allSettled([workflow.initialize(), model.initialize()])
   const workflowId = String(route.query.workflowId || '')
   const isNewWorkflow = route.query.new === '1'
   const target = workflowId ? workflows.value.find(item => item.id === workflowId) : null

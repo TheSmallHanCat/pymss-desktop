@@ -291,7 +291,7 @@ const consumedValueSet = computed(() => buildWorkflowConsumedValueSetForDraft(st
 const saveTargets = computed<WorkflowSaveTargetDraft[]>(() => draftState.value.saveTargets || [])
 const saveOutputs = computed(() => {
   const stepItems = steps.value.flatMap((step, stepIndex) => step.stems
-    .filter(stem => !consumedValueSet.value.has(`${step.id}.${stem}`))
+    .filter(stem => Boolean(step.save?.[stem]?.trim()))
     .map(stem => ({
       key: `${step.id}.${stem}`,
       source: `${step.id}.${stem}`,

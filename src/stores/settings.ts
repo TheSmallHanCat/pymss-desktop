@@ -90,6 +90,7 @@ type StoredSettings = {
   downloadSource?: string
   downloadMethod?: DownloadMethod
   maxConcurrentSeparations?: number
+  clearInputAfterSubmit?: boolean
   wavBitDepth?: string
   flacBitDepth?: string
   mp3BitRate?: string
@@ -111,6 +112,7 @@ const DEFAULT_DOWNLOAD_METHOD: DownloadMethod = 'aria2c'
 const DEFAULT_DEFAULT_DEVICE = 'auto'
 const DEFAULT_DEFAULT_FORMAT = 'wav'
 const DEFAULT_CONCURRENT_SEPARATIONS = 1
+const DEFAULT_CLEAR_INPUT_AFTER_SUBMIT = true
 const MAX_CONCURRENT_SEPARATIONS = 16
 const DEFAULT_PROXY_MODE: ProxyMode = 'system'
 const DEFAULT_PROXY_URL = ''
@@ -224,6 +226,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const downloadSource = ref(DEFAULT_DOWNLOAD_SOURCE)
   const downloadMethod = ref<DownloadMethod>(DEFAULT_DOWNLOAD_METHOD)
   const maxConcurrentSeparations = ref(DEFAULT_CONCURRENT_SEPARATIONS)
+  const clearInputAfterSubmit = ref(DEFAULT_CLEAR_INPUT_AFTER_SUBMIT)
   const wavBitDepth = ref(DEFAULT_WAV_BIT_DEPTH)
   const flacBitDepth = ref(DEFAULT_FLAC_BIT_DEPTH)
   const mp3BitRate = ref(DEFAULT_MP3_BIT_RATE)
@@ -257,6 +260,7 @@ export const useSettingsStore = defineStore('settings', () => {
     downloadSource: downloadSource.value,
     downloadMethod: downloadMethod.value,
     maxConcurrentSeparations: maxConcurrentSeparations.value,
+    clearInputAfterSubmit: clearInputAfterSubmit.value,
     wavBitDepth: wavBitDepth.value,
     flacBitDepth: flacBitDepth.value,
     mp3BitRate: mp3BitRate.value,
@@ -313,6 +317,7 @@ export const useSettingsStore = defineStore('settings', () => {
     maxConcurrentSeparations.value = Number.isFinite(Number(stored?.maxConcurrentSeparations))
       ? Math.min(MAX_CONCURRENT_SEPARATIONS, Math.max(1, Math.trunc(Number(stored?.maxConcurrentSeparations))))
       : DEFAULT_CONCURRENT_SEPARATIONS
+    clearInputAfterSubmit.value = stored?.clearInputAfterSubmit ?? DEFAULT_CLEAR_INPUT_AFTER_SUBMIT
     wavBitDepth.value = stored?.wavBitDepth || DEFAULT_WAV_BIT_DEPTH
     flacBitDepth.value = stored?.flacBitDepth || DEFAULT_FLAC_BIT_DEPTH
     mp3BitRate.value = stored?.mp3BitRate || DEFAULT_MP3_BIT_RATE
@@ -376,6 +381,7 @@ export const useSettingsStore = defineStore('settings', () => {
       downloadSource,
       downloadMethod,
       maxConcurrentSeparations,
+      clearInputAfterSubmit,
       wavBitDepth,
       flacBitDepth,
       mp3BitRate,
@@ -845,6 +851,7 @@ export const useSettingsStore = defineStore('settings', () => {
     downloadSource,
     downloadMethod,
     maxConcurrentSeparations,
+    clearInputAfterSubmit,
     MAX_CONCURRENT_SEPARATIONS,
     SCALE_FACTOR_MIN,
     SCALE_FACTOR_MAX,

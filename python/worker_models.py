@@ -309,21 +309,23 @@ def is_user_model_entry(entry: Any) -> bool:
 def model_path_for(entry: Any, model_dir: str | None = None) -> Path:
     if is_user_model_entry(entry):
         return Path(str(entry.model_path))
-    return model_root(model_dir) / entry.relpath
+    return model_root(model_dir) / str(getattr(entry, "relpath", "") or "")
 
 
 def config_path_for(entry: Any, model_dir: str | None = None) -> Path | None:
     if is_user_model_entry(entry):
         config_path = getattr(entry, "config_path", None)
         return Path(str(config_path)) if config_path else None
-    return model_root(model_dir) / entry.config_relpath if entry.config_relpath else None
+    config_relpath = str(getattr(entry, "config_relpath", "") or "")
+    return model_root(model_dir) / config_relpath if config_relpath else None
 
 
 def base_config_path_for(entry: Any, model_dir: str | None = None) -> Path | None:
     if is_user_model_entry(entry):
         config_path = getattr(entry, "config_path", None)
         return Path(str(config_path)) if config_path else None
-    return model_root(model_dir) / entry.config_relpath if entry.config_relpath else None
+    config_relpath = str(getattr(entry, "config_relpath", "") or "")
+    return model_root(model_dir) / config_relpath if config_relpath else None
 
 
 def effective_source_for(entry: Any) -> str:
@@ -339,7 +341,7 @@ def auxiliary_paths_for(entry: Any, model_dir: str | None = None) -> list[Path]:
         # User registrations name their files outright, so anything here is already absolute.
         return [Path(str(relpath)) for relpath in getattr(entry, "auxiliary_relpaths", ()) or ()]
     root = model_root(model_dir)
-    return [root / relpath for relpath in entry.auxiliary_relpaths]
+    return [root / relpath for relpath in getattr(entry, "auxiliary_relpaths", ()) or ()]
 
 def _derive_overlap_size_from_num_overlap(chunk_size: Any, num_overlap: Any) -> int | None:
     chunk_value = _as_int(chunk_size)
@@ -490,8 +492,8 @@ def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state:
     required_paths.extend(auxiliary_paths)
     missing_paths = [str(path) for path in required_paths if not path.is_file()]
     downloaded = include_local_state and not missing_paths
-    config_instruments = str(entry.config_instruments or "").strip()
-    config_target_instrument = str(entry.config_target_instrument or "").strip()
+    config_instruments = str(getattr(entry, "config_instruments", "") or "").strip()
+    config_target_instrument = str(getattr(entry, "config_target_instrument", "") or "").strip()
     if config_path and config_path.is_file():
         resolved_instruments, resolved_target = resolve_config_stems(config_path)
         config_instruments = resolved_instruments or config_instruments
@@ -499,23 +501,26 @@ def model_to_dict(entry: Any, model_dir: str | None = None, include_local_state:
     default_inference_params = resolve_default_inference_params(entry, model_path, config_path)
     default_inference_params_source = "config" if config_path and config_path.is_file() else "runtime_fallback"
     return {
-        "name": entry.name,
-        "aliases": list(entry.aliases),
-        "modelType": entry.model_type,
-        "architecture": entry.architecture,
-        "supported": bool(entry.supported),
-        "unsupportedReason": entry.unsupported_reason,
-        "category": entry.category_path or entry.primary_category,
-        "categoryCn": " / ".join(filter(None, [entry.primary_category_cn, entry.secondary_category_cn])),
-        "primaryCategory": entry.primary_category,
-        "primaryCategoryCn": entry.primary_category_cn,
-        "secondaryCategory": entry.secondary_category,
-        "secondaryCategoryCn": entry.secondary_category_cn,
-        "targetStem": entry.target_stem,
+        "name": str(getattr(entry, "name", "") or ""),
+        "aliases": list(getattr(entry, "aliases", ()) or ()),
+        "modelType": getattr(entry, "model_type", None),
+        "architecture": str(getattr(entry, "architecture", "") or ""),
+        "supported": bool(getattr(entry, "supported", False)),
+        "unsupportedReason": str(getattr(entry, "unsupported_reason", "") or ""),
+        "category": str(getattr(entry, "category_path", "") or getattr(entry, "primary_category", "") or ""),
+        "categoryCn": " / ".join(filter(None, [
+            str(getattr(entry, "primary_category_cn", "") or ""),
+            str(getattr(entry, "secondary_category_cn", "") or ""),
+        ])),
+        "primaryCategory": str(getattr(entry, "primary_category", "") or ""),
+        "primaryCategoryCn": str(getattr(entry, "primary_category_cn", "") or ""),
+        "secondaryCategory": str(getattr(entry, "secondary_category", "") or ""),
+        "secondaryCategoryCn": str(getattr(entry, "secondary_category_cn", "") or ""),
+        "targetStem": str(getattr(entry, "target_stem", "") or ""),
         "configInstruments": config_instruments,
         "configTargetInstrument": config_target_instrument,
-        "classificationConfidence": entry.classification_confidence,
-        "classificationBasis": entry.classification_basis,
+        "classificationConfidence": str(getattr(entry, "classification_confidence", "") or ""),
+        "classificationBasis": str(getattr(entry, "classification_basis", "") or ""),
         "sizeBytes": _entry_size_bytes(entry, model_path),
         "sha256": getattr(entry, "sha256", "") or "",
         # 'user' models are local-only: they cannot be downloaded (pymss.download_model rejects
