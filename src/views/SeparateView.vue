@@ -1146,15 +1146,20 @@ watch(
 )
 
 watch(
-  currentModelInfo,
-  (info, previousInfo) => {
-    if (!info || info.name !== selectedModelName.value) return
+  [selectedModelName, currentModelInfo],
+  ([name, info], previous) => {
+    if (!info || !name || info.name !== name) return
     task.applySelectedModelDefaults(
       model.getModelBaseInferenceDefaults(info.name) || info.defaultInferenceParams,
       info.modelType,
       task.getSavedModelState(info.name),
       model.getModelInferenceOverrides(info.name),
-      { force: info.name !== previousInfo?.name },
+      {
+        force: Boolean(
+          (previous?.[0] && previous[0] !== name)
+          || (previous?.[1]?.name && previous[1].name !== info.name),
+        ),
+      },
     )
   },
   { immediate: true },

@@ -723,7 +723,7 @@ export const useTaskStore = defineStore('task', () => {
       Object.entries(separateStored?.inferenceParamsByModel || {})
         .map(([name, value]) => {
           const normalized = normalizePersistedModelState(value)
-          return [name, { selectedStems: normalized.selectedStems || [] }]
+          return [name, normalized]
         }),
     )
     initialized.value = true
@@ -745,6 +745,8 @@ export const useTaskStore = defineStore('task', () => {
     () => {
       if (applyingModelDefaults) return
       inferenceParamsDirty.value = true
+      const modelStore = useModelStore()
+      if (modelStore.selectedModel) saveCurrentModelState(modelStore.selectedModel)
     },
   )
 
@@ -781,19 +783,32 @@ export const useTaskStore = defineStore('task', () => {
     const modelOverrideValue = <K extends keyof ModelDefaultInferenceParams>(key: K) => (
       modelOverrides && Object.prototype.hasOwnProperty.call(modelOverrides, key) ? modelOverrides[key] : undefined
     )
+    const modelDefaultValue = <K extends keyof ModelDefaultInferenceParams>(key: K) => (
+      baseDefaults && Object.prototype.hasOwnProperty.call(baseDefaults, key) ? baseDefaults[key] : undefined
+    )
+    const savedValue = <K extends keyof ModelDefaultInferenceParams & keyof PersistedSeparateModelState>(key: K, fallback: PersistedSeparateModelState[K]) => (
+      saved && Object.prototype.hasOwnProperty.call(saved, key) ? saved[key] : fallback
+    )
+    const modelOrSavedValue = <K extends keyof ModelDefaultInferenceParams & keyof PersistedSeparateModelState>(key: K) => {
+      const override = modelOverrideValue(key)
+      if (override !== undefined) return override
+      const modelDefault = modelDefaultValue(key)
+      if (modelDefault !== undefined) return modelDefault
+      return savedValue(key, next[key])
+    }
     const valueOrDefault = <T>(value: T | undefined, fallback: T): T => value === undefined ? fallback : value
     const resolvedDefaults = {
-      batch_size: valueOrDefault(modelOverrideValue('batch_size') ?? next.batch_size, 1),
-      overlap_size: valueOrDefault(modelOverrideValue('overlap_size') ?? next.overlap_size, 0),
-      num_overlap: valueOrDefault(modelOverrideValue('num_overlap') ?? next.num_overlap, 0),
-      chunk_size: valueOrDefault(modelOverrideValue('chunk_size') ?? next.chunk_size, 0),
-      standardize: valueOrDefault(modelOverrideValue('standardize') ?? next.standardize, false),
-      normalize: valueOrDefault(modelOverrideValue('normalize') ?? next.normalize, false),
-      window_size: valueOrDefault(modelOverrideValue('window_size') ?? next.window_size, 0),
-      aggression: valueOrDefault(modelOverrideValue('aggression') ?? next.aggression, 0),
-      enable_post_process: valueOrDefault(modelOverrideValue('enable_post_process') ?? next.enable_post_process, false),
-      post_process_threshold: valueOrDefault(modelOverrideValue('post_process_threshold') ?? next.post_process_threshold, 0),
-      high_end_process: valueOrDefault(modelOverrideValue('high_end_process') ?? next.high_end_process, false),
+      batch_size: valueOrDefault(modelOrSavedValue('batch_size'), 1),
+      overlap_size: valueOrDefault(modelOrSavedValue('overlap_size'), 0),
+      num_overlap: valueOrDefault(modelOrSavedValue('num_overlap'), 0),
+      chunk_size: valueOrDefault(modelOrSavedValue('chunk_size'), 0),
+      standardize: valueOrDefault(modelOrSavedValue('standardize'), false),
+      normalize: valueOrDefault(modelOrSavedValue('normalize'), false),
+      window_size: valueOrDefault(modelOrSavedValue('window_size'), 0),
+      aggression: valueOrDefault(modelOrSavedValue('aggression'), 0),
+      enable_post_process: valueOrDefault(modelOrSavedValue('enable_post_process'), false),
+      post_process_threshold: valueOrDefault(modelOrSavedValue('post_process_threshold'), 0),
+      high_end_process: valueOrDefault(modelOrSavedValue('high_end_process'), false),
     }
     selectedModelUiDefaults.value = { ...resolvedDefaults }
     if (inferenceParamsDirty.value && !options.force) return
