@@ -86,7 +86,10 @@ jobs:
           echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
           echo "RELEASE_NAME=Pymss Studio v${version}" >> "$GITHUB_ENV"
           echo "RELEASE_VERSION=${version}" >> "$GITHUB_ENV"
-          if [[ "$version" == *-* ]]; then
+          windows_result="${{ needs.windows.result }}"
+          if [[ "$windows_result" != "success" ]]; then
+            echo "RELEASE_PRERELEASE=true" >> "$GITHUB_ENV"
+          elif [[ "$version" == *-* ]]; then
             echo "RELEASE_PRERELEASE=true" >> "$GITHUB_ENV"
           else
             echo "RELEASE_PRERELEASE=${{ github.event_name == 'workflow_dispatch' && inputs.prerelease == true }}" >> "$GITHUB_ENV"

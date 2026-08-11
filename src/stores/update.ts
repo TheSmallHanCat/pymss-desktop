@@ -36,6 +36,8 @@ export const useUpdateStore = defineStore('update', () => {
   const installErrorVisible = ref(false)
   const installFailed = ref(false)
   const initialized = ref(false)
+  const autoCheckCompleted = ref(false)
+  let updateCheckInFlight: Promise<Update | null> | null = null
 
   const hasUpdate = computed(() => availableUpdate.value !== null)
   const isBusy = computed(() => ['checking', 'downloading', 'installing'].includes(status.value))
@@ -64,6 +66,7 @@ export const useUpdateStore = defineStore('update', () => {
   async function initialize() {
     if (initialized.value) return
     initialized.value = true
+    autoCheckCompleted.value = false
     let payload: UpdateStorePayload | null = null
     if (!isTauriRuntime()) {
       try {
@@ -110,46 +113,56 @@ export const useUpdateStore = defineStore('update', () => {
 
   async function checkForUpdates(manual = false) {
     const app = useAppStore()
-    if (!app.buildInfoUpdateSupported && !app.buildInfoVariant.includes('online')) {
-      resetResult()
-      status.value = 'idle'
-      lastCheckResult.value = 'none'
-      error.value = ''
-      currentVersion.value = app.buildInfoVersion || ''
-      return null
+    if (!manual && autoCheckCompleted.value) return availableUpdate.value
+    if (!updateCheckInFlight) {
+      updateCheckInFlight = (async () => {
+        try {
+          if (!app.buildInfoUpdateSupported && !app.buildInfoVariant.includes('online')) {
+            resetResult()
+            status.value = 'idle'
+            lastCheckResult.value = 'none'
+            error.value = ''
+            currentVersion.value = app.buildInfoVersion || ''
+            return null
+          }
+          status.value = 'checking'
+          error.value = ''
+          installFailed.value = false
+          const update = await check()
+          currentVersion.value = update?.currentVersion || app.buildInfoVersion || ''
+          lastCheckedAt.value = new Date().toISOString()
+          if (!update) {
+            resetResult()
+            status.value = shouldShowDeferred.value ? 'ready' : 'idle'
+            lastCheckResult.value = 'none'
+            return null
+          }
+          availableUpdate.value = update
+          latestVersion.value = update.version
+          releaseNotes.value = update.body || ''
+          releaseDate.value = update.date || ''
+          if (deferredVersion.value === update.version) {
+            status.value = 'ready'
+            lastCheckResult.value = 'available'
+          } else {
+            status.value = 'available'
+            lastCheckResult.value = 'available'
+          }
+          return update
+        } catch (err) {
+          error.value = err instanceof Error ? err.message : String(err)
+          status.value = shouldShowDeferred.value ? 'ready' : 'failed'
+          lastCheckResult.value = 'failed'
+          throw err
+        } finally {
+          updateCheckInFlight = null
+        }
+      })()
     }
-    status.value = 'checking'
-    error.value = ''
-    installFailed.value = false
-    try {
-      const update = await check()
-      currentVersion.value = update?.currentVersion || app.buildInfoVersion || ''
-      lastCheckedAt.value = new Date().toISOString()
-      if (!update) {
-        resetResult()
-        status.value = shouldShowDeferred.value ? 'ready' : 'idle'
-        lastCheckResult.value = 'none'
-        return null
-      }
-      availableUpdate.value = update
-      latestVersion.value = update.version
-      releaseNotes.value = update.body || ''
-      releaseDate.value = update.date || ''
-      if (deferredVersion.value === update.version) {
-        status.value = 'ready'
-        lastCheckResult.value = 'available'
-      } else {
-        status.value = 'available'
-        lastCheckResult.value = 'available'
-      }
-      return update
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : String(err)
-      status.value = shouldShowDeferred.value ? 'ready' : 'failed'
-      lastCheckResult.value = 'failed'
-      if (!manual) return null
-      throw err
-    }
+    if (manual) return updateCheckInFlight
+    return updateCheckInFlight.catch(() => null).finally(() => {
+      autoCheckCompleted.value = true
+    })
   }
 
   async function downloadAndInstall() {

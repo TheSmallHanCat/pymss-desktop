@@ -207,6 +207,33 @@ test('keeps consumed stems available and saves only selected outputs', () => {
   assert.equal(draft.steps[1].input, 'step_a.other')
 })
 
+test('preserves save edges without explicit output labels', () => {
+  const definition = {
+    version: 2,
+    kind: 'pymss-studio-graph',
+    defaults,
+    graph: {
+      viewport: { x: 0, y: 0, k: 1 },
+      nodes: [
+        { id: 'input', type: 'input_audio', position: { x: 0, y: 0 }, data: {} },
+        { id: 'step_a', type: 'separate', position: { x: 200, y: 0 }, data: { model: 'model.ckpt', stems: ['vocals'] } },
+        { id: 'save', type: 'save_outputs', position: { x: 400, y: 0 }, data: { outputs: {} } },
+      ],
+      edges: [
+        { id: 'e1', source: { nodeId: 'input', portId: 'audio' }, target: { nodeId: 'step_a', portId: 'input' } },
+        { id: 'e2', source: { nodeId: 'step_a', portId: 'stem:vocals' }, target: { nodeId: 'save', portId: 'save:step_a.vocals' } },
+      ],
+    },
+  }
+
+  const draft = hydrateSimpleWorkflow(definition)
+  assert.deepEqual(draft.steps[0].save, { vocals: 'vocals' })
+
+  const rebuilt = buildSimpleWorkflowDefinition(draft, definition)
+  assert.ok(rebuilt.graph.edges.some(edge => edge.source.nodeId === 'step_a' && edge.source.portId === 'stem:vocals' && edge.target.nodeId === 'save'))
+  assert.equal(analyzeSimpleWorkflow(rebuilt).editable, true)
+})
+
 test('preserves workflow defaults not managed by simple mode', () => {
   const source = buildSimpleWorkflowDefinition({
     defaultDevice: 'cpu',

@@ -66,7 +66,8 @@ function hasCanonicalSaveBehavior(definition: Record<string, unknown>, expected:
   if (saveEdges.length !== expected.size) return false
 
   const outputs = isRecord(saveNode.data.outputs) ? saveNode.data.outputs : {}
-  if (Object.keys(outputs).length !== expected.size) return false
+  const outputKeys = Object.keys(outputs).filter(key => Boolean(String(outputs[key] || '').trim()))
+  if (outputKeys.some(key => !expected.has(key))) return false
   const seen = new Set<string>()
   for (const edge of saveEdges) {
     const sourceNode = nodesById.get(edge.source.nodeId)
@@ -74,7 +75,6 @@ function hasCanonicalSaveBehavior(definition: Record<string, unknown>, expected:
     const source = `${sourceNode.id}.${edge.source.portId.slice('stem:'.length)}`
     if (!expected.has(source) || seen.has(source)) return false
     if (edge.target.portId !== `save:${source}`) return false
-    if (typeof outputs[source] !== 'string' || !String(outputs[source]).trim()) return false
     seen.add(source)
   }
   return seen.size === expected.size

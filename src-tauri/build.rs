@@ -11,6 +11,7 @@ fn main() {
         "PYMSS_BUILD_TIME",
         "PYMSS_BUILD_TARGET",
         "PYMSS_BUILD_VARIANT",
+        "PYMSS_BUILD_UPDATE_SUPPORTED",
         "PYMSS_BUILD_OFFICIAL",
     ] {
         println!("cargo:rerun-if-env-changed={key}");

@@ -113,10 +113,13 @@ function reconcileConfiguredStems() {
     if (!stems.length) return
     if (stems.length === step.stems.length && stems.every((stem, index) => stem === step.stems[index])) return
     const previousSave = step.save || {}
+    const previousSaveByStem = new Map(Object.entries(previousSave)
+      .filter(([, value]) => Boolean(value?.trim()))
+      .map(([stem, value]) => [stem.toLowerCase(), value]))
     step.stems = stems
     step.save = Object.fromEntries(stems
-      .filter(stem => Boolean(previousSave[stem]?.trim()))
-      .map(stem => [stem, previousSave[stem]]))
+      .map(stem => [stem, previousSave[stem] || previousSaveByStem.get(stem.toLowerCase()) || ''] as const)
+      .filter(([, value]) => Boolean(value.trim())))
     changed = true
   })
   if (changed) clearInvalidInputs()

@@ -146,6 +146,19 @@ function graphSaveOutputMap(definition: WorkflowGraphDefinition) {
   ) as Record<string, string>
 }
 
+function graphSavedSeparateStemSet(definition: WorkflowGraphDefinition) {
+  const saveNodeIds = workflowGraphSaveNodeIds(definition)
+  const saved = new Set<string>()
+  definition.graph.edges.forEach((edge) => {
+    if (!saveNodeIds.has(edge.target.nodeId)) return
+    const source = definition.graph.nodes.find(node => node.id === edge.source.nodeId)
+    if (source?.type !== 'separate' || !edge.source.portId.startsWith('stem:')) return
+    const stem = edge.source.portId.slice('stem:'.length)
+    if (stem) saved.add(`${source.id}.${stem}`)
+  })
+  return saved
+}
+
 function normalizeSaveTargetSource(source: string) {
   const value = String(source || '').trim()
   if (!value) return ''
@@ -484,6 +497,7 @@ function draftToGraph(draft: WorkflowDefinitionDraft): WorkflowGraphDefinition {
 function graphToDraft(definition: WorkflowGraphDefinition): WorkflowDefinitionDraft {
   const stepNodes = sortWorkflowGraphStepNodes(definition)
   const saveOutputs = graphSaveOutputMap(definition)
+  const savedSeparateStems = graphSavedSeparateStemSet(definition)
   const steps = stepNodes.map((node) => {
     const data = readSeparateNodeData(node)
     return {
@@ -492,7 +506,11 @@ function graphToDraft(definition: WorkflowGraphDefinition): WorkflowDefinitionDr
       input: graphInputToDraftInput(definition, node.id),
       stems: [...data.stems],
       save: Object.fromEntries(data.stems
-        .map(stem => [stem, saveOutputs[`${node.id}.${stem}`]] as const)
+        .map((stem) => {
+          const ref = `${node.id}.${stem}`
+          const outputDir = saveOutputs[ref] || (savedSeparateStems.has(ref) ? safeWorkflowStemDir(stem) : '')
+          return [stem, outputDir] as const
+        })
         .filter((entry): entry is readonly [string, string] => Boolean(entry[1]))),
       overlapSize: data.overlapSize,
       modelKind: data.modelKind,
