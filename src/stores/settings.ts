@@ -101,6 +101,7 @@ type StoredSettings = {
   proxyMode?: ProxyMode
   proxyUrl?: string
   proxyBypass?: string
+  updateEndpointOverride?: string
 }
 
 export type ProxyMode = 'system' | 'none' | 'custom'
@@ -116,6 +117,7 @@ const DEFAULT_CLEAR_INPUT_AFTER_SUBMIT = true
 const MAX_CONCURRENT_SEPARATIONS = 16
 const DEFAULT_PROXY_MODE: ProxyMode = 'system'
 const DEFAULT_PROXY_URL = ''
+export const DEFAULT_UPDATE_ENDPOINT = 'https://github.com/pymss-project/pymss-studio/releases/latest/download/latest.json'
 
 function displayModelDirPath(path: unknown): string {
   const value = String(path || '').trim()
@@ -235,6 +237,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const proxyMode = ref<ProxyMode>(DEFAULT_PROXY_MODE)
   const proxyUrl = ref(DEFAULT_PROXY_URL)
   const proxyBypass = ref('')
+  const updateEndpointOverride = ref('')
   const startupOnboardingSeen = ref(false)
   const modelDirMigrationState = ref<ModelDirMigrationState>(createEmptyModelDirMigrationState())
 
@@ -270,6 +273,7 @@ export const useSettingsStore = defineStore('settings', () => {
     proxyMode: proxyMode.value,
     proxyUrl: proxyUrl.value,
     proxyBypass: proxyBypass.value,
+    updateEndpointOverride: updateEndpointOverride.value.trim() || undefined,
   }))
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -328,6 +332,7 @@ export const useSettingsStore = defineStore('settings', () => {
       : DEFAULT_PROXY_MODE
     proxyUrl.value = stored?.proxyUrl || DEFAULT_PROXY_URL
     proxyBypass.value = stored?.proxyBypass || ''
+    updateEndpointOverride.value = String(stored?.updateEndpointOverride || '').trim()
     startupOnboardingSeen.value = stored?.startupOnboardingSeen === true
       || String(stored?.startupOnboardingSeenVersion || '').trim().length > 0
     const shouldPersistNormalizedOnboarding =
@@ -390,6 +395,7 @@ export const useSettingsStore = defineStore('settings', () => {
       proxyMode,
       proxyUrl,
       proxyBypass,
+      updateEndpointOverride,
     ],
     () => queuePersist(),
     { deep: true },
@@ -864,6 +870,7 @@ export const useSettingsStore = defineStore('settings', () => {
     proxyMode,
     proxyUrl,
     proxyBypass,
+    updateEndpointOverride,
     startupOnboardingSeen,
     modelDirMigrationState,
     initialize,

@@ -13,8 +13,10 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, ResourceId, State, Webview, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_updater::UpdaterExt;
+use url::Url;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +32,17 @@ pub struct BuildInfo {
     variant: &'static str,
     update_supported: bool,
     official: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugUpdateCheckResult {
+    rid: ResourceId,
+    current_version: String,
+    version: String,
+    date: Option<String>,
+    body: Option<String>,
+    raw_json: Value,
 }
 
 #[derive(Serialize)]
@@ -118,6 +131,43 @@ pub fn get_build_info() -> BuildInfo {
         update_supported: option_env!("PYMSS_BUILD_UPDATE_SUPPORTED") == Some("true"),
         official: option_env!("PYMSS_BUILD_OFFICIAL") == Some("true"),
     }
+}
+
+#[tauri::command]
+pub async fn debug_check_update_endpoint(webview: Webview, endpoint: String) -> AppResult<Option<DebugUpdateCheckResult>> {
+    let app = webview.app_handle().clone();
+    require_runtime_debug_developer_mode(&app)?;
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        return Err(AppError::Worker("Missing update endpoint".into()));
+    }
+    let url = Url::parse(endpoint).map_err(|err| AppError::Worker(format!("Invalid update endpoint: {err}")))?;
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![url])
+        .map_err(|err| AppError::Worker(err.to_string()))?
+        .build()
+        .map_err(|err| AppError::Worker(err.to_string()))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|err| AppError::Worker(err.to_string()))?;
+    Ok(update.map(|update| {
+        let current_version = update.current_version.clone();
+        let version = update.version.clone();
+        let date = update.date.map(|date| date.to_string());
+        let body = update.body.clone();
+        let raw_json = update.raw_json.clone();
+        let rid = webview.resources_table().add(update);
+        DebugUpdateCheckResult {
+            rid,
+            current_version,
+            version,
+            date,
+            body,
+            raw_json,
+        }
+    }))
 }
 
 #[tauri::command]

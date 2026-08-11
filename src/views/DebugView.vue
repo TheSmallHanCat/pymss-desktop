@@ -18,7 +18,7 @@ import {
   WarningOutline,
 } from '@vicons/ionicons5'
 import { useAppStore, type DiagnosticLevel } from '@/stores/app'
-import { useSettingsStore } from '@/stores/settings'
+import { DEFAULT_UPDATE_ENDPOINT, useSettingsStore } from '@/stores/settings'
 import { useTaskStore } from '@/stores/task'
 import { useModelStore } from '@/stores/model'
 import { formatBytes } from '@/utils/format'
@@ -30,7 +30,7 @@ const settings = useSettingsStore()
 const task = useTaskStore()
 const modelStore = useModelStore()
 
-const { developerMode, dataRoot, modelDir, outputDir, settingsDir, editorProjectsDir, logsDir, tempDir, defaultDevice, downloadSource, downloadMethod, maxConcurrentSeparations } = storeToRefs(settings)
+const { developerMode, dataRoot, modelDir, outputDir, settingsDir, editorProjectsDir, logsDir, tempDir, defaultDevice, downloadSource, downloadMethod, maxConcurrentSeparations, updateEndpointOverride } = storeToRefs(settings)
 const { activeWorkerTasks, runningTasks } = storeToRefs(task)
 const { downloadTasks } = storeToRefs(modelStore)
 
@@ -157,6 +157,8 @@ const runtimeDebugEditingPath = ref('')
 const runtimeDebugEditingContent = ref('')
 const runtimeOverrideBackend = ref('cuda')
 const runtimeOverridePythonPath = ref('')
+const updateEndpointEditing = ref(false)
+const updateEndpointDraft = ref('')
 const debugLogLoading = ref(false)
 const debugLogClearing = ref(false)
 const debugLogReportLoading = ref(false)
@@ -180,6 +182,44 @@ const debugModelOptions = computed(() => modelStore.models
     label: `${model.name}${model.source === 'user' ? ` · ${t('debug.userModelReadonly')}` : ''}`,
     value: model.name,
   })))
+const effectiveUpdateEndpoint = computed(() => updateEndpointOverride.value.trim() || DEFAULT_UPDATE_ENDPOINT)
+const updateEndpointMode = computed(() => updateEndpointOverride.value.trim() ? t('debug.updateEndpointCustom') : t('debug.updateEndpointDefault'))
+
+function beginUpdateEndpointEdit() {
+  updateEndpointDraft.value = effectiveUpdateEndpoint.value
+  updateEndpointEditing.value = true
+}
+
+function cancelUpdateEndpointEdit() {
+  updateEndpointDraft.value = ''
+  updateEndpointEditing.value = false
+}
+
+function saveUpdateEndpointOverride() {
+  const endpoint = updateEndpointDraft.value.trim()
+  if (!endpoint) {
+    updateEndpointOverride.value = ''
+    cancelUpdateEndpointEdit()
+    message.success(t('debug.updateEndpointRestored'))
+    return
+  }
+  try {
+    new URL(endpoint)
+  } catch {
+    message.error(t('debug.updateEndpointInvalid'))
+    return
+  }
+  updateEndpointOverride.value = endpoint === DEFAULT_UPDATE_ENDPOINT ? '' : endpoint
+  cancelUpdateEndpointEdit()
+  message.success(t('debug.updateEndpointSaved'))
+}
+
+function resetUpdateEndpointOverride() {
+  updateEndpointOverride.value = ''
+  updateEndpointDraft.value = DEFAULT_UPDATE_ENDPOINT
+  updateEndpointEditing.value = false
+  message.success(t('debug.updateEndpointRestored'))
+}
 
 function catalogForEditor(result: DebugCatalogInfo) {
   return result.effectiveCatalog || result.baseCatalog || { schema_version: 1, models: [], removed: [] }
@@ -1025,6 +1065,49 @@ watch(developerMode, (enabled) => {
           </div>
         </div>
       </n-card>
+
+      <n-card class="debug-card" :bordered="true" size="small">
+        <template #header>
+          <div class="debug-section-title">
+            <n-icon :component="CloudDownloadOutline" />
+            <span>{{ t('debug.updateEndpointTitle') }}</span>
+          </div>
+        </template>
+        <div class="update-endpoint-panel">
+          <div class="update-endpoint-panel__head">
+            <n-tag size="small" :bordered="false" :type="updateEndpointOverride ? 'warning' : 'success'">
+              {{ updateEndpointMode }}
+            </n-tag>
+            <div class="update-endpoint-panel__actions">
+              <n-button size="tiny" secondary :disabled="!updateEndpointOverride" @click="resetUpdateEndpointOverride">
+                {{ t('debug.updateEndpointRestore') }}
+              </n-button>
+            </div>
+          </div>
+          <p>{{ t('debug.updateEndpointHint') }}</p>
+          <n-input
+            v-if="updateEndpointEditing"
+            v-model:value="updateEndpointDraft"
+            size="small"
+            :placeholder="DEFAULT_UPDATE_ENDPOINT"
+            @keydown.enter.prevent="saveUpdateEndpointOverride"
+            @keydown.esc.prevent="cancelUpdateEndpointEdit"
+          />
+          <n-input
+            v-else
+            :value="effectiveUpdateEndpoint"
+            size="small"
+            readonly
+            @click="beginUpdateEndpointEdit"
+          />
+          <template v-if="updateEndpointEditing">
+            <div class="update-endpoint-panel__actions update-endpoint-panel__actions--right">
+              <n-button size="small" secondary @click="cancelUpdateEndpointEdit">{{ t('common.cancel') }}</n-button>
+              <n-button size="small" type="primary" secondary @click="saveUpdateEndpointOverride">{{ t('common.save') }}</n-button>
+            </div>
+          </template>
+        </div>
+      </n-card>
     </section>
 
     <n-card v-if="activeTab === 'paths'" class="debug-card" :bordered="true" size="small">
@@ -1617,6 +1700,31 @@ watch(developerMode, (enabled) => {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   margin-bottom: 12px;
+}
+
+.update-endpoint-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.update-endpoint-panel__head,
+.update-endpoint-panel__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.update-endpoint-panel__actions--right {
+  justify-content: flex-end;
+}
+
+.update-endpoint-panel p {
+  margin: 0;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .debug-code-editor :deep(textarea) {

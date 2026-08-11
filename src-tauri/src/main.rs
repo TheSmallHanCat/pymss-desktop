@@ -83,6 +83,7 @@ fn main() {
             commands::app_cmd::debug_log_create_report,
             commands::app_cmd::debug_log_info,
             commands::app_cmd::debug_log_read,
+            commands::app_cmd::debug_check_update_endpoint,
             commands::app_cmd::debug_runtime_override_active,
             commands::app_cmd::debug_runtime_pointers,
             commands::app_cmd::debug_runtime_restore_file,

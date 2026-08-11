@@ -1,8 +1,10 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
-import { check, type Update } from '@tauri-apps/plugin-updater'
+import { invoke } from '@tauri-apps/api/core'
+import { check, Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { useAppStore } from '@/stores/app'
+import { useSettingsStore } from '@/stores/settings'
 import { isTauriRuntime, loadAppStore, saveAppStore } from '@/utils/appStore'
 
 export type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'installing' | 'failed'
@@ -11,6 +13,15 @@ type UpdateStorePayload = {
   deferredVersion?: string
   deferredAt?: string
   lastAcceptedVersion?: string
+}
+
+type DebugUpdateCheckResult = {
+  rid: number
+  currentVersion: string
+  version: string
+  date?: string
+  body?: string
+  rawJson: Record<string, unknown>
 }
 
 type UpdateDownloadEvent =
@@ -113,6 +124,7 @@ export const useUpdateStore = defineStore('update', () => {
 
   async function checkForUpdates(manual = false) {
     const app = useAppStore()
+    const settings = useSettingsStore()
     if (!manual && autoCheckCompleted.value) return availableUpdate.value
     if (!updateCheckInFlight) {
       updateCheckInFlight = (async () => {
@@ -128,7 +140,10 @@ export const useUpdateStore = defineStore('update', () => {
           status.value = 'checking'
           error.value = ''
           installFailed.value = false
-          const update = await check()
+          const endpointOverride = settings.developerMode ? settings.updateEndpointOverride.trim() : ''
+          const update = endpointOverride
+            ? await invoke<DebugUpdateCheckResult | null>('debug_check_update_endpoint', { endpoint: endpointOverride }).then((result) => result ? new Update(result) : null)
+            : await check()
           currentVersion.value = update?.currentVersion || app.buildInfoVersion || ''
           lastCheckedAt.value = new Date().toISOString()
           if (!update) {
