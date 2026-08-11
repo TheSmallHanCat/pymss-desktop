@@ -120,9 +120,13 @@ async function openInEditor(item: SeparationTask) {
   }
 }
 
-// 删除结果时仅回收当前结果对应的输出文件，避免误删共享目录或附加产物
+// 删除结果时回收当前结果对应的输出文件；分层输出的结果目录仅在已空时清理。
 function trashTargets(item: SeparationTask) {
   return task.resultTrashTargets(item)
+}
+
+function trashEmptyDirs(item: SeparationTask) {
+  return task.resultTrashEmptyDirs(item)
 }
 
 function groupTaskIds(group: ResultGroup) {
@@ -132,6 +136,15 @@ function groupTaskIds(group: ResultGroup) {
 function trashTargetsForItems(items: SeparationTask[]) {
   const seen = new Set<string>()
   return items.flatMap((item) => trashTargets(item)).filter((path) => {
+    if (seen.has(path)) return false
+    seen.add(path)
+    return true
+  })
+}
+
+function trashEmptyDirsForItems(items: SeparationTask[]) {
+  const seen = new Set<string>()
+  return items.flatMap((item) => trashEmptyDirs(item)).filter((path) => {
     if (seen.has(path)) return false
     seen.add(path)
     return true
@@ -195,7 +208,7 @@ function handleRemoveResult(group: ResultGroup) {
       }
 
       try {
-        const result = await task.trashPaths(targets)
+        const result = await task.trashResultPaths(targets, trashEmptyDirsForItems(group.items))
         if (!result.failed.length) {
           task.removeResults(ids)
           message.success(t('results.removeFilesSuccessSingle'))
@@ -268,7 +281,7 @@ function handleRemoveSelected() {
       }
 
       try {
-        const result = await task.trashPaths(targets)
+        const result = await task.trashResultPaths(targets, trashEmptyDirsForItems(items))
         if (!result.failed.length) {
           finishRemove(true)
           message.success(t('results.removeFilesSuccessMultiple'))
@@ -340,7 +353,7 @@ function handleClearResults() {
       }
 
       try {
-        const result = await task.trashPaths(targets)
+        const result = await task.trashResultPaths(targets, trashEmptyDirsForItems(items))
         if (!result.failed.length) {
           finishClear(true)
           message.success(t('results.removeFilesSuccessMultiple'))

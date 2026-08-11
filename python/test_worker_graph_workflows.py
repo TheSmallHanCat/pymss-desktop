@@ -202,6 +202,72 @@ class ExecutionOrderTests(unittest.TestCase):
 
 
 class SaveTargetTests(unittest.TestCase):
+    def test_custom_file_label_tokens_are_rendered_as_a_full_file_name(self):
+        label = gw._render_file_label(
+            "%filename%_%stem%_%model%.wav",
+            input_path="C:/music/demo song.mp3",
+            stem_label="instrument",
+            model_label="bs_model",
+        )
+
+        self.assertEqual(label, "demo song_instrument_bs_model.wav")
+        self.assertEqual(gw._output_file_name(label, "wav"), "demo song_instrument_bs_model.wav")
+        self.assertEqual(gw._output_file_name(label, "flac"), "demo song_instrument_bs_model.flac")
+
+    def test_duplicate_rendered_file_names_keep_their_label_with_numeric_suffix(self):
+        label = gw._render_file_label(
+            "%filename%_%stem%_%model%",
+            input_path="C:/music/song.wav",
+            stem_label="vocals",
+            model_label="same_model",
+        )
+        seen = set()
+
+        first = gw._unique_file_name(gw._output_file_name(label, "wav"), seen)
+        seen.add(first.lower())
+        second = gw._unique_file_name(gw._output_file_name(label, "wav"), seen)
+
+        self.assertEqual(first, "song_vocals_same_model.wav")
+        self.assertEqual(second, "song_vocals_same_model_2.wav")
+
+    def test_duplicate_save_labels_are_kept_with_source_ref_fallback(self):
+        nodes = {
+            "input": node("input", "input_audio"),
+            "save": node("save", "save_outputs", outputs={
+                "step_1.vocals": "vocals",
+                "step_1.instrument": "instrument",
+                "step_2.instrument": "instrument",
+            }),
+            "step_1": node("step_1", "separate", model="a.ckpt", stems=["vocals", "instrument"]),
+            "step_2": node("step_2", "separate", model="b.ckpt", stems=["vocals", "instrument"]),
+        }
+        edges = [
+            edge("input", "audio", "step_1", "input"),
+            edge("step_1", "stem:vocals", "step_2", "input"),
+            edge("step_1", "stem:vocals", "save", "save:step_1.vocals"),
+            edge("step_1", "stem:instrument", "save", "save:step_1.instrument"),
+            edge("step_2", "stem:instrument", "save", "save:step_2.instrument"),
+        ]
+
+        targets = gw._save_targets_for_graph(nodes, edges)
+
+        self.assertEqual([target.source_ref for target in targets], [
+            "step_1.vocals",
+            "step_1.instrument",
+            "step_2.instrument",
+        ])
+        self.assertEqual([target.stem_label for target in targets], [
+            "vocals",
+            "instrument",
+            "instrument",
+        ])
+        self.assertEqual([target.filename_label for target in targets], [
+            "",
+            "",
+            "",
+        ])
+        self.assertEqual([target.model_label for target in targets], ["a", "a", "b"])
+
     def test_save_node_output_name_overrides_utility_label(self):
         nodes = {
             "input": node("input", "input_audio"),
@@ -222,7 +288,8 @@ class SaveTargetTests(unittest.TestCase):
 
         self.assertEqual(len(targets), 1)
         self.assertEqual(targets[0].source_ref, "utility:join")
-        self.assertEqual(targets[0].output_label, "merged_vocals")
+        self.assertEqual(targets[0].stem_label, "audio_ensemble")
+        self.assertEqual(targets[0].filename_label, "merged_vocals")
 
 
 class PortRuleTests(unittest.TestCase):

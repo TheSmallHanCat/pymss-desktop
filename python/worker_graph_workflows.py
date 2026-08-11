@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from worker_infer import JsonLogHandler, _prepare_separator, _safe_filename_part, apply_output_naming, normalize_audio_params, resolve_pymss_output_dir
+from worker_infer import JsonLogHandler, _prepare_separator, _safe_filename_part, normalize_audio_params, resolve_pymss_output_dir
 from worker_protocol import emit
 
 
@@ -35,7 +35,98 @@ class AudioArtifact:
 @dataclass
 class SaveTarget:
     source_ref: str
-    output_label: str
+    stem_label: str
+    model_label: str
+    filename_label: str = ""
+
+
+def _source_ref_label(source_ref: str) -> str:
+    return _safe_filename_part(source_ref.replace(":", "_").replace(".", "_"))
+
+
+def _source_stem_label(source_ref: str, nodes: dict[str, dict[str, Any]], chain_label: str) -> str:
+    if source_ref.startswith("utility:"):
+        node_id = source_ref.split(":", 1)[1]
+        node = nodes.get(node_id, {})
+        return _utility_title(str(node.get("type") or "utility"))
+    if "." in source_ref:
+        return source_ref.split(".", 1)[1].strip() or chain_label
+    return chain_label or source_ref
+
+
+def _source_model_label(source_ref: str, nodes: dict[str, dict[str, Any]]) -> str:
+    if "." not in source_ref:
+        return "workflow"
+    node_id, _stem = source_ref.split(".", 1)
+    node = nodes.get(node_id) or {}
+    if str(node.get("type") or "") != "separate":
+        return "workflow"
+    data = _node_data(node)
+    model = str(data.get("model") or node_id).strip() or node_id
+    return Path(model).stem or model
+
+
+def _is_default_save_label(label: str, source_ref: str, stem_label: str, chain_label: str) -> bool:
+    normalized = _safe_filename_part(label).lower()
+    defaults = {
+        _safe_filename_part(stem_label).lower(),
+        _safe_filename_part(chain_label).lower(),
+        _source_ref_label(source_ref).lower(),
+    }
+    return normalized in defaults
+
+
+def _render_file_label(template: str, *, input_path: str, stem_label: str, model_label: str) -> str:
+    label = str(template or "")
+    values = {
+        "%filename%": Path(input_path).stem,
+        "%stem%": stem_label,
+        "%track%": stem_label,
+        "%model%": model_label,
+    }
+    for token, value in values.items():
+        label = label.replace(token, value)
+    return _safe_filename_part(label)
+
+
+def _output_file_name(label: str, output_format: str) -> str:
+    safe_label = _safe_filename_part(label)
+    suffix = Path(safe_label).suffix
+    expected_suffix = f".{output_format}"
+    if suffix.lower() == expected_suffix.lower():
+        return safe_label
+    if suffix:
+        safe_label = safe_label[: -len(suffix)]
+    return f"{safe_label}{expected_suffix}"
+
+
+def _unique_file_name(file_name: str, seen_file_names: set[str]) -> str:
+    safe_name = _safe_filename_part(file_name)
+    if safe_name.lower() not in seen_file_names:
+        return safe_name
+    path = Path(safe_name)
+    stem = path.stem or "output"
+    suffix = path.suffix
+    for index in range(2, 1000):
+        candidate = f"{stem}_{index}{suffix}"
+        if candidate.lower() not in seen_file_names:
+            return candidate
+    return f"{stem}_{len(seen_file_names) + 1}{suffix}"
+
+
+def _unique_output_label(preferred: str, fallback: str, source_ref: str, seen_labels: set[str]) -> str:
+    candidates = [preferred, fallback, _source_ref_label(source_ref)]
+    for candidate in candidates:
+        label = _safe_filename_part(candidate)
+        if label.lower() not in seen_labels:
+            return label
+
+    base = _safe_filename_part(candidates[0] or source_ref)
+    for index in range(2, 1000):
+        label = _safe_filename_part(f"{base}_{index}")
+        if label.lower() not in seen_labels:
+            return label
+    return _safe_filename_part(f"{base}_{len(seen_labels) + 1}")
 
 
 def is_graph_workflow_definition(definition: Any) -> bool:
@@ -516,7 +607,6 @@ def _save_targets_for_graph(
     edges: list[dict[str, Any]],
 ) -> list[SaveTarget]:
     targets: list[SaveTarget] = []
-    seen_labels: set[str] = set()
     save_node_ids = {
         node_id
         for node_id, node in nodes.items()
@@ -533,19 +623,21 @@ def _save_targets_for_graph(
         chain_label = _resolve_chain_label(source_ref, nodes, edges)
         if not chain_label:
             continue
+        stem_label = _source_stem_label(source_ref, nodes, chain_label)
+        model_label = _source_model_label(source_ref, nodes)
         save_node = nodes.get(save_node_id) or {}
         save_node_data = _node_data(save_node)
         save_outputs = save_node_data.get("outputs") if isinstance(save_node_data.get("outputs"), dict) else {}
         configured_label = str(save_outputs.get(source_ref) or "").strip()
-        output_label = _safe_filename_part(configured_label or chain_label)
-        # Guard against duplicate labels caused by duplicate save edges.
-        if output_label.lower() in seen_labels:
-            continue
-        seen_labels.add(output_label.lower())
+        filename_label = ""
+        if configured_label and not _is_default_save_label(configured_label, source_ref, stem_label, chain_label):
+            filename_label = configured_label
         targets.append(
             SaveTarget(
                 source_ref=source_ref,
-                output_label=output_label,
+                stem_label=stem_label,
+                model_label=model_label,
+                filename_label=filename_label,
             )
         )
     return targets
@@ -625,25 +717,33 @@ def run_graph_workflow_task(
         output_format = str(payload.get("outputFormat") or "wav").strip().lower() or "wav"
         audio_params = normalize_audio_params(payload.get("audioParams"))
         track_name = source_path.stem
+        seen_file_names: set[str] = set()
 
         for target in save_targets:
             artifact = _resolve_artifact(artifacts, target.source_ref)
-            file_name = f"{_safe_filename_part(track_name)}_{target.output_label}.{output_format}"
+            if target.filename_label:
+                file_label = _render_file_label(
+                    target.filename_label,
+                    input_path=input_path,
+                    stem_label=target.stem_label,
+                    model_label=target.model_label,
+                )
+            else:
+                file_label = _render_file_label(
+                    "%filename%_%stem%_%model%",
+                    input_path=input_path,
+                    stem_label=target.stem_label,
+                    model_label=target.model_label,
+                )
+            file_name = _unique_file_name(_output_file_name(file_label, output_format), seen_file_names)
+            seen_file_names.add(file_name.lower())
             output_path = task_output_dir / file_name
             save_audio(str(output_path), _to_save_audio(artifact.audio), artifact.sample_rate, output_format, audio_params)
             outputs.append({
-                "stem": target.output_label,
+                "stem": target.stem_label,
                 "path": str(output_path),
             })
 
-        outputs = apply_output_naming(
-            outputs,
-            payload.get("outputNaming"),
-            input_path=input_path,
-            input_index=int(payload.get("inputIndex") or 1),
-            model=str(payload.get("workflowName") or ""),
-            output_format=output_format,
-        )
         return {
             "files": [item["path"] for item in outputs],
             "outputs": outputs,

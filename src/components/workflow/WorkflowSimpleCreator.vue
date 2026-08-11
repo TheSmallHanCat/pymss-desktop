@@ -106,6 +106,18 @@ function configuredStems(modelName: string) {
   return parseModelStems(item?.configInstruments || item?.configTargetInstrument || item?.targetStem)
 }
 
+function filenamePart(value: string) {
+  return String(value || '')
+    .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*_\s*/g, '_')
+    .replace(/^[ ._]+|[ ._]+$/g, '') || 'output'
+}
+
+function modelFileStem(modelName: string) {
+  return filenamePart(modelName.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') || modelName || 'model')
+}
+
 function reconcileConfiguredStems() {
   let changed = false
   steps.value.forEach((step) => {
@@ -152,6 +164,24 @@ function updateStepModel(step: WorkflowStepDraft, modelName: string) {
 
 function savedStems(step: WorkflowStepDraft) {
   return step.stems.filter(stem => Boolean(step.save?.[stem]?.trim()))
+}
+
+function defaultSaveFileName(step: WorkflowStepDraft, stem: string) {
+  return `%filename%_${filenamePart(stem)}_${modelFileStem(step.model)}.${defaultFormat.value || 'wav'}`
+}
+
+function saveFileNameValue(step: WorkflowStepDraft, stem: string) {
+  const value = step.save?.[stem]?.trim() || ''
+  return value && value !== stem ? value : defaultSaveFileName(step, stem)
+}
+
+function updateSaveFileName(step: WorkflowStepDraft, stem: string, value: string | null) {
+  if (!savedStems(step).includes(stem)) return
+  const filename = value?.trim() || defaultSaveFileName(step, stem)
+  step.save = {
+    ...step.save,
+    [stem]: filename === defaultSaveFileName(step, stem) ? stem : filename,
+  }
 }
 
 function updateSavedStems(step: WorkflowStepDraft, values: string[]) {
@@ -303,6 +333,18 @@ function payload(): SimpleWorkflowSavePayload {
               @update:value="updateSavedStems(step, $event)"
             />
           </label>
+          <div v-if="savedStems(step).length" class="simple-step__filenames">
+            <span>{{ t('workflows.saveFilename') }}</span>
+            <label v-for="stem in savedStems(step)" :key="`${step.id}:${stem}`">
+              <span>{{ stem }}</span>
+              <n-input
+                :value="saveFileNameValue(step, stem)"
+                size="small"
+                :placeholder="defaultSaveFileName(step, stem)"
+                @update:value="(value: string) => updateSaveFileName(step, stem, value)"
+              />
+            </label>
+          </div>
         </div>
       </article>
     </div>
@@ -418,7 +460,33 @@ function payload(): SimpleWorkflowSavePayload {
   gap: 10px 12px;
 }
 
-.simple-step__stems { grid-column: 1 / -1; }
+.simple-step__stems,
+.simple-step__filenames { grid-column: 1 / -1; }
+
+.simple-step__filenames {
+  display: grid;
+  gap: 8px;
+}
+
+.simple-step__filenames > span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.simple-step__filenames label {
+  display: grid;
+  grid-template-columns: minmax(96px, 140px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.simple-step__filenames label > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--on-surface);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .simple-creator__error,
 .simple-creator__valid { margin: 0; font-size: 12px; }
 .simple-creator__error { color: var(--danger); }
@@ -438,6 +506,11 @@ function payload(): SimpleWorkflowSavePayload {
   .simple-creator__defaults,
   .simple-step__grid { grid-template-columns: minmax(0, 1fr); }
   .simple-creator__description,
-  .simple-step__stems { grid-column: auto; }
+  .simple-step__stems,
+  .simple-step__filenames { grid-column: auto; }
+
+  .simple-step__filenames label {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

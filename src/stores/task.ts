@@ -258,6 +258,18 @@ function outputsFromFiles(outputDir: string, files: string[], outputFormat = 'wa
   })
 }
 
+function parentDir(path: string) {
+  const trimmed = normalizeOutputPath(path).replace(/[\\/]$/, '')
+  const index = Math.max(trimmed.lastIndexOf('\\'), trimmed.lastIndexOf('/'))
+  return index > 0 ? trimmed.slice(0, index) : ''
+}
+
+function samePath(a?: string, b?: string) {
+  const left = normalizeOutputPath(a || '').replace(/[\\/]$/, '')
+  const right = normalizeOutputPath(b || '').replace(/[\\/]$/, '')
+  return Boolean(left && right && left.toLowerCase() === right.toLowerCase())
+}
+
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value))
 }
@@ -1432,7 +1444,14 @@ export const useTaskStore = defineStore('task', () => {
   async function trashPaths(paths: string[]) {
     const valid = paths.filter((p) => p?.trim())
     if (!valid.length) return { trashed: [] as string[], failed: [] as string[] }
-    return invoke<{ trashed: string[]; failed: string[] }>('move_paths_to_trash', { paths: valid })
+    return invoke<{ trashed: string[]; failed: string[] }>('move_paths_to_trash', { paths: valid, emptyDirs: [] })
+  }
+
+  async function trashResultPaths(paths: string[], emptyDirs: string[] = []) {
+    const valid = paths.filter((p) => p?.trim())
+    const validEmptyDirs = emptyDirs.filter((p) => p?.trim())
+    if (!valid.length && !validEmptyDirs.length) return { trashed: [] as string[], failed: [] as string[] }
+    return invoke<{ trashed: string[]; failed: string[] }>('move_paths_to_trash', { paths: valid, emptyDirs: validEmptyDirs })
   }
 
   // 删除结果时始终仅回收当前结果对应的输出文件，避免误删共享目录、
@@ -1447,6 +1466,21 @@ export const useTaskStore = defineStore('task', () => {
         seen.add(path)
         return true
       })
+  }
+
+  function resultTrashEmptyDirs(task: SeparationTask): string[] {
+    if (task.runConfig?.outputLayout !== 'folders') return []
+    const jobOutput = task.jobOutput?.trim()
+    const output = task.output?.trim()
+    if (output && !samePath(output, jobOutput)) return [output]
+
+    const parents = task.outputs
+      .map((item) => parentDir(item.path || ''))
+      .filter(Boolean)
+    const uniqueParents = [...new Set(parents)]
+    const parent = uniqueParents.length === 1 ? uniqueParents[0] : ''
+    if (!parent || samePath(parent, jobOutput)) return []
+    return [parent]
   }
 
   function primaryRevealPath(task: SeparationTask) {
@@ -1897,6 +1931,8 @@ export const useTaskStore = defineStore('task', () => {
     clearInputFiles,
     revealPath,
     trashPaths,
+    trashResultPaths,
+    resultTrashEmptyDirs,
     resultTrashTargets,
     primaryRevealPath,
     getTaskById,

@@ -27,6 +27,7 @@ type ManagedAudio = {
   metadataPromise: Promise<void>
   fallbackUrl?: string | null
   graphEnabled?: boolean
+  channelMode?: 'mono' | 'stereo'
   sourceNode?: MediaElementAudioSourceNode | null
   gainNode?: GainNode | null
   balanceSplitter?: ChannelSplitterNode | null
@@ -195,6 +196,10 @@ export function useEditorPlayback(options: PlaybackOptions) {
     entry.audio.volume = clamp(Number(baseVolume || 0), 0, 1)
   }
 
+  function channelModeForSource(source: EditorSource): 'mono' | 'stereo' {
+    return Number(source.channels || 0) === 1 ? 'mono' : 'stereo'
+  }
+
   function createMetadataPromise(audio: HTMLAudioElement, entry: ManagedAudio) {
     return new Promise<void>((resolve) => {
       if (audio.readyState >= 1) {
@@ -241,10 +246,30 @@ export function useEditorPlayback(options: PlaybackOptions) {
     entry.audio.load()
   }
 
+  function connectBalanceRouting(entry: ManagedAudio, source: EditorSource) {
+    if (!entry.balanceSplitter || !entry.balanceLeftGain || !entry.balanceRightGain) return
+    const nextMode = channelModeForSource(source)
+    if (entry.channelMode === nextMode) return
+
+    entry.balanceSplitter.disconnect()
+    if (nextMode === 'mono') {
+      entry.balanceSplitter.connect(entry.balanceLeftGain, 0)
+      entry.balanceSplitter.connect(entry.balanceRightGain, 0)
+    } else {
+      entry.balanceSplitter.connect(entry.balanceLeftGain, 0)
+      entry.balanceSplitter.connect(entry.balanceRightGain, 1)
+    }
+    entry.channelMode = nextMode
+  }
+
   function connectEntryAudioGraph(entry: ManagedAudio, source: EditorSource) {
     const ctx = ensureAudioContext()
     if (!ctx || !masterInputGain) return
-    if (entry.sourceNode || entry.graphEnabled === false) return
+    if (entry.graphEnabled === false) return
+    if (entry.sourceNode) {
+      connectBalanceRouting(entry, source)
+      return
+    }
 
     try {
       entry.sourceNode = ctx.createMediaElementSource(entry.audio)
@@ -264,14 +289,7 @@ export function useEditorPlayback(options: PlaybackOptions) {
 
       entry.sourceNode.connect(entry.gainNode)
       entry.gainNode.connect(entry.balanceSplitter)
-
-      if (Number(source.channels || 0) <= 1) {
-        entry.balanceSplitter.connect(entry.balanceLeftGain, 0)
-        entry.balanceSplitter.connect(entry.balanceRightGain, 0)
-      } else {
-        entry.balanceSplitter.connect(entry.balanceLeftGain, 0)
-        entry.balanceSplitter.connect(entry.balanceRightGain, 1)
-      }
+      connectBalanceRouting(entry, source)
 
       entry.balanceLeftGain.connect(entry.balanceMerger, 0, 0)
       entry.balanceRightGain.connect(entry.balanceMerger, 0, 1)
@@ -328,7 +346,7 @@ export function useEditorPlayback(options: PlaybackOptions) {
 
   function trackSignature() {
     return activeTracks()
-      .map(({ track, source }) => [track.id, source.id, track.volume, track.pan, track.muted, track.solo, track.fadeIn, track.fadeOut].join(':'))
+      .map(({ track, source }) => [track.id, source.id, source.channels, track.volume, track.pan, track.muted, track.solo, track.fadeIn, track.fadeOut].join(':'))
       .join('|')
   }
 

@@ -2356,7 +2356,7 @@ pub struct TrashResult {
 }
 
 #[tauri::command]
-pub async fn move_paths_to_trash(paths: Vec<String>) -> AppResult<TrashResult> {
+pub async fn move_paths_to_trash(paths: Vec<String>, empty_dirs: Option<Vec<String>>) -> AppResult<TrashResult> {
     let mut trashed = Vec::new();
     let mut failed = Vec::new();
     for path in paths {
@@ -2364,6 +2364,27 @@ pub async fn move_paths_to_trash(paths: Vec<String>) -> AppResult<TrashResult> {
         // 已不存在的路径视为已删除，无需报错
         if !target.exists() {
             trashed.push(path);
+            continue;
+        }
+        match trash::delete(target) {
+            Ok(()) => trashed.push(path),
+            Err(_) => failed.push(path),
+        }
+    }
+    for path in empty_dirs.unwrap_or_default() {
+        let target = Path::new(&path);
+        if !target.exists() {
+            trashed.push(path);
+            continue;
+        }
+        if !target.is_dir() {
+            continue;
+        }
+        let is_empty = match std::fs::read_dir(target) {
+            Ok(mut entries) => entries.next().is_none(),
+            Err(_) => false,
+        };
+        if !is_empty {
             continue;
         }
         match trash::delete(target) {

@@ -118,6 +118,16 @@ type WorkflowValidationIssue = {
   message: string
   targetKey: string
 }
+type SaveOutputItem = {
+  key: string
+  source: string
+  type: 'step' | 'utility'
+  stepIndex?: number
+  stem?: string
+  utilityId?: string
+  label: string
+  outputDir: string
+}
 
 const { t } = useI18n()
 const message = useMessage()
@@ -189,6 +199,8 @@ const stepInputMenuOpenId = ref('')
 const stepInputSearch = ref('')
 const utilityConfigModalId = ref('')
 const saveConfigOpen = ref(false)
+const editingSaveOutputKey = ref('')
+const saveFileNameInputRef = ref<HTMLInputElement | Array<HTMLInputElement> | null>(null)
 const hasMultipleSelection = computed(() => selectedGraphNodes.value.length > 1)
 const movableSelectedCount = computed(() => movableSelectionKeys().length)
 const canAlignSelection = computed(() => movableSelectedCount.value >= 2)
@@ -289,7 +301,7 @@ function noteTextStyle(note: WorkflowNoteDraft) {
 const utilityNodes = computed<WorkflowUtilityNodeDraft[]>(() => draftState.value.utilityNodes || [])
 const consumedValueSet = computed(() => buildWorkflowConsumedValueSetForDraft(steps.value, utilityNodes.value))
 const saveTargets = computed<WorkflowSaveTargetDraft[]>(() => draftState.value.saveTargets || [])
-const saveOutputs = computed(() => {
+const saveOutputs = computed<SaveOutputItem[]>(() => {
   const stepItems = steps.value.flatMap((step, stepIndex) => step.stems
     .filter(stem => Boolean(step.save?.[stem]?.trim()))
     .map(stem => ({
@@ -1124,6 +1136,26 @@ function closeSaveConfig() {
   saveConfigOpen.value = false
 }
 
+function isEditingSaveOutput(item: SaveOutputItem) {
+  return editingSaveOutputKey.value === item.key
+}
+
+function beginSaveOutputEdit(item: SaveOutputItem) {
+  selectGraphNode('save')
+  editingSaveOutputKey.value = item.key
+  void nextTick(() => {
+    const ref = saveFileNameInputRef.value
+    const el = Array.isArray(ref) ? ref[0] : ref
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(0, el.value.length)
+  })
+}
+
+function finishSaveOutputEdit() {
+  editingSaveOutputKey.value = ''
+}
+
 function stepStemValue(step: WorkflowStepDraft, stem: string) {
   return `${step.id}.${stem}`
 }
@@ -1257,6 +1289,18 @@ function utilityNodeTaskCountLabel(node: WorkflowUtilityNodeDraft) {
 
 function baseName(path: string) {
   return path.split(/[/\\]/).filter(Boolean).pop() || path
+}
+
+function filenamePart(value: string) {
+  return String(value || '')
+    .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*_\s*/g, '_')
+    .replace(/^[ ._]+|[ ._]+$/g, '') || 'output'
+}
+
+function modelFileStem(modelName: string) {
+  return filenamePart(baseName(modelName).replace(/\.[^.]+$/, '') || modelName || 'model')
 }
 
 function graphNodeStyle(key: string, extra: Record<string, string> = {}) {
@@ -2060,24 +2104,56 @@ function updateSaveOutputDir(item: { type: 'step' | 'utility'; stepIndex?: numbe
     const step = typeof item.stepIndex === 'number' ? steps.value[item.stepIndex] : null
     if (!step || !item.stem) return
     const stem = item.stem
+    const filename = value?.trim() || defaultSaveFileName(item)
     mutateDraft((next) => {
       const target = next.steps.find(item2 => item2.id === step.id)
       if (!target) return
       target.save = {
         ...target.save,
-        [stem]: value?.trim() || stem,
+        [stem]: filename === defaultSaveFileName(item) ? stem : filename,
       }
     })
     return
   }
   if (item.type === 'utility' && item.utilityId) {
     const utilityNode = utilityNodes.value.find(node => node.id === item.utilityId)
+    const defaultFileName = defaultSaveFileName(item)
     mutateDraft((next) => {
-      const outputDir = value?.trim() || (utilityNode ? utilityNodeDefaultOutputDir(utilityNode) : 'utility_output')
+      const filename = value?.trim() || defaultFileName
+      const outputDir = filename === defaultFileName
+        ? (utilityNode ? utilityNodeDefaultOutputDir(utilityNode) : 'utility_output')
+        : filename
       const existing = next.saveTargets.filter(target => target.source !== item.source)
       next.saveTargets = [...existing, { source: item.source, outputDir }]
     })
   }
+}
+
+function defaultSaveFileName(item: { type: 'step' | 'utility'; stepIndex?: number; stem?: string; utilityId?: string }) {
+  const outputFormat = draftState.value.defaultFormat || 'wav'
+  if (item.type === 'step') {
+    const step = typeof item.stepIndex === 'number' ? steps.value[item.stepIndex] : null
+    const stem = filenamePart(item.stem || 'stem')
+    const model = modelFileStem(step?.model || 'model')
+    return `%filename%_${stem}_${model}.${outputFormat}`
+  }
+  if (item.type === 'utility' && item.utilityId) {
+    const utilityNode = utilityNodes.value.find(node => node.id === item.utilityId)
+    const label = filenamePart(utilityNode ? utilityNodeDefaultOutputDir(utilityNode) : 'utility_output')
+    return `%filename%_${label}_workflow.${outputFormat}`
+  }
+  return `%filename%_output_workflow.${outputFormat}`
+}
+
+function saveFileNameValue(item: { type: 'step' | 'utility'; stepIndex?: number; stem?: string; utilityId?: string; outputDir: string }) {
+  const value = String(item.outputDir || '').trim()
+  if (!value) return defaultSaveFileName(item)
+  if (item.type === 'step' && item.stem && value === item.stem) return defaultSaveFileName(item)
+  if (item.type === 'utility' && item.utilityId) {
+    const utilityNode = utilityNodes.value.find(node => node.id === item.utilityId)
+    if (utilityNode && value === utilityNodeDefaultOutputDir(utilityNode)) return defaultSaveFileName(item)
+  }
+  return value
 }
 
 function isRewiringOrigin(kind: 'step' | 'utility', nodeId: string) {
@@ -3975,7 +4051,29 @@ function jumpMinimap(event: MouseEvent) {
                   <i :data-port-id="`in:save:${index}`" />
                   <span class="graph-port__content">
                     <strong>{{ item.label }}</strong>
-                    <small>{{ item.outputDir || (item.type === 'step' ? item.stem : '') }}</small>
+                    <input
+                      v-if="isEditingSaveOutput(item)"
+                      ref="saveFileNameInputRef"
+                      class="graph-port__filename-input"
+                      :value="saveFileNameValue(item)"
+                      :placeholder="t('workflows.saveFilenamePlaceholder')"
+                      @input="(event) => updateSaveOutputDir(item, (event.target as HTMLInputElement).value)"
+                      @blur="finishSaveOutputEdit"
+                      @keydown.enter.prevent="finishSaveOutputEdit"
+                      @keydown.esc.prevent="finishSaveOutputEdit"
+                      @click.stop
+                      @pointerdown.stop
+                    >
+                    <button
+                      v-else
+                      type="button"
+                      class="graph-port__filename-button"
+                      :title="t('workflows.saveFilename')"
+                      @click.stop="beginSaveOutputEdit(item)"
+                      @pointerdown.stop
+                    >
+                      {{ saveFileNameValue(item) || t('workflows.saveFilenameAuto') }}
+                    </button>
                   </span>
                 </div>
                 <div v-if="!saveOutputs.length" class="graph-node__empty-port">{{ t('workflows.noSavedOutputs') }}</div>
@@ -4108,13 +4206,13 @@ function jumpMinimap(event: MouseEvent) {
       @update:show="(value: boolean) => { if (!value) closeSaveConfig() }"
     >
       <div class="node-config-form">
-        <span class="graph-node__hint">{{ t('workflows.saveOutputDirHint') }}</span>
+        <span class="graph-node__hint">{{ t('workflows.saveFilenameHint') }}</span>
         <label v-for="item in saveOutputs" :key="item.key">
           <span>{{ item.label }}</span>
           <n-input
-            :value="item.outputDir"
+            :value="saveFileNameValue(item)"
             size="small"
-            :placeholder="item.type === 'step' ? item.stem : ''"
+            :placeholder="t('workflows.saveFilenamePlaceholder')"
             @update:value="(value: string) => updateSaveOutputDir(item, value)"
           />
         </label>
@@ -5117,7 +5215,9 @@ function jumpMinimap(event: MouseEvent) {
 }
 
 .graph-port__content {
+  flex: 1 1 auto;
   min-width: 0;
+  width: 100%;
   display: grid;
   gap: 2px;
 }
@@ -5138,6 +5238,45 @@ function jumpMinimap(event: MouseEvent) {
 .graph-port__content small {
   color: var(--on-surface-muted);
   font-size: 11px;
+}
+
+.graph-port__filename-button {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--on-surface-muted);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+
+.graph-port__filename-button:hover {
+  color: var(--on-surface);
+}
+
+.graph-port__filename-input {
+  min-width: 0;
+  width: 100%;
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--primary) 34%, var(--outline));
+  border-radius: 6px;
+  outline: none;
+  background: color-mix(in srgb, var(--surface-1) 92%, transparent);
+  color: var(--on-surface);
+  font: inherit;
+  font-size: 11px;
+}
+
+.graph-port__filename-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 16%, transparent);
 }
 
 .graph-port i {

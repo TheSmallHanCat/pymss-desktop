@@ -574,8 +574,10 @@ export const useEditorStore = defineStore('editor', () => {
       session.value = normalizeSession(result)
       selectedTrackId.value = session.value.tracks[0]?.id || null
       await hydratePeaksFromCache(session.value.id)
+      const metadataChanged = await hydrateSourceMetadataState(session.value.id)
       clearHistory()
       const currentProjectId = session.value.id
+      if (metadataChanged) await saveProject()
       hydrateSessionSourcesInBackground(currentProjectId)
       return session.value
     } catch (error) {
@@ -668,11 +670,11 @@ export const useEditorStore = defineStore('editor', () => {
       const result = await invoke<PersistedSession>('load_editor_project', { projectId })
       session.value = normalizeSession(result)
       await hydratePeaksFromCache(session.value.id)
-      const missingChanged = await hydrateSourceMissingState(session.value.id)
+      const metadataChanged = await hydrateSourceMetadataState(session.value.id)
       selectedTrackId.value = session.value.tracks[0]?.id || null
       clearHistory()
       const currentProjectId = session.value.id
-      if (missingChanged) await saveProject()
+      if (metadataChanged) await saveProject()
       hydrateSessionSourcesInBackground(currentProjectId)
       return session.value
     } catch (error) {
@@ -774,7 +776,7 @@ export const useEditorStore = defineStore('editor', () => {
       .catch(() => {})
   }
 
-  async function hydrateSourceMissingState(projectId = session.value?.id || '') {
+  async function hydrateSourceMetadataState(projectId = session.value?.id || '') {
     if (!session.value || !projectId || session.value.id !== projectId) return false
 
     let changed = false
@@ -782,14 +784,30 @@ export const useEditorStore = defineStore('editor', () => {
 
     await runLimited(sources, 4, async (source) => {
       if (!session.value || session.value.id !== projectId) return
-      const beforeMissing = Boolean(source.missing)
-      const exists = await getMetadata(source.path)
-        .then(() => true)
-        .catch(() => false)
+      const before = {
+        name: source.name,
+        duration: source.duration,
+        sampleRate: source.sampleRate,
+        channels: source.channels,
+        missing: Boolean(source.missing),
+      }
+      const metadata = await getMetadata(source.path).catch(() => null)
       if (!session.value || session.value.id !== projectId) return
-      const nextMissing = !exists
-      if (beforeMissing !== nextMissing) {
-        source.missing = nextMissing
+      source.missing = !metadata
+      if (metadata) {
+        source.name = metadata.name || source.name
+        source.duration = Number(metadata.duration || source.duration)
+        source.sampleRate = Number(metadata.sampleRate || source.sampleRate)
+        const peakChannels = source.channelPeaks?.filter(channel => channel.length).length || 0
+        source.channels = Math.max(Number(metadata.channels || 0), peakChannels, Number(source.channels || 0))
+      }
+      if (
+        source.name !== before.name
+        || source.duration !== before.duration
+        || source.sampleRate !== before.sampleRate
+        || source.channels !== before.channels
+        || Boolean(source.missing) !== before.missing
+      ) {
         changed = true
       }
     })

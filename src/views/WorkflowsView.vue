@@ -419,8 +419,33 @@ function duplicateSimpleWorkflow(payload: SimpleWorkflowSavePayload) {
   void saveSimpleWorkflow(payload, { saveCopy: true })
 }
 
+function confirmAdvancedWorkflowWarning() {
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const finish = (value: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    dialog.warning({
+      title: t('workflows.advancedWarningTitle'),
+      content: t('workflows.advancedWarningContent'),
+      positiveText: t('workflows.advancedWarningContinue'),
+      negativeText: t('workflows.advancedWarningCancel'),
+      positiveButtonProps: { type: 'warning' },
+      negativeButtonProps: { secondary: true },
+      onPositiveClick: () => finish(true),
+      onNegativeClick: () => finish(false),
+      onClose: () => finish(false),
+    })
+  })
+}
+
 // ---- Node editor bridge ----
 async function openNodeEditor(options: { forceNew?: boolean; workflowId?: string } = {}) {
+  const confirmed = await confirmAdvancedWorkflowWarning()
+  if (!confirmed) return
+
   const forceNew = options.forceNew === true
   const workflowId = forceNew ? '' : (options.workflowId || editingId.value || selectedWorkflowId.value || '')
   const isNewWorkflow = forceNew || !workflowId
