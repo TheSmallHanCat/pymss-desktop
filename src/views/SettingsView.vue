@@ -576,6 +576,7 @@ const aboutVersionItems = computed(() => [
 ])
 const updateStatusLabel = computed(() => {
   if (!updateSupported.value) return t('settings.updateUnsupported')
+  if (updates.status === 'failed' && updates.installFailed) return t('settings.updateInstallFailed')
   if (updates.shouldShowDeferred) return t('settings.updateDeferred')
   if (updates.status === 'checking') return t('settings.updateChecking')
   if (updates.status === 'downloading') return t('settings.updateDownloading')
@@ -586,9 +587,9 @@ const updateStatusLabel = computed(() => {
 })
 const updateBadgeTone = computed(() => {
   if (!updateSupported.value) return 'default'
+  if (updates.status === 'failed') return 'error'
   if (updates.shouldShowDeferred) return 'warning'
   if (updates.status === 'available') return 'success'
-  if (updates.status === 'failed') return 'error'
   if (updates.status === 'checking' || updates.status === 'downloading' || updates.status === 'installing') return 'warning'
   return 'default'
 })
@@ -1022,7 +1023,7 @@ onMounted(async () => {
                   {{ t('settings.installUpdate') }}
                 </n-button>
                 <n-button secondary :disabled="!updateSupported || !updates.hasUpdate || updates.isBusy" @click="deferUpdate">
-                  {{ t('settings.updateNextLaunch') }}
+                  {{ t('settings.updateRemindLater') }}
                 </n-button>
               </div>
             </div>

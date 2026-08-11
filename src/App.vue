@@ -79,6 +79,7 @@ async function installDeferredUpdate() {
   if (deferredUpdateInstalling.value) return
   deferredUpdateInstalling.value = true
   deferredUpdateError.value = ''
+  deferredUpdateModalVisible.value = false
   try {
     await updates.downloadAndInstall()
   } catch (error) {
@@ -165,12 +166,42 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
           </n-alert>
           <template #action>
             <n-button secondary :disabled="deferredUpdateInstalling" @click="keepDeferredUpdateForNextLaunch">
-              {{ t('settings.updateNextLaunch') }}
+              {{ t('settings.updateRemindLater') }}
             </n-button>
             <n-button type="primary" :loading="deferredUpdateInstalling" @click="installDeferredUpdate">
               {{ t('settings.installUpdate') }}
             </n-button>
           </template>
+        </n-modal>
+        <n-modal :show="updates.isInstallOverlayVisible" preset="card" :mask-closable="false" :closable="false" class="update-install-modal" :bordered="false">
+          <div class="update-install-panel">
+            <div class="update-install-panel__head">
+              <strong>
+                {{ updates.status === 'failed' ? t('settings.updateInstallFailed') : updates.status === 'installing' ? t('settings.updateInstalling') : t('settings.updateDownloading') }}
+              </strong>
+              <span>{{ updates.status === 'failed' ? t('settings.updateInstallFailedHint') : t('settings.updateInstallOverlayHint') }}</span>
+            </div>
+            <n-progress
+              v-if="updates.status !== 'failed'"
+              type="line"
+              :percentage="updates.downloadProgressPercent"
+              :processing="updates.status === 'downloading'"
+              :show-indicator="updates.downloadTotalBytes > 0"
+              status="success"
+            />
+            <p v-if="updates.status === 'downloading' && updates.downloadTotalBytes > 0" class="update-install-panel__meta">
+              {{ t('settings.updateDownloadProgress', { percent: updates.downloadProgressPercent }) }}
+            </p>
+            <p v-else-if="updates.status === 'installing'" class="update-install-panel__meta">
+              {{ t('settings.updateInstallRestarting') }}
+            </p>
+            <n-alert v-if="updates.status === 'failed' && updates.error" type="error" :bordered="false">
+              {{ updates.error }}
+            </n-alert>
+            <div v-if="updates.status === 'failed'" class="update-install-panel__actions">
+              <n-button secondary @click="updates.dismissInstallError()">{{ t('common.close') }}</n-button>
+            </div>
+          </div>
         </n-modal>
         </n-dialog-provider>
       </n-message-provider>
@@ -220,5 +251,39 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
 .boot-fade-enter-from,
 .boot-fade-leave-to {
   opacity: 0;
+}
+
+.update-install-modal {
+  width: min(440px, calc(100vw - 32px));
+}
+
+.update-install-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.update-install-panel__head {
+  display: grid;
+  gap: 6px;
+}
+
+.update-install-panel__head strong {
+  color: var(--on-surface);
+  font-size: 17px;
+}
+
+.update-install-panel__head span,
+.update-install-panel__meta {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.update-install-panel__meta {
+  margin: -6px 0 0;
+}
+
+.update-install-panel__actions {
+  display: flex;
+  justify-content: flex-end;
 }
 </style>
