@@ -295,6 +295,9 @@ let unlistenResize: (() => void) | undefined
 let unlistenCloseRequested: (() => void) | undefined
 
 onMounted(async () => {
+  // Standalone node-editor windows are opened directly at this route, which can
+  // mount before bootstrap's `workflows.initialize()` finishes. Waiting here keeps
+  // the editor from falling back to a blank draft when a workflowId is in the URL.
   await Promise.allSettled([workflow.initialize(), model.initialize()])
   const workflowId = String(route.query.workflowId || '')
   const isNewWorkflow = route.query.new === '1'
