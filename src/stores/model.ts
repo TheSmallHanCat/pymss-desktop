@@ -533,6 +533,7 @@ export const useModelStore = defineStore('model', () => {
   }
 
   watch(downloadTasks, () => queuePersist(), { deep: true })
+  watch(modelViewMode, () => queuePersist())
   watch(supportedOnly, () => {
     if (selectedInfo.value && !filteredModels.value.some((item) => item.name === selectedInfo.value?.name)) {
       selectedInfo.value = null
