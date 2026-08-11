@@ -34,8 +34,12 @@ pub fn attach_parent() {
 }
 
 pub fn write(line: &str) {
-    if TERMINAL_ATTACHED.load(Ordering::Relaxed) {
+    if is_attached() {
         use std::io::Write;
         let _ = std::io::stderr().lock().write_all(line.as_bytes());
     }
+}
+
+pub fn is_attached() -> bool {
+    TERMINAL_ATTACHED.load(Ordering::Relaxed)
 }
