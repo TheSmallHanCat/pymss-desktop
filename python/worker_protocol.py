@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 WORKER_VERSION = "0.1.0"
+TERMINAL_LOG_PREFIX = "__PYMSS_STUDIO_TERMINAL_LOG__"
 MAX_LOG_LINE_CHARS = 8 * 1024
 MAX_LOG_BYTES = 50 * 1024 * 1024
 MAX_PERSISTENT_LOG_BYTES = 100 * 1024 * 1024
@@ -54,6 +55,8 @@ def debug_log(event: str, **fields: Any) -> None:
             line = line[:MAX_LOG_LINE_CHARS] + " ...[truncated]"
         _write_debug_line(path, line, MAX_LOG_BYTES)
         _write_debug_line(persistent_path, line, MAX_PERSISTENT_LOG_BYTES)
+        if os.environ.get("PYMSS_STUDIO_TERMINAL_LOG") == "1":
+            print(TERMINAL_LOG_PREFIX + line, file=sys.stderr, flush=True)
     except Exception:
         pass
 

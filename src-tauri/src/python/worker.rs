@@ -19,6 +19,8 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+const PYTHON_TERMINAL_LOG_PREFIX: &str = "__PYMSS_STUDIO_TERMINAL_LOG__";
+
 static PAYLOAD_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
@@ -359,6 +361,9 @@ fn build_worker_command(
         cmd.env("PYMSS_STUDIO_SESSION_LOG", path)
             .env("PYMSS_STUDIO_DEBUG_LOG", "1");
     }
+    if crate::terminal::is_attached() {
+        cmd.env("PYMSS_STUDIO_TERMINAL_LOG", "1");
+    }
     if let Some(path) = session_log::persistent_log_env_path(app) {
         cmd.env("PYMSS_STUDIO_PERSISTENT_LOG", path);
     }
@@ -498,6 +503,14 @@ fn emit_worker_stderr(app: &AppHandle, line: String) {
             "payload": { "message": line }
         }),
     );
+}
+
+fn forward_python_terminal_log(line: &str) -> bool {
+    let Some(line) = line.strip_prefix(PYTHON_TERMINAL_LOG_PREFIX) else {
+        return false;
+    };
+    crate::terminal::write(&format!("{line}\n"));
+    true
 }
 
 fn emit_task_log(app: &AppHandle, task_id: &str, level: &str, message: String) {
@@ -706,6 +719,9 @@ pub fn run_worker_with_payload(
     let stderr_handle = stderr.map(|stderr| {
         std::thread::spawn(move || {
             read_lossy_lines(stderr, |line| {
+                if forward_python_terminal_log(&line) {
+                    return;
+                }
                 if let Ok(mut lines) = stderr_lines_for_thread.lock() {
                     lines.push(line.clone());
                     if lines.len() > 20 {
@@ -849,6 +865,9 @@ pub fn spawn_worker_background(
     let stderr_handle = stderr.map(|stderr| {
         std::thread::spawn(move || {
             read_lossy_lines(stderr, |line| {
+                if forward_python_terminal_log(&line) {
+                    return;
+                }
                 for stderr_task_id in &stderr_task_ids {
                     emit_task_log(&stderr_app, stderr_task_id, "warning", line.clone());
                 }
