@@ -807,7 +807,13 @@ pub async fn save_app_store(app: AppHandle, name: String, data: Value) -> AppRes
         "app.store.save",
         vec![("name", name.clone()), ("valueType", value_type(&data).to_string())],
     );
-    storage::write_app_store(&app, &name, &data)
+    storage::write_app_store(&app, &name, &data)?;
+    if name == "app-settings" {
+        session_log::set_developer_mode(
+            data.get("developerMode").and_then(Value::as_bool) == Some(true),
+        );
+    }
+    Ok(())
 }
 
 fn value_type(value: &Value) -> &'static str {

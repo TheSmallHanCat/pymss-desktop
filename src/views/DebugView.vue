@@ -112,7 +112,6 @@ type DebugLogInfo = {
   persistentPath: string
   persistentExists: boolean
   persistentSizeBytes: number
-  debugBuild: boolean
   maxBytes: number
   persistentMaxBytes: number
   reportPath: string
@@ -507,7 +506,7 @@ const debugLogRows = computed(() => [
   { label: t('debug.persistentLogSize'), value: `${formatBytes(debugLogInfo.value?.persistentSizeBytes || debugLogContent.value?.sizeBytes || 0)} / ${formatBytes(debugLogInfo.value?.persistentMaxBytes || 0)}` },
   { label: t('debug.reportPath'), value: debugLogInfo.value?.reportPath || '' },
   { label: t('debug.reportSize'), value: debugLogInfo.value?.reportExists ? formatBytes(debugLogInfo.value?.reportSizeBytes || 0) : '-' },
-  { label: t('debug.logMode'), value: debugLogInfo.value?.debugBuild ? t('debug.logModeVerbose') : t('debug.logModeRelease') },
+  { label: t('debug.logMode'), value: developerMode.value ? t('debug.logModeVerbose') : t('debug.logModeRelease') },
 ])
 const statusCards = computed(() => [
   { label: t('debug.envStatus'), value: app.envReady ? t('debug.ready') : t('debug.needsAttention'), tone: app.envReady ? 'ok' : 'warn' },

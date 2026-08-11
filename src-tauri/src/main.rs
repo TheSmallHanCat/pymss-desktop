@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod commands;
 mod error;
@@ -7,11 +7,14 @@ mod python;
 mod session_log;
 mod state;
 mod storage;
+mod terminal;
 
 use state::AppState;
 use tauri::{Emitter, Manager};
 
 fn main() {
+    terminal::attach_parent();
+
     let builder = tauri::Builder::default()
         .on_page_load(|webview, _payload| {
             let window = webview.window();
