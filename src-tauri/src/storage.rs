@@ -54,6 +54,33 @@ fn portable_data_root_dir() -> AppResult<Option<PathBuf>> {
     Ok(None)
 }
 
+fn is_cargo_profile_executable(exe: &Path, target_dir: &Path) -> bool {
+    let Some(profile_dir) = exe.parent() else {
+        return false;
+    };
+    let profile = profile_dir.file_name().and_then(|value| value.to_str());
+    if !matches!(profile, Some("debug" | "release")) {
+        return false;
+    }
+    let Some(profile_parent) = profile_dir.parent() else {
+        return false;
+    };
+    // Native builds live at target/{debug,release}; cross-compiled artifacts add exactly one
+    // target-triple directory. Bundle contents are deeper and must use packaged semantics even
+    // while CI is inspecting them in target/**/bundle.
+    profile_parent == target_dir || profile_parent.parent() == Some(target_dir)
+}
+
+pub fn is_development_executable() -> bool {
+    let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .zip(std::fs::canonicalize(target_dir).ok())
+        .map(|(exe, target)| is_cargo_profile_executable(&exe, &target))
+        .unwrap_or(false)
+}
+
 fn resolve_data_root(
     env_root: Option<PathBuf>,
     development_root: PathBuf,
@@ -82,7 +109,7 @@ pub fn data_root_dir(app: &AppHandle) -> AppResult<PathBuf> {
         development_data_root_dir()?,
         portable_data_root_dir()?,
         legacy_data_root_dir(app)?,
-        cfg!(debug_assertions),
+        is_development_executable(),
     ))
 }
 

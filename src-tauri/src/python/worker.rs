@@ -28,13 +28,6 @@ struct ActiveRuntimeRecord {
 }
 
 fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
-    if cfg!(debug_assertions) {
-        let path = dev_worker_path();
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-
     if let Ok(resource) = app.path().resource_dir() {
         let candidates = [
             resource.join("python").join("worker.py"),
@@ -58,7 +51,11 @@ fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
         return Ok(portable_worker);
     }
 
-    if cfg!(debug_assertions) {
+    if storage::is_development_executable() {
+        let path = dev_worker_path();
+        if path.exists() {
+            return Ok(path);
+        }
         // Fallback: try cwd (for backward compatibility)
         let cwd = std::env::current_dir()?;
         Ok(cwd.join("python").join("worker.py"))
@@ -118,7 +115,7 @@ fn bootstrap_python_path(app: &AppHandle) -> AppResult<String> {
     if let Some(embedded) = embedded_python_path(app)? {
         return Ok(embedded.to_string_lossy().to_string());
     }
-    if cfg!(debug_assertions) {
+    if cfg!(windows) {
         Ok("python".to_string())
     } else {
         Ok("python3".to_string())
@@ -553,7 +550,7 @@ fn log_worker_event(app: &AppHandle, command: &str, envelope: &WorkerEnvelope) {
     } else {
         "INFO"
     };
-    if level == "DEBUG" && !cfg!(debug_assertions) {
+    if level == "DEBUG" && !session_log::developer_mode_enabled() {
         return;
     }
     let payload = &envelope.payload;
@@ -627,56 +624,6 @@ fn log_worker_parse_error(
             ("raw", line.to_string()),
         ],
     );
-}
-
-#[cfg(debug_assertions)]
-fn debug_log_worker_stderr(command: &str, task_id: Option<&str>, line: &str) {
-    if line.trim().is_empty() {
-        return;
-    }
-    if let Some(task_id) = task_id {
-        eprintln!("[pymss-worker:{command}:{task_id}:stderr] {line}");
-    } else {
-        eprintln!("[pymss-worker:{command}:stderr] {line}");
-    }
-}
-
-#[cfg(debug_assertions)]
-fn debug_log_worker_event(command: &str, envelope: &WorkerEnvelope) {
-    let mut parts = vec![format!("[pymss-worker:{command}:{}]", envelope.event_type)];
-    if let Some(task_id) = envelope.task_id.as_deref() {
-        parts.push(format!("task={task_id}"));
-    }
-    if let Some(request_id) = envelope.request_id.as_deref() {
-        parts.push(format!("request={request_id}"));
-    }
-    if let Some(message) = envelope.payload.get("message").and_then(Value::as_str) {
-        parts.push(message.to_string());
-    } else if let Some(stage) = envelope.payload.get("stage").and_then(Value::as_str) {
-        parts.push(format!("stage={stage}"));
-        if let Some(message) = envelope.payload.get("message").and_then(Value::as_str) {
-            parts.push(message.to_string());
-        }
-    } else if matches!(envelope.event_type.as_str(), "error") {
-        parts.push(envelope.payload.to_string());
-    }
-    eprintln!("{}", parts.join(" "));
-}
-
-#[cfg(debug_assertions)]
-fn debug_log_worker_parse_error(
-    command: &str,
-    task_id: Option<&str>,
-    err: &serde_json::Error,
-    line: &str,
-) {
-    if let Some(task_id) = task_id {
-        eprintln!(
-            "[pymss-worker:{command}:{task_id}:stdout] invalid worker event: {err}; raw={line}"
-        );
-    } else {
-        eprintln!("[pymss-worker:{command}:stdout] invalid worker event: {err}; raw={line}");
-    }
 }
 
 fn is_background_terminal_event(command: &str, event_type: &str) -> bool {
@@ -754,8 +701,6 @@ pub fn run_worker_with_payload(
         .ok_or_else(|| AppError::Worker("missing worker stdout".into()))?;
     let stderr = child.stderr.take();
     let stderr_app = app.clone();
-    #[cfg(debug_assertions)]
-    let stderr_command = command.to_string();
     let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let stderr_lines_for_thread = Arc::clone(&stderr_lines);
     let stderr_handle = stderr.map(|stderr| {
@@ -767,8 +712,6 @@ pub fn run_worker_with_payload(
                         lines.remove(0);
                     }
                 }
-                #[cfg(debug_assertions)]
-                debug_log_worker_stderr(&stderr_command, None, &line);
                 emit_worker_stderr(&stderr_app, line);
             });
         })
@@ -783,8 +726,6 @@ pub fn run_worker_with_payload(
             Ok(envelope) => {
                 last_payload = envelope.payload.clone();
                 log_worker_event(app, command, &envelope);
-                #[cfg(debug_assertions)]
-                debug_log_worker_event(command, &envelope);
                 let _ = app.emit("pymss://worker-event", &envelope);
                 if envelope.event_type == "error" {
                     worker_error = Some(AppError::Worker(
@@ -799,8 +740,6 @@ pub fn run_worker_with_payload(
             }
             Err(err) => {
                 log_worker_parse_error(app, command, None, &err, &line);
-                #[cfg(debug_assertions)]
-                debug_log_worker_parse_error(command, None, &err, &line);
                 worker_error = Some(AppError::Worker(format!(
                     "Invalid worker event: {err}; raw={line}"
                 )));
@@ -907,14 +846,10 @@ pub fn spawn_worker_background(
     let stderr = child.stderr.take();
     let stderr_app = app.clone();
     let stderr_task_ids = registered_task_ids.clone();
-    #[cfg(debug_assertions)]
-    let stderr_command = command_name.clone();
     let stderr_handle = stderr.map(|stderr| {
         std::thread::spawn(move || {
             read_lossy_lines(stderr, |line| {
                 for stderr_task_id in &stderr_task_ids {
-                    #[cfg(debug_assertions)]
-                    debug_log_worker_stderr(&stderr_command, Some(stderr_task_id), &line);
                     emit_task_log(&stderr_app, stderr_task_id, "warning", line.clone());
                 }
             });
@@ -951,15 +886,11 @@ pub fn spawn_worker_background(
                             terminal_task_ids.insert(task_id.clone());
                         }
                     }
-                    #[cfg(debug_assertions)]
-                    debug_log_worker_event(&command_name, &envelope);
                     log_worker_event(&app, &command_name, &envelope);
                     let _ = app.emit("pymss://worker-event", &envelope);
                 }
                 Err(err) => {
                     log_worker_parse_error(&app, &command_name, Some(&task_id), &err, &line);
-                    #[cfg(debug_assertions)]
-                    debug_log_worker_parse_error(&command_name, Some(&task_id), &err, &line);
                     emit_task_error_to_all(
                         &app,
                         &registered_task_ids,

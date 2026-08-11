@@ -1,5 +1,6 @@
 use crate::error::{AppError, AppResult};
 use crate::storage;
+use crate::terminal;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -17,6 +18,7 @@ const REPORT_TAIL_BYTES: u64 = 96 * 1024;
 const REPORT_THROTTLE_MS: u64 = 5_000;
 
 static LOG_CAP_REACHED: AtomicBool = AtomicBool::new(false);
+static DEVELOPER_MODE: AtomicBool = AtomicBool::new(false);
 static LAST_REPORT_MS: AtomicU64 = AtomicU64::new(0);
 static LOG_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -30,7 +32,6 @@ pub struct DebugLogInfo {
     persistent_path: String,
     persistent_exists: bool,
     persistent_size_bytes: u64,
-    debug_build: bool,
     max_bytes: u64,
     persistent_max_bytes: u64,
     report_path: String,
@@ -70,6 +71,13 @@ pub fn diagnostic_report_path(app: &AppHandle) -> AppResult<PathBuf> {
 pub fn init_session_log(app: &AppHandle) -> AppResult<()> {
     storage::ensure_app_directories(app)?;
     LOG_CAP_REACHED.store(false, Ordering::Relaxed);
+    let settings = storage::read_app_store(app, "app-settings").unwrap_or_default();
+    set_developer_mode(
+        settings
+            .get("developerMode")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+    );
     let path = session_log_path(app)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -82,7 +90,7 @@ pub fn init_session_log(app: &AppHandle) -> AppResult<()> {
         "app.start",
         vec![
             ("version", env!("CARGO_PKG_VERSION").to_string()),
-            ("mode", build_mode().to_string()),
+            ("mode", app_mode().to_string()),
             ("target", option_env!("PYMSS_BUILD_TARGET").unwrap_or("dev").to_string()),
             ("variant", option_env!("PYMSS_BUILD_VARIANT").unwrap_or("development").to_string()),
         ],
@@ -126,11 +134,22 @@ pub fn append(app: &AppHandle, level: &str, event: &str, fields: Vec<(&str, Stri
         if let Ok(path) = persistent_log_path(app) {
             append_persistent_line(&path, &line);
         }
+        // Mirror while holding the same lock as the files so concurrent worker threads preserve
+        // an identical line order in every destination.
+        terminal::write(&line);
         line
     };
     if level.eq_ignore_ascii_case("ERROR") && should_refresh_report() {
         let _ = create_diagnostic_report_with_trigger(app, event, &line);
     }
+}
+
+pub fn set_developer_mode(enabled: bool) {
+    DEVELOPER_MODE.store(enabled, Ordering::Relaxed);
+}
+
+pub fn developer_mode_enabled() -> bool {
+    DEVELOPER_MODE.load(Ordering::Relaxed)
 }
 
 pub fn info(app: &AppHandle) -> AppResult<DebugLogInfo> {
@@ -148,7 +167,6 @@ pub fn info(app: &AppHandle) -> AppResult<DebugLogInfo> {
         persistent_path: persistent_path.to_string_lossy().to_string(),
         persistent_exists: persistent_meta.is_some(),
         persistent_size_bytes: persistent_meta.map(|value| value.len()).unwrap_or(0),
-        debug_build: cfg!(debug_assertions),
         max_bytes: MAX_LOG_BYTES,
         persistent_max_bytes: MAX_PERSISTENT_LOG_BYTES,
         report_path: report_path.to_string_lossy().to_string(),
@@ -311,7 +329,7 @@ Arch: {}\n\n\
 ## Recent Persistent Log\n\n```text\n{}\n```\n",
         timestamp(),
         trigger,
-        build_mode(),
+        app_mode(),
         env!("CARGO_PKG_VERSION"),
         option_env!("PYMSS_BUILD_TARGET").unwrap_or("dev"),
         option_env!("PYMSS_BUILD_VARIANT").unwrap_or("development"),
@@ -364,11 +382,11 @@ fn should_refresh_report() -> bool {
         .is_ok()
 }
 
-fn build_mode() -> &'static str {
-    if cfg!(debug_assertions) {
-        "debug"
+fn app_mode() -> &'static str {
+    if storage::is_development_executable() {
+        "development"
     } else {
-        "release"
+        "packaged"
     }
 }
 
