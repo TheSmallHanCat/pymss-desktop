@@ -28,6 +28,7 @@ pub struct BuildInfo {
     build_time: &'static str,
     target: &'static str,
     variant: &'static str,
+    update_supported: bool,
     official: bool,
 }
 
@@ -114,6 +115,7 @@ pub fn get_build_info() -> BuildInfo {
         build_time: option_env!("PYMSS_BUILD_TIME").unwrap_or(""),
         target: option_env!("PYMSS_BUILD_TARGET").unwrap_or("dev"),
         variant: option_env!("PYMSS_BUILD_VARIANT").unwrap_or("development"),
+        update_supported: option_env!("PYMSS_BUILD_UPDATE_SUPPORTED") == Some("true"),
         official: option_env!("PYMSS_BUILD_OFFICIAL") == Some("true"),
     }
 }

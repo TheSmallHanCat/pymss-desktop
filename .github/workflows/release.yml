@@ -91,8 +91,8 @@ jobs:
           else
             echo "RELEASE_PRERELEASE=${{ github.event_name == 'workflow_dispatch' && inputs.prerelease == true }}" >> "$GITHUB_ENV"
           fi
-      - name: Stage artifacts for Quark netdisk upload
-        if: ${{ env.QUARK_COOKIE != '' }}
+      - name: Stage artifacts for mirror uploads
+        if: ${{ env.QUARK_COOKIE != '' || env.HF_TOKEN != '' || env.MODELSCOPE_API_TOKEN != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -102,8 +102,7 @@ jobs:
           copied=0
           for f in artifacts/*; do
             [ -f "$f" ] || continue
-            # Hard-link to avoid doubling disk usage; the split step below may
-            # delete the artifacts/ entry, but the staged hard link keeps the data.
+            # Hard-link to preserve complete archives before oversized GitHub assets are split.
             ln -f "$f" "$staging/"
             copied=$((copied + 1))
           done
@@ -177,6 +176,14 @@ jobs:
           }
           Path("artifacts/latest.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
           PY
+      - name: Stage updater metadata for mirror uploads
+        if: ${{ needs.windows.result == 'success' && (env.QUARK_COOKIE != '' || env.HF_TOKEN != '' || env.MODELSCOPE_API_TOKEN != '') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="pms/${RELEASE_VERSION}"
+          ln -f artifacts/latest.json "$staging/latest.json"
+          ls -la "$staging"
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}

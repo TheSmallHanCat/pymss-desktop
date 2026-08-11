@@ -379,6 +379,7 @@ jobs:
           PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
           PYMSS_BUILD_TARGET: windows-x64
           PYMSS_BUILD_VARIANT: windows-x64-online
+          PYMSS_BUILD_UPDATE_SUPPORTED: 'true'
           PYMSS_BUILD_OFFICIAL: 'true'
         run: pnpm tauri build --no-bundle
       - name: Prepare Windows bundled tools
@@ -407,6 +408,7 @@ jobs:
           PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
           PYMSS_BUILD_TARGET: windows-x64
           PYMSS_BUILD_VARIANT: windows-x64-online
+          PYMSS_BUILD_UPDATE_SUPPORTED: 'true'
           PYMSS_BUILD_OFFICIAL: 'true'
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}

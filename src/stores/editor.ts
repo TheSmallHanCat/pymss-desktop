@@ -379,6 +379,7 @@ export const useEditorStore = defineStore('editor', () => {
   const lastError = ref<string | null>(null)
   const selectedTrackId = ref<string | null>(null)
   const pixelsPerSecond = ref(96)
+  const exportFormat = ref<EditorExportFormat>('wav')
   const projectSummaries = ref<EditorProjectSummary[]>([])
 
   const undoStack = ref<HistorySnapshot[]>([])
@@ -1114,7 +1115,7 @@ export const useEditorStore = defineStore('editor', () => {
     const normalized = typeof options === 'string'
       ? { format: options, audioParams: undefined }
       : (options || {})
-    const fmt = normalized.format || 'wav'
+    const fmt = normalized.format || exportFormat.value
     exporting.value = true
     lastError.value = null
     try {
@@ -1164,6 +1165,7 @@ export const useEditorStore = defineStore('editor', () => {
     lastError,
     projectSummaries,
     selectedTrackId,
+    exportFormat,
     selectedTrack,
     selectedSource,
     sourceMap,

@@ -13,6 +13,11 @@ type UpdateStorePayload = {
   lastAcceptedVersion?: string
 }
 
+type UpdateDownloadEvent =
+  | { event: 'Started'; data: { contentLength?: number | null } }
+  | { event: 'Progress'; data: { chunkLength?: number } }
+  | { event: 'Finished'; data?: null }
+
 export const useUpdateStore = defineStore('update', () => {
   const status = ref<UpdateStatus>('idle')
   const currentVersion = ref('')
@@ -26,10 +31,20 @@ export const useUpdateStore = defineStore('update', () => {
   const deferredVersion = ref('')
   const deferredAt = ref('')
   const lastAcceptedVersion = ref('')
+  const downloadDownloadedBytes = ref(0)
+  const downloadTotalBytes = ref(0)
+  const installErrorVisible = ref(false)
+  const installFailed = ref(false)
   const initialized = ref(false)
 
   const hasUpdate = computed(() => availableUpdate.value !== null)
   const isBusy = computed(() => ['checking', 'downloading', 'installing'].includes(status.value))
+  const isInstallingUpdate = computed(() => ['downloading', 'installing'].includes(status.value))
+  const isInstallOverlayVisible = computed(() => isInstallingUpdate.value || installErrorVisible.value)
+  const downloadProgressPercent = computed(() => {
+    if (downloadTotalBytes.value <= 0) return 0
+    return Math.min(100, Math.round((downloadDownloadedBytes.value / downloadTotalBytes.value) * 100))
+  })
   const hasDeferredUpdate = computed(() => Boolean(deferredVersion.value))
   const shouldShowDeferred = computed(() => Boolean(deferredVersion.value && deferredVersion.value !== lastAcceptedVersion.value))
 
@@ -88,10 +103,14 @@ export const useUpdateStore = defineStore('update', () => {
     releaseDate.value = ''
   }
 
+  function resetDownloadProgress() {
+    downloadDownloadedBytes.value = 0
+    downloadTotalBytes.value = 0
+  }
+
   async function checkForUpdates(manual = false) {
     const app = useAppStore()
-    const variant = app.buildInfoVariant || ''
-    if (!variant.includes('online')) {
+    if (!app.buildInfoUpdateSupported && !app.buildInfoVariant.includes('online')) {
       resetResult()
       status.value = 'idle'
       lastCheckResult.value = 'none'
@@ -101,6 +120,7 @@ export const useUpdateStore = defineStore('update', () => {
     }
     status.value = 'checking'
     error.value = ''
+    installFailed.value = false
     try {
       const update = await check()
       currentVersion.value = update?.currentVersion || app.buildInfoVersion || ''
@@ -136,20 +156,53 @@ export const useUpdateStore = defineStore('update', () => {
     const update = availableUpdate.value
     if (!update) return false
     status.value = 'downloading'
+    resetDownloadProgress()
+    error.value = ''
+    installErrorVisible.value = false
+    installFailed.value = false
     try {
-      await update.downloadAndInstall()
+      await update.downloadAndInstall((event: UpdateDownloadEvent) => {
+        if (event.event === 'Started') {
+          const total = Number(event.data.contentLength || 0)
+          downloadTotalBytes.value = Number.isFinite(total) && total > 0 ? total : 0
+          downloadDownloadedBytes.value = 0
+          return
+        }
+        if (event.event === 'Progress') {
+          const chunk = Number(event.data.chunkLength || 0)
+          if (Number.isFinite(chunk) && chunk > 0) {
+            downloadDownloadedBytes.value += chunk
+            if (downloadTotalBytes.value > 0) {
+              downloadDownloadedBytes.value = Math.min(downloadDownloadedBytes.value, downloadTotalBytes.value)
+            }
+          }
+          return
+        }
+        if (event.event === 'Finished') {
+          if (downloadTotalBytes.value > 0) downloadDownloadedBytes.value = downloadTotalBytes.value
+          status.value = 'installing'
+        }
+      })
       status.value = 'installing'
       lastAcceptedVersion.value = update.version
       deferredVersion.value = ''
       deferredAt.value = ''
+      installErrorVisible.value = false
+      installFailed.value = false
       await persistState()
       await relaunch()
       return true
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err)
       status.value = 'failed'
+      installErrorVisible.value = true
+      installFailed.value = true
       throw err
     }
+  }
+
+  function dismissInstallError() {
+    installErrorVisible.value = false
   }
 
   async function deferUntilNextLaunch() {
@@ -197,6 +250,11 @@ export const useUpdateStore = defineStore('update', () => {
     releaseDate,
     error,
     lastCheckedAt,
+    downloadDownloadedBytes,
+    downloadTotalBytes,
+    downloadProgressPercent,
+    installErrorVisible,
+    installFailed,
     availableUpdate,
     lastCheckResult,
     deferredVersion,
@@ -208,9 +266,12 @@ export const useUpdateStore = defineStore('update', () => {
     resolveDeferredVersion,
     hasUpdate,
     isBusy,
+    isInstallingUpdate,
+    isInstallOverlayVisible,
     initialize,
     checkForUpdates,
     downloadAndInstall,
+    dismissInstallError,
     deferUntilNextLaunch,
     clearDeferredUpdate,
     dismiss,

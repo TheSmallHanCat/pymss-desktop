@@ -78,6 +78,7 @@ type BuildInfo = {
   buildTime: string
   target: string
   variant: string
+  updateSupported?: boolean
   official: boolean
 }
 const activeSection = ref<SettingsSection>('appearance')
@@ -575,6 +576,7 @@ const aboutVersionItems = computed(() => [
 ])
 const updateStatusLabel = computed(() => {
   if (!updateSupported.value) return t('settings.updateUnsupported')
+  if (updates.status === 'failed' && updates.installFailed) return t('settings.updateInstallFailed')
   if (updates.shouldShowDeferred) return t('settings.updateDeferred')
   if (updates.status === 'checking') return t('settings.updateChecking')
   if (updates.status === 'downloading') return t('settings.updateDownloading')
@@ -585,9 +587,9 @@ const updateStatusLabel = computed(() => {
 })
 const updateBadgeTone = computed(() => {
   if (!updateSupported.value) return 'default'
+  if (updates.status === 'failed') return 'error'
   if (updates.shouldShowDeferred) return 'warning'
   if (updates.status === 'available') return 'success'
-  if (updates.status === 'failed') return 'error'
   if (updates.status === 'checking' || updates.status === 'downloading' || updates.status === 'installing') return 'warning'
   return 'default'
 })
@@ -598,8 +600,9 @@ const updateBadgeType = computed(() => {
   return 'default'
 })
 const updateSupported = computed(() => {
-  const variant = buildInfo.value?.variant || app.buildInfoVariant || ''
-  return variant.includes('online')
+  return buildInfo.value?.updateSupported === true
+    || app.buildInfoUpdateSupported
+    || String(buildInfo.value?.variant || app.buildInfoVariant || '').includes('online')
 })
 const updateLastCheckedLabel = computed(() => {
   return formatDateTime(updates.lastCheckedAt) || t('settings.updateNeverChecked')
@@ -624,6 +627,7 @@ async function loadBuildInfo() {
     buildInfo.value = await invoke<BuildInfo>('get_build_info')
     app.buildInfoVersion = buildInfo.value?.version || ''
     app.buildInfoVariant = buildInfo.value?.variant || ''
+    app.buildInfoUpdateSupported = buildInfo.value?.updateSupported === true
   } catch {
     buildInfo.value = null
   }
@@ -1019,7 +1023,7 @@ onMounted(async () => {
                   {{ t('settings.installUpdate') }}
                 </n-button>
                 <n-button secondary :disabled="!updateSupported || !updates.hasUpdate || updates.isBusy" @click="deferUpdate">
-                  {{ t('settings.updateNextLaunch') }}
+                  {{ t('settings.updateRemindLater') }}
                 </n-button>
               </div>
             </div>

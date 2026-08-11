@@ -438,8 +438,8 @@ function draftToGraph(draft: WorkflowDefinitionDraft): WorkflowGraphDefinition {
   draft.steps.forEach((step) => {
     step.stems.forEach((stem) => {
       const ref = `${step.id}.${stem}`
-      if (consumedValueSet.has(ref)) return
-      const outputDir = step.save?.[stem]?.trim() || safeWorkflowStemDir(stem)
+      const outputDir = step.save?.[stem]?.trim()
+      if (!outputDir) return
       saveOutputs[ref] = outputDir
       edges.push({
         id: createWorkflowGraphEdgeId('edge_save'),
@@ -491,7 +491,9 @@ function graphToDraft(definition: WorkflowGraphDefinition): WorkflowDefinitionDr
       model: data.model,
       input: graphInputToDraftInput(definition, node.id),
       stems: [...data.stems],
-      save: Object.fromEntries(data.stems.map(stem => [stem, saveOutputs[`${node.id}.${stem}`] || safeWorkflowStemDir(stem)])),
+      save: Object.fromEntries(data.stems
+        .map(stem => [stem, saveOutputs[`${node.id}.${stem}`]] as const)
+        .filter((entry): entry is readonly [string, string] => Boolean(entry[1]))),
       overlapSize: data.overlapSize,
       modelKind: data.modelKind,
       customModelType: data.customModelType,

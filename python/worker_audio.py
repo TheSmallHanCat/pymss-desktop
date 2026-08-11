@@ -237,6 +237,8 @@ def cmd_export_editor_mix(payload: dict[str, Any]) -> int:
         import numpy as np  # type: ignore
         import soundfile as sf  # type: ignore
 
+        if export_dir.exists() and not export_dir.is_dir():
+            return emit_error("EDITOR_EXPORT_DIR_INVALID", "Export path is not a directory")
         export_dir.mkdir(parents=True, exist_ok=True)
 
         sources: dict[str, dict[str, Any]] = {}
