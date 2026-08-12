@@ -318,10 +318,6 @@ function payload(): SimpleWorkflowSavePayload {
               :placeholder="t('workflows.stepInputPlaceholder')"
             />
           </label>
-          <label>
-            <span>{{ t('workflows.stepOverlap') }}</span>
-            <n-input-number v-model:value="step.overlapSize" :min="0" :step="1" clearable />
-          </label>
           <label class="simple-step__stems">
             <span>{{ t('workflows.saveStems') }}</span>
             <n-select

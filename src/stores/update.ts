@@ -29,6 +29,10 @@ type UpdateDownloadEvent =
   | { event: 'Progress'; data: { chunkLength?: number } }
   | { event: 'Finished'; data?: null }
 
+function isPrereleaseVersion(version: string) {
+  return /^\d+\.\d+\.\d+-/.test(version.trim())
+}
+
 export const useUpdateStore = defineStore('update', () => {
   const status = ref<UpdateStatus>('idle')
   const currentVersion = ref('')
@@ -59,7 +63,16 @@ export const useUpdateStore = defineStore('update', () => {
     return Math.min(100, Math.round((downloadDownloadedBytes.value / downloadTotalBytes.value) * 100))
   })
   const hasDeferredUpdate = computed(() => Boolean(deferredVersion.value))
-  const shouldShowDeferred = computed(() => Boolean(deferredVersion.value && deferredVersion.value !== lastAcceptedVersion.value))
+  const updateIsPrerelease = computed(() => {
+    const raw = availableUpdate.value?.rawJson || {}
+    return raw.prerelease === true || isPrereleaseVersion(availableUpdate.value?.version || latestVersion.value)
+  })
+  const shouldShowDeferred = computed(() => Boolean(
+    availableUpdate.value
+    && deferredVersion.value
+    && deferredVersion.value === availableUpdate.value.version
+    && deferredVersion.value !== lastAcceptedVersion.value,
+  ))
 
   async function persistState() {
     const payload: UpdateStorePayload = {
@@ -129,7 +142,7 @@ export const useUpdateStore = defineStore('update', () => {
     if (!updateCheckInFlight) {
       updateCheckInFlight = (async () => {
         try {
-          if (!app.buildInfoUpdateSupported && !app.buildInfoVariant.includes('online')) {
+          if (!app.buildInfoUpdateSupported) {
             resetResult()
             status.value = 'idle'
             lastCheckResult.value = 'none'
@@ -148,7 +161,7 @@ export const useUpdateStore = defineStore('update', () => {
           lastCheckedAt.value = new Date().toISOString()
           if (!update) {
             resetResult()
-            status.value = shouldShowDeferred.value ? 'ready' : 'idle'
+            status.value = 'idle'
             lastCheckResult.value = 'none'
             return null
           }
@@ -166,7 +179,7 @@ export const useUpdateStore = defineStore('update', () => {
           return update
         } catch (err) {
           error.value = err instanceof Error ? err.message : String(err)
-          status.value = shouldShowDeferred.value ? 'ready' : 'failed'
+          status.value = 'failed'
           lastCheckResult.value = 'failed'
           throw err
         } finally {
@@ -182,7 +195,7 @@ export const useUpdateStore = defineStore('update', () => {
 
   async function downloadAndInstall() {
     const update = availableUpdate.value
-    if (!update) return false
+    if (!update) throw new Error('Update package is not available. Check for updates again.')
     status.value = 'downloading'
     resetDownloadProgress()
     error.value = ''
@@ -288,6 +301,7 @@ export const useUpdateStore = defineStore('update', () => {
     deferredVersion,
     deferredAt,
     lastAcceptedVersion,
+    updateIsPrerelease,
     hasDeferredUpdate,
     shouldShowDeferred,
     hasPendingDeferredVersion,

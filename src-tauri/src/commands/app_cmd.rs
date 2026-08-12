@@ -45,6 +45,13 @@ pub struct DebugUpdateCheckResult {
     raw_json: Value,
 }
 
+fn is_portable_distribution() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.join("pymss-studio.portable")))
+        .is_some_and(|marker| marker.is_file())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DebugRuntimeFileInfo {
@@ -128,7 +135,8 @@ pub fn get_build_info() -> BuildInfo {
         build_time: option_env!("PYMSS_BUILD_TIME").unwrap_or(""),
         target: option_env!("PYMSS_BUILD_TARGET").unwrap_or("dev"),
         variant: option_env!("PYMSS_BUILD_VARIANT").unwrap_or("development"),
-        update_supported: option_env!("PYMSS_BUILD_UPDATE_SUPPORTED") == Some("true"),
+        update_supported: option_env!("PYMSS_BUILD_UPDATE_SUPPORTED") == Some("true")
+            && !is_portable_distribution(),
         official: option_env!("PYMSS_BUILD_OFFICIAL") == Some("true"),
     }
 }
@@ -2405,6 +2413,48 @@ pub struct TrashResult {
     pub failed: Vec<String>,
 }
 
+fn is_ignored_empty_dir_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == ".DS_Store")
+}
+
+fn is_effectively_empty_dir(path: &Path) -> bool {
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let child = entry.path();
+        if child.is_dir() {
+            if !is_effectively_empty_dir(&child) {
+                return false;
+            }
+            continue;
+        }
+        if !child.is_file() || !is_ignored_empty_dir_file(&child) {
+            return false;
+        }
+    }
+    true
+}
+
+fn normalize_trash_empty_dirs(paths: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut dirs: Vec<String> = paths
+        .into_iter()
+        .filter(|path| !path.trim().is_empty())
+        .filter(|path| seen.insert(path.to_lowercase()))
+        .collect();
+    dirs.sort_by_key(|path| {
+        std::cmp::Reverse(Path::new(path).components().count())
+    });
+    dirs
+}
+
 #[tauri::command]
 pub async fn move_paths_to_trash(paths: Vec<String>, empty_dirs: Option<Vec<String>>) -> AppResult<TrashResult> {
     let mut trashed = Vec::new();
@@ -2421,7 +2471,7 @@ pub async fn move_paths_to_trash(paths: Vec<String>, empty_dirs: Option<Vec<Stri
             Err(_) => failed.push(path),
         }
     }
-    for path in empty_dirs.unwrap_or_default() {
+    for path in normalize_trash_empty_dirs(empty_dirs.unwrap_or_default()) {
         let target = Path::new(&path);
         if !target.exists() {
             trashed.push(path);
@@ -2430,11 +2480,7 @@ pub async fn move_paths_to_trash(paths: Vec<String>, empty_dirs: Option<Vec<Stri
         if !target.is_dir() {
             continue;
         }
-        let is_empty = match std::fs::read_dir(target) {
-            Ok(mut entries) => entries.next().is_none(),
-            Err(_) => false,
-        };
-        if !is_empty {
+        if !is_effectively_empty_dir(target) {
             continue;
         }
         match trash::delete(target) {
@@ -2443,4 +2489,43 @@ pub async fn move_paths_to_trash(paths: Vec<String>, empty_dirs: Option<Vec<Stri
         }
     }
     Ok(TrashResult { trashed, failed })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("pymss-studio-{name}-{unique}"))
+    }
+
+    #[test]
+    fn effectively_empty_dir_allows_ds_store_and_empty_children() {
+        let root = temp_test_dir("empty-dir-ds-store");
+        let child = root.join("album").join("track");
+        fs::create_dir_all(&child).expect("create nested test dirs");
+        fs::write(root.join(".DS_Store"), b"finder metadata").expect("write ds store");
+        fs::write(child.join(".DS_Store"), b"finder metadata").expect("write nested ds store");
+
+        assert!(is_effectively_empty_dir(&root));
+
+        fs::remove_dir_all(&root).expect("remove test dir");
+    }
+
+    #[test]
+    fn effectively_empty_dir_rejects_user_files() {
+        let root = temp_test_dir("empty-dir-user-file");
+        fs::create_dir_all(&root).expect("create test dir");
+        fs::write(root.join("vocals.wav"), b"audio").expect("write user file");
+
+        assert!(!is_effectively_empty_dir(&root));
+
+        fs::remove_dir_all(&root).expect("remove test dir");
+    }
 }

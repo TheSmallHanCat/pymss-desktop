@@ -594,15 +594,14 @@ const updateBadgeTone = computed(() => {
   return 'default'
 })
 const updateBadgeType = computed(() => {
+  if (updates.updateIsPrerelease) return 'warning'
   if (updateBadgeTone.value === 'success') return 'success'
   if (updateBadgeTone.value === 'error') return 'error'
   if (updateBadgeTone.value === 'warning') return 'warning'
   return 'default'
 })
 const updateSupported = computed(() => {
-  return buildInfo.value?.updateSupported === true
-    || app.buildInfoUpdateSupported
-    || String(buildInfo.value?.variant || app.buildInfoVariant || '').includes('online')
+  return buildInfo.value?.updateSupported === true || app.buildInfoUpdateSupported
 })
 const updateLastCheckedLabel = computed(() => {
   return formatDateTime(updates.lastCheckedAt) || t('settings.updateNeverChecked')
@@ -650,7 +649,9 @@ async function installUpdate() {
   if (updates.shouldShowDeferred && updates.latestVersion) {
     const confirmed = await confirmRuntimeAction(
       t('settings.updateInstallTitle'),
-      t('settings.updateInstallDeferredContent', { version: updates.latestVersion }),
+      updates.updateIsPrerelease
+        ? t('settings.updateInstallPrereleaseDeferredContent', { version: updates.latestVersion })
+        : t('settings.updateInstallDeferredContent', { version: updates.latestVersion }),
       t('settings.updateInstallConfirm'),
     )
     if (!confirmed) return
@@ -668,7 +669,9 @@ async function installUpdate() {
   }
   const confirmed = await confirmRuntimeAction(
     t('settings.updateInstallTitle'),
-    t('settings.updateInstallContent', { version: updates.latestVersion || appVersion.value }),
+    updates.updateIsPrerelease
+      ? t('settings.updateInstallPrereleaseContent', { version: updates.latestVersion || appVersion.value })
+      : t('settings.updateInstallContent', { version: updates.latestVersion || appVersion.value }),
     t('settings.updateInstallConfirm'),
   )
   if (!confirmed) return
@@ -1000,7 +1003,10 @@ onMounted(async () => {
                   <strong>{{ updateStatusLabel }}</strong>
                   <p>{{ updateSupported ? t('settings.updateStatusHint') : t('settings.updateUnsupportedHint') }}</p>
                 </div>
-                <n-tag :type="updateBadgeType" size="small">{{ updates.latestVersion || appVersion }}</n-tag>
+                <div class="update-panel__tags">
+                  <n-tag :type="updateBadgeType" size="small">{{ updates.latestVersion || appVersion }}</n-tag>
+                  <n-tag v-if="updates.updateIsPrerelease" type="warning" size="small">{{ t('settings.updatePrereleaseBadge') }}</n-tag>
+                </div>
               </div>
               <div class="update-panel__meta">
                 <span>{{ t('settings.updateCurrentVersion', { version: appVersion }) }}</span>
@@ -2189,6 +2195,14 @@ onMounted(async () => {
   color: var(--on-surface-muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.update-panel__tags {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .update-panel__meta {

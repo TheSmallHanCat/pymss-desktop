@@ -8,7 +8,7 @@ import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
 import { useAppStore } from '@/stores/app'
 import type { WorkflowEntry } from '@/stores/workflow'
 import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, stripWorkflowUi, workflowValidationErrorMessage, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
-import { getWorkflowDefinitionDefaults, readWorkflowGraphDefinition } from '@/utils/workflowGraph'
+import { getWorkflowDefinitionDefaults, readWorkflowGraphDefinition, serializeWorkflowGraphDefinition } from '@/utils/workflowGraph'
 
 export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
 
@@ -268,6 +268,22 @@ function samePath(a?: string, b?: string) {
   const left = normalizeOutputPath(a || '').replace(/[\\/]$/, '')
   const right = normalizeOutputPath(b || '').replace(/[\\/]$/, '')
   return Boolean(left && right && left.toLowerCase() === right.toLowerCase())
+}
+
+function cleanupDirChain(path: string, stopAt?: string) {
+  const dirs: string[] = []
+  const seen = new Set<string>()
+  const stop = stopAt?.trim()
+  let current = normalizeOutputPath(path).replace(/[\\/]$/, '')
+  while (current && !(stop && samePath(current, stop))) {
+    const key = current.toLowerCase()
+    if (seen.has(key)) break
+    dirs.push(current)
+    seen.add(key)
+    if (!stop) break
+    current = parentDir(current)
+  }
+  return dirs
 }
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -957,7 +973,7 @@ export const useTaskStore = defineStore('task', () => {
         ? false
         : normalize.value
     return {
-      ...stripWorkflowUi(normalizedDefinition as unknown as Record<string, unknown>),
+      ...stripWorkflowUi(withWorkflowModelParams(normalizedDefinition as unknown as Record<string, unknown>)),
       defaults: {
         ...defaults,
         output_format: outputFormat,
@@ -1472,15 +1488,19 @@ export const useTaskStore = defineStore('task', () => {
     if (task.runConfig?.outputLayout !== 'folders') return []
     const jobOutput = task.jobOutput?.trim()
     const output = task.output?.trim()
-    if (output && !samePath(output, jobOutput)) return [output]
+    if (output && !samePath(output, jobOutput)) return cleanupDirChain(output, jobOutput)
 
     const parents = task.outputs
       .map((item) => parentDir(item.path || ''))
       .filter(Boolean)
-    const uniqueParents = [...new Set(parents)]
-    const parent = uniqueParents.length === 1 ? uniqueParents[0] : ''
-    if (!parent || samePath(parent, jobOutput)) return []
-    return [parent]
+    const dirs = parents.flatMap(parent => cleanupDirChain(parent, jobOutput))
+    const seen = new Set<string>()
+    return dirs.filter((dir) => {
+      const key = dir.toLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
   }
 
   function primaryRevealPath(task: SeparationTask) {
@@ -1746,6 +1766,88 @@ export const useTaskStore = defineStore('task', () => {
     if (standardizeOverride !== null) inferenceParams.standardize = standardizeOverride
     if (normalizeOverride !== null) inferenceParams.normalize = normalizeOverride
     return inferenceParams
+  }
+
+  function modelInferenceParamsFromState(modelName: string, modelType?: string | null): Record<string, unknown> {
+    const modelStore = useModelStore()
+    if (modelStore.selectedModel === modelName) return buildInferenceParams(modelType)
+    const entry = modelStore.models.find(item => item.name === modelName) || null
+    const defaults = modelStore.hasKnownModelInferenceBase(modelName)
+      ? (modelStore.getModelBaseInferenceDefaults(modelName) || {})
+      : (entry?.defaultInferenceParams || {})
+    const overrides = modelStore.getModelInferenceOverrides(modelName) || {}
+    const saved = getSavedModelState(modelName) || {}
+    const source = { ...saved, ...overrides }
+    const params: Record<string, unknown> = {}
+    const vrModel = isVrModelType(modelType)
+    const apolloModel = isApolloModelType(modelType)
+
+    const numberParam = (key: keyof ModelDefaultInferenceParams, options?: { zeroMeansUnset?: boolean }) => {
+      const value = source[key]
+      if (typeof value !== 'number' || !Number.isFinite(value)) return
+      if (options?.zeroMeansUnset && value <= 0) return
+      if (defaults[key] === value) return
+      params[key] = value
+    }
+    const booleanParam = (key: keyof ModelDefaultInferenceParams) => {
+      const value = source[key]
+      if (typeof value !== 'boolean') return
+      if (defaults[key] === value) return
+      if (!value && defaults[key] === undefined) return
+      params[key] = value
+    }
+
+    numberParam('batch_size', { zeroMeansUnset: true })
+    if (vrModel) {
+      numberParam('window_size', { zeroMeansUnset: true })
+      numberParam('aggression')
+      numberParam('post_process_threshold')
+      booleanParam('enable_post_process')
+      booleanParam('high_end_process')
+      booleanParam('normalize')
+      return params
+    }
+
+    numberParam('overlap_size', { zeroMeansUnset: true })
+    if (!apolloModel) numberParam('num_overlap', { zeroMeansUnset: true })
+    numberParam('chunk_size', { zeroMeansUnset: true })
+    booleanParam('standardize')
+    booleanParam('normalize')
+    return params
+  }
+
+  function withWorkflowModelParams(definition: Record<string, unknown>) {
+    const modelStore = useModelStore()
+    const graphDefinition = readWorkflowGraphDefinition(definition)
+    return serializeWorkflowGraphDefinition({
+      ...graphDefinition,
+      graph: {
+        ...graphDefinition.graph,
+        nodes: graphDefinition.graph.nodes.map((node) => {
+          if (node.type !== 'separate') return node
+          const data = node.data || {}
+          const existingParams = data.inferenceParams && typeof data.inferenceParams === 'object'
+            ? data.inferenceParams as Record<string, unknown>
+            : {}
+          if (Object.keys(existingParams).length) return node
+          const modelName = String(data.model || '').trim()
+          if (!modelName) return node
+          const entry = modelStore.models.find(item => item.name === modelName) || null
+          const modelType = typeof data.modelKind === 'string' && data.modelKind.trim()
+            ? data.modelKind
+            : entry?.modelType || null
+          const inferenceParams = modelInferenceParamsFromState(modelName, modelType)
+          if (!Object.keys(inferenceParams).length) return node
+          return {
+            ...node,
+            data: {
+              ...data,
+              inferenceParams,
+            },
+          }
+        }),
+      },
+    })
   }
 
 

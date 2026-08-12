@@ -1304,7 +1304,6 @@ function buildEnsembleWorkflow(): WorkflowEntry {
       data: {
         model: modelName,
         stems: [stem],
-        overlapSize: null,
         modelKind: null,
         customModelType: null,
         inferenceParams: buildEnsembleInferenceParams(entry?.modelType),
@@ -1412,7 +1411,7 @@ async function start() {
   }
   try {
     const result = runMode.value === 'workflow' && selectedWorkflow.value
-      ? await task.startWorkflowInference(selectedWorkflow.value, { outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value, outputNaming: outputNamingConfig.value })
+      ? await task.startWorkflowInference(selectedWorkflow.value, { outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value })
       : ensembleEnabled.value
         ? await task.startWorkflowInference(buildEnsembleWorkflow(), { outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value, outputNaming: outputNamingConfig.value })
         : await task.startSeparation({ outputDir: normalizedOutputDir.value, outputLayout: effectiveOutputLayout.value, outputNaming: outputNamingConfig.value })
@@ -1533,16 +1532,22 @@ async function retryCurrentTask() {
               <strong>{{ t('separate.input') }}</strong>
               <small>{{ t('separate.candidateCount', { count: inputFiles.length }) }}</small>
             </div>
-            <n-button
-              v-if="inputFiles.length"
-              text
-              size="tiny"
-              class="rail-card__clear"
-              :disabled="isRunModeLocked"
-              @click="task.clearInputFiles()"
-            >
-              {{ t('separate.clearAll') }}
-            </n-button>
+            <div class="rail-card__actions rail-card__actions--input">
+              <label class="input-retention-toggle input-retention-toggle--head">
+                <span>{{ t('separate.clearInputAfterSubmit') }}</span>
+                <n-switch v-model:value="settings.clearInputAfterSubmit" size="small" :disabled="isRunModeLocked" />
+              </label>
+              <n-button
+                v-if="inputFiles.length"
+                text
+                size="tiny"
+                class="rail-card__clear"
+                :disabled="isRunModeLocked"
+                @click="task.clearInputFiles()"
+              >
+                {{ t('separate.clearAll') }}
+              </n-button>
+            </div>
           </div>
           <div class="rail-card__body">
             <div class="picker-buttons">
@@ -1591,10 +1596,6 @@ async function retryCurrentTask() {
                 <strong>{{ isDragging ? t('separate.dropHere') : t('separate.candidateEmpty') }}</strong>
               </div>
             </div>
-            <label class="input-retention-toggle">
-              <n-switch v-model:value="settings.clearInputAfterSubmit" size="small" :disabled="isRunModeLocked" />
-              <span>{{ t('separate.clearInputAfterSubmit') }}</span>
-            </label>
           </div>
         </section>
 
@@ -1649,7 +1650,7 @@ async function retryCurrentTask() {
               </div>
             </div>
 
-            <div class="ofield naming-field">
+            <div v-if="runMode === 'model'" class="ofield naming-field">
               <span class="ofield__label">{{ t('separate.namingRule') }}</span>
               <button type="button" class="naming-summary" :disabled="isRunModeLocked" @click="showNamingModal = true">
                 <span>{{ outputNamingSummary }}</span>
@@ -2505,6 +2506,9 @@ async function retryCurrentTask() {
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rail-card__label small {
@@ -2513,6 +2517,21 @@ async function retryCurrentTask() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.rail-card__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rail-card__actions--input {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-left: auto;
+  justify-content: flex-end;
 }
 
 .rail-card__clear {
@@ -2570,6 +2589,21 @@ async function retryCurrentTask() {
   gap: 8px;
   color: var(--on-surface-muted);
   font-size: 12px;
+}
+
+.input-retention-toggle--head {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  min-width: 0;
+  gap: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.input-retention-toggle--head span {
+  min-width: 0;
+  line-height: 1.25;
+  text-align: right;
 }
 
 /* dropzone / file list */

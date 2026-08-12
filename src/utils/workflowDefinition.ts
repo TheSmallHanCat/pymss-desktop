@@ -41,9 +41,9 @@ export type WorkflowStepDraft = {
   id: string
   model: string
   input: string
+  inferenceParams: Record<string, unknown>
   stems: string[]
   save: Record<string, string>
-  overlapSize: number | null
   modelKind: string | null
   customModelType: string | null
   // Round-trip carrier for comfy-mss fields that pymss-studio does not manage
@@ -107,19 +107,13 @@ function clone<T>(value: T): T {
 }
 
 function readSeparateNodeData(node: WorkflowGraphNode) {
-  const inferenceParams = isRecord(node.data.inferenceParams) ? node.data.inferenceParams : {}
-  const overlapSize = typeof node.data.overlapSize === 'number' && Number.isFinite(node.data.overlapSize)
-    ? node.data.overlapSize
-    : (typeof inferenceParams.overlap_size === 'number' && Number.isFinite(inferenceParams.overlap_size)
-      ? Number(inferenceParams.overlap_size)
-      : null)
   return {
     model: String(node.data.model || ''),
     stems: Array.isArray(node.data.stems)
       ? node.data.stems.map(item => String(item || '').trim()).filter(Boolean)
       : [],
-    overlapSize,
     collapsed: Boolean(node.data.collapsed),
+    inferenceParams: isRecord(node.data.inferenceParams) ? clone(node.data.inferenceParams) : {},
     modelKind: typeof node.data.modelKind === 'string' && node.data.modelKind.trim() ? String(node.data.modelKind).trim() : null,
     customModelType: typeof node.data.customModelType === 'string' && node.data.customModelType.trim()
       ? String(node.data.customModelType).trim()
@@ -402,8 +396,8 @@ function draftToGraph(draft: WorkflowDefinitionDraft): WorkflowGraphDefinition {
       data: {
         model: step.model,
         stems: [...step.stems],
-        overlapSize: step.overlapSize,
         collapsed: (ui.collapsedStepIds || []).includes(step.id),
+        inferenceParams: clone(step.inferenceParams || {}),
         modelKind: step.modelKind,
         customModelType: step.customModelType,
         ...(step.comfyMeta && isRecord(step.comfyMeta) ? { comfyMeta: clone(step.comfyMeta) } : {}),
@@ -504,6 +498,7 @@ function graphToDraft(definition: WorkflowGraphDefinition): WorkflowDefinitionDr
       id: node.id,
       model: data.model,
       input: graphInputToDraftInput(definition, node.id),
+      inferenceParams: data.inferenceParams,
       stems: [...data.stems],
       save: Object.fromEntries(data.stems
         .map((stem) => {
@@ -512,7 +507,6 @@ function graphToDraft(definition: WorkflowGraphDefinition): WorkflowDefinitionDr
           return [stem, outputDir] as const
         })
         .filter((entry): entry is readonly [string, string] => Boolean(entry[1]))),
-      overlapSize: data.overlapSize,
       modelKind: data.modelKind,
       customModelType: data.customModelType,
       ...(data.comfyMeta ? { comfyMeta: data.comfyMeta } : {}),
@@ -598,9 +592,9 @@ export function createStepDraft(index = 0): WorkflowStepDraft {
     id: createWorkflowStepId(),
     model: '',
     input: index ? '' : 'input',
+    inferenceParams: {},
     stems: [],
     save: {},
-    overlapSize: null,
     modelKind: null,
     customModelType: null,
   }

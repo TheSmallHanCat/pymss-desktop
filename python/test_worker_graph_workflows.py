@@ -312,6 +312,18 @@ class PortRuleTests(unittest.TestCase):
         self.assertFalse(gw._target_port_is_valid(ensemble, "input:3"))
 
 
+class InferenceParamTests(unittest.TestCase):
+    def test_node_inference_params_keep_num_overlap(self):
+        params = gw._inference_params_from_node_data({
+            "batch_size": 2,
+            "overlap_size": "Default",
+            "num_overlap": 8,
+            "chunk_size": 352800,
+        })
+
+        self.assertEqual(params, {"batch_size": 2, "num_overlap": 8, "chunk_size": 352800})
+
+
 class DispatchTests(unittest.TestCase):
     """Which engine a workflow runs on.
 

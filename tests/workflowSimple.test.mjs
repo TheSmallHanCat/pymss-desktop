@@ -36,7 +36,6 @@ test('round-trips a linear separation graph through simple mode', () => {
       input: 'input',
       stems: ['vocals', 'instrument'],
       save: { vocals: 'vocals', instrument: 'instrument' },
-      overlapSize: 4,
       modelKind: null,
       customModelType: null,
     }],
@@ -110,7 +109,7 @@ test('rejects a separation node with no input edge', () => {
     defaultNormalize: false,
     steps: [{
       id: 'step_a', model: 'model.ckpt', input: 'input', stems: ['vocals'],
-      save: { vocals: 'vocals' }, overlapSize: null, modelKind: null, customModelType: null,
+      save: { vocals: 'vocals' }, modelKind: null, customModelType: null,
     }],
     utilityNodes: [], saveTargets: [],
     ui: { viewport: { x: 0, y: 0, k: 1 }, nodes: {}, notes: [], collapsedStepIds: [] },
@@ -129,7 +128,7 @@ test('rejects duplicate save edges', () => {
     defaultNormalize: false,
     steps: [{
       id: 'step_a', model: 'model.ckpt', input: 'input', stems: ['vocals'],
-      save: { vocals: 'vocals' }, overlapSize: null, modelKind: null, customModelType: null,
+      save: { vocals: 'vocals' }, modelKind: null, customModelType: null,
     }],
     utilityNodes: [], saveTargets: [],
     ui: { viewport: { x: 0, y: 0, k: 1 }, nodes: {}, notes: [], collapsedStepIds: [] },
@@ -150,11 +149,11 @@ test('round-trips representable fan-out without changing inputs', () => {
     steps: [
       {
         id: 'step_a', model: 'model-a.ckpt', input: 'input', stems: ['vocals'],
-        save: { vocals: 'vocals' }, overlapSize: null, modelKind: null, customModelType: null,
+        save: { vocals: 'vocals' }, modelKind: null, customModelType: null,
       },
       {
         id: 'step_b', model: 'model-b.ckpt', input: 'input', stems: ['instrument'],
-        save: { instrument: 'instrument' }, overlapSize: null, modelKind: null, customModelType: null,
+        save: { instrument: 'instrument' }, modelKind: null, customModelType: null,
       },
     ],
     utilityNodes: [], saveTargets: [],
@@ -180,11 +179,11 @@ test('keeps consumed stems available and saves only selected outputs', () => {
     steps: [
       {
         id: 'step_a', model: 'model-a.ckpt', input: 'input', stems: ['vocals', 'other'],
-        save: { vocals: 'vocals' }, overlapSize: null, modelKind: null, customModelType: null,
+        save: { vocals: 'vocals' }, modelKind: null, customModelType: null,
       },
       {
         id: 'step_b', model: 'model-b.ckpt', input: 'step_a.other', stems: ['Vocal'],
-        save: { Vocal: 'Vocal' }, overlapSize: null, modelKind: null, customModelType: null,
+        save: { Vocal: 'Vocal' }, modelKind: null, customModelType: null,
       },
     ],
     utilityNodes: [], saveTargets: [],
@@ -241,7 +240,7 @@ test('preserves workflow defaults not managed by simple mode', () => {
     defaultNormalize: false,
     steps: [{
       id: 'step_a', model: 'model.ckpt', input: 'input', stems: ['vocals'],
-      save: { vocals: 'vocals' }, overlapSize: null, modelKind: null, customModelType: null,
+      save: { vocals: 'vocals' }, modelKind: null, customModelType: null,
     }],
     utilityNodes: [], saveTargets: [],
     ui: { viewport: { x: 0, y: 0, k: 1 }, nodes: {}, notes: [], collapsedStepIds: [] },

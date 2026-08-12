@@ -207,6 +207,70 @@ test('an unknown model still imports', () => {
   assert.equal(hydrateWorkflowDefinition(result.definition).steps[0].model, 'never_seen.ckpt')
 })
 
+test('imports a Comfy-MSS params node as an editable workflow node', () => {
+  const result = importComfyMssWorkflow({
+    nodes: [
+      { id: 1, type: 'pymss_load_audio', outputs: [{ name: 'audio', type: 'AUDIO', links: [2] }] },
+      {
+        id: 2,
+        type: 'pymss_mss_params',
+        pos: [120, 260],
+        widgets_values: [2, '1024', '4096', true, true, false],
+        outputs: [{ name: 'mss_params', type: 'PYMSS_MSS_PARAMS', links: [1] }],
+      },
+      {
+        id: 3,
+        type: 'pymss_mss_separate',
+        widgets_values: ['m.ckpt', 'auto', true, 'modelscope', '0', false],
+        inputs: [
+          { name: 'audio', type: 'AUDIO', link: 2 },
+          { name: 'params', type: 'PYMSS_MSS_PARAMS', link: 1 },
+        ],
+        outputs: [{ name: 'Vocals (Audio)', type: 'AUDIO' }],
+      },
+    ],
+    links: [
+      [1, 2, 0, 3, 1, 'PYMSS_MSS_PARAMS'],
+      [2, 1, 0, 3, 0, 'AUDIO'],
+    ],
+  })
+  const draft = hydrateWorkflowDefinition(result.definition)
+  assert.equal(draft.steps[0].inferenceParams.batch_size, 2)
+  assert.equal(draft.steps[0].inferenceParams.overlap_size, '1024')
+  assert.equal(draft.steps[0].inferenceParams.enable_tta, true)
+})
+
+test('imports zero-valued VR params without falling back to defaults', () => {
+  const result = importComfyMssWorkflow({
+    nodes: [
+      { id: 1, type: 'pymss_load_audio', outputs: [{ name: 'audio', type: 'AUDIO', links: [2] }] },
+      {
+        id: 2,
+        type: 'pymss_vr_params',
+        widgets_values: [1, 512, 0, false, false, false, 0, false],
+        outputs: [{ name: 'vr_params', type: 'PYMSS_VR_PARAMS', links: [1] }],
+      },
+      {
+        id: 3,
+        type: 'pymss_vr_separate',
+        widgets_values: ['vr_model.pth', 'auto', true, 'modelscope', '0', false],
+        inputs: [
+          { name: 'audio', type: 'AUDIO', link: 2 },
+          { name: 'params', type: 'PYMSS_VR_PARAMS', link: 1 },
+        ],
+        outputs: [{ name: 'Vocals (Audio)', type: 'AUDIO' }],
+      },
+    ],
+    links: [
+      [1, 2, 0, 3, 1, 'PYMSS_VR_PARAMS'],
+      [2, 1, 0, 3, 0, 'AUDIO'],
+    ],
+  })
+  const draft = hydrateWorkflowDefinition(result.definition)
+  assert.equal(draft.steps[0].inferenceParams.aggression, 0)
+  assert.equal(draft.steps[0].inferenceParams.post_process_threshold, 0)
+})
+
 // --------------------------------------------------------------------------------------
 // Export
 // --------------------------------------------------------------------------------------
@@ -242,6 +306,29 @@ test('link ids are unique', () => {
   const comfy = exportComfyMssWorkflow(makeDefinition({ steps: 3 }), { models: MODELS })
   const linkIds = comfy.links.map(link => link[0])
   assert.equal(new Set(linkIds).size, linkIds.length)
+})
+
+test('exports new Comfy-MSS node names and explicit params links', () => {
+  const step = createStepDraft(0)
+  step.model = 'bs_roformer_voc.ckpt'
+  step.stems = ['vocals']
+  step.save = { vocals: 'vocals' }
+  step.inferenceParams = { batch_size: 4, overlap_size: '2048', chunk_size: '8192', enable_tta: true }
+  const comfy = exportComfyMssWorkflow(buildWorkflowDefinition({
+    defaultDevice: 'auto',
+    defaultFormat: 'wav',
+    defaultNormalize: false,
+    steps: [step],
+    saveTargets: [{ source: `${step.id}.vocals`, outputDir: 'vocals' }],
+    utilityNodes: [],
+    ui: createDefaultWorkflowNodeEditorUi([step]),
+  }), { models: MODELS })
+  const paramsNode = comfy.nodes.find(node => node.type === 'pymss_mss_params')
+  const separateNode = comfy.nodes.find(node => node.type === 'pymss_mss_separate')
+  assert.ok(paramsNode)
+  assert.ok(separateNode)
+  assert.deepEqual(paramsNode.widgets_values.slice(0, 5), [4, '2048', '8192', false, true])
+  assert.ok(comfy.links.some(link => link[1] === paramsNode.id && link[3] === separateNode.id && link[5] === 'PYMSS_MSS_PARAMS'))
 })
 
 // --------------------------------------------------------------------------------------

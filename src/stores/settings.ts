@@ -117,7 +117,7 @@ const DEFAULT_CLEAR_INPUT_AFTER_SUBMIT = true
 const MAX_CONCURRENT_SEPARATIONS = 16
 const DEFAULT_PROXY_MODE: ProxyMode = 'system'
 const DEFAULT_PROXY_URL = ''
-export const DEFAULT_UPDATE_ENDPOINT = 'https://github.com/pymss-project/pymss-studio/releases/latest/download/latest.json'
+export const DEFAULT_UPDATE_ENDPOINT = 'https://github.com/pymss-project/pymss-studio/releases/download/updater/latest.json'
 
 function displayModelDirPath(path: unknown): string {
   const value = String(path || '').trim()

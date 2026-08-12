@@ -69,12 +69,8 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MODELSCOPE_API_TOKEN: ${{ secrets.MODELSCOPE_API_TOKEN }}
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-          pattern: "!*-stage"
       - name: Resolve release tag
+        id: release_meta
         shell: bash
         run: |
           version="${RELEASE_VERSION_INPUT#v}"
@@ -86,6 +82,7 @@ jobs:
           echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
           echo "RELEASE_NAME=Pymss Studio v${version}" >> "$GITHUB_ENV"
           echo "RELEASE_VERSION=${version}" >> "$GITHUB_ENV"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
           windows_result="${{ needs.windows.result }}"
           if [[ "$windows_result" != "success" ]]; then
             echo "RELEASE_PRERELEASE=true" >> "$GITHUB_ENV"
@@ -94,6 +91,34 @@ jobs:
           else
             echo "RELEASE_PRERELEASE=${{ github.event_name == 'workflow_dispatch' && inputs.prerelease == true }}" >> "$GITHUB_ENV"
           fi
+      - name: Download Windows portable artifacts
+        if: needs.windows.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+          pattern: Pymss-Studio-${{ steps.release_meta.outputs.version }}-windows-x64-*-portable
+      - name: Download Windows setup artifacts
+        if: needs.windows.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+          pattern: Pymss-Studio-${{ steps.release_meta.outputs.version }}-windows-x64-*-setup
+      - name: Download Windows updater artifacts
+        if: needs.windows.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+          pattern: Pymss-Studio-${{ steps.release_meta.outputs.version }}-windows-x64-online-stage-updater
+      - name: Download macOS release artifacts
+        if: needs.macos.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+          pattern: Pymss-Studio-${{ steps.release_meta.outputs.version }}-macos-*-mlx
       - name: Stage artifacts for mirror uploads
         if: ${{ env.QUARK_COOKIE != '' || env.HF_TOKEN != '' || env.MODELSCOPE_API_TOKEN != '' }}
         shell: bash
@@ -165,11 +190,14 @@ jobs:
 
           version = os.environ["RELEASE_TAG"].removeprefix("v")
           tag = os.environ["RELEASE_TAG"]
+          prerelease = os.environ.get("RELEASE_PRERELEASE", "false").lower() == "true"
           signature = Path(f"artifacts/Pymss-Studio-{version}-windows-x64-online-updater.exe.sig").read_text(encoding="utf-8").strip()
           data = {
               "version": version,
               "notes": "See the GitHub release notes for details.",
               "pub_date": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+              "prerelease": prerelease,
+              "channel": "prerelease" if prerelease else "stable",
               "platforms": {
                   "windows-x86_64": {
                       "signature": signature,
@@ -194,6 +222,17 @@ jobs:
           prerelease: ${{ env.RELEASE_PRERELEASE }}
           generate_release_notes: true
           files: artifacts/*
+
+      - uses: softprops/action-gh-release@v2
+        if: needs.windows.result == 'success'
+        with:
+          tag_name: updater
+          name: Pymss Studio Update Channel
+          body: Latest updater metadata for Pymss Studio. This release is managed by CI.
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          files: artifacts/latest.json
 
       - name: Download Quark netdisk CLI
         if: ${{ env.QUARK_COOKIE != '' }}

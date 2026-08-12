@@ -671,8 +671,7 @@ const pendingConnectionTarget = computed<{ kind: 'step' | 'utility'; stepId?: st
     const dx = point.x - canvasMouseWorld.value!.x
     const dy = point.y - canvasMouseWorld.value!.y
     const distance = Math.sqrt(dx * dx + dy * dy)
-    if (distance > threshold) return
-    if (distance < bestDistance) {
+    if (distance <= threshold && distance < bestDistance) {
       bestTarget = { kind: 'step', stepId: step.id, point }
       bestPoint = point
       bestDistance = distance
@@ -1191,7 +1190,7 @@ function updateGraphNodePosition(nodeId: string, point: WorkflowCanvasPoint) {
 function stepNodeHeight(step: WorkflowStepDraft) {
   if (stepCollapsed(step)) return 148
   const chipRows = Math.max(0, Math.ceil(modelStemOptions(step.model).length / 4))
-  return 196 + chipRows * 28 + Math.max(1, step.stems.length) * 26
+  return 252 + chipRows * 28 + Math.max(1, step.stems.length) * 26
 }
 
 function saveNodeHeight() {
@@ -1386,7 +1385,7 @@ function stepStemPort(index: number, stem: string): GraphPoint | null {
   if (measured) return measured
   const position = nodePosition(step.id)
   const stemIndex = Math.max(0, step.stems.findIndex(item => item === stem))
-  return { x: position.x + GRAPH_NODE_WIDTH, y: position.y + 132 + stemIndex * 26 }
+  return { x: position.x + GRAPH_NODE_WIDTH, y: position.y + 164 + stemIndex * 26 }
 }
 
 function saveInputPort(index: number): GraphPoint {
@@ -1511,6 +1510,43 @@ function modelStemOptions(modelName: string) {
   const entry = props.models.find(item => item.name === modelName)
   return parseModelStems(entry?.configInstruments || entry?.configTargetInstrument || entry?.targetStem)
     .map(stem => ({ label: stem, value: stem }))
+}
+
+function stepModelKind(step: WorkflowStepDraft) {
+  return String(step.modelKind || props.models.find(item => item.name === step.model)?.modelType || '').trim().toLowerCase()
+}
+
+function stepUsesVrParams(step: WorkflowStepDraft) {
+  return stepModelKind(step) === 'vr'
+}
+
+function stepInferenceParamNumber(step: WorkflowStepDraft, key: string, fallback: number) {
+  const value = Number((step.inferenceParams || {})[key])
+  return Number.isFinite(value) ? value : fallback
+}
+
+function stepInferenceParamString(step: WorkflowStepDraft, key: string, fallback: string) {
+  const value = (step.inferenceParams || {})[key]
+  return typeof value === 'string' && value.trim() ? value : fallback
+}
+
+function updateStepInferenceParams(stepId: string, patch: Record<string, unknown>) {
+  mutateDraft((next) => {
+    const target = next.steps.find(item => item.id === stepId)
+    if (!target) return
+    target.inferenceParams = {
+      ...(target.inferenceParams || {}),
+      ...patch,
+    }
+  })
+}
+
+function clearStepInferenceParams(stepId: string) {
+  mutateDraft((next) => {
+    const target = next.steps.find(item => item.id === stepId)
+    if (!target) return
+    target.inferenceParams = {}
+  })
 }
 
 function selectGraphNode(key: string, options?: { append?: boolean; toggle?: boolean }) {
@@ -1887,9 +1923,9 @@ function pasteGraphNodes() {
         input: step.input,
         stems: [...step.stems],
         save: { ...step.save },
-        overlapSize: step.overlapSize,
         modelKind: step.modelKind,
         customModelType: step.customModelType,
+        inferenceParams: { ...(step.inferenceParams || {}) },
       }
       idMap.set(step.id, copy.id)
       next.ui.nodes[copy.id] = { x: Math.round(position.x + offset), y: Math.round(position.y + offset) }
@@ -2008,6 +2044,7 @@ function handleModelChange(step: WorkflowStepDraft) {
     const options = modelStemOptions(target.model).map(item => item.value)
     target.stems = target.stems.filter(stem => options.includes(stem))
     target.save = Object.fromEntries(target.stems.map(stem => [stem, target.save?.[stem] || stem]))
+    target.inferenceParams = {}
     clearReferencesToUnavailableStepStems(next, target.id, target.stems)
   })
 }
@@ -2049,6 +2086,7 @@ function updateStepModel(stepId: string, value: string) {
     const options = modelStemOptions(target.model).map(item => item.value)
     target.stems = target.stems.filter(stem => options.includes(stem))
     target.save = Object.fromEntries(target.stems.map(stem => [stem, target.save?.[stem] || stem]))
+    target.inferenceParams = {}
     clearReferencesToUnavailableStepStems(next, target.id, target.stems)
   })
 }
@@ -2080,14 +2118,6 @@ function clearStepStems(step: WorkflowStepDraft) {
     target.stems = []
     target.save = {}
     clearReferencesToUnavailableStepStems(next, target.id, target.stems)
-  })
-}
-
-function updateStepOverlap(stepId: string, value: number | null) {
-  mutateDraft((next) => {
-    const target = next.steps.find(item => item.id === stepId)
-    if (!target) return
-    target.overlapSize = value
   })
 }
 
@@ -2434,7 +2464,12 @@ function wouldPendingConnectionCreateCycle(targetNodeId: string): boolean {
 
 function connectPendingToStep(stepId: string) {
   const index = steps.value.findIndex(step => step.id === stepId)
-  if (index < 0 || !pendingConnection.value) return false
+  if (index < 0) return false
+  if (!pendingConnection.value) {
+    selectGraphNode(stepSelectionKey(stepId))
+    return false
+  }
+  const pendingValue = pendingConnection.value.value || ''
   if (wouldPendingConnectionCreateCycle(stepId)) {
     message.warning(t('workflows.connectionCycleBlocked'))
     cancelGraphConnection()
@@ -2443,7 +2478,7 @@ function connectPendingToStep(stepId: string) {
   mutateDraft((next) => {
     const target = next.steps.find(item => item.id === stepId)
     if (!target) return
-    target.input = pendingConnection.value?.value || ''
+    target.input = pendingValue
   })
   cancelGraphConnection()
   selectGraphNode(stepSelectionKey(stepId))
@@ -2586,6 +2621,7 @@ function addGraphStepAt(point?: WorkflowCanvasPoint, forcedInput?: string) {
   ensureUiState()
   if (createdId) selectedGraphNode.value = stepSelectionKey(createdId)
   if (forcedInput) cancelGraphConnection()
+  return createdId ? stepSelectionKey(createdId) : ''
 }
 
 function addGraphStep() {
@@ -2654,9 +2690,9 @@ function duplicateGraphStep(target: number | WorkflowStepDraft) {
       input: source.input,
       stems: [...source.stems],
       save: { ...source.save },
-      overlapSize: source.overlapSize,
       modelKind: source.modelKind,
       customModelType: source.customModelType,
+      inferenceParams: { ...(source.inferenceParams || {}) },
     }
     next.steps.splice(index + 1, 0, draft)
     ensureWorkflowStepIds(next.steps)
@@ -3823,17 +3859,74 @@ function jumpMinimap(event: MouseEvent) {
                   </div>
                   <div v-else class="graph-node__empty-port">{{ t('workflows.stepModelPlaceholder') }}</div>
                 </div>
-                <div class="graph-node__widget graph-node__widget--inline">
-                  <span class="graph-node__widget-label">{{ t('workflows.stepOverlap') }}</span>
-                  <n-input-number
-                    size="tiny"
-                    :value="step.overlapSize"
-                    clearable
-                    :min="0"
-                    :step="1024"
-                    style="width: 100%"
-                    @update:value="updateStepOverlap(step.id, $event)"
-                  />
+                <div class="graph-node__widget graph-node__widget--params">
+                  <div class="graph-node__widget-label-row">
+                    <span class="graph-node__widget-label">{{ t('workflows.stepParams') }}</span>
+                    <button
+                      v-if="Object.keys(step.inferenceParams || {}).length"
+                      type="button"
+                      class="graph-node__chip-action"
+                      @click.stop="clearStepInferenceParams(step.id)"
+                    >
+                      {{ t('workflows.useModelDefaults') }}
+                    </button>
+                  </div>
+                  <div class="graph-node__param-grid">
+                    <label>
+                      <span>{{ t('inference.batchSize') }}</span>
+                      <n-input-number
+                        size="tiny"
+                        :value="stepInferenceParamNumber(step, 'batch_size', 1)"
+                        :min="1"
+                        :max="128"
+                        @update:value="(value: number | null) => updateStepInferenceParams(step.id, { batch_size: value || 1 })"
+                      />
+                    </label>
+                    <template v-if="stepUsesVrParams(step)">
+                      <label>
+                        <span>{{ t('inference.vrWindowSize') }}</span>
+                        <n-input-number size="tiny" :value="stepInferenceParamNumber(step, 'window_size', 512)" :min="128" :max="4096" :step="128" @update:value="(value: number | null) => updateStepInferenceParams(step.id, { window_size: value || 512 })" />
+                      </label>
+                      <label>
+                        <span>{{ t('inference.vrAggression') }}</span>
+                        <n-input-number size="tiny" :value="stepInferenceParamNumber(step, 'aggression', 5)" :min="0" :max="100" @update:value="(value: number | null) => updateStepInferenceParams(step.id, { aggression: value ?? 0 })" />
+                      </label>
+                      <label>
+                        <span>{{ t('inference.vrPostProcessThreshold') }}</span>
+                        <n-input-number size="tiny" :value="stepInferenceParamNumber(step, 'post_process_threshold', 0.2)" :min="0" :max="1" :step="0.01" @update:value="(value: number | null) => updateStepInferenceParams(step.id, { post_process_threshold: value ?? 0.2 })" />
+                      </label>
+                      <label class="graph-node__param-switch">
+                        <span>{{ t('inference.vrHighEndProcess') }}</span>
+                        <n-switch size="small" :value="Boolean((step.inferenceParams || {}).high_end_process)" @update:value="(value: boolean) => updateStepInferenceParams(step.id, { high_end_process: value })" />
+                      </label>
+                      <label class="graph-node__param-switch">
+                        <span>{{ t('inference.vrEnablePostProcess') }}</span>
+                        <n-switch size="small" :value="Boolean((step.inferenceParams || {}).enable_post_process)" @update:value="(value: boolean) => updateStepInferenceParams(step.id, { enable_post_process: value })" />
+                      </label>
+                    </template>
+                    <template v-else>
+                      <label>
+                        <span>{{ t('inference.overlapSize') }}</span>
+                        <n-input size="tiny" :value="stepInferenceParamString(step, 'overlap_size', 'Default')" @update:value="(value: string) => updateStepInferenceParams(step.id, { overlap_size: value || 'Default' })" />
+                      </label>
+                      <label>
+                        <span>{{ t('inference.chunkSize') }}</span>
+                        <n-input size="tiny" :value="stepInferenceParamString(step, 'chunk_size', 'Default')" @update:value="(value: string) => updateStepInferenceParams(step.id, { chunk_size: value || 'Default' })" />
+                      </label>
+                      <label class="graph-node__param-switch">
+                        <span>{{ t('inference.standardize') }}</span>
+                        <n-switch size="small" :value="Boolean((step.inferenceParams || {}).standardize)" @update:value="(value: boolean) => updateStepInferenceParams(step.id, { standardize: value })" />
+                      </label>
+                    </template>
+                    <label class="graph-node__param-switch">
+                      <span>{{ t('inference.normalize') }}</span>
+                      <n-switch size="small" :value="Boolean((step.inferenceParams || {}).normalize)" @update:value="(value: boolean) => updateStepInferenceParams(step.id, { normalize: value })" />
+                    </label>
+                    <label class="graph-node__param-switch">
+                      <span>{{ t('separate.tta') }}</span>
+                      <n-switch size="small" :value="Boolean((step.inferenceParams || {}).enable_tta)" @update:value="(value: boolean) => updateStepInferenceParams(step.id, { enable_tta: value })" />
+                    </label>
+                  </div>
                 </div>
               </div>
               <div class="graph-node__ports">
@@ -4359,6 +4452,7 @@ function jumpMinimap(event: MouseEvent) {
             </div>
           </label>
         </template>
+
       </div>
     </n-modal>
   </div>
@@ -4912,6 +5006,30 @@ function jumpMinimap(event: MouseEvent) {
 
 .graph-node__widget--inline {
   grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+}
+
+.graph-node__widget--params {
+  padding-top: 2px;
+}
+
+.graph-node__param-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.graph-node__param-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  color: var(--on-surface-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.graph-node__param-switch {
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
 }
 

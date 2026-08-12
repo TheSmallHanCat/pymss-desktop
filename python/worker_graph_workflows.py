@@ -273,7 +273,8 @@ def _validate_graph_definition(nodes: dict[str, dict[str, Any]], edges: list[dic
             raise ValueError(f"Workflow graph connection uses an unavailable target port: {target_id}:{target_port}.")
         endpoint = (target_id, target_port)
         incoming_ports[endpoint] = incoming_ports.get(endpoint, 0) + 1
-        if str(target_node.get("type") or "") == "save_outputs":
+        source_ref = _source_ref_for_edge(nodes, edge)
+        if str(target_node.get("type") or "") == "save_outputs" and source_ref:
             valid_save_targets += 1
 
     duplicates = [f"{node_id}:{port_id}" for (node_id, port_id), count in incoming_ports.items() if count > 1]
@@ -350,6 +351,32 @@ def _input_ref_for_node(nodes: dict[str, dict[str, Any]], edges: list[dict[str, 
             continue
         return _source_ref_for_edge(nodes, edge)
     return ""
+
+
+def _inference_params_from_node_data(data: dict[str, Any]) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    for key in (
+        "batch_size",
+        "overlap_size",
+        "num_overlap",
+        "chunk_size",
+        "window_size",
+        "aggression",
+        "post_process_threshold",
+        "normalize",
+        "enable_tta",
+        "standardize",
+        "high_end_process",
+        "enable_post_process",
+        "use_amp",
+    ):
+        if key not in data:
+            continue
+        value = data.get(key)
+        if isinstance(value, str) and value.strip().lower() == "default":
+            continue
+        params[key] = value
+    return params
 
 
 def _resolve_artifact(artifacts: dict[str, AudioArtifact], ref: str) -> AudioArtifact:
@@ -494,10 +521,8 @@ def _execute_separate_node(
     inference_params = dict(workflow_defaults.get("inference_params") or {})
     node_inference_params = node_data.get("inferenceParams")
     if isinstance(node_inference_params, dict):
-        inference_params.update(node_inference_params)
-    overlap_size = node_data.get("overlapSize")
-    if isinstance(overlap_size, (int, float)) and int(overlap_size) > 0:
-        inference_params["overlap_size"] = int(overlap_size)
+        inference_params.update(_inference_params_from_node_data(node_inference_params))
+    use_tta = bool(inference_params.pop("enable_tta", payload.get("useTta", False)))
 
     progress_prefix = model_name
 
@@ -524,6 +549,7 @@ def _execute_separate_node(
             "model": model_name,
             "selectedStems": stems,
             "inferenceParams": inference_params,
+            "useTta": use_tta,
             "output": payload.get("output") or "results",
         },
         task_id=task_id,

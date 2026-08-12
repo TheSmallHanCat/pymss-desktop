@@ -34,6 +34,9 @@ const isWorkflowNodeEditorRoute = computed(() => route.path === '/workflow-node-
 const isMacOS = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)
 const resolvedTheme = computed(() => getResolvedThemeTokens(settings.themeMode, settings.themeAccent))
 const showStartupOnboarding = computed(() => bootReady.value && !isStandaloneRoute.value && settings.shouldShowStartupOnboarding)
+const deferredUpdatePrompt = computed(() => updates.updateIsPrerelease
+  ? t('settings.updatePrereleaseDeferredPrompt', { version: updates.latestVersion })
+  : t('settings.updateDeferredPrompt', { version: updates.latestVersion }))
 
 const routeWarmupLoaders = [
   () => import('@/views/SeparateView.vue'),
@@ -160,7 +163,7 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
           <template #header>
             {{ t('settings.updateDeferred') }}
           </template>
-          <div>{{ t('settings.updateDeferredPrompt', { version: updates.latestVersion }) }}</div>
+          <div>{{ deferredUpdatePrompt }}</div>
           <n-alert v-if="deferredUpdateError" type="error" :bordered="false" style="margin-top: 12px">
             {{ deferredUpdateError }}
           </n-alert>

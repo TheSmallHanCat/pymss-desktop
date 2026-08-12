@@ -254,11 +254,9 @@ test('every draggable element is a graph node', () => {
 test('per-node settings survive the round trip', () => {
   const definition = buildDraftDefinition({ steps: 1 })
   const draft = hydrateWorkflowDefinition(definition)
-  draft.steps[0].overlapSize = 4
   draft.steps[0].modelKind = 'vr'
   draft.steps[0].customModelType = 'bs_roformer'
   const rebuilt = hydrateWorkflowDefinition(buildWorkflowDefinition(draft))
-  assert.equal(rebuilt.steps[0].overlapSize, 4)
   assert.equal(rebuilt.steps[0].modelKind, 'vr')
   assert.equal(rebuilt.steps[0].customModelType, 'bs_roformer')
 })

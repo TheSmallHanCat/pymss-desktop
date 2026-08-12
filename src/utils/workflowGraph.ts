@@ -61,7 +61,6 @@ type LegacyStep = {
   input: string
   stems: string[]
   save: Record<string, string>
-  overlapSize: number | null
 }
 
 type LegacyNodeEditorUi = {
@@ -178,7 +177,6 @@ function readLegacySteps(definition: Record<string, unknown>) {
   const seen = new Set<string>()
   return rawSteps.map((raw, index) => {
     const item = isRecord(raw) ? raw : {}
-    const inference = isRecord(item.inference_params) ? item.inference_params : {}
     const save = isRecord(item.save) ? item.save : {}
     const id = readLegacyStepId(item.id, seen)
     const stems = Array.isArray(item.stems)
@@ -190,9 +188,6 @@ function readLegacySteps(definition: Record<string, unknown>) {
       input: String(item.input || (index ? '' : 'input')),
       stems,
       save: Object.fromEntries(Object.entries(save).map(([stem, dir]) => [String(stem), String(dir || '')])),
-      overlapSize: typeof inference.overlap_size === 'number' && Number.isFinite(inference.overlap_size)
-        ? inference.overlap_size
-        : null,
     } satisfies LegacyStep
   })
 }
@@ -331,7 +326,6 @@ export function migrateLegacyWorkflowToGraph(definition: Record<string, unknown>
       data: {
         model: step.model,
         stems: [...step.stems],
-        overlapSize: step.overlapSize,
         collapsed: ui.collapsedStepIds.includes(step.id),
       },
     })),

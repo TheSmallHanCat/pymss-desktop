@@ -112,13 +112,6 @@ function readNumberWidget(node: ComfyWorkflowNode, index: number, fallback: numb
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
-function parseDefaultInt(value: unknown) {
-  const text = String(value || '').trim()
-  if (!text || text.toLowerCase() === 'default') return null
-  const parsed = Number.parseInt(text, 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
-}
-
 function cleanComfyModelName(value: string) {
   const text = value.trim()
   if (!text) return ''
@@ -205,14 +198,72 @@ function outputNameFromLink(node: ComfyWorkflowNode | undefined, slotIndex: numb
 
 function nodeTypeKind(type: string): StepKind | null {
   const normalized = type.trim()
-  if (normalized === 'mss_separate' || normalized === 'mss_separate_list') return 'mss'
-  if (normalized === 'vr_separate' || normalized === 'vr_separate_list') return 'vr'
-  if (normalized === 'custom_mss_separate' || normalized === 'custom_mss_separate_list') return 'custom'
+  if (normalized === 'mss_separate' || normalized === 'mss_separate_list' || normalized === 'pymss_mss_separate' || normalized === 'pymss_mss_separate_list') return 'mss'
+  if (normalized === 'vr_separate' || normalized === 'vr_separate_list' || normalized === 'pymss_vr_separate' || normalized === 'pymss_vr_separate_list') return 'vr'
+  if (normalized === 'custom_mss_separate' || normalized === 'custom_mss_separate_list' || normalized === 'pymss_custom_mss_separate' || normalized === 'pymss_custom_mss_separate_list') return 'custom'
   return null
 }
 
 function isListSeparateNode(type: string) {
-  return ['mss_separate_list', 'vr_separate_list', 'custom_mss_separate_list'].includes(type.trim())
+  return ['mss_separate_list', 'vr_separate_list', 'custom_mss_separate_list', 'pymss_mss_separate_list', 'pymss_vr_separate_list', 'pymss_custom_mss_separate_list'].includes(type.trim())
+}
+
+function isParamsNodeType(type: string) {
+  return type === 'pymss_mss_params' || type === 'pymss_vr_params'
+}
+
+function paramsDataFromWidgets(type: string, widgets: unknown[]) {
+  const numberWidget = (index: number, fallback: number) => {
+    const value = Number(widgets[index])
+    return Number.isFinite(value) ? value : fallback
+  }
+  if (type === 'pymss_vr_params') {
+    return {
+      batch_size: numberWidget(0, 1),
+      window_size: numberWidget(1, 512),
+      aggression: numberWidget(2, 5),
+      enable_tta: Boolean(widgets[3]),
+      high_end_process: Boolean(widgets[4]),
+      enable_post_process: Boolean(widgets[5]),
+      post_process_threshold: numberWidget(6, 0.2),
+      normalize: Boolean(widgets[7]),
+    }
+  }
+  return {
+    batch_size: numberWidget(0, 1),
+    overlap_size: typeof widgets[1] === 'string' ? widgets[1] : 'Default',
+    chunk_size: typeof widgets[2] === 'string' ? widgets[2] : 'Default',
+    normalize: Boolean(widgets[3]),
+    enable_tta: Boolean(widgets[4]),
+    standardize: Boolean(widgets[5]),
+  }
+}
+
+function paramsWidgetsFromData(data: Record<string, unknown>, kind: 'mss' | 'vr') {
+  const numberValue = (key: string, fallback: number) => {
+    const value = Number(data[key])
+    return Number.isFinite(value) ? value : fallback
+  }
+  if (kind === 'vr') {
+    return [
+      numberValue('batch_size', 1),
+      numberValue('window_size', 512),
+      numberValue('aggression', 5),
+      Boolean(data.enable_tta),
+      Boolean(data.high_end_process),
+      Boolean(data.enable_post_process),
+      numberValue('post_process_threshold', 0.2),
+      Boolean(data.normalize),
+    ]
+  }
+  return [
+    numberValue('batch_size', 1),
+    String(data.overlap_size || 'Default'),
+    String(data.chunk_size || 'Default'),
+    Boolean(data.normalize),
+    Boolean(data.enable_tta),
+    Boolean(data.standardize),
+  ]
 }
 
 function findMatchingModelEntry(modelName: string, models: ModelEntry[]) {
@@ -508,9 +559,9 @@ export function importComfyMssWorkflow(input: unknown, options?: { models?: Mode
       id: stepId,
       model,
       input: 'input',
+      inferenceParams: {},
       stems: inferredStems,
       save: {},
-      overlapSize: null,
       modelKind: kind,
       customModelType: kind === 'custom' ? readStringWidget(node, 1, 'mel_band_roformer') : null,
     }
@@ -532,12 +583,13 @@ export function importComfyMssWorkflow(input: unknown, options?: { models?: Mode
       if (link) {
         const paramsNode = nodeMap.get(link[1])
         if (paramsNode?.type === 'pymss_mss_params') {
-          step.overlapSize = parseDefaultInt(paramsNode.widgets_values?.[1])
           defaultNormalize = defaultNormalize || readBoolWidget(paramsNode, 3, false)
           comfyMeta.params = { type: paramsNode.type, widgets: cloneJson(asArray(paramsNode.widgets_values)) }
+          step.inferenceParams = paramsDataFromWidgets(paramsNode.type, asArray(paramsNode.widgets_values))
         } else if (paramsNode?.type === 'pymss_vr_params') {
           defaultNormalize = defaultNormalize || readBoolWidget(paramsNode, 7, false)
           comfyMeta.params = { type: paramsNode.type, widgets: cloneJson(asArray(paramsNode.widgets_values)) }
+          step.inferenceParams = paramsDataFromWidgets(paramsNode.type, asArray(paramsNode.widgets_values))
         }
       }
     }
@@ -848,6 +900,7 @@ export function exportComfyMssWorkflow(
         widgets_values: [],
       })
       utilityNodeIds.set(node.id, exportNode.id)
+      return
     }
   })
 
@@ -857,75 +910,13 @@ export function exportComfyMssWorkflow(
   draft.steps.forEach((step, index) => {
     const position = draft.ui.nodes[step.id] || { x: 384 + index * 318, y: 118 + (index % 2) * 96 }
     const kind = inferStepKind(step, models)
-    const paramsNodeType = kind === 'vr' ? 'pymss_vr_params' : 'pymss_mss_params'
-    const paramsNodeId = nextNodeId++
     const separateNodeId = nextNodeId++
 
-    // Round-trip: if this step was imported from comfy-mss, restore the original
-    // params widgets and patch only the fields pymss-studio manages.
-    const defaultParamsWidgets: unknown[] = kind === 'vr'
-      ? [1, 512, 5, false, false, false, 0.2, Boolean(draft.defaultNormalize)]
-      : [
-          1,
-          step.overlapSize == null ? 'Default' : String(step.overlapSize),
-          'Default',
-          Boolean(draft.defaultNormalize),
-          false,
-          false,
-        ]
-    const paramsMeta = readComfyMetaSection(step, 'params')
-    const paramsMetaWidgets = readComfyMetaWidgets(paramsMeta)
-    const paramsMetaMatchesKind = paramsMeta
-      ? String(paramsMeta.type || '') === paramsNodeType
-      : false
-    const paramsWidgets = paramsMetaWidgets && paramsMetaMatchesKind
-      ? patchWidgets(paramsMetaWidgets, kind === 'vr'
-          ? { 7: Boolean(draft.defaultNormalize) }
-          : {
-              1: step.overlapSize == null ? 'Default' : String(step.overlapSize),
-              3: Boolean(draft.defaultNormalize),
-            })
-      : defaultParamsWidgets
-
-    const paramsNode = createNode({
-      id: paramsNodeId,
-      type: paramsNodeType,
-      pos: [position.x - 320, position.y + 162],
-      size: [260, kind === 'vr' ? 220 : 178],
-      flags: {},
-      order: nodes.length,
-      mode: 0,
-      inputs: toComfyInputs(kind === 'vr'
-        ? [
-            { name: 'batch_size', type: 'INT' },
-            { name: 'window_size', type: 'INT' },
-            { name: 'aggression', type: 'INT' },
-            { name: 'enable_tta', type: 'BOOLEAN' },
-            { name: 'high_end_process', type: 'BOOLEAN' },
-            { name: 'enable_post_process', type: 'BOOLEAN' },
-            { name: 'post_process_threshold', type: 'FLOAT' },
-            { name: 'normalize', type: 'BOOLEAN' },
-          ]
-        : [
-            { name: 'batch_size', type: 'INT' },
-            { name: 'overlap_size', type: 'STRING' },
-            { name: 'chunk_size', type: 'STRING' },
-            { name: 'normalize', type: 'BOOLEAN' },
-            { name: 'enable_tta', type: 'BOOLEAN' },
-            { name: 'standardize', type: 'BOOLEAN' },
-          ]),
-      outputs: toComfyOutputs([
-        { name: kind === 'vr' ? 'vr_params' : 'mss_params', type: kind === 'vr' ? 'PYMSS_VR_PARAMS' : 'PYMSS_MSS_PARAMS' },
-      ]),
-      properties: { 'Node name for S&R': paramsNodeType },
-      widgets_values: paramsWidgets,
-    })
-
     const separateNodeType = kind === 'vr'
-      ? 'vr_separate'
+      ? 'pymss_vr_separate'
       : kind === 'custom'
-        ? 'custom_mss_separate'
-        : 'mss_separate'
+        ? 'pymss_custom_mss_separate'
+        : 'pymss_mss_separate'
 
     const outputs = step.stems.flatMap((stem) => ([
       { name: `${stem} (Audio)`, type: 'AUDIO', label: `${stem} (Audio)` },
@@ -984,15 +975,53 @@ export function exportComfyMssWorkflow(
     stepNodeIds.set(step.id, separateNodeId)
     stepStemNames.set(step.id, [...step.stems])
 
-    addLink(
-      links,
-      nodesById,
-      paramsNode.id,
-      0,
-      separateNode.id,
-      1,
-      kind === 'vr' ? 'PYMSS_VR_PARAMS' : 'PYMSS_MSS_PARAMS',
-    )
+    const stepInferenceParams = step.inferenceParams && typeof step.inferenceParams === 'object' ? step.inferenceParams : {}
+    if (Object.keys(stepInferenceParams).length) {
+      const paramsKind = kind === 'vr' ? 'vr' : 'mss'
+      const paramsNodeType = paramsKind === 'vr' ? 'pymss_vr_params' : 'pymss_mss_params'
+      const paramsNode = createNode({
+        id: nextNodeId++,
+        type: paramsNodeType,
+        pos: [position.x - 320, position.y + 162],
+        size: [260, paramsKind === 'vr' ? 220 : 178],
+        flags: {},
+        order: nodes.length,
+        mode: 0,
+        inputs: toComfyInputs(paramsKind === 'vr'
+          ? [
+              { name: 'batch_size', type: 'INT' },
+              { name: 'window_size', type: 'INT' },
+              { name: 'aggression', type: 'INT' },
+              { name: 'enable_tta', type: 'BOOLEAN' },
+              { name: 'high_end_process', type: 'BOOLEAN' },
+              { name: 'enable_post_process', type: 'BOOLEAN' },
+              { name: 'post_process_threshold', type: 'FLOAT' },
+              { name: 'normalize', type: 'BOOLEAN' },
+            ]
+          : [
+              { name: 'batch_size', type: 'INT' },
+              { name: 'overlap_size', type: 'STRING' },
+              { name: 'chunk_size', type: 'STRING' },
+              { name: 'normalize', type: 'BOOLEAN' },
+              { name: 'enable_tta', type: 'BOOLEAN' },
+              { name: 'standardize', type: 'BOOLEAN' },
+            ]),
+        outputs: toComfyOutputs([
+          { name: paramsKind === 'vr' ? 'vr_params' : 'mss_params', type: paramsKind === 'vr' ? 'PYMSS_VR_PARAMS' : 'PYMSS_MSS_PARAMS' },
+        ]),
+        properties: { 'Node name for S&R': paramsNodeType },
+        widgets_values: paramsWidgetsFromData(stepInferenceParams, paramsKind),
+      })
+      addLink(
+        links,
+        nodesById,
+        paramsNode.id,
+        0,
+        separateNode.id,
+        1,
+        kind === 'vr' ? 'PYMSS_VR_PARAMS' : 'PYMSS_MSS_PARAMS',
+      )
+    }
 
     const source = workflowValueToComfySource(
       String(step.input || 'input'),
