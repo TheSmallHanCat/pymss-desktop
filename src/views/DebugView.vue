@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
@@ -129,6 +129,18 @@ type DebugLogReport = {
   exists: boolean
   sizeBytes: number
 }
+type ParsedDebugLogLine = {
+  id: string
+  timestamp: string
+  level: string
+  source: string
+  taskId: string
+  command: string
+  stage: string
+  message: string
+  details: string
+  raw: string
+}
 
 const activeTab = ref<DebugTab>('overview')
 const debugCatalogLoading = ref(false)
@@ -157,6 +169,7 @@ const runtimeDebugEditingPath = ref('')
 const runtimeDebugEditingContent = ref('')
 const runtimeOverrideBackend = ref('cuda')
 const runtimeOverridePythonPath = ref('')
+const runtimeOverrideDirty = ref(false)
 const updateEndpointEditing = ref(false)
 const updateEndpointDraft = ref('')
 const debugLogLoading = ref(false)
@@ -164,6 +177,7 @@ const debugLogClearing = ref(false)
 const debugLogReportLoading = ref(false)
 const debugLogInfo = ref<DebugLogInfo | null>(null)
 const debugLogContent = ref<DebugLogContent | null>(null)
+const debugLogScroller = ref<HTMLElement | null>(null)
 
 const diagnostics = computed(() => app.diagnostics)
 const env = computed(() => app.envInfo)
@@ -509,11 +523,17 @@ const runtimeTree = computed<RuntimeTreeNode[]>(() => {
     }] : []),
   ]
 })
-const runtimeDebugRows = computed(() => [
+const runtimeStatusRows = computed(() => [
+  { label: t('debug.runtimeCurrentBackend'), value: app.runtimeInfo?.installedBackend || '-' },
+  { label: t('debug.runtimeCurrentPython'), value: app.runtimeInfo?.installState?.pythonPath || '-' },
+  { label: t('debug.runtimeCurrentSource'), value: app.runtimeInfo?.installState?.source || '-' },
+  { label: t('debug.runtimeInstalledCount'), value: String(app.runtimeInfo?.installedEnvironments?.length || 0) },
+])
+const runtimePointerRows = computed(() => [
   { label: t('debug.runtimeDebugUserRoot'), value: runtimeDebugInfo.value?.runtimeEnvsDir || app.runtimeInfo?.runtimeEnvsDir || '' },
   { label: t('debug.runtimeDebugUserActive'), value: runtimeDebugInfo.value?.activeRuntimeFile || app.runtimeInfo?.activeRuntimeFile || '' },
   { label: t('debug.runtimeDebugBundledRoot'), value: runtimeDebugInfo.value?.bundledRuntimeEnvsDir || app.runtimeInfo?.bundledRuntimeEnvsDir || '' },
-  { label: t('debug.runtimeDebugInstallState'), value: app.runtimeInfo?.installState?.pythonPath || app.runtimeInfo?.installedBackend || '' },
+  { label: t('debug.runtimeBootstrapPython'), value: app.runtimeInfo?.bootstrapPython || '' },
 ])
 const runtimeDebugFiles = computed(() => runtimeDebugInfo.value?.files || [])
 const runtimeDebugActiveFile = computed(() => runtimeDebugFiles.value.find((file) => file.kind === 'active-runtime') || null)
@@ -539,6 +559,10 @@ const runtimeBackendOptions = [
   { label: 'ROCm', value: 'rocm' },
   { label: 'MLX', value: 'mlx' },
 ]
+const currentRuntimeOverrideDefaults = computed(() => ({
+  backend: String(app.runtimeInfo?.installedBackend || app.runtimeInfo?.installState?.backend || runtimeOverrideBackend.value || 'cuda'),
+  pythonPath: String(app.runtimeInfo?.installState?.pythonPath || ''),
+}))
 const debugLogRows = computed(() => [
   { label: t('debug.currentLogPath'), value: debugLogInfo.value?.path || '' },
   { label: t('debug.currentLogSize'), value: `${formatBytes(debugLogInfo.value?.sizeBytes || 0)} / ${formatBytes(debugLogInfo.value?.maxBytes || 0)}` },
@@ -548,6 +572,10 @@ const debugLogRows = computed(() => [
   { label: t('debug.reportSize'), value: debugLogInfo.value?.reportExists ? formatBytes(debugLogInfo.value?.reportSizeBytes || 0) : '-' },
   { label: t('debug.logMode'), value: developerMode.value ? t('debug.logModeVerbose') : t('debug.logModeRelease') },
 ])
+const parsedDebugLogLines = computed(() => (debugLogContent.value?.content || '')
+  .split(/\r?\n/)
+  .filter(Boolean)
+  .map((line, index) => parseDebugLogLine(line, index)))
 const statusCards = computed(() => [
   { label: t('debug.envStatus'), value: app.envReady ? t('debug.ready') : t('debug.needsAttention'), tone: app.envReady ? 'ok' : 'warn' },
   { label: t('debug.activeWorkerTasks'), value: String(activeWorkerTasks.value.length), tone: activeWorkerTasks.value.length ? 'warn' : 'ok' },
@@ -788,6 +816,12 @@ async function revealPath(path: string) {
   }
 }
 
+async function scrollDebugLogToLatest() {
+  await nextTick()
+  const scroller = debugLogScroller.value
+  if (scroller) scroller.scrollTop = scroller.scrollHeight
+}
+
 async function loadDebugLog() {
   if (!developerMode.value) return
   debugLogLoading.value = true
@@ -798,6 +832,7 @@ async function loadDebugLog() {
     ])
     debugLogInfo.value = info
     debugLogContent.value = content
+    await scrollDebugLogToLatest()
   } catch (error) {
     debugLogInfo.value = null
     debugLogContent.value = null
@@ -813,6 +848,7 @@ async function clearDebugLog() {
   try {
     debugLogInfo.value = await invoke<DebugLogInfo>('debug_log_clear')
     debugLogContent.value = await invoke<DebugLogContent>('debug_log_read')
+    await scrollDebugLogToLatest()
     message.success(t('debug.logCleared'))
   } catch (error) {
     message.error(error instanceof Error ? error.message : String(error))
@@ -915,6 +951,79 @@ async function restoreRuntimeDebugFile(file: DebugRuntimeFileInfo) {
   }
 }
 
+function parseDebugLogLine(raw: string, index: number): ParsedDebugLogLine {
+  const appMatch = raw.match(/^(\S+)\s+(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s+(\S+)(?:\s+(.*))?$/)
+  const workerMatch = raw.match(/^(\S+)\s+PY\s+(\S+)(?:\s+(.*))?$/)
+  if (!appMatch && !workerMatch) {
+    return {
+      id: `${index}-${raw}`,
+      timestamp: '',
+      level: '',
+      source: '',
+      taskId: '',
+      command: '',
+      stage: '',
+      message: raw,
+      details: '',
+      raw,
+    }
+  }
+
+  const timestamp = appMatch?.[1] || workerMatch?.[1] || ''
+  const level = appMatch?.[2] || 'PY'
+  const source = appMatch?.[3] || workerMatch?.[2] || ''
+  const attributes = appMatch?.[4] || workerMatch?.[3] || ''
+
+  const fields: Record<string, string> = {}
+  const fieldPattern = /([A-Za-z][\w]*)=(?:"((?:\\.|[^"])*)"|(\S+))/g
+  for (const field of attributes.matchAll(fieldPattern)) {
+    fields[field[1]] = field[2] ?? field[3] ?? ''
+  }
+  const details = attributes.replace(fieldPattern, '').replace(/\s+/g, ' ').trim()
+  const fieldDetails = Object.entries(fields)
+    .filter(([key]) => key !== 'message')
+    .map(([key, value]) => `${key}=${value}`)
+    .join(' ')
+
+  return {
+    id: `${index}-${raw}`,
+    timestamp: formatDebugLogTimestamp(timestamp),
+    level,
+    source,
+    taskId: fields.taskId || '',
+    command: fields.command || '',
+    stage: fields.stage || '',
+    message: fields.message || details,
+    details: [details, fieldDetails].filter(Boolean).join(' '),
+    raw,
+  }
+}
+
+function formatDebugLogTimestamp(value: string) {
+  const epoch = value.match(/^(\d+)\.(\d{3})Z?$/)
+  const date = epoch
+    ? new Date(Number(epoch[1]) * 1000 + Number(epoch[2]))
+    : new Date(value)
+  if (!Number.isFinite(date.getTime())) return value
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`
+}
+
+function syncRuntimeOverrideFromCurrent(force = false) {
+  if (!force && runtimeOverrideDirty.value) return
+  const defaults = currentRuntimeOverrideDefaults.value
+  runtimeOverrideBackend.value = defaults.backend
+  runtimeOverridePythonPath.value = defaults.pythonPath
+  runtimeOverrideDirty.value = false
+}
+
+function resetRuntimeOverrideForm() {
+  syncRuntimeOverrideFromCurrent(true)
+}
+
+function markRuntimeOverrideDirty() {
+  runtimeOverrideDirty.value = true
+}
+
 async function overrideActiveRuntimePointer() {
   if (!developerMode.value || !runtimeOverrideBackend.value || !runtimeOverridePythonPath.value.trim()) return
   runtimeDebugSaving.value = 'active-runtime'
@@ -924,6 +1033,8 @@ async function overrideActiveRuntimePointer() {
     })
     setRuntimeDebugInfo(info)
     await app.checkRuntimeInfo().catch(() => {})
+    runtimeOverrideDirty.value = false
+    syncRuntimeOverrideFromCurrent(true)
     message.success(t('debug.runtimeDebugOverrideSaved'))
   } catch (error) {
     message.error(error instanceof Error ? error.message : String(error))
@@ -957,6 +1068,14 @@ watch(debugModelOptions, (options) => {
     debugModelConfig.value = null
     debugConfigText.value = ''
   }
+})
+
+watch(currentRuntimeOverrideDefaults, () => {
+  syncRuntimeOverrideFromCurrent()
+}, { immediate: true })
+
+watch(activeTab, (tab) => {
+  if (tab === 'logs') scrollDebugLogToLatest().catch(() => {})
 })
 
 watch(developerMode, (enabled) => {
@@ -1130,90 +1249,155 @@ watch(developerMode, (enabled) => {
 
     <n-card v-if="activeTab === 'runtime'" class="debug-card" :bordered="true" size="small">
       <template #header>
-        <div class="debug-section-title">
-          <n-icon :component="FolderOpenOutline" />
-          <span>{{ t('debug.runtimeTreeTitle') }}</span>
-        </div>
-      </template>
-      <section class="runtime-debug-panel">
-        <div class="runtime-debug-toolbar">
-          <strong>{{ t('debug.runtimeDebugPointerTitle') }}</strong>
+        <div class="runtime-card-header">
+          <div class="debug-section-title">
+            <n-icon :component="FolderOpenOutline" />
+            <span>{{ t('debug.runtimePageTitle') }}</span>
+          </div>
           <n-button size="tiny" secondary :loading="runtimeDebugLoading" @click="loadRuntimeDebugPointers">
             {{ t('common.refresh') }}
           </n-button>
         </div>
-        <div class="kv-list">
-          <div v-for="row in runtimeDebugRows" :key="row.label" class="kv-row">
+      </template>
+      <section class="runtime-status-panel">
+        <div class="runtime-panel-copy">
+          <strong>{{ t('debug.runtimeCurrentTitle') }}</strong>
+          <p>{{ t('debug.runtimeCurrentHint') }}</p>
+        </div>
+        <div class="runtime-status-grid">
+          <div v-for="row in runtimeStatusRows" :key="row.label" class="runtime-status-item">
             <span>{{ row.label }}</span>
             <code :title="row.value || '-'">{{ row.value || '-' }}</code>
           </div>
         </div>
-        <div class="runtime-override-form">
-          <n-select v-model:value="runtimeOverrideBackend" size="small" :options="runtimeBackendOptions" />
-          <n-input v-model:value="runtimeOverridePythonPath" size="small" :placeholder="t('debug.runtimeDebugPythonPathPlaceholder')" />
-          <n-button size="small" type="primary" secondary :loading="runtimeDebugSaving === 'active-runtime'" :disabled="!developerMode || !runtimeOverridePythonPath.trim()" @click="overrideActiveRuntimePointer">
-            {{ t('debug.runtimeDebugOverrideActive') }}
-          </n-button>
-        </div>
       </section>
-      <section class="runtime-file-editor-list">
-        <article v-if="runtimeDebugActiveFile" class="runtime-file-editor">
-          <div class="runtime-file-editor__head">
-            <div class="runtime-file-editor__title">
-              <strong>active-runtime</strong>
-              <span>{{ runtimeDebugActiveFile.source }} · {{ runtimeDebugActiveFile.exists ? t('debug.runtimeDebugFileExists') : t('debug.runtimeDebugFileMissing') }}</span>
-            </div>
-            <div class="runtime-file-editor__actions">
-              <n-button size="tiny" secondary :disabled="!runtimeDebugActiveFile.path" @click="revealPath(runtimeDebugActiveFile.path)">{{ t('common.open') }}</n-button>
-              <n-button size="tiny" secondary :disabled="!developerMode || !runtimeDebugActiveFile.editable" @click="openRuntimeDebugEditor(runtimeDebugActiveFile)">{{ t('debug.runtimeDebugEdit') }}</n-button>
-              <n-button size="tiny" secondary :disabled="!developerMode || !runtimeDebugActiveFile.backupExists" :loading="runtimeDebugSaving === runtimeDebugActiveFile.path" @click="restoreRuntimeDebugFile(runtimeDebugActiveFile)">{{ t('debug.runtimeDebugRestore') }}</n-button>
+
+      <div class="runtime-page-grid">
+        <section class="runtime-info-section runtime-info-section--wide">
+          <div class="runtime-section-head">
+            <div>
+              <strong>{{ t('debug.runtimePointerTitle') }}</strong>
+              <p>{{ t('debug.runtimePointerHint') }}</p>
             </div>
           </div>
-          <button type="button" class="runtime-file-editor__path-button" :disabled="!developerMode || !runtimeDebugActiveFile.editable" :title="t('debug.runtimeDebugEdit')" @click="openRuntimeDebugEditor(runtimeDebugActiveFile)">
-            <code class="runtime-file-editor__path">{{ runtimeDebugActiveFile.path }}</code>
-          </button>
-        </article>
-        <article v-for="envItem in runtimeDebugEnvironments" :key="`${envItem.backend}-${envItem.pythonPath}`" class="runtime-file-editor">
-          <div class="runtime-file-editor__head">
-            <div class="runtime-file-editor__title">
-              <strong>{{ envItem.backend }}</strong>
-              <span>{{ envItem.source }} · {{ envItem.editableFile ? t('debug.runtimeDebugConfigFile') : t('debug.runtimeDebugNoConfigFile') }}</span>
-            </div>
-            <div class="runtime-file-editor__actions">
-              <n-button size="tiny" secondary :disabled="!envItem.pythonPath" @click="revealPath(envItem.pythonPath)">{{ t('common.open') }}</n-button>
-              <n-button size="tiny" secondary :disabled="!developerMode || !envItem.editableFile?.editable" @click="envItem.editableFile && openRuntimeDebugEditor(envItem.editableFile)">{{ t('debug.runtimeDebugEdit') }}</n-button>
-              <n-button size="tiny" secondary :disabled="!developerMode || !envItem.editableFile?.backupExists" :loading="runtimeDebugSaving === envItem.editablePath" @click="envItem.editableFile && restoreRuntimeDebugFile(envItem.editableFile)">{{ t('debug.runtimeDebugRestore') }}</n-button>
+          <div class="kv-list runtime-pointer-list">
+            <div v-for="row in runtimePointerRows" :key="row.label" class="kv-row">
+              <span>{{ row.label }}</span>
+              <code :title="row.value || '-'">{{ row.value || '-' }}</code>
             </div>
           </div>
-          <button v-if="envItem.editableFile" type="button" class="runtime-file-editor__path-button" :disabled="!developerMode || !envItem.editableFile.editable" :title="t('debug.runtimeDebugEdit')" @click="openRuntimeDebugEditor(envItem.editableFile)">
-            <code class="runtime-file-editor__path runtime-file-editor__path--config">{{ envItem.editablePath }}</code>
-          </button>
-        </article>
-        <n-empty v-if="!runtimeDebugActiveFile && !runtimeDebugEnvironments.length" :description="t('debug.runtimeDebugNoFiles')" />
-      </section>
-      <div class="runtime-tree">
-        <div v-for="node in runtimeTree" :key="node.name" class="runtime-tree__node">
-          <div class="runtime-tree__head">
-            <span class="runtime-tree__chevron" aria-hidden="true">›</span>
-            <strong>{{ node.name }}</strong>
-            <span class="runtime-tree__role">{{ node.role }}</span>
-            <em>{{ node.source }}</em>
+        </section>
+
+        <section class="runtime-info-section">
+          <div class="runtime-section-head">
+            <div>
+              <strong>{{ t('debug.runtimeEditableTitle') }}</strong>
+              <p>{{ t('debug.runtimeEditableHint') }}</p>
+            </div>
           </div>
-          <code class="runtime-tree__path" :title="node.path">{{ node.path }}</code>
-          <div v-if="node.children.length" class="runtime-tree__children">
-            <div v-for="child in node.children" :key="`${node.name}-${child.name}`" class="runtime-tree__child">
-              <span class="runtime-tree__branch" aria-hidden="true">└</span>
-              <div class="runtime-tree__child-main">
-                <div class="runtime-tree__child-head">
-                  <strong>{{ child.name }}</strong>
-                  <span>{{ child.role }}</span>
+          <div class="runtime-file-editor-list">
+            <article v-if="runtimeDebugActiveFile" class="runtime-file-editor runtime-file-editor--primary">
+              <div class="runtime-file-editor__head">
+                <div class="runtime-file-editor__title">
+                  <strong>active-runtime</strong>
+                  <span>{{ runtimeDebugActiveFile.source }} · {{ runtimeDebugActiveFile.exists ? t('debug.runtimeDebugFileExists') : t('debug.runtimeDebugFileMissing') }}</span>
                 </div>
-                <code :title="child.path">{{ child.path }}</code>
+                <div class="runtime-file-editor__actions">
+                  <n-button size="tiny" secondary :disabled="!runtimeDebugActiveFile.path" @click="revealPath(runtimeDebugActiveFile.path)">{{ t('common.open') }}</n-button>
+                  <n-button size="tiny" secondary :disabled="!developerMode || !runtimeDebugActiveFile.editable" @click="openRuntimeDebugEditor(runtimeDebugActiveFile)">{{ t('debug.runtimeDebugEdit') }}</n-button>
+                  <n-button size="tiny" secondary :disabled="!developerMode || !runtimeDebugActiveFile.backupExists" :loading="runtimeDebugSaving === runtimeDebugActiveFile.path" @click="restoreRuntimeDebugFile(runtimeDebugActiveFile)">{{ t('debug.runtimeDebugRestore') }}</n-button>
+                </div>
+              </div>
+              <button type="button" class="runtime-file-editor__path-button" :disabled="!developerMode || !runtimeDebugActiveFile.editable" :title="t('debug.runtimeDebugEdit')" @click="openRuntimeDebugEditor(runtimeDebugActiveFile)">
+                <code class="runtime-file-editor__path">{{ runtimeDebugActiveFile.path }}</code>
+              </button>
+            </article>
+            <article v-for="envItem in runtimeDebugEnvironments" :key="`${envItem.backend}-${envItem.pythonPath}`" class="runtime-file-editor">
+              <div class="runtime-file-editor__head">
+                <div class="runtime-file-editor__title">
+                  <strong>{{ envItem.backend }}</strong>
+                  <span>{{ envItem.source }} · {{ envItem.editableFile ? t('debug.runtimeDebugConfigFile') : t('debug.runtimeDebugNoConfigFile') }}</span>
+                </div>
+                <div class="runtime-file-editor__actions">
+                  <n-button size="tiny" secondary :disabled="!envItem.pythonPath" @click="revealPath(envItem.pythonPath)">{{ t('debug.runtimeOpenPython') }}</n-button>
+                  <n-button size="tiny" secondary :disabled="!developerMode || !envItem.editableFile?.editable" @click="envItem.editableFile && openRuntimeDebugEditor(envItem.editableFile)">{{ t('debug.runtimeDebugEdit') }}</n-button>
+                  <n-button size="tiny" secondary :disabled="!developerMode || !envItem.editableFile?.backupExists" :loading="runtimeDebugSaving === envItem.editablePath" @click="envItem.editableFile && restoreRuntimeDebugFile(envItem.editableFile)">{{ t('debug.runtimeDebugRestore') }}</n-button>
+                </div>
+              </div>
+              <div class="runtime-file-editor__paths">
+                <div>
+                  <span>{{ t('debug.runtimePythonExecutable') }}</span>
+                  <code :title="envItem.pythonPath || '-'">{{ envItem.pythonPath || '-' }}</code>
+                </div>
+                <button v-if="envItem.editableFile" type="button" class="runtime-file-editor__path-button" :disabled="!developerMode || !envItem.editableFile.editable" :title="t('debug.runtimeDebugEdit')" @click="openRuntimeDebugEditor(envItem.editableFile)">
+                  <span>{{ t('debug.runtimeVenvConfig') }}</span>
+                  <code class="runtime-file-editor__path runtime-file-editor__path--config">{{ envItem.editablePath }}</code>
+                </button>
+              </div>
+            </article>
+            <n-empty v-if="!runtimeDebugActiveFile && !runtimeDebugEnvironments.length" :description="t('debug.runtimeDebugNoFiles')" />
+          </div>
+        </section>
+
+        <section class="runtime-info-section">
+          <div class="runtime-section-head">
+            <div>
+              <strong>{{ t('debug.runtimeOverrideTitle') }}</strong>
+              <p>{{ t('debug.runtimeOverrideHint') }}</p>
+            </div>
+          </div>
+          <div class="runtime-override-form">
+            <label>
+              <span>{{ t('debug.runtimeOverrideBackend') }}</span>
+              <n-select v-model:value="runtimeOverrideBackend" size="small" :options="runtimeBackendOptions" @update:value="markRuntimeOverrideDirty" />
+            </label>
+            <label>
+              <span>{{ t('debug.runtimeOverridePythonPath') }}</span>
+              <n-input v-model:value="runtimeOverridePythonPath" size="small" :placeholder="t('debug.runtimeDebugPythonPathPlaceholder')" @update:value="markRuntimeOverrideDirty" />
+            </label>
+            <div class="runtime-override-actions">
+              <n-button size="small" secondary @click="resetRuntimeOverrideForm">
+                {{ t('debug.runtimeOverrideReset') }}
+              </n-button>
+              <n-button size="small" type="primary" secondary :loading="runtimeDebugSaving === 'active-runtime'" :disabled="!developerMode || !runtimeOverridePythonPath.trim()" @click="overrideActiveRuntimePointer">
+                {{ t('debug.runtimeDebugOverrideActive') }}
+              </n-button>
+            </div>
+          </div>
+        </section>
+
+        <section class="runtime-info-section runtime-info-section--wide">
+          <div class="runtime-section-head">
+            <div>
+              <strong>{{ t('debug.runtimeTreeTitle') }}</strong>
+              <p>{{ t('debug.runtimeTreeHint') }}</p>
+            </div>
+          </div>
+          <div class="runtime-tree">
+            <div v-for="node in runtimeTree" :key="node.name" class="runtime-tree__node">
+              <div class="runtime-tree__head">
+                <span class="runtime-tree__chevron" aria-hidden="true">›</span>
+                <strong>{{ node.name }}</strong>
+                <span class="runtime-tree__role">{{ node.role }}</span>
+                <em>{{ node.source }}</em>
+              </div>
+              <code class="runtime-tree__path" :title="node.path">{{ node.path }}</code>
+              <div v-if="node.children.length" class="runtime-tree__children">
+                <div v-for="child in node.children" :key="`${node.name}-${child.name}`" class="runtime-tree__child">
+                  <span class="runtime-tree__branch" aria-hidden="true">└</span>
+                  <div class="runtime-tree__child-main">
+                    <div class="runtime-tree__child-head">
+                      <strong>{{ child.name }}</strong>
+                      <span>{{ child.role }}</span>
+                    </div>
+                    <code :title="child.path">{{ child.path }}</code>
+                  </div>
+                </div>
               </div>
             </div>
+            <n-empty v-if="!app.runtimeInfo" :description="t('debug.envNotChecked')" />
           </div>
-        </div>
-        <n-empty v-if="!app.runtimeInfo" :description="t('debug.envNotChecked')" />
+        </section>
       </div>
     </n-card>
 
@@ -1561,7 +1745,26 @@ watch(developerMode, (enabled) => {
       <n-alert v-if="debugLogContent?.truncated" type="warning" :show-icon="true">
         {{ t('debug.logTailHint') }}
       </n-alert>
-      <pre v-if="debugLogContent?.content" class="debug-log-content">{{ debugLogContent.content }}</pre>
+      <section v-if="parsedDebugLogLines.length" class="debug-log-viewer">
+        <div class="debug-log-viewer__head">
+          <span>{{ t('debug.logEntryCount', { count: parsedDebugLogLines.length }) }}</span>
+          <span>{{ t('debug.logLatestHint') }}</span>
+        </div>
+        <div ref="debugLogScroller" class="debug-log-terminal" role="log" aria-live="polite">
+          <article
+            v-for="line in parsedDebugLogLines"
+            :key="line.id"
+            class="debug-log-terminal__line"
+            :class="`debug-log-line--${line.level.toLowerCase() || 'plain'}`"
+            :title="line.raw"
+          >
+            <code class="debug-log-terminal__time">{{ line.timestamp || '-' }}</code>
+            <span class="debug-log-terminal__level">{{ line.level || '-' }}</span>
+            <code class="debug-log-terminal__source">{{ line.source || '-' }}</code>
+            <span class="debug-log-terminal__text">{{ line.message || line.details }}{{ line.message && line.details ? ` ${line.details}` : '' }}</span>
+          </article>
+        </div>
+      </section>
       <n-empty v-else :description="t('debug.logEmpty')" />
     </n-card>
     </div>
@@ -1909,20 +2112,117 @@ watch(developerMode, (enabled) => {
   padding: 14px 18px 18px;
 }
 
+.runtime-card-header,
+.runtime-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.runtime-status-panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.62fr) minmax(0, 1.38fr);
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--outline));
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--primary) 9%, transparent), transparent 58%),
+    color-mix(in srgb, var(--surface-2) 38%, transparent);
+}
+
+.runtime-panel-copy,
+.runtime-section-head > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.runtime-panel-copy strong,
+.runtime-section-head strong {
+  color: var(--on-surface);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.runtime-panel-copy p,
+.runtime-section-head p {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.runtime-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.runtime-status-item {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-1) 68%, transparent);
+}
+
+.runtime-status-item span,
+.runtime-override-form label span,
+.runtime-file-editor__paths span {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+}
+
+.runtime-status-item code,
+.runtime-file-editor__paths code {
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--on-surface) 88%, var(--on-surface-muted));
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-page-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
+  gap: 14px;
+}
+
+.runtime-info-section {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 28%, transparent);
+}
+
+.runtime-info-section--wide {
+  grid-column: 1 / -1;
+}
+
+.runtime-pointer-list .kv-row {
+  grid-template-columns: 150px minmax(0, 1fr);
+}
+
 .runtime-tree {
   display: grid;
   gap: 10px;
   font-size: 12px;
 }
 
-.runtime-debug-panel,
 .runtime-file-editor-list {
   display: grid;
-  gap: 10px;
-  margin-bottom: 14px;
-}
-
-.runtime-file-editor-list {
   gap: 0;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
@@ -1930,7 +2230,6 @@ watch(developerMode, (enabled) => {
   background: color-mix(in srgb, var(--surface-2) 30%, transparent);
 }
 
-.runtime-debug-toolbar,
 .runtime-file-editor__head,
 .runtime-file-editor__actions {
   display: flex;
@@ -1938,16 +2237,26 @@ watch(developerMode, (enabled) => {
   gap: 8px;
 }
 
-.runtime-debug-toolbar,
 .runtime-file-editor__head {
   justify-content: space-between;
 }
 
 .runtime-override-form {
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.runtime-override-form label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.runtime-override-actions {
+  display: flex;
+  justify-content: flex-end;
   gap: 8px;
-  align-items: center;
+  padding-top: 2px;
 }
 
 .runtime-file-editor {
@@ -1998,6 +2307,18 @@ watch(developerMode, (enabled) => {
   color: color-mix(in srgb, var(--on-surface-muted) 88%, var(--primary));
 }
 
+.runtime-file-editor__paths {
+  display: grid;
+  gap: 8px;
+}
+
+.runtime-file-editor__paths > div,
+.runtime-file-editor__paths > button {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
 .runtime-file-editor__path-button {
   min-width: 0;
   padding: 0;
@@ -2045,21 +2366,89 @@ watch(developerMode, (enabled) => {
   margin-bottom: 12px;
 }
 
-.debug-log-content {
+.debug-log-viewer {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.debug-log-viewer__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.debug-log-terminal {
   overflow: auto;
   max-height: min(58vh, 620px);
-  margin: 12px 0 0;
-  padding: 14px;
   border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
   border-radius: 10px;
   background: color-mix(in srgb, #0c111d 92%, var(--surface-1));
   color: #d9e2f1;
   font-family: "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
   font-size: 12px;
-  line-height: 1.65;
+  line-height: 1.5;
+}
+
+.debug-log-terminal__line {
+  display: grid;
+  grid-template-columns: 72px 38px 92px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 5px;
+  min-width: 560px;
+  padding: 1px 8px;
+}
+
+.debug-log-terminal__line:hover {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.debug-log-terminal__time,
+.debug-log-terminal__source,
+.debug-log-terminal__text {
+  min-width: 0;
+}
+
+.debug-log-terminal__time {
+  overflow: hidden;
+  color: #94a3b8;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-log-terminal__level {
+  justify-self: start;
+  min-width: 38px;
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.debug-log-terminal__source {
+  overflow: hidden;
+  color: #a5b4fc;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-log-terminal__text {
+  color: #e2e8f0;
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.debug-log-line--info .debug-log-terminal__level { color: #86efac; }
+.debug-log-line--warn .debug-log-terminal__level { color: #facc15; }
+.debug-log-line--error .debug-log-terminal__level,
+.debug-log-line--fatal .debug-log-terminal__level { color: #fca5a5; }
+.debug-log-line--debug .debug-log-terminal__level { color: #93c5fd; }
+.debug-log-line--trace .debug-log-terminal__level { color: #c4b5fd; }
+.debug-log-line--py .debug-log-terminal__level { color: #f9a8d4; }
 
 .runtime-tree__node {
   padding: 12px 14px;
@@ -2324,7 +2713,10 @@ watch(developerMode, (enabled) => {
 @media (max-width: 980px) {
   .debug-status-grid,
   .debug-grid,
-  .debug-model-workbench {
+  .debug-model-workbench,
+  .runtime-status-panel,
+  .runtime-status-grid,
+  .runtime-page-grid {
     grid-template-columns: 1fr;
   }
 
@@ -2336,7 +2728,6 @@ watch(developerMode, (enabled) => {
   .path-debug-row,
   .task-debug-row,
   .debug-config-controls,
-  .runtime-override-form,
   .worker-event-row {
     grid-template-columns: 1fr;
   }

@@ -12,8 +12,8 @@ from typing import Any
 WORKER_VERSION = "0.1.0"
 TERMINAL_LOG_PREFIX = "__PYMSS_STUDIO_TERMINAL_LOG__"
 MAX_LOG_LINE_CHARS = 8 * 1024
-MAX_LOG_BYTES = 50 * 1024 * 1024
-MAX_PERSISTENT_LOG_BYTES = 100 * 1024 * 1024
+MAX_LOG_BYTES = 5 * 1024 * 1024
+MAX_PERSISTENT_LOG_BYTES = 10 * 1024 * 1024
 SENSITIVE_KEY_RE = re.compile(r"(password|passwd|token|secret|authorization|api[_-]?key|proxy[-_]?pass)", re.IGNORECASE)
 URL_CREDENTIALS_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^\s/@]+@", re.IGNORECASE)
 SENSITIVE_VALUE_RE = re.compile(
