@@ -75,6 +75,8 @@ type BuildInfo = {
   gitRef: string
   runId: string
   runAttempt: string
+  repository: string
+  repositoryOwner: string
   buildTime: string
   target: string
   variant: string
@@ -87,6 +89,8 @@ const updateChecking = ref(false)
 const updateInstalling = ref(false)
 const appVersion = computed(() => buildInfo.value?.version || packageMeta.version || '0.0.0')
 const repoUrl = 'https://github.com/pymss-project/pymss-studio'
+const officialRepository = 'pymss-project/pymss-studio'
+const officialRepositoryOwner = 'pymss-project'
 const coreRepoUrl = 'https://github.com/pymss-project/pymss'
 const licenseUrl = 'https://www.gnu.org/licenses/agpl-3.0.html'
 const coreLicenseUrl = 'https://github.com/pymss-project/pymss/blob/main/LICENSE'
@@ -544,9 +548,15 @@ const buildRunLabel = computed(() => {
 const buildFingerprint = computed(() => {
   const info = buildInfo.value
   if (!info) return t('common.unknown')
-  const parts = [info.gitTag || info.gitRef, buildCommitShort.value, info.variant, buildRunLabel.value].filter(Boolean)
+  const parts = [info.gitTag || info.gitRef, buildCommitShort.value, info.variant, buildRunLabel.value, info.repository].filter(Boolean)
   return parts.length ? parts.join(' · ') : t('settings.buildFingerprintUnavailable')
 })
+function isOfficialRepositoryBuild(info: BuildInfo) {
+  return info.official
+    && info.repository === officialRepository
+    && info.repositoryOwner === officialRepositoryOwner
+    && Boolean(info.gitCommit && info.runId)
+}
 const buildVerification = computed(() => {
   const info = buildInfo.value
   if (!info) {
@@ -556,11 +566,18 @@ const buildVerification = computed(() => {
       description: t('settings.buildStatusUnknownDesc'),
     }
   }
-  if (info.official && info.gitCommit && info.runId) {
+  if (isOfficialRepositoryBuild(info)) {
     return {
       label: t('settings.buildStatusOfficial'),
       tone: 'official',
       description: t('settings.buildStatusOfficialDesc'),
+    }
+  }
+  if (info.gitCommit && info.runId) {
+    return {
+      label: t('settings.buildStatusCi'),
+      tone: 'development',
+      description: t('settings.buildStatusCiDesc'),
     }
   }
   return {

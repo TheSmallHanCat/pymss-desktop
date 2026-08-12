@@ -54,9 +54,11 @@ jobs:
           PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
           PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
           PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PYMSS_BUILD_REPOSITORY: ${{ github.repository }}
+          PYMSS_BUILD_REPOSITORY_OWNER: ${{ github.repository_owner }}
           PYMSS_BUILD_TARGET: windows-x64
           PYMSS_BUILD_VARIANT: windows-x64-cuda
-          PYMSS_BUILD_OFFICIAL: 'true'
+          PYMSS_BUILD_OFFICIAL: ${{ github.repository == 'pymss-project/pymss-studio' && github.repository_owner == 'pymss-project' && 'true' || 'false' }}
         run: pnpm tauri build --no-bundle
 
       - name: Prepare Windows bundled tools
@@ -224,9 +226,11 @@ jobs:
           PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
           PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
           PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PYMSS_BUILD_REPOSITORY: ${{ github.repository }}
+          PYMSS_BUILD_REPOSITORY_OWNER: ${{ github.repository_owner }}
           PYMSS_BUILD_TARGET: windows-x64
           PYMSS_BUILD_VARIANT: windows-x64-cpu
-          PYMSS_BUILD_OFFICIAL: 'true'
+          PYMSS_BUILD_OFFICIAL: ${{ github.repository == 'pymss-project/pymss-studio' && github.repository_owner == 'pymss-project' && 'true' || 'false' }}
         run: pnpm tauri build --no-bundle
 
       - name: Prepare Windows bundled tools
@@ -377,10 +381,12 @@ jobs:
           PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
           PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
           PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PYMSS_BUILD_REPOSITORY: ${{ github.repository }}
+          PYMSS_BUILD_REPOSITORY_OWNER: ${{ github.repository_owner }}
           PYMSS_BUILD_TARGET: windows-x64
           PYMSS_BUILD_VARIANT: windows-x64-online
           PYMSS_BUILD_UPDATE_SUPPORTED: 'true'
-          PYMSS_BUILD_OFFICIAL: 'true'
+          PYMSS_BUILD_OFFICIAL: ${{ github.repository == 'pymss-project/pymss-studio' && github.repository_owner == 'pymss-project' && 'true' || 'false' }}
         run: pnpm tauri build --no-bundle
       - name: Prepare Windows bundled tools
         shell: pwsh
@@ -406,10 +412,12 @@ jobs:
           PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
           PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
           PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PYMSS_BUILD_REPOSITORY: ${{ github.repository }}
+          PYMSS_BUILD_REPOSITORY_OWNER: ${{ github.repository_owner }}
           PYMSS_BUILD_TARGET: windows-x64
           PYMSS_BUILD_VARIANT: windows-x64-online
           PYMSS_BUILD_UPDATE_SUPPORTED: 'true'
-          PYMSS_BUILD_OFFICIAL: 'true'
+          PYMSS_BUILD_OFFICIAL: ${{ github.repository == 'pymss-project/pymss-studio' && github.repository_owner == 'pymss-project' && 'true' || 'false' }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -546,9 +554,11 @@ jobs:
           PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
           PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
           PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PYMSS_BUILD_REPOSITORY: ${{ github.repository }}
+          PYMSS_BUILD_REPOSITORY_OWNER: ${{ github.repository_owner }}
           PYMSS_BUILD_TARGET: windows-x64
           PYMSS_BUILD_VARIANT: windows-x64-rocm
-          PYMSS_BUILD_OFFICIAL: 'true'
+          PYMSS_BUILD_OFFICIAL: ${{ github.repository == 'pymss-project/pymss-studio' && github.repository_owner == 'pymss-project' && 'true' || 'false' }}
         run: pnpm tauri build --no-bundle
       - name: Prepare ROCm portable tools
         shell: pwsh

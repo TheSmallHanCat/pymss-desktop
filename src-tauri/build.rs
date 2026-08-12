@@ -8,6 +8,8 @@ fn main() {
         "PYMSS_BUILD_GIT_REF",
         "PYMSS_BUILD_RUN_ID",
         "PYMSS_BUILD_RUN_ATTEMPT",
+        "PYMSS_BUILD_REPOSITORY",
+        "PYMSS_BUILD_REPOSITORY_OWNER",
         "PYMSS_BUILD_TIME",
         "PYMSS_BUILD_TARGET",
         "PYMSS_BUILD_VARIANT",

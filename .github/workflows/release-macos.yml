@@ -88,9 +88,11 @@ jobs:
           PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
           PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
           PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PYMSS_BUILD_REPOSITORY: ${{ github.repository }}
+          PYMSS_BUILD_REPOSITORY_OWNER: ${{ github.repository_owner }}
           PYMSS_BUILD_TARGET: macos-arm64
           PYMSS_BUILD_VARIANT: macos-arm64-mlx
-          PYMSS_BUILD_OFFICIAL: 'true'
+          PYMSS_BUILD_OFFICIAL: ${{ github.repository == 'pymss-project/pymss-studio' && github.repository_owner == 'pymss-project' && 'true' || 'false' }}
         run: |
           python3 - <<'PY' > src-tauri/tauri.bundle.resources.json
           import json
