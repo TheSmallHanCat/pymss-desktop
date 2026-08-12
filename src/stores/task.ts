@@ -134,7 +134,6 @@ type PersistedSeparateState = {
   modelListViewMode?: 'card' | 'list'
   modelListSortMode?: ModelListSortMode
   useTta?: boolean
-  debug?: boolean
   inferenceParamsByModel?: Record<string, PersistedSeparateModelState>
 }
 
@@ -537,7 +536,6 @@ export const useTaskStore = defineStore('task', () => {
   const modelListViewMode = ref<'card' | 'list'>('card')
   const modelListSortMode = ref<ModelListSortMode>('usage')
   const useTta = ref(false)
-  const debug = ref(false)
   const batch_size = ref<number | null>(1)
   const overlap_size = ref<number | null>(0)
   const num_overlap = ref<number | null>(0)
@@ -593,7 +591,6 @@ export const useTaskStore = defineStore('task', () => {
       modelListViewMode: modelListViewMode.value,
       modelListSortMode: modelListSortMode.value,
       useTta: useTta.value,
-      debug: debug.value,
       inferenceParamsByModel: JSON.parse(JSON.stringify(persistedSeparateModelState.value)),
     }
   }
@@ -750,7 +747,6 @@ export const useTaskStore = defineStore('task', () => {
       ? separateStored?.modelListSortMode as ModelListSortMode
       : 'usage'
     useTta.value = separateStored?.useTta === true
-    debug.value = separateStored?.debug === true
     persistedSeparateModelState.value = Object.fromEntries(
       Object.entries(separateStored?.inferenceParamsByModel || {})
         .map(([name, value]) => {
@@ -763,7 +759,7 @@ export const useTaskStore = defineStore('task', () => {
 
   watch(
     [separateRunMode, ensembleEnabled, ensembleModels, ensembleStem, ensembleModelStems, ensembleType, ensembleWeights, separateTemporaryOutputDir,
-      separateOutputLayout, separateOutputNamingTemplate, separateCustomStemOrder, modelListViewMode, modelListSortMode, useTta, debug],
+      separateOutputLayout, separateOutputNamingTemplate, separateCustomStemOrder, modelListViewMode, modelListSortMode, useTta],
     () => {
       if (applyingModelDefaults) return
       queueSeparateStatePersist()
@@ -944,7 +940,7 @@ export const useTaskStore = defineStore('task', () => {
       outputFormat: settings.defaultFormat,
       selectedStems: [...selectedStems.value],
       useTta: useTta.value,
-      debug: debug.value,
+      debug: settings.developerMode,
       audioParams: settings.getAudioParams(),
       inferenceParamsVersion: CURRENT_INFERENCE_PARAMS_VERSION,
       inferenceParams,
@@ -1016,7 +1012,7 @@ export const useTaskStore = defineStore('task', () => {
       outputFormat: workflowFormat,
       selectedStems: [],
       useTta: useTta.value,
-      debug: debug.value,
+      debug: settings.developerMode,
       audioParams: settings.getAudioParams(),
       inferenceParamsVersion: CURRENT_INFERENCE_PARAMS_VERSION,
       inferenceParams: {},
@@ -2008,7 +2004,6 @@ export const useTaskStore = defineStore('task', () => {
     modelListViewMode,
     modelListSortMode,
     useTta,
-    debug,
     batch_size,
     overlap_size,
     num_overlap,

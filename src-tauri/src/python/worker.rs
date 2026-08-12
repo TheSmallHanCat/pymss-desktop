@@ -579,6 +579,7 @@ fn log_worker_event(app: &AppHandle, command: &str, envelope: &WorkerEnvelope) {
             ("code", payload.get("code").and_then(Value::as_str).unwrap_or_default().to_string()),
             ("stage", payload.get("stage").and_then(Value::as_str).unwrap_or_default().to_string()),
             ("message", payload.get("message").and_then(Value::as_str).unwrap_or_default().to_string()),
+            ("detail", payload.get("detail").and_then(Value::as_str).unwrap_or_default().to_string()),
             ("logPath", payload.get("logPath").and_then(Value::as_str).unwrap_or_default().to_string()),
         ],
     );

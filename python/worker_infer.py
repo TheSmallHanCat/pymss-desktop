@@ -29,7 +29,13 @@ class JsonLogHandler:
     def handle(self, record: Any) -> bool:
         if record.levelno < self.level:
             return False
-        emit("task_log", {"level": record.levelname.lower(), "message": record.getMessage()}, task_id=self.task_id)
+        payload = {"level": record.levelname.lower(), "message": record.getMessage()}
+        if record.exc_info:
+            import logging
+            payload["detail"] = logging.Formatter().formatException(record.exc_info)
+        elif getattr(record, "stack_info", None):
+            payload["detail"] = record.stack_info
+        emit("task_log", payload, task_id=self.task_id)
         return True
 
 

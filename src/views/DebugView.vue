@@ -36,6 +36,8 @@ const { downloadTasks } = storeToRefs(modelStore)
 
 type DebugTab = 'overview' | 'runtime' | 'models' | 'events' | 'logs' | 'paths'
 type CatalogEditMode = 'simple' | 'advanced'
+type DebugLogLevelFilter = 'all' | 'error' | 'warn' | 'info' | 'debug'
+type DebugLogCategoryFilter = 'all' | 'issues' | 'traceback' | 'pymss' | 'worker' | 'app' | 'runtime' | 'store' | 'other'
 type DebugCatalogInfo = {
   baseCatalogPath: string
   debugCatalogPath: string
@@ -132,13 +134,20 @@ type DebugLogReport = {
 type ParsedDebugLogLine = {
   id: string
   timestamp: string
+  severity: DebugLogLevelFilter
   level: string
   source: string
+  sourceKind: string
+  category: DebugLogCategoryFilter
   taskId: string
   command: string
   stage: string
   message: string
   details: string
+  location: string
+  traceback: string
+  hasIssue: boolean
+  fields: Record<string, string>
   raw: string
 }
 
@@ -178,6 +187,12 @@ const debugLogReportLoading = ref(false)
 const debugLogInfo = ref<DebugLogInfo | null>(null)
 const debugLogContent = ref<DebugLogContent | null>(null)
 const debugLogScroller = ref<HTMLElement | null>(null)
+const debugLogQuery = ref('')
+const debugLogLevel = ref<DebugLogLevelFilter>('all')
+const debugLogSource = ref('all')
+const debugLogCategory = ref<DebugLogCategoryFilter>('all')
+const debugLogTask = ref('all')
+const expandedDebugLogLines = ref<Record<string, boolean>>({})
 
 const diagnostics = computed(() => app.diagnostics)
 const env = computed(() => app.envInfo)
@@ -576,6 +591,60 @@ const parsedDebugLogLines = computed(() => (debugLogContent.value?.content || ''
   .split(/\r?\n/)
   .filter(Boolean)
   .map((line, index) => parseDebugLogLine(line, index)))
+const debugLogLevelOptions = computed(() => [
+  { label: t('debug.logFilterAllLevels'), value: 'all' },
+  { label: 'ERROR', value: 'error' },
+  { label: 'WARN', value: 'warn' },
+  { label: 'INFO', value: 'info' },
+  { label: 'DEBUG', value: 'debug' },
+] as Array<{ label: string; value: DebugLogLevelFilter }>)
+const debugLogSourceOptions = computed(() => {
+  const sources = Array.from(new Set(parsedDebugLogLines.value.map((line) => line.sourceKind).filter(Boolean))).sort()
+  return [
+    { label: t('debug.logFilterAllSources'), value: 'all' },
+    ...sources.map((source) => ({ label: logSourceLabel(source), value: source })),
+  ]
+})
+const debugLogCategoryOptions = computed(() => [
+  { label: t('debug.logCategoryAll'), value: 'all' },
+  { label: t('debug.logCategoryIssues'), value: 'issues' },
+  { label: t('debug.logCategoryTraceback'), value: 'traceback' },
+  { label: 'pymss', value: 'pymss' },
+  { label: 'Worker', value: 'worker' },
+  { label: 'App', value: 'app' },
+  { label: t('debug.logCategoryRuntime'), value: 'runtime' },
+  { label: t('debug.logCategoryStore'), value: 'store' },
+  { label: t('debug.logCategoryOther'), value: 'other' },
+] as Array<{ label: string; value: DebugLogCategoryFilter }>)
+const debugLogTaskOptions = computed(() => {
+  const tasks = Array.from(new Set(parsedDebugLogLines.value.map((line) => line.taskId).filter(Boolean))).sort()
+  return [
+    { label: t('debug.logFilterAllTasks'), value: 'all' },
+    ...tasks.map((taskId) => ({ label: shortTaskId(taskId), value: taskId })),
+  ]
+})
+const filteredDebugLogLines = computed(() => {
+  const query = debugLogQuery.value.trim().toLowerCase()
+  return parsedDebugLogLines.value.filter((line) => {
+    if (debugLogLevel.value !== 'all' && line.severity !== debugLogLevel.value) return false
+    if (debugLogSource.value !== 'all' && line.sourceKind !== debugLogSource.value) return false
+    if (debugLogTask.value !== 'all' && line.taskId !== debugLogTask.value) return false
+    if (debugLogCategory.value === 'issues' && !line.hasIssue) return false
+    if (debugLogCategory.value === 'traceback' && !line.traceback) return false
+    if (!['all', 'issues', 'traceback'].includes(debugLogCategory.value) && line.category !== debugLogCategory.value) return false
+    if (!query) return true
+    return [line.timestamp, line.level, line.source, line.taskId, line.command, line.stage, line.message, line.details, line.location, line.traceback, line.raw]
+      .join('\n')
+      .toLowerCase()
+      .includes(query)
+  })
+})
+const debugLogIssueCounts = computed(() => {
+  const errors = parsedDebugLogLines.value.filter((line) => line.severity === 'error').length
+  const warnings = parsedDebugLogLines.value.filter((line) => line.severity === 'warn').length
+  const tracebacks = parsedDebugLogLines.value.filter((line) => line.traceback).length
+  return { errors, warnings, tracebacks }
+})
 const statusCards = computed(() => [
   { label: t('debug.envStatus'), value: app.envReady ? t('debug.ready') : t('debug.needsAttention'), tone: app.envReady ? 'ok' : 'warn' },
   { label: t('debug.activeWorkerTasks'), value: String(activeWorkerTasks.value.length), tone: activeWorkerTasks.value.length ? 'warn' : 'ok' },
@@ -955,16 +1024,24 @@ function parseDebugLogLine(raw: string, index: number): ParsedDebugLogLine {
   const appMatch = raw.match(/^(\S+)\s+(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s+(\S+)(?:\s+(.*))?$/)
   const workerMatch = raw.match(/^(\S+)\s+PY\s+(\S+)(?:\s+(.*))?$/)
   if (!appMatch && !workerMatch) {
+    const severity = inferLogSeverity('', raw)
     return {
       id: `${index}-${raw}`,
       timestamp: '',
+      severity,
       level: '',
       source: '',
+      sourceKind: 'plain',
+      category: 'other',
       taskId: '',
       command: '',
       stage: '',
       message: raw,
       details: '',
+      location: extractLogLocation(raw),
+      traceback: extractTraceback(raw),
+      hasIssue: severity === 'error' || severity === 'warn',
+      fields: {},
       raw,
     }
   }
@@ -977,26 +1054,206 @@ function parseDebugLogLine(raw: string, index: number): ParsedDebugLogLine {
   const fields: Record<string, string> = {}
   const fieldPattern = /([A-Za-z][\w]*)=(?:"((?:\\.|[^"])*)"|(\S+))/g
   for (const field of attributes.matchAll(fieldPattern)) {
-    fields[field[1]] = field[2] ?? field[3] ?? ''
+    fields[field[1]] = parseDebugLogFieldValue(field[2] ?? field[3] ?? '')
   }
   const details = attributes.replace(fieldPattern, '').replace(/\s+/g, ' ').trim()
   const fieldDetails = Object.entries(fields)
-    .filter(([key]) => key !== 'message')
+    .filter(([key]) => key !== 'message' && key !== 'detail')
     .map(([key, value]) => `${key}=${value}`)
     .join(' ')
+  const embedded = parseEmbeddedLogMessage(fields.message || details)
+  const rawMessage = embedded.message || fields.message || details
+  const detail = fields.detail || ''
+  const location = extractLogLocation(`${rawMessage}\n${detail}\n${fieldDetails}`)
+  const message = stripLeadingLogLocation(rawMessage, location)
+  const traceback = extractTraceback(detail || message || raw)
+  const severity = inferLogSeverity(embedded.level || level, `${source}\n${message}\n${detail}`)
+  const sourceKind = inferLogSourceKind(source, rawMessage)
+  const category = inferLogCategory(source, sourceKind, rawMessage, fields)
 
   return {
     id: `${index}-${raw}`,
     timestamp: formatDebugLogTimestamp(timestamp),
-    level,
+    severity,
+    level: embedded.level || level,
     source,
+    sourceKind,
+    category,
     taskId: fields.taskId || '',
     command: fields.command || '',
     stage: fields.stage || '',
-    message: fields.message || details,
-    details: [details, fieldDetails].filter(Boolean).join(' '),
+    message,
+    details: [details && details !== message ? details : '', fieldDetails].filter(Boolean).join(' '),
+    location,
+    traceback,
+    hasIssue: severity === 'error' || severity === 'warn' || Boolean(traceback),
+    fields,
     raw,
   }
+}
+
+function parseDebugLogFieldValue(value: string) {
+  if (!value) return ''
+  if (!/[\\"]/.test(value)) return value
+  try {
+    return JSON.parse(`"${value}"`)
+  } catch {
+    return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+  }
+}
+
+function inferLogSeverity(level: string, text: string): DebugLogLevelFilter {
+  const normalized = normalizeLogLevel(level).toLowerCase()
+  if (normalized === 'fatal' || normalized === 'error') return 'error'
+  if (normalized === 'warn' || normalized === 'warning') return 'warn'
+  if (normalized === 'debug' || normalized === 'trace' || normalized === 'py') return 'debug'
+  const lowered = text.toLowerCase()
+  if (lowered.includes('traceback') || lowered.includes('exception') || lowered.includes('failed')) return 'error'
+  if (lowered.includes(' warn ') || lowered.includes('cannot separate') || lowered.includes('unable to')) return 'warn'
+  return 'info'
+}
+
+function parseEmbeddedLogMessage(message: string) {
+  const text = String(message || '').trim()
+  const pymssMatch = text.match(/^(?:\d{2}:\d{2}:\d{2}\s+\|\s+)?(TRC|TRACE|DBG|DEBUG|INF|INFO|WRN|WARN|WARNING|ERR|ERROR|FTL|FATAL)\s+\|\s+(.+)$/)
+  if (pymssMatch) {
+    return {
+      level: normalizeLogLevel(pymssMatch[1]),
+      message: pymssMatch[2].trim(),
+    }
+  }
+  const pipeMatch = text.match(/^(.+?\.py:\d+)\s+\|\s+(.*)$/)
+  if (pipeMatch) {
+    return {
+      level: '',
+      message: `${pipeMatch[1]} | ${pipeMatch[2]}`.trim(),
+    }
+  }
+  return { level: '', message: text }
+}
+
+function normalizeLogLevel(level: string) {
+  const value = String(level || '').trim().toUpperCase()
+  const aliases: Record<string, string> = {
+    TRC: 'TRACE',
+    DBG: 'DEBUG',
+    INF: 'INFO',
+    WRN: 'WARN',
+    WARNING: 'WARN',
+    ERR: 'ERROR',
+    FTL: 'FATAL',
+  }
+  return aliases[value] || value
+}
+
+function inferLogSourceKind(source: string, message: string) {
+  const text = `${source} ${message}`.toLowerCase()
+  if (text.includes('pymss') || text.includes('separator.py')) return 'pymss'
+  if (text.includes('worker.')) return 'worker'
+  if (text.includes('app.')) return 'app'
+  if (text.includes('log.')) return 'log'
+  return source ? 'other' : 'plain'
+}
+
+function inferLogCategory(source: string, sourceKind: string, message: string, fields: Record<string, string>): DebugLogCategoryFilter {
+  const text = `${source} ${sourceKind} ${message} ${fields.command || ''} ${fields.stage || ''}`.toLowerCase()
+  if (sourceKind === 'pymss' || text.includes('pymss') || text.includes('separator.py')) return 'pymss'
+  if (text.includes('runtime') || text.includes('env_info') || text.includes('pythonpath')) return 'runtime'
+  if (text.includes('app.store') || text.includes('store.')) return 'store'
+  if (sourceKind === 'worker' || text.includes('worker.')) return 'worker'
+  if (sourceKind === 'app' || text.includes('app.')) return 'app'
+  return 'other'
+}
+
+function logSourceLabel(source: string) {
+  const labels: Record<string, string> = {
+    app: 'App',
+    log: 'Log',
+    other: t('debug.logSourceOther'),
+    plain: t('debug.logSourcePlain'),
+    pymss: 'pymss',
+    worker: 'Worker',
+  }
+  return labels[source] || source
+}
+
+function extractLogLocation(text: string) {
+  const value = String(text || '')
+  const pipeLocation = value.match(/\|\s*([^|\n]+?\.py):(\d+)\s*\|/)
+  if (pipeLocation) return `${pipeLocation[1]}:${pipeLocation[2]}`
+  const tracebackFrame = value.match(/File\s+"([^"]+)",\s+line\s+(\d+),\s+in\s+([^\n]+)/)
+  if (tracebackFrame) return `${tracebackFrame[1]}:${tracebackFrame[2]} in ${tracebackFrame[3].trim()}`
+  const shortFrame = value.match(/([A-Za-z]:)?[^\s|]+\.py:(\d+)/)
+  return shortFrame ? shortFrame[0] : ''
+}
+
+function stripLeadingLogLocation(message: string, location: string) {
+  let text = String(message || '').trim()
+  if (!location) return text
+  const escaped = location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  text = text.replace(new RegExp(`^${escaped}\\s*\\|\\s*`), '')
+  text = text.replace(/^.*?\.py:\d+\s*\|\s*/, '')
+  return text.trim()
+}
+
+function extractTraceback(text: string) {
+  const value = String(text || '').trim()
+  if (!value) return ''
+  const marker = value.indexOf('Traceback (most recent call last):')
+  if (marker >= 0) return formatTracebackText(value.slice(marker))
+  if (/File\s+"[^"]+",\s+line\s+\d+,\s+in\s+/.test(value)) return formatTracebackText(value)
+  return ''
+}
+
+function formatTracebackText(value: string) {
+  return value
+    .replace(/\\n/g, '\n')
+    .replace(/\s+(File\s+")/g, '\n  $1')
+    .replace(/\s+([A-Za-z_][\w.]+(?:Error|Exception|Warning):)/g, '\n$1')
+    .trim()
+}
+
+function debugLogLineText(line: ParsedDebugLogLine) {
+  return [line.message, line.details].filter(Boolean).join(' ')
+}
+
+function debugLogLineSource(line: ParsedDebugLogLine) {
+  const source = logSourceLabel(line.sourceKind)
+  if (!line.category || line.category === 'all' || line.category === line.sourceKind) return source
+  return `${source}/${logCategoryLabel(line.category)}`
+}
+
+function debugLogLineLocation(line: ParsedDebugLogLine) {
+  const location = line.location.trim()
+  if (!location) return '-'
+  const normalized = location.replace(/\\/g, '/')
+  const fileMatch = normalized.match(/([^/]+\.py:\d+(?:\s+in\s+.+)?)$/)
+  return fileMatch?.[1] || location
+}
+
+function canExpandDebugLogLine(line: ParsedDebugLogLine) {
+  return Boolean(line.traceback || line.severity === 'error' || (line.severity === 'warn' && (line.location || line.details)))
+}
+
+function logCategoryLabel(category: DebugLogCategoryFilter) {
+  const option = debugLogCategoryOptions.value.find((item) => item.value === category)
+  return option?.label || category
+}
+
+function toggleDebugLogLine(line: ParsedDebugLogLine) {
+  if (!canExpandDebugLogLine(line)) return
+  expandedDebugLogLines.value = {
+    ...expandedDebugLogLines.value,
+    [line.id]: !expandedDebugLogLines.value[line.id],
+  }
+}
+
+function clearDebugLogFilters() {
+  debugLogQuery.value = ''
+  debugLogLevel.value = 'all'
+  debugLogCategory.value = 'all'
+  debugLogSource.value = 'all'
+  debugLogTask.value = 'all'
 }
 
 function formatDebugLogTimestamp(value: string) {
@@ -1716,54 +1973,111 @@ watch(developerMode, (enabled) => {
           <span>{{ t('debug.sessionLog') }}</span>
         </div>
       </template>
-      <div class="debug-log-toolbar">
-        <n-button size="small" secondary :loading="debugLogLoading" @click="loadDebugLog">
-          {{ t('common.refresh') }}
-        </n-button>
-        <n-button size="small" secondary :disabled="!debugLogInfo?.logsDir" @click="revealPath(debugLogInfo?.logsDir || logsDir)">
-          {{ t('debug.openLogsDir') }}
-        </n-button>
-        <n-button size="small" secondary :disabled="!debugLogContent?.content" @click="copyDebugLog">
-          {{ t('debug.copyLog') }}
-        </n-button>
-        <n-button size="small" secondary :loading="debugLogReportLoading" @click="createDebugLogReport">
-          {{ t('debug.createReport') }}
-        </n-button>
-        <n-button size="small" secondary :disabled="!debugLogInfo?.reportExists" @click="revealPath(debugLogInfo?.reportPath || '')">
-          {{ t('debug.openReport') }}
-        </n-button>
-        <n-button size="small" secondary type="warning" :loading="debugLogClearing" @click="clearDebugLog">
-          {{ t('debug.clearLog') }}
-        </n-button>
-      </div>
-      <div class="kv-list debug-log-meta">
-        <div v-for="row in debugLogRows" :key="row.label" class="kv-row">
-          <span>{{ row.label }}</span>
-          <code :title="row.value || '-'">{{ row.value || '-' }}</code>
+      <div class="debug-log-console-head">
+        <div class="debug-log-toolbar">
+          <n-button size="small" secondary :loading="debugLogLoading" @click="loadDebugLog">
+            {{ t('common.refresh') }}
+          </n-button>
+          <n-button size="small" secondary :disabled="!debugLogInfo?.logsDir" @click="revealPath(debugLogInfo?.logsDir || logsDir)">
+            {{ t('debug.openLogsDir') }}
+          </n-button>
+          <n-button size="small" secondary :disabled="!debugLogContent?.content" @click="copyDebugLog">
+            {{ t('debug.copyLog') }}
+          </n-button>
+          <n-button size="small" secondary :loading="debugLogReportLoading" @click="createDebugLogReport">
+            {{ t('debug.createReport') }}
+          </n-button>
+          <n-button size="small" secondary :disabled="!debugLogInfo?.reportExists" @click="revealPath(debugLogInfo?.reportPath || '')">
+            {{ t('debug.openReport') }}
+          </n-button>
+          <n-button size="small" secondary type="warning" :loading="debugLogClearing" @click="clearDebugLog">
+            {{ t('debug.clearLog') }}
+          </n-button>
         </div>
+        <details class="debug-log-meta-panel">
+          <summary>{{ t('debug.logFileDetails') }}</summary>
+          <div class="kv-list debug-log-meta">
+            <div v-for="row in debugLogRows" :key="row.label" class="kv-row">
+              <span>{{ row.label }}</span>
+              <code :title="row.value || '-'">{{ row.value || '-' }}</code>
+            </div>
+          </div>
+        </details>
       </div>
       <n-alert v-if="debugLogContent?.truncated" type="warning" :show-icon="true">
         {{ t('debug.logTailHint') }}
       </n-alert>
+      <section v-if="parsedDebugLogLines.length" class="debug-log-insights">
+        <button class="debug-log-insight debug-log-insight--error" type="button" @click="debugLogLevel = 'error'; debugLogCategory = 'all'">
+          <span>{{ t('debug.logErrors') }}</span>
+          <strong>{{ debugLogIssueCounts.errors }}</strong>
+        </button>
+        <button class="debug-log-insight debug-log-insight--warn" type="button" @click="debugLogLevel = 'warn'; debugLogCategory = 'all'">
+          <span>{{ t('debug.logWarnings') }}</span>
+          <strong>{{ debugLogIssueCounts.warnings }}</strong>
+        </button>
+        <button class="debug-log-insight debug-log-insight--traceback" type="button" @click="debugLogCategory = 'traceback'; debugLogLevel = 'all'">
+          <span>{{ t('debug.logTracebacks') }}</span>
+          <strong>{{ debugLogIssueCounts.tracebacks }}</strong>
+        </button>
+      </section>
       <section v-if="parsedDebugLogLines.length" class="debug-log-viewer">
+        <div class="debug-log-filters">
+          <n-input v-model:value="debugLogQuery" size="small" clearable :placeholder="t('debug.logSearchPlaceholder')" />
+          <n-select v-model:value="debugLogLevel" size="small" :options="debugLogLevelOptions" />
+          <n-select v-model:value="debugLogCategory" size="small" :options="debugLogCategoryOptions" />
+          <n-select v-model:value="debugLogTask" size="small" filterable :options="debugLogTaskOptions" />
+          <n-select v-model:value="debugLogSource" size="small" :options="debugLogSourceOptions" />
+          <n-button size="small" secondary @click="clearDebugLogFilters">
+            {{ t('debug.logClearFilters') }}
+          </n-button>
+        </div>
         <div class="debug-log-viewer__head">
-          <span>{{ t('debug.logEntryCount', { count: parsedDebugLogLines.length }) }}</span>
+          <span>{{ t('debug.logFilteredCount', { shown: filteredDebugLogLines.length, total: parsedDebugLogLines.length }) }}</span>
           <span>{{ t('debug.logLatestHint') }}</span>
         </div>
-        <div ref="debugLogScroller" class="debug-log-terminal" role="log" aria-live="polite">
+        <div v-if="filteredDebugLogLines.length" ref="debugLogScroller" class="debug-log-stream" role="log" aria-live="polite">
+          <div class="debug-log-table__head" aria-hidden="true">
+            <span>{{ t('debug.logColumnTime') }}</span>
+            <span>{{ t('debug.logColumnLevel') }}</span>
+            <span>{{ t('debug.logColumnCategory') }}</span>
+            <span>{{ t('debug.logColumnLocation') }}</span>
+            <span>{{ t('debug.logColumnMessage') }}</span>
+          </div>
           <article
-            v-for="line in parsedDebugLogLines"
+            v-for="line in filteredDebugLogLines"
             :key="line.id"
-            class="debug-log-terminal__line"
-            :class="`debug-log-line--${line.level.toLowerCase() || 'plain'}`"
+            class="debug-log-row"
+            :class="[`debug-log-row--${line.severity}`, { 'debug-log-row--expandable': canExpandDebugLogLine(line) }]"
             :title="line.raw"
+            @click="toggleDebugLogLine(line)"
           >
-            <code class="debug-log-terminal__time">{{ line.timestamp || '-' }}</code>
-            <span class="debug-log-terminal__level">{{ line.level || '-' }}</span>
-            <code class="debug-log-terminal__source">{{ line.source || '-' }}</code>
-            <span class="debug-log-terminal__text">{{ line.message || line.details }}{{ line.message && line.details ? ` ${line.details}` : '' }}</span>
+            <code class="debug-log-row__time">{{ line.timestamp || '-' }}</code>
+            <span class="debug-log-row__level">{{ line.level || line.severity }}</span>
+            <code class="debug-log-row__source" :title="line.source || '-'">{{ debugLogLineSource(line) }}</code>
+            <code class="debug-log-row__location" :title="line.location || '-'">{{ debugLogLineLocation(line) }}</code>
+            <span class="debug-log-row__message">{{ line.message || line.raw }}</span>
+            <div v-if="expandedDebugLogLines[line.id]" class="debug-log-row__detail">
+              <div v-if="line.location" class="debug-log-row__location-detail">
+                <span>{{ t('debug.logLocation') }}</span>
+                <code>{{ line.location }}</code>
+              </div>
+              <pre v-if="line.traceback">{{ line.traceback }}</pre>
+              <pre v-if="line.details && !line.traceback">{{ line.details }}</pre>
+              <details class="debug-log-row__raw">
+                <summary>{{ t('debug.logRawLine') }}</summary>
+                <pre>{{ line.raw }}</pre>
+              </details>
+            </div>
           </article>
         </div>
+        <n-empty v-else :description="t('debug.logNoFilteredResults')">
+          <template #extra>
+            <n-button size="small" secondary @click="clearDebugLogFilters">
+              {{ t('debug.logClearFilters') }}
+            </n-button>
+          </template>
+        </n-empty>
       </section>
       <n-empty v-else :description="t('debug.logEmpty')" />
     </n-card>
@@ -2359,11 +2673,78 @@ watch(developerMode, (enabled) => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 12px;
 }
 
 .debug-log-meta {
+  margin-top: 10px;
+}
+
+.debug-log-console-head {
+  display: grid;
+  gap: 10px;
   margin-bottom: 12px;
+}
+
+.debug-log-meta-panel {
+  border: 1px solid color-mix(in srgb, var(--outline) 34%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 26%, transparent);
+}
+
+.debug-log-meta-panel summary {
+  padding: 9px 11px;
+  color: var(--on-surface-muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.debug-log-meta-panel .debug-log-meta {
+  padding: 0 10px 10px;
+}
+
+.debug-log-insights {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.debug-log-insight {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 36%, transparent);
+  cursor: pointer;
+  text-align: left;
+}
+
+.debug-log-insight:hover {
+  background: color-mix(in srgb, var(--surface-2) 58%, transparent);
+}
+
+.debug-log-insight span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.debug-log-insight strong {
+  color: var(--on-surface);
+  font-size: 18px;
+}
+
+.debug-log-insight--error strong { color: var(--danger); }
+.debug-log-insight--warn strong { color: var(--warning); }
+.debug-log-insight--traceback strong { color: var(--primary); }
+
+.debug-log-filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 118px 150px 150px 145px auto;
+  gap: 8px;
 }
 
 .debug-log-viewer {
@@ -2380,9 +2761,9 @@ watch(developerMode, (enabled) => {
   font-size: 12px;
 }
 
-.debug-log-terminal {
+.debug-log-stream {
   overflow: auto;
-  max-height: min(58vh, 620px);
+  max-height: min(62vh, 680px);
   border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
   border-radius: 10px;
   background: color-mix(in srgb, #0c111d 92%, var(--surface-1));
@@ -2392,63 +2773,128 @@ watch(developerMode, (enabled) => {
   line-height: 1.5;
 }
 
-.debug-log-terminal__line {
+.debug-log-table__head,
+.debug-log-row {
   display: grid;
-  grid-template-columns: 72px 38px 92px minmax(0, 1fr);
+  grid-template-columns: 72px 58px 126px 150px minmax(360px, 1fr);
   align-items: baseline;
-  gap: 5px;
-  min-width: 560px;
-  padding: 1px 8px;
+  gap: 7px;
+  min-width: 820px;
 }
 
-.debug-log-terminal__line:hover {
+.debug-log-table__head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.96);
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.debug-log-row {
+  padding: 4px 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+  cursor: default;
+}
+
+.debug-log-row--expandable {
+  cursor: pointer;
+}
+
+.debug-log-row:hover {
   background: rgba(255, 255, 255, 0.045);
 }
 
-.debug-log-terminal__time,
-.debug-log-terminal__source,
-.debug-log-terminal__text {
+.debug-log-row__time,
+.debug-log-row__source,
+.debug-log-row__location,
+.debug-log-row__message {
   min-width: 0;
-}
-
-.debug-log-terminal__time {
   overflow: hidden;
-  color: #94a3b8;
-  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.debug-log-terminal__level {
+.debug-log-row__time,
+.debug-log-row__location {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.debug-log-row__level {
   justify-self: start;
-  min-width: 38px;
+  min-width: 46px;
   color: #cbd5e1;
   font-size: 11px;
   font-weight: 700;
   text-align: center;
 }
 
-.debug-log-terminal__source {
-  overflow: hidden;
+.debug-log-row__source {
   color: #a5b4fc;
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.debug-log-terminal__text {
+.debug-log-row__message {
   color: #e2e8f0;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.debug-log-line--info .debug-log-terminal__level { color: #86efac; }
-.debug-log-line--warn .debug-log-terminal__level { color: #facc15; }
-.debug-log-line--error .debug-log-terminal__level,
-.debug-log-line--fatal .debug-log-terminal__level { color: #fca5a5; }
-.debug-log-line--debug .debug-log-terminal__level { color: #93c5fd; }
-.debug-log-line--trace .debug-log-terminal__level { color: #c4b5fd; }
-.debug-log-line--py .debug-log-terminal__level { color: #f9a8d4; }
+.debug-log-row__detail {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.86);
+}
+
+.debug-log-row__detail pre {
+  margin: 0;
+  overflow: auto;
+  max-height: 360px;
+  color: #dbeafe;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.debug-log-row__location-detail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #93c5fd;
+  font-size: 11px;
+}
+
+.debug-log-row__location-detail code {
+  min-width: 0;
+  overflow: hidden;
+  color: #bfdbfe;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-log-row__raw summary {
+  width: max-content;
+  color: #93c5fd;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.debug-log-row--info .debug-log-row__level { color: #86efac; }
+.debug-log-row--warn .debug-log-row__level { color: #facc15; }
+.debug-log-row--error .debug-log-row__level { color: #fca5a5; }
+.debug-log-row--debug .debug-log-row__level { color: #93c5fd; }
 
 .runtime-tree__node {
   padding: 12px 14px;
@@ -2728,7 +3174,9 @@ watch(developerMode, (enabled) => {
   .path-debug-row,
   .task-debug-row,
   .debug-config-controls,
-  .worker-event-row {
+  .worker-event-row,
+  .debug-log-insights,
+  .debug-log-filters {
     grid-template-columns: 1fr;
   }
 

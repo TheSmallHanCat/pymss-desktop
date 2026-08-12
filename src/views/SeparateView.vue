@@ -65,7 +65,6 @@ const {
   separateOutputNamingTemplate: outputNamingTemplate,
   separateCustomStemOrder: customStemOrder,
   useTta,
-  debug,
   batch_size,
   overlap_size,
   num_overlap,
@@ -2092,7 +2091,6 @@ async function retryCurrentTask() {
             </div>
             <div class="check-list">
               <n-checkbox v-model:checked="useTta">{{ t('separate.tta') }}</n-checkbox>
-              <n-checkbox v-model:checked="debug">{{ t('separate.debug') }}</n-checkbox>
             </div>
           </div>
 

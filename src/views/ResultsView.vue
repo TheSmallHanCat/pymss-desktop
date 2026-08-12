@@ -133,6 +133,10 @@ function groupTaskIds(group: ResultGroup) {
   return group.items.map(item => item.id)
 }
 
+function groupTaskIdTitle(group: ResultGroup) {
+  return groupTaskIds(group).join('\n')
+}
+
 function trashTargetsForItems(items: SeparationTask[]) {
   const seen = new Set<string>()
   return items.flatMap((item) => trashTargets(item)).filter((path) => {
@@ -551,7 +555,7 @@ function formatDurationMs(value: number | undefined) {
           <span class="result-row__body">
             <strong>{{ getGroupTitle(item) }}</strong>
             <span class="result-row__meta">
-              <span>{{ item.model }}</span>
+              <span class="result-row__model" :title="groupTaskIdTitle(item)">{{ item.model }}</span>
               <span>{{ item.inputCount }} {{ t('results.inputUnit') }}</span>
               <span>{{ item.outputCount }} {{ t('results.stemUnit') }}</span>
               <span>{{ formatDurationMs(item.durationMs) }}</span>
