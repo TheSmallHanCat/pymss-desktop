@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import { useRouter } from 'vue-router'
-import { CheckmarkOutline, ColorPaletteOutline, FolderOpenOutline, HardwareChipOutline, LanguageOutline, LockClosedOutline, MoonOutline } from '@vicons/ionicons5'
+import { CheckmarkOutline, ColorPaletteOutline, FolderOpenOutline, HardwareChipOutline, LanguageOutline, MoonOutline } from '@vicons/ionicons5'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 import { SYSTEM_LOCALE, setLocale, type LocaleSetting } from '@/i18n'
 import { useSettingsStore } from '@/stores/settings'
@@ -12,7 +12,7 @@ import { useAppStore, type RuntimeBackend } from '@/stores/app'
 import { formatBytes } from '@/utils/format'
 import {
   detectRuntimePlatform,
-  isBuiltInRuntimeSource,
+  preferredInstalledRuntimeBackend,
   recommendedRuntimeBackend,
   runtimeBackendLabel as runtimeBackendName,
   runtimeSizeHint,
@@ -53,16 +53,9 @@ const overlayRef = ref<HTMLElement | null>(null)
 const completeButtonRef = ref<HTMLElement | null>(null)
 const selectedBackend = ref<RuntimeBackend>('cpu')
 const runtimeMirror = ref('auto')
+const runtimeChecking = ref(false)
 
 const runtimePlatform = computed(() => detectRuntimePlatform(app.runtimeInfo))
-
-// Same rule as Settings: a macOS build runs on its bundled runtime, so there is nothing to choose.
-const runtimeManagementLocked = computed(() => {
-  if (!runtimePlatform.value.isMac) return false
-  const active = (app.runtimeInfo?.installedEnvironments || [])
-    .find((entry) => entry.backend === app.runtimeInstalledBackend)
-  return isBuiltInRuntimeSource(active?.source)
-})
 
 // An environment counts as installed even when it is not the active one, so this reads the
 // installed list rather than app.runtimeReadyForBackend() (which only answers for the active backend).
@@ -93,18 +86,17 @@ const runtimeBackendChoices = computed(() => {
 })
 
 const runtimeRecommendedBackend = computed(() => recommendedRuntimeBackend(app.runtimeInfo))
+const preferredRuntimeBackend = computed(() => preferredInstalledRuntimeBackend(app.runtimeInfo) || runtimeRecommendedBackend.value)
 
 // runtimeInfo arrives asynchronously, so preselect once it can actually answer — but never
 // override a choice the user has already made.
 const backendTouched = ref(false)
-watch(runtimeRecommendedBackend, (backend) => {
+watch(preferredRuntimeBackend, (backend) => {
   if (!backend || backendTouched.value) return
   if (runtimeBackendChoices.value.some((choice) => choice.value === backend)) {
     selectedBackend.value = backend
   }
 }, { immediate: true })
-
-const runtimeBackendLabel = computed(() => runtimeBackendName(app.runtimeInstalledBackend) || 'CPU')
 
 const selectedBackendInstalled = computed(() => backendInstalled(selectedBackend.value))
 const selectedBackendSize = computed(() => runtimeSizeHint(selectedBackend.value))
@@ -166,6 +158,7 @@ const canGoNext = computed(() => {
   if (step.value === dataDirStepIndex) {
     return !checkingModelDir.value && !isModelDirMigrating.value && modelDirMigrationState.value.status !== 'confirm'
   }
+  if (step.value === runtimeStepIndex && runtimeChecking.value) return false
   return true
 })
 const modelDirMigrationVisible = computed(() => modelDirMigrationState.value.status !== 'idle' && modelDirMigrationState.value.status !== 'confirm')
@@ -287,12 +280,11 @@ async function finishOnboarding(event?: MouseEvent) {
     : getElementOrigin(completeButtonRef.value) || {
         x: window.innerWidth / 2,
         y: window.innerHeight / 2,
-      }
+  }
   const backend = selectedBackend.value
-  const locked = runtimeManagementLocked.value
   const alreadyReady = app.runtimeReadyForBackend(backend)
   const alreadyInstalled = backendInstalled(backend)
-  const needsRuntimeSettings = !locked && !alreadyReady
+  const needsRuntimeSettings = !alreadyReady
   await runRippleViewTransition(async () => {
     await settings.markStartupOnboardingCompleted()
     if (needsRuntimeSettings) {
@@ -301,8 +293,7 @@ async function finishOnboarding(event?: MouseEvent) {
     emit('completed')
   }, origin)
   // Runtime errors are handled by the store and surfaced in Settings.
-  // When management is locked the bundled runtime is the only one — never touch it.
-  if (locked || alreadyReady) return
+  if (alreadyReady) return
   if (alreadyInstalled) {
     // Installed but not active — switching is enough, no need to download it again.
     app.activateRuntime(backend).catch(() => {})
@@ -310,6 +301,16 @@ async function finishOnboarding(event?: MouseEvent) {
     app.installRuntime(backend, runtimeMirror.value, currentLocale.value).catch(() => {})
   }
 }
+
+onMounted(() => {
+  runtimeChecking.value = true
+  app.checkRuntimeInfo()
+    .catch(() => {})
+    .finally(() => {
+      runtimeChecking.value = false
+    })
+  void app.loadRuntimeCoreVersions().catch(() => {})
+})
 </script>
 
 <template>
@@ -414,15 +415,14 @@ async function finishOnboarding(event?: MouseEvent) {
           </section>
 
           <section v-else class="onboarding-section onboarding-runtime-section">
-            <div v-if="runtimeManagementLocked" class="onboarding-runtime-locked">
-              <n-icon :component="LockClosedOutline" size="18" />
+            <div v-if="runtimeChecking" class="onboarding-runtime-locked">
+              <n-spin size="small" />
               <div class="onboarding-runtime-locked__copy">
-                <strong>{{ runtimeBackendLabel }}</strong>
-                <span>{{ t('onboarding.runtimeBuiltInLocked') }}</span>
+                <strong>{{ t('settings.checkingEnv') }}</strong>
+                <span>{{ t('onboarding.runtimeDetecting') }}</span>
               </div>
             </div>
 
-            <template v-else>
             <div class="onboarding-runtime-grid">
               <button
                 v-for="choice in runtimeBackendChoices"
@@ -475,7 +475,6 @@ async function finishOnboarding(event?: MouseEvent) {
                 <span>{{ t('onboarding.runtimeSizeHint', { size: selectedBackendSize }) }}</span>
               </template>
             </p>
-            </template>
           </section>
         </div>
 

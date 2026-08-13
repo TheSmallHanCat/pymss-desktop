@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import urllib.error as urllib_error
 from pathlib import Path
 from unittest import mock
 
@@ -37,7 +38,7 @@ def probe_result(torch_backend="cpu", mlx=None, missing=()):
     }
 
 
-class BundledEnvironmentDetectionTests(unittest.TestCase):
+class PreinstalledEnvironmentDetectionTests(unittest.TestCase):
     """_installed_envs()'s bootstrap-python fallback is the only thing that reports the
     environment shipped inside the macOS app bundle, which is torch(cpu) + MLX."""
 
@@ -49,11 +50,11 @@ class BundledEnvironmentDetectionTests(unittest.TestCase):
              mock.patch.object(sys, "platform", platform_name):
             return worker_bootstrap._installed_envs(MANIFEST), probe
 
-    def test_macos_bundle_with_mlx_is_reported_as_the_mlx_backend(self):
+    def test_macos_preinstalled_runtime_with_mlx_is_reported_as_the_mlx_backend(self):
         items, probe = self._installed_envs("darwin", probe_result("cpu", mlx=True))
         self.assertEqual([item["backend"] for item in items], ["mlx"])
         entry = items[0]
-        self.assertEqual(entry["source"], "bundled")
+        self.assertEqual(entry["source"], "preinstalled")
         # The torch build really is a CPU build; only the backend label becomes mlx.
         self.assertEqual(entry["torchBackend"], "cpu")
         # The mlx flag must survive into the payload — the UI reads it to decide whether
@@ -203,10 +204,10 @@ class MultipleEnvironmentTests(unittest.TestCase):
 
     def test_bootstrap_interpreter_can_satisfy_a_backend_without_a_managed_env(self):
         # Documented fallback: an interpreter that already carries a matching torch build is
-        # activatable even with no environment on disk (this is how older bundled builds work).
+        # activatable even with no environment on disk.
         with self._runtime(bootstrap_torch_backend="cuda"):
             self.assertEqual(worker_bootstrap.cmd_activate_runtime({"backend": "cuda"}), 0)
-        self.assertEqual(self._active()["source"], "bundled")
+        self.assertEqual(self._active()["source"], "preinstalled")
 
     def test_deleting_the_active_environment_is_refused(self):
         self._make_env("cpu", "2.7.1")
@@ -227,6 +228,369 @@ class MultipleEnvironmentTests(unittest.TestCase):
         self.assertEqual([item["backend"] for item in remaining], ["cuda"])
         self.assertFalse((self.envs_dir / "cpu").exists())
         self.assertEqual(self._active()["backend"], "cuda")
+
+
+class PackagedRuntimePriorityTests(unittest.TestCase):
+    """Preinstalled CPU/CUDA packages use the same active-runtime mechanism as online packages."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.user_envs = self.root / "user-runtime-envs"
+        self.bundled_envs = self.root / "bundled-runtime-envs"
+        self.user_envs.mkdir()
+        self.bundled_envs.mkdir()
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def _make_env(self, root, backend, source="managed"):
+        env_dir = root / backend
+        scripts_dir = env_dir / "Scripts"
+        scripts_dir.mkdir(parents=True)
+        python_path = scripts_dir / "python.exe"
+        python_path.write_text("stub", encoding="utf-8")
+        (env_dir / "pymss-runtime-state.json").write_text(json.dumps({
+            "backend": backend,
+            "manifestVersion": "test-1",
+            "torchVersion": "2.7.1+cu128" if backend == "cuda" else "2.7.1",
+            "torchBackend": backend,
+            "acceleratorAvailable": backend != "cpu",
+            "packages": {name: True for name in COMMON_PACKAGES},
+            "source": source,
+        }), encoding="utf-8")
+        return python_path
+
+    def test_user_active_runtime_wins_over_legacy_bundled_default_runtime(self):
+        user_python = self._make_env(self.user_envs, "cpu")
+        self._make_env(self.bundled_envs, "cuda", source="bundled")
+        (self.user_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "cpu",
+            "pythonPath": str(user_python),
+            "source": "managed",
+        }), encoding="utf-8")
+        (self.bundled_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "cuda",
+            "pythonPath": "cuda\\Scripts\\python.exe",
+            "source": "bundled",
+        }), encoding="utf-8")
+        with mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs):
+            state = worker_bootstrap._read_runtime_state()
+        self.assertEqual(state["backend"], "cpu")
+        self.assertEqual(state["source"], "managed")
+
+    def test_user_active_runtime_wins_over_preinstalled_default_runtime(self):
+        user_python = self._make_env(self.user_envs, "cpu")
+        self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        (self.user_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "cpu",
+            "pythonPath": str(user_python),
+            "source": "managed",
+        }), encoding="utf-8")
+        (self.bundled_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "cuda",
+            "pythonPath": "cuda\\Scripts\\python.exe",
+            "source": "preinstalled",
+        }), encoding="utf-8")
+        with mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs):
+            state = worker_bootstrap._read_runtime_state()
+        self.assertEqual(state["backend"], "cpu")
+        self.assertEqual(state["source"], "managed")
+
+    def test_preinstalled_default_runtime_is_used_when_user_has_no_active_runtime(self):
+        self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        (self.bundled_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "cuda",
+            "pythonPath": "cuda\\Scripts\\python.exe",
+            "source": "preinstalled",
+        }), encoding="utf-8")
+        with mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs):
+            state = worker_bootstrap._read_runtime_state()
+        self.assertEqual(state["backend"], "cuda")
+        self.assertEqual(state["source"], "preinstalled")
+
+    def test_active_preinstalled_env_is_listed_even_when_same_backend_is_managed(self):
+        self._make_env(self.user_envs, "cuda")
+        self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        (self.bundled_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "cuda",
+            "pythonPath": "cuda\\Scripts\\python.exe",
+            "source": "preinstalled",
+        }), encoding="utf-8")
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(worker_bootstrap, "_manifest", return_value=MANIFEST), \
+             mock.patch.object(worker_bootstrap, "_probe_python_runtime", return_value=probe_result("missing")), \
+             mock.patch.object(sys, "platform", "win32"):
+            items = worker_bootstrap._installed_envs(MANIFEST)
+        cuda_sources = [item["source"] for item in items if item["backend"] == "cuda"]
+        self.assertEqual(cuda_sources, ["managed", "preinstalled"])
+
+    def test_package_versions_are_probed_for_each_listed_environment(self):
+        self._make_env(self.user_envs, "cpu")
+        probe = mock.Mock(return_value={"pymss": "2.0.19", "pymss-core": "0.1.6"})
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", None), \
+             mock.patch.object(worker_bootstrap, "_manifest", return_value=MANIFEST), \
+             mock.patch.object(worker_bootstrap, "_probe_python_runtime", return_value=probe_result("cpu")), \
+             mock.patch.object(worker_bootstrap, "_probe_python_package_versions", probe), \
+             mock.patch.object(sys, "platform", "win32"):
+            items = worker_bootstrap._installed_envs(MANIFEST)
+        self.assertEqual(items[0]["pymssVersion"], "2.0.19")
+        self.assertEqual(items[0]["pymssCoreVersion"], "0.1.6")
+
+    def test_live_package_version_wins_over_stale_recorded_version(self):
+        self._make_env(self.user_envs, "cpu")
+        state_path = self.user_envs / "cpu" / "pymss-runtime-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["pymssVersion"] = "2.0.15"
+        state["packageVersions"] = {"pymss": "2.0.15"}
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        probe = mock.Mock(return_value={"pymss": "2.0.19", "pymss-core": "0.1.6"})
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", None), \
+             mock.patch.object(worker_bootstrap, "_manifest", return_value=MANIFEST), \
+             mock.patch.object(worker_bootstrap, "_probe_python_runtime", return_value=probe_result("cpu")), \
+             mock.patch.object(worker_bootstrap, "_probe_python_package_versions", probe), \
+             mock.patch.object(sys, "platform", "win32"):
+            items = worker_bootstrap._installed_envs(MANIFEST)
+        self.assertEqual(items[0]["pymssVersion"], "2.0.19")
+
+    def test_preinstalled_cuda_runtime_can_be_updated_even_when_the_active_runtime_file_uses_legacy_bundled_source(self):
+        bundled_python = self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        (self.bundled_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "cuda",
+            "pythonPath": "cuda\\Scripts\\python.exe",
+            "source": "bundled",
+        }), encoding="utf-8")
+
+        pip = mock.Mock(return_value=mock.Mock(stdout=iter(()), wait=mock.Mock(return_value=0), returncode=0))
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(worker_bootstrap, "_latest_pypi_version", side_effect=lambda name: "2.0.19" if name == "pymss" else "0.1.6"), \
+             mock.patch.object(worker_bootstrap, "_probe_python_runtime", return_value={**probe_result("cuda"), "pymssVersion": "2.0.19", "pymssCoreVersion": "0.1.6"}), \
+             mock.patch.object(worker_bootstrap.subprocess, "Popen", pip), \
+             mock.patch.object(sys, "platform", "win32"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(worker_bootstrap.cmd_update_runtime_core({"backend": "cuda", "mirror": "pypi"}), 0)
+
+        self.assertTrue(pip.called)
+        command = pip.call_args.args[0]
+        self.assertEqual(command[0], str(bundled_python))
+        state = json.loads((self.bundled_envs / "cuda" / "pymss-runtime-state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["backend"], "cuda")
+        self.assertNotIn("source", state)
+
+    def test_core_update_uses_the_requested_python_path_when_backend_exists_in_two_places(self):
+        user_python = self._make_env(self.user_envs, "cuda", source="managed")
+        bundled_python = self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        pip = mock.Mock(return_value=mock.Mock(stdout=iter(()), wait=mock.Mock(return_value=0), returncode=0))
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(worker_bootstrap, "_latest_pypi_version", side_effect=lambda name: "2.0.19" if name == "pymss" else "0.1.6"), \
+             mock.patch.object(worker_bootstrap, "_probe_python_runtime", return_value={**probe_result("cuda"), "pymssVersion": "2.0.19", "pymssCoreVersion": "0.1.6"}), \
+             mock.patch.object(worker_bootstrap.subprocess, "Popen", pip), \
+             mock.patch.object(sys, "platform", "win32"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(worker_bootstrap.cmd_update_runtime_core({
+                "backend": "cuda",
+                "mirror": "pypi",
+                "pythonPath": str(bundled_python),
+                "source": "preinstalled",
+            }), 0)
+
+        self.assertNotEqual(str(user_python), str(bundled_python))
+        self.assertEqual(pip.call_args.args[0][0], str(bundled_python))
+
+    def test_auto_core_update_uses_pypi_instead_of_a_possibly_stale_locale_mirror(self):
+        bundled_python = self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        pip = mock.Mock(return_value=mock.Mock(stdout=iter(()), wait=mock.Mock(return_value=0), returncode=0))
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(worker_bootstrap, "_latest_pypi_version", side_effect=lambda name: "2.0.19" if name == "pymss" else "0.1.6"), \
+             mock.patch.object(worker_bootstrap, "_probe_python_runtime", return_value={**probe_result("cuda"), "pymssVersion": "2.0.19", "pymssCoreVersion": "0.1.6"}), \
+             mock.patch.object(worker_bootstrap.subprocess, "Popen", pip), \
+             mock.patch.object(sys, "platform", "win32"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(worker_bootstrap.cmd_update_runtime_core({"backend": "cuda", "mirror": "auto", "locale": "zh-CN"}), 0)
+
+        command = pip.call_args.args[0]
+        self.assertEqual(command[0], str(bundled_python))
+        self.assertIn("--index-url", command)
+        self.assertIn("https://pypi.org/simple", command)
+        self.assertIn("pymss==2.0.19", command)
+
+    def test_mirror_core_update_still_targets_latest_pypi_versions(self):
+        bundled_python = self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        pip = mock.Mock(return_value=mock.Mock(stdout=iter(()), wait=mock.Mock(return_value=0), returncode=0))
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(worker_bootstrap, "_latest_pypi_version", side_effect=lambda name: "2.0.19" if name == "pymss" else "0.1.6"), \
+             mock.patch.object(worker_bootstrap, "_probe_python_runtime", return_value={**probe_result("cuda"), "pymssVersion": "2.0.19", "pymssCoreVersion": "0.1.6"}), \
+             mock.patch.object(worker_bootstrap.subprocess, "Popen", pip), \
+             mock.patch.object(sys, "platform", "win32"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(worker_bootstrap.cmd_update_runtime_core({"backend": "cuda", "mirror": "tsinghua"}), 0)
+
+        command = pip.call_args.args[0]
+        self.assertEqual(command[0], str(bundled_python))
+        self.assertIn("https://pypi.tuna.tsinghua.edu.cn/simple", command)
+        self.assertIn("pymss==2.0.19", command)
+        self.assertIn("pymss-core==0.1.6", command)
+
+    def test_core_update_fails_when_pymss_does_not_reach_the_target_version(self):
+        self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        pip = mock.Mock(return_value=mock.Mock(stdout=iter(()), wait=mock.Mock(return_value=0), returncode=0))
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(worker_bootstrap, "_latest_pypi_version", side_effect=lambda name: "2.0.19" if name == "pymss" else "0.1.6"), \
+             mock.patch.object(worker_bootstrap, "_probe_python_runtime", return_value={**probe_result("cuda"), "pymssVersion": "2.0.15"}), \
+             mock.patch.object(worker_bootstrap.subprocess, "Popen", pip), \
+             mock.patch.object(sys, "platform", "win32"), \
+              contextlib.redirect_stdout(io.StringIO()):
+            self.assertNotEqual(worker_bootstrap.cmd_update_runtime_core({"backend": "cuda", "mirror": "auto", "locale": "zh-CN"}), 0)
+
+    def test_core_update_fails_when_pymss_core_does_not_reach_the_target_version(self):
+        self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        pip = mock.Mock(return_value=mock.Mock(stdout=iter(()), wait=mock.Mock(return_value=0), returncode=0))
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(worker_bootstrap, "_latest_pypi_version", side_effect=lambda name: "2.0.19" if name == "pymss" else "0.1.6"), \
+             mock.patch.object(worker_bootstrap, "_probe_python_runtime", return_value={**probe_result("cuda"), "pymssVersion": "2.0.19", "pymssCoreVersion": "0.1.4"}), \
+             mock.patch.object(worker_bootstrap.subprocess, "Popen", pip), \
+             mock.patch.object(sys, "platform", "win32"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertNotEqual(worker_bootstrap.cmd_update_runtime_core({"backend": "cuda", "mirror": "auto", "locale": "zh-CN"}), 0)
+
+    def test_core_update_fails_before_pip_when_latest_pypi_version_cannot_be_resolved(self):
+        self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        pip = mock.Mock()
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(worker_bootstrap, "_latest_pypi_version", side_effect=urllib_error.URLError("offline")), \
+             mock.patch.object(worker_bootstrap.subprocess, "Popen", pip), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertNotEqual(worker_bootstrap.cmd_update_runtime_core({"backend": "cuda", "mirror": "auto"}), 0)
+
+        self.assertFalse(pip.called)
+
+    def test_activate_can_select_preinstalled_runtime_when_managed_runtime_has_same_backend(self):
+        managed_python = self._make_env(self.user_envs, "cuda", source="managed")
+        preinstalled_python = self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(sys, "platform", "win32"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(worker_bootstrap.cmd_activate_runtime({
+                "backend": "cuda",
+                "pythonPath": str(preinstalled_python),
+                "source": "preinstalled",
+            }), 0)
+
+        active = json.loads((self.user_envs / "active-runtime.json").read_text(encoding="utf-8"))
+        self.assertEqual(active["source"], "preinstalled")
+        self.assertEqual(Path(active["pythonPath"]), preinstalled_python)
+        self.assertNotEqual(managed_python, preinstalled_python)
+
+    def test_delete_can_remove_idle_preinstalled_runtime_when_managed_runtime_is_active(self):
+        managed_python = self._make_env(self.user_envs, "cuda", source="managed")
+        preinstalled_python = self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        (self.user_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "cuda",
+            "pythonPath": str(managed_python),
+            "source": "managed",
+        }), encoding="utf-8")
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(sys, "platform", "win32"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(worker_bootstrap.cmd_delete_runtime({
+                "backend": "cuda",
+                "pythonPath": str(preinstalled_python),
+                "source": "preinstalled",
+            }), 0)
+
+        self.assertFalse(preinstalled_python.parent.parent.exists())
+        self.assertTrue(managed_python.parent.parent.exists())
+
+    def test_preinstalled_runtime_without_state_file_can_still_update(self):
+        bundled_python = self._make_env(self.bundled_envs, "cuda", source="preinstalled")
+        (self.bundled_envs / "cuda" / "pymss-runtime-state.json").unlink()
+        (self.bundled_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "cuda",
+            "pythonPath": "cuda\\Scripts\\python.exe",
+            "source": "bundled",
+        }), encoding="utf-8")
+
+        pip = mock.Mock(return_value=mock.Mock(stdout=iter(()), wait=mock.Mock(return_value=0), returncode=0))
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(worker_bootstrap, "_latest_pypi_version", side_effect=lambda name: "2.0.19" if name == "pymss" else "0.1.6"), \
+             mock.patch.object(worker_bootstrap, "_probe_python_runtime", return_value={**probe_result("cuda"), "pymssVersion": "2.0.19", "pymssCoreVersion": "0.1.6"}), \
+             mock.patch.object(worker_bootstrap.subprocess, "Popen", pip), \
+             mock.patch.object(sys, "platform", "win32"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(worker_bootstrap.cmd_update_runtime_core({"backend": "cuda", "mirror": "pypi"}), 0)
+
+        self.assertEqual(pip.call_args.args[0][0], str(bundled_python))
+        state = json.loads((self.bundled_envs / "cuda" / "pymss-runtime-state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["backend"], "cuda")
+
+    def test_active_legacy_bundled_runtime_with_a_real_python_path_updates_as_preinstalled(self):
+        bundled_python = self.bundled_envs / "python-runtime" / "python.exe"
+        bundled_python.parent.mkdir(parents=True)
+        bundled_python.write_text("stub", encoding="utf-8")
+        (self.bundled_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "cuda",
+            "pythonPath": "python-runtime\\python.exe",
+            "source": "bundled",
+        }), encoding="utf-8")
+
+        pip = mock.Mock(return_value=mock.Mock(stdout=iter(()), wait=mock.Mock(return_value=0), returncode=0))
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(worker_bootstrap, "_latest_pypi_version", side_effect=lambda name: "2.0.19" if name == "pymss" else "0.1.6"), \
+             mock.patch.object(worker_bootstrap, "_probe_python_runtime", return_value={**probe_result("cuda"), "pymssVersion": "2.0.19", "pymssCoreVersion": "0.1.6"}), \
+             mock.patch.object(worker_bootstrap.subprocess, "Popen", pip), \
+             mock.patch.object(sys, "platform", "win32"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(worker_bootstrap.cmd_update_runtime_core({"backend": "cuda", "mirror": "pypi"}), 0)
+
+        self.assertTrue(pip.called)
+
+    def test_bootstrap_runtime_cannot_be_updated_in_place(self):
+        bootstrap_python = self.root / "python-runtime" / "python.exe"
+        bootstrap_python.parent.mkdir(parents=True)
+        bootstrap_python.write_text("stub", encoding="utf-8")
+        pip = mock.Mock(return_value=mock.Mock(stdout=iter(()), wait=mock.Mock(return_value=0), returncode=0))
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", None), \
+             mock.patch.object(worker_bootstrap, "_bootstrap_python_path", return_value=bootstrap_python), \
+             mock.patch.object(worker_bootstrap, "_latest_pypi_version", side_effect=lambda name: "2.0.19" if name == "pymss" else "0.1.6"), \
+             mock.patch.object(worker_bootstrap.subprocess, "Popen", pip), \
+             mock.patch.object(sys, "platform", "win32"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            result = worker_bootstrap.cmd_update_runtime_core({
+                "backend": "cuda",
+                "mirror": "pypi",
+                "pythonPath": str(bootstrap_python),
+                "source": "preinstalled",
+            })
+
+        self.assertNotEqual(result, 0)
+        self.assertFalse(pip.called)
 
 
 class PackageImportNameTests(unittest.TestCase):
@@ -445,7 +809,7 @@ class InstallRecordsTheNewEnvironmentTests(unittest.TestCase):
         self.active_python.write_text("stub", encoding="utf-8")
         self.envs_dir.mkdir(parents=True)
         self.active_file.write_text(json.dumps({
-            "backend": "cuda", "pythonPath": str(self.active_python), "source": "bundled",
+            "backend": "cuda", "pythonPath": str(self.active_python), "source": "preinstalled",
         }), encoding="utf-8")
         # Pre-create the target venv so the install skips venv.EnvBuilder.
         (self.envs_dir / "cpu" / "Scripts").mkdir(parents=True)

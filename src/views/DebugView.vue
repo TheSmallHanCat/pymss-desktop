@@ -530,7 +530,7 @@ const runtimeTree = computed<RuntimeTreeNode[]>(() => {
       children: [],
     },
     ...(info?.bundledRuntimeEnvsDir ? [{
-      name: 'bundled-runtime-envs',
+      name: 'preinstalled-runtime-envs',
       role: t('debug.runtimeTreeBundleRootRole'),
       path: info.bundledRuntimeEnvsDir,
       source: t('debug.runtimeTreeAppSource'),

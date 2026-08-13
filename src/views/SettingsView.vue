@@ -10,13 +10,14 @@ import packageMeta from '../../package.json'
 import appLogo from '@/assets/app-logo-symbol-canvas.png'
 import { SYSTEM_LOCALE, setLocale, type LocaleSetting } from '@/i18n'
 import { useSettingsStore } from '@/stores/settings'
-import { useAppStore, type RuntimeBackend } from '@/stores/app'
+import { useAppStore, type InstalledRuntime, type RuntimeBackend } from '@/stores/app'
 import { useUpdateStore } from '@/stores/update'
 import {
   detectRuntimePlatform,
-  isBuiltInRuntimeSource,
   recommendedRuntimeBackend,
   runtimeAcceleratorReady,
+  runtimeCoreUpdateAvailable,
+  runtimeEnvironmentForBackend,
   runtimeManifestStatus,
   runtimeBackendLabel as runtimeBackendName,
   runtimeSizeHint,
@@ -53,7 +54,6 @@ import {
   TrashOutline,
   PlayOutline,
   HardwareChipOutline,
-  LockClosedOutline,
   CloudDownloadOutline,
   RefreshOutline,
 } from '@vicons/ionicons5'
@@ -158,25 +158,40 @@ watch(() => app.runtimeInstallLogs.length, () => {
   }
 })
 const runtimeInstalling = computed(() => app.runtimeInstallStatus === 'installing')
+const runtimeCoreUpdating = computed(() => app.runtimeCoreUpdateStatus === 'updating')
 // Install / switch / delete all restart the worker, so only one may run at a time.
-const runtimeBusy = computed(() => runtimeInstalling.value || runtimeActivating.value !== null || runtimeDeleting.value !== null)
+const runtimeBusy = computed(() => runtimeInstalling.value || runtimeCoreUpdating.value || runtimeActivating.value !== null || runtimeDeleting.value !== null)
 const runtimeCurrentBackend = computed(() => app.runtimeInstalledBackend || app.runtimeInfo?.torchBackend || app.envInfo?.torchBackend || null)
 const runtimeCurrentLabel = computed(() => runtimeCurrentBackend.value ? runtimeBackendName(runtimeCurrentBackend.value) : t('settings.envNotChecked'))
 const installedRuntimes = computed(() => app.runtimeInfo?.installedEnvironments || [])
+const latestPymssVersion = computed(() => app.runtimeCoreVersions?.packages?.pymss?.latestVersion || null)
+const latestPymssCoreVersion = computed(() => app.runtimeCoreVersions?.packages?.['pymss-core']?.latestVersion || null)
 
 type BackendCardState = 'active' | 'installed' | 'not_installed'
 
+type RuntimeBackendCard = {
+  backend: RuntimeBackend
+  key: string
+  label: string
+  description: string
+  offCatalog?: boolean
+  env?: InstalledRuntime
+  state: BackendCardState
+  recommended: boolean
+  manifestOutdated: boolean
+  leftover: boolean
+  leftoverLabel: string
+  vendorMissing: boolean
+  sizeHint: string
+  diskLabel: string
+  installing: boolean
+  pymssVersion: string
+  pymssCoreVersion: string
+  coreUpdateAvailable: boolean
+}
+
 const runtimePlatform = computed(() => detectRuntimePlatform(app.runtimeInfo))
 const runtimeRecommendedBackend = computed(() => recommendedRuntimeBackend(app.runtimeInfo))
-
-// macOS ships its runtime inside the app bundle (torch + MLX), and CUDA/ROCm are rejected outright
-// by the installer there. Installing a managed CPU env would only re-download a strict subset and
-// silently drop MLX acceleration, so environment management is locked off.
-const runtimeManagementLocked = computed(() => {
-  if (!runtimePlatform.value.isMac) return false
-  const active = installedRuntimes.value.find((entry) => entry.backend === runtimeCurrentBackend.value)
-  return isBuiltInRuntimeSource(active?.source)
-})
 
 const RUNTIME_BACKEND_DESC_KEYS: Record<RuntimeBackend, string> = {
   cpu: 'onboarding.runtimeCpu',
@@ -219,41 +234,65 @@ const runtimeBackendCards = computed(() => {
       offCatalog: true,
     })
   }
-  return catalog.map((item) => {
-    const env = installedRuntimes.value.find((entry) => entry.backend === item.backend)
-    const isActive = runtimeCurrentBackend.value === item.backend
-    const state: BackendCardState = isActive ? 'active' : env ? 'installed' : 'not_installed'
-    const diskBytes = app.runtimeEnvSizes[String(item.backend)]
-    const gpuBackend = item.backend === 'cuda' || item.backend === 'rocm' || item.backend === 'mlx'
-    // A cancelled or failed install leaves its venv behind without an install state, so the
-    // backend reads as not installed while still holding gigabytes. Surface it so the space
-    // can be reclaimed instead of being stranded.
-    const leftover = !env && app.runtimeIncompleteBackends.includes(String(item.backend))
-    return {
-      ...item,
-      env,
-      state,
-      recommended: runtimeRecommendedBackend.value === item.backend,
-      manifestOutdated: runtimeManifestStatus(env, app.runtimeInfo?.manifestVersion) === 'outdated',
-      leftover,
-      leftoverLabel: leftover && diskBytes ? formatBytes(diskBytes) : '',
-      // Only warn on GPU backends: it explains why a card is there without hiding it, and
-      // detection missing a card must never stop someone installing what they need.
-      // Off-catalog cards already carry their own "not for this platform" line; a second,
-      // near-identical explanation on top of it is just noise.
-      vendorMissing: gpuBackend
-        && !item.offCatalog
-        && runtimeRecommendedBackend.value !== null
-        && runtimeRecommendedBackend.value !== item.backend,
-      sizeHint: runtimeSizeHint(item.backend),
-      // Absent means "not measured" (the app's own bundled runtime), and zero means the walk
-      // could not read anything. Neither is a usable number, and formatBytes renders both as
-      // an em dash, so only show the row when there is a real size to show.
-      diskLabel: diskBytes ? formatBytes(diskBytes) : '',
-      installing: runtimeInstalling.value && app.runtimeInstallBackend === item.backend,
+  const cards: RuntimeBackendCard[] = []
+  for (const item of catalog) {
+    const matchingEnvs = installedRuntimes.value.filter((entry) => entry.backend === item.backend)
+    const preferredEnv = runtimeEnvironmentForBackend(app.runtimeInfo, item.backend)
+    const envs = preferredEnv
+      ? [preferredEnv, ...matchingEnvs.filter((entry) => entry !== preferredEnv)]
+      : matchingEnvs
+    const displayEnvs = envs.length ? envs : [undefined]
+
+    for (const env of displayEnvs) {
+      const isActive = Boolean(env && runtimeCurrentBackend.value === item.backend && runtimeEnvironmentForBackend(app.runtimeInfo, item.backend) === env)
+      const state: BackendCardState = isActive ? 'active' : env ? 'installed' : 'not_installed'
+      const diskBytes = app.runtimeEnvSizes[String(item.backend)]
+      const pymssVersion = env?.pymssVersion || env?.packageVersions?.pymss || ''
+      const pymssCoreVersion = env?.pymssCoreVersion || env?.packageVersions?.['pymss-core'] || ''
+      const coreUpdateAvailable = isActive && runtimeCoreUpdateAvailable(env, latestPymssVersion.value, latestPymssCoreVersion.value)
+      const gpuBackend = item.backend === 'cuda' || item.backend === 'rocm' || item.backend === 'mlx'
+      // A cancelled or failed install leaves its venv behind without an install state, so the
+      // backend reads as not installed while still holding gigabytes. Surface it so the space
+      // can be reclaimed instead of being stranded.
+      const leftover = !env && app.runtimeIncompleteBackends.includes(String(item.backend))
+      cards.push({
+        ...item,
+        key: `${item.backend}:${env?.source || 'none'}:${env?.pythonPath || ''}`,
+        env,
+        state,
+        recommended: runtimeRecommendedBackend.value === item.backend,
+        manifestOutdated: runtimeManifestStatus(env, app.runtimeInfo?.manifestVersion) === 'outdated',
+        leftover,
+        leftoverLabel: leftover && diskBytes ? formatBytes(diskBytes) : '',
+        // Only warn on GPU backends: it explains why a card is there without hiding it, and
+        // detection missing a card must never stop someone installing what they need.
+        // Off-catalog cards already carry their own "not for this platform" line; a second,
+        // near-identical explanation on top of it is just noise.
+        vendorMissing: gpuBackend
+          && !item.offCatalog
+          && runtimeRecommendedBackend.value !== null
+          && runtimeRecommendedBackend.value !== item.backend,
+        sizeHint: runtimeSizeHint(item.backend),
+        // Absent means "not measured", and zero means the walk
+        // could not read anything. Neither is a usable number, and formatBytes renders both as
+        // an em dash, so only show the row when there is a real size to show.
+        diskLabel: diskBytes ? formatBytes(diskBytes) : '',
+        installing: runtimeInstalling.value && app.runtimeInstallBackend === item.backend,
+        pymssVersion,
+        pymssCoreVersion,
+        coreUpdateAvailable,
+      })
     }
-  })
+  }
+  return cards
 })
+
+function runtimeCoreVersionLabel(card: { pymssVersion?: string; pymssCoreVersion?: string }) {
+  return t('settings.runtimeCoreVersion', {
+    pymss: card.pymssVersion || t('settings.runtimeCoreVersionUnknown'),
+    core: card.pymssCoreVersion || t('settings.runtimeCoreVersionUnknown'),
+  })
+}
 
 // Same naming as the cards ("NVIDIA CUDA", not "CUDA"), so a confirmation dialog never appears
 // to be talking about something other than the card that opened it.
@@ -263,7 +302,6 @@ function runtimeBackendLabel(value: RuntimeBackend | string | null | undefined) 
 
 function runtimeSourceLabel(source: string | undefined) {
   if (source === 'preinstalled') return t('settings.runtimeSourcePreinstalled')
-  if (source === 'bundled') return t('settings.runtimeSourceBundled')
   return t('settings.runtimeSourceManaged')
 }
 
@@ -322,10 +360,43 @@ watch(() => app.runtimeInstallStatus, (status, previous) => {
   }
 })
 
-// Measuring disk usage walks every file in each venv, so only do it when the section is open.
+async function refreshRuntimeStatus(showSuccess = false) {
+  runtimeDetecting.value = true
+  try {
+    await Promise.all([app.checkRuntimeInfo(), app.checkEnv(), app.loadRuntimeEnvSizes()])
+    if (showSuccess) message.success(t('settings.runtimeDetectSuccess'))
+  } catch (error) {
+    if (showSuccess) message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    runtimeDetecting.value = false
+  }
+}
+
+async function refreshRuntimeCoreVersions() {
+  try {
+    await app.loadRuntimeCoreVersions()
+  } catch {
+    // Network availability is optional for the settings page; the installed version still shows.
+  }
+}
+
+// Measuring disk usage walks every file in each venv, so only refresh the full runtime section
+// when it is visible.
 watch(activeSection, (section) => {
-  if (section === 'runtime') void app.loadRuntimeEnvSizes()
+  if (section === 'runtime') {
+    void refreshRuntimeStatus(false)
+    void refreshRuntimeCoreVersions()
+  }
 }, { immediate: true })
+
+watch(
+  () => [app.runtimeInfo?.installedBackend, app.runtimeInfo?.installState?.backend, app.runtimeInfo?.installedEnvironments?.length],
+  () => {
+    if (activeSection.value === 'runtime') {
+      void refreshRuntimeCoreVersions()
+    }
+  },
+)
 
 const runtimeDiskTotalLabel = computed(() => {
   const values = Object.values(app.runtimeEnvSizes).filter((value) => value > 0)
@@ -348,9 +419,11 @@ async function cancelRuntimeInstall() {
   }
 }
 
-async function deleteRuntime(backend: string) {
+async function deleteRuntime(card: { backend: RuntimeBackend; env?: InstalledRuntime }) {
   if (runtimeBusy.value) return
-  if (runtimeCurrentBackend.value === backend) {
+  const backend = card.backend
+  const active = runtimeEnvironmentForBackend(app.runtimeInfo, backend)
+  if (card.env && active === card.env && runtimeCurrentBackend.value === backend) {
     message.warning(t('settings.runtimeDeleteActiveError'))
     return
   }
@@ -368,7 +441,10 @@ async function deleteRuntime(backend: string) {
   if (!confirmed) return
   runtimeDeleting.value = backend
   try {
-    await app.deleteRuntime(backend as RuntimeBackend)
+    await app.deleteRuntime(backend, {
+      pythonPath: card.env?.pythonPath,
+      source: card.env?.source,
+    })
     await Promise.all([app.checkRuntimeInfo(), app.checkEnv(), app.loadRuntimeEnvSizes()])
   } catch (error) {
     message.error(error instanceof Error ? error.message : String(error))
@@ -377,8 +453,10 @@ async function deleteRuntime(backend: string) {
   }
 }
 
-async function activateInstalledRuntime(backend: string) {
-  if (runtimeBusy.value || runtimeCurrentBackend.value === backend) return
+async function activateInstalledRuntime(card: { backend: RuntimeBackend; env?: InstalledRuntime }) {
+  const backend = card.backend
+  const active = runtimeEnvironmentForBackend(app.runtimeInfo, backend)
+  if (runtimeBusy.value || (runtimeCurrentBackend.value === backend && active === card.env)) return
   const confirmed = await confirmRuntimeAction(
     t('settings.runtimeSwitchTitle'),
     t('settings.runtimeSwitchContent', {
@@ -390,8 +468,12 @@ async function activateInstalledRuntime(backend: string) {
   if (!confirmed) return
   runtimeActivating.value = backend
   try {
-    await app.activateRuntime(backend as RuntimeBackend)
+    await app.activateRuntime(backend, {
+      pythonPath: card.env?.pythonPath,
+      source: card.env?.source,
+    })
     message.success(t('settings.runtimeActivateSuccess'))
+    await Promise.all([app.checkRuntimeInfo(), app.loadRuntimeCoreVersions()])
   } catch (error) {
     message.error(error instanceof Error ? error.message : String(error))
   } finally {
@@ -400,14 +482,30 @@ async function activateInstalledRuntime(backend: string) {
 }
 
 async function detectRuntime() {
-  runtimeDetecting.value = true
+  await refreshRuntimeStatus(true)
+}
+
+async function updateRuntimeCore(card: { backend: RuntimeBackend; env?: InstalledRuntime }) {
+  if (runtimeBusy.value) return
+  const runtime = card.env || installedRuntimes.value.find((entry) => entry.backend === card.backend) || null
+  const confirmed = await confirmRuntimeAction(
+    t('settings.runtimeCoreUpdateTitle'),
+    t('settings.runtimeCoreUpdateContent', {
+      current: runtime?.pymssVersion || runtime?.packageVersions?.pymss || app.runtimeInfo?.pymssVersion || t('settings.runtimeCoreVersionUnknown'),
+      latest: latestPymssVersion.value || t('settings.runtimeCoreVersionUnknown'),
+      coreCurrent: runtime?.pymssCoreVersion || runtime?.packageVersions?.['pymss-core'] || app.runtimeInfo?.pymssCoreVersion || t('settings.runtimeCoreVersionUnknown'),
+      coreLatest: latestPymssCoreVersion.value || t('settings.runtimeCoreVersionUnknown'),
+    }),
+    t('settings.runtimeCoreUpdate'),
+  )
+  if (!confirmed) return
   try {
-    await Promise.all([app.checkRuntimeInfo(), app.checkEnv(), app.loadRuntimeEnvSizes()])
-    message.success(t('settings.runtimeDetectSuccess'))
+    await app.updateRuntimeCore(card.backend, runtimeMirror.value, currentLocale.value, {
+      pythonPath: runtime?.pythonPath,
+      source: runtime?.source,
+    })
   } catch (error) {
     message.error(error instanceof Error ? error.message : String(error))
-  } finally {
-    runtimeDetecting.value = false
   }
 }
 
@@ -550,6 +648,11 @@ const buildFingerprint = computed(() => {
   if (!info) return t('common.unknown')
   const parts = [info.gitTag || info.gitRef, buildCommitShort.value, info.variant, buildRunLabel.value, info.repository].filter(Boolean)
   return parts.length ? parts.join(' · ') : t('settings.buildFingerprintUnavailable')
+})
+
+watch(() => app.runtimeCoreUpdateStatus, (status, previous) => {
+  if (previous !== 'updating') return
+  if (status === 'success') message.success(t('settings.runtimeCoreUpdateSuccess'))
 })
 function isOfficialRepositoryBuild(info: BuildInfo) {
   return info.official
@@ -1264,7 +1367,7 @@ onMounted(async () => {
             <div class="runtime-envs-list">
               <div
                 v-for="card in runtimeBackendCards"
-                :key="card.backend"
+                :key="card.key"
                 class="runtime-env-card"
                 :class="{
                   'runtime-env-card--active': card.state === 'active',
@@ -1293,12 +1396,19 @@ onMounted(async () => {
                 <p v-if="card.description" class="runtime-env-card__desc">{{ card.description }}</p>
                 <p v-if="card.offCatalog" class="runtime-env-card__desc">{{ t('settings.runtimeBackendUnsupported') }}</p>
                 <p v-if="card.vendorMissing" class="runtime-env-card__desc">{{ t('settings.runtimeVendorNotDetected') }}</p>
-                <p v-if="card.manifestOutdated && !runtimeManagementLocked" class="runtime-env-card__desc">
+                <p v-if="card.manifestOutdated" class="runtime-env-card__desc">
                   {{ t('settings.runtimeManifestOutdatedHint') }}
                 </p>
 
                 <div v-if="card.env" class="runtime-env-card__meta">
                   <span v-if="card.env.torchVersion">{{ t('settings.runtimeTorchVersion', { version: card.env.torchVersion }) }}</span>
+                  <span>{{ runtimeCoreVersionLabel(card) }}</span>
+                  <span v-if="card.coreUpdateAvailable" class="runtime-env-card__accel runtime-env-card__accel--warn">
+                    {{ t('settings.runtimeCoreUpdateAvailable', {
+                      pymss: latestPymssVersion || t('settings.runtimeCoreVersionUnknown'),
+                      core: latestPymssCoreVersion || t('settings.runtimeCoreVersionUnknown'),
+                    }) }}
+                  </span>
                   <span v-if="runtimeAcceleratorReady(card.env, card.backend)" class="runtime-env-card__accel runtime-env-card__accel--ok">{{ t('settings.runtimeAcceleratorAvailable') }}</span>
                   <span v-else-if="card.backend !== 'cpu'" class="runtime-env-card__accel">{{ t('settings.runtimeAcceleratorUnavailable') }}</span>
                   <span v-if="card.diskLabel">{{ t('settings.runtimeDiskUsage', { size: card.diskLabel }) }}</span>
@@ -1310,12 +1420,7 @@ onMounted(async () => {
                   </span>
                 </div>
 
-                <div v-if="runtimeManagementLocked" class="runtime-env-card__locked">
-                  <n-icon :component="LockClosedOutline" size="14" />
-                  <span>{{ t('settings.runtimeBuiltInLocked') }}</span>
-                </div>
-
-                <div v-else class="runtime-env-card__actions">
+                <div class="runtime-env-card__actions">
                   <n-button
                     v-if="card.state === 'not_installed'"
                     size="tiny"
@@ -1335,7 +1440,7 @@ onMounted(async () => {
                     type="primary"
                     :loading="runtimeActivating === card.backend"
                     :disabled="runtimeBusy"
-                    @click="activateInstalledRuntime(card.backend)"
+                    @click="activateInstalledRuntime(card)"
                   >
                     <template #icon><n-icon :component="PlayOutline" /></template>
                     {{ t('settings.runtimeActivateShort') }}
@@ -1349,6 +1454,18 @@ onMounted(async () => {
                     @click="installBackend(card.backend)"
                   >
                     {{ card.installing ? t('settings.runtimeInstalling') : t('settings.runtimeRepair') }}
+                  </n-button>
+                  <n-button
+                    v-if="card.coreUpdateAvailable && card.state === 'active'"
+                    size="tiny"
+                    secondary
+                    type="warning"
+                    :loading="runtimeCoreUpdating"
+                    :disabled="runtimeBusy"
+                    @click="updateRuntimeCore(card)"
+                  >
+                    <template #icon><n-icon :component="CloudDownloadOutline" /></template>
+                    {{ t('settings.runtimeCoreUpdate') }}
                   </n-button>
                   <n-button
                     v-if="card.env?.logPath"
@@ -1365,7 +1482,7 @@ onMounted(async () => {
                     type="error"
                     :loading="runtimeDeleting === card.backend"
                     :disabled="runtimeBusy"
-                    @click="deleteRuntime(card.backend)"
+                    @click="deleteRuntime(card)"
                   >
                     <template #icon><n-icon :component="TrashOutline" /></template>
                     {{ t('settings.runtimeCleanLeftover') }}
@@ -1377,7 +1494,7 @@ onMounted(async () => {
                     type="error"
                     :loading="runtimeDeleting === card.backend"
                     :disabled="runtimeBusy"
-                    @click="deleteRuntime(card.backend)"
+                    @click="deleteRuntime(card)"
                   >
                     <template #icon><n-icon :component="TrashOutline" /></template>
                     {{ t('settings.runtimeDelete') }}
@@ -1395,6 +1512,10 @@ onMounted(async () => {
                     {{ t('common.cancel') }}
                   </n-button>
                 </div>
+                <div v-if="card.state === 'active' && runtimeCoreUpdating" class="runtime-env-card__progress">
+                  <n-spin size="small" />
+                  <span class="runtime-env-card__progress-msg">{{ app.runtimeCoreUpdateMessage || t('settings.runtimeCoreUpdating') }}</span>
+                </div>
               </div>
             </div>
 
@@ -1405,7 +1526,7 @@ onMounted(async () => {
               {{ t('settings.runtimeDiskTotal', { size: runtimeDiskTotalLabel }) }}
             </p>
 
-            <div v-if="!runtimeManagementLocked" class="runtime-mirror-row">
+            <div class="runtime-mirror-row">
               <label class="text-muted text-sm">{{ t('settings.runtimeMirrorLabel') }}</label>
               <n-select v-model:value="runtimeMirror" size="small" class="runtime-mirror-row__select" :options="[
                 { label: t('onboarding.runtimeMirrorAuto'), value: 'auto' },
@@ -1434,6 +1555,17 @@ onMounted(async () => {
                   </n-button>
                   <n-button size="small" secondary @click="retryRuntimeInstall">
                     {{ t('settings.runtimeRetryInstall') }}
+                  </n-button>
+                </div>
+              </div>
+            </n-alert>
+
+            <n-alert v-if="app.runtimeCoreUpdateStatus === 'error'" type="error" :show-icon="true">
+              <div class="runtime-install-error">
+                <div class="runtime-install-error__message">{{ app.runtimeCoreUpdateMessage }}</div>
+                <div class="runtime-install-error__actions">
+                  <n-button v-if="app.runtimeInfo?.logPath" size="small" tertiary @click="revealPath(app.runtimeInfo.logPath)">
+                    {{ t('settings.runtimeOpenInstallLog') }}
                   </n-button>
                 </div>
               </div>

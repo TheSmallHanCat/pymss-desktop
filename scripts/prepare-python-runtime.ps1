@@ -143,7 +143,7 @@ if ($PreinstallBackend) {
     if ($PreinstallBackend -in @("mps", "mlx")) {
         Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', 'mlx')
     }
-    Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--no-deps', 'pymss>=2.0.15', 'pymss-core==0.1.6')
+    Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--upgrade', '--no-deps', 'pymss>=2.0.15', 'pymss-core>=0.1.6')
     & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $envDir -KeepScripts
 
     # Step 4: Verify the environment
@@ -257,7 +257,7 @@ Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install
 if ($Variant -in @("mps", "mlx")) {
     Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', 'mlx')
 }
-Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--no-deps', 'pymss>=2.0.15', 'pymss-core==0.1.6')
+Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--upgrade', '--no-deps', 'pymss>=2.0.15', 'pymss-core>=0.1.6')
 
 & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $runtime -KeepVenv
 $previousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE

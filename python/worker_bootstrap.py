@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,8 @@ def _resolve_runtime_state_from(file: Path) -> dict[str, Any] | None:
                 state["pythonPath"] = str(resolved)
             else:
                 return None
+    if state.get("source") == "bundled":
+        state["source"] = "preinstalled"
     return state
 
 
@@ -63,12 +66,9 @@ def _read_runtime_state() -> dict[str, Any] | None:
     state = _resolve_runtime_state_from(ACTIVE_RUNTIME_FILE)
     if state:
         return state
-    # Fall back to bundled active-runtime.json
-    if BUNDLED_RUNTIME_ENVS_DIR and BUNDLED_RUNTIME_ENVS_DIR.is_dir():
-        bundled_file = BUNDLED_RUNTIME_ENVS_DIR / "active-runtime.json"
-        if bundled_file.is_file():
-            return _resolve_runtime_state_from(bundled_file)
-    return None
+    if not BUNDLED_RUNTIME_ENVS_DIR or not BUNDLED_RUNTIME_ENVS_DIR.is_dir():
+        return None
+    return _resolve_runtime_state_from(BUNDLED_RUNTIME_ENVS_DIR / "active-runtime.json")
 
 
 def _write_runtime_state(state: dict[str, Any]) -> None:
@@ -91,6 +91,11 @@ def _env_state_path(backend: str) -> Path:
 
 def _env_log_path(backend: str) -> Path:
     return _env_dir(backend) / "pymss-runtime-install.log"
+
+
+def _bootstrap_python_path() -> Path:
+    python_path = Path(os.environ.get("PYMSS_STUDIO_BOOTSTRAP_PYTHON") or sys.executable)
+    return python_path if python_path.is_file() else Path(sys.executable)
 
 
 # Bumped when a fixed install path starts recording trustworthy state. States below this
@@ -141,6 +146,9 @@ def _repaired_env_state(backend: str, state: dict[str, Any]) -> dict[str, Any]:
             "torchBackend": probed.get("torchBackend"),
             "acceleratorAvailable": bool(probed.get("acceleratorAvailable")),
             "packages": probed.get("packages") or repaired.get("packages"),
+            "packageVersions": probed.get("packageVersions") or repaired.get("packageVersions"),
+            "pymssVersion": probed.get("pymssVersion") or repaired.get("pymssVersion"),
+            "pymssCoreVersion": probed.get("pymssCoreVersion") or repaired.get("pymssCoreVersion"),
             "stateVersion": ENV_STATE_VERSION,
         })
     except Exception:
@@ -293,11 +301,18 @@ def _probe_python_runtime(python_path: Path, extras: list[str] | None = None) ->
     extras = extras or []
     script = """
 import importlib.util, json, platform
+from importlib import metadata
 packages = json.loads(%PACKAGES%)
 mapping = json.loads(%MAPPING%)
-result = {'pythonVersion': platform.python_version(), 'torchVersion': None, 'torchBackend': 'missing', 'acceleratorAvailable': False, 'packages': {}}
+result = {'pythonVersion': platform.python_version(), 'torchVersion': None, 'torchBackend': 'missing', 'acceleratorAvailable': False, 'packages': {}, 'packageVersions': {}, 'pymssVersion': None, 'pymssCoreVersion': None}
 for name in packages:
     result['packages'][name] = importlib.util.find_spec(mapping.get(name, name)) is not None
+    try:
+        result['packageVersions'][name] = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        result['packageVersions'][name] = None
+result['pymssVersion'] = result['packageVersions'].get('pymss')
+result['pymssCoreVersion'] = result['packageVersions'].get('pymss-core')
 if importlib.util.find_spec('torch') is not None:
     try:
         import torch
@@ -313,6 +328,29 @@ print(json.dumps(result, ensure_ascii=False))
     return json.loads(output.strip() or "{}")
 
 
+def _probe_python_package_versions(python_path: Path, package_names: list[str]) -> dict[str, str | None]:
+    if not python_path.is_file() or not package_names:
+        return {}
+    script = """
+import json
+from importlib import metadata
+names = json.loads(%NAMES%)
+result = {}
+for name in names:
+    try:
+        result[name] = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        result[name] = None
+print(json.dumps(result, ensure_ascii=False))
+""".replace("%NAMES%", repr(json.dumps(package_names)))
+    try:
+        output = subprocess.check_output([str(python_path), "-c", script], text=True, encoding="utf-8", errors="replace")
+        data = json.loads(output.strip() or "{}")
+        return {name: (str(data.get(name)) if data.get(name) else None) for name in package_names}
+    except Exception:
+        return {}
+
+
 def _installed_envs(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen_backends: set[str] = set()
@@ -321,40 +359,57 @@ def _installed_envs(manifest: dict[str, Any]) -> list[dict[str, Any]]:
         state = _read_installed_env_state(backend)
         python_path = _env_python_path(backend)
         if state and python_path.is_file():
+            package_versions = _probe_python_package_versions(python_path, ["pymss", "pymss-core"])
             items.append({
                 **state,
                 "backend": backend,
                 "pythonPath": str(python_path),
                 "logPath": str(_env_log_path(backend)),
                 "source": "managed",
+                "coreUpdateSupported": True,
+                "packageVersions": {**(state.get("packageVersions") or {}), **package_versions},
+                "pymssVersion": (package_versions.get("pymss") or state.get("pymssVersion")),
+                "pymssCoreVersion": (package_versions.get("pymss-core") or state.get("pymssCoreVersion")),
             })
             seen_backends.add(backend)
-    # Bundled pre-installed environments (fallback)
+    bundled_active = None
+    if BUNDLED_RUNTIME_ENVS_DIR and BUNDLED_RUNTIME_ENVS_DIR.is_dir():
+        bundled_active = _resolve_runtime_state_from(BUNDLED_RUNTIME_ENVS_DIR / "active-runtime.json")
+    # Bundled pre-installed environments (fallback, except the active packaged env is always listed)
     if BUNDLED_RUNTIME_ENVS_DIR and BUNDLED_RUNTIME_ENVS_DIR.is_dir():
         for backend in manifest.get("backends", {}):
-            if backend in seen_backends:
-                continue
             bundled_env = BUNDLED_RUNTIME_ENVS_DIR / backend
             bundled_state_path = bundled_env / "pymss-runtime-state.json"
             bundled_python = bundled_env / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+            active_packaged = bool(
+                bundled_active
+                and str(bundled_active.get("backend") or "") == backend
+                and bundled_active.get("pythonPath")
+                and _same_path(bundled_active.get("pythonPath"), bundled_python)
+            )
+            if backend in seen_backends and not active_packaged:
+                continue
             if bundled_state_path.is_file() and bundled_python.is_file():
                 try:
                     state = json.loads(bundled_state_path.read_text(encoding="utf-8"))
                 except Exception:
                     continue
+                package_versions = _probe_python_package_versions(bundled_python, ["pymss", "pymss-core"])
                 items.append({
                     **state,
                     "backend": backend,
                     "pythonPath": str(bundled_python),
                     "source": "preinstalled",
+                    "coreUpdateSupported": True,
+                    "packageVersions": {**(state.get("packageVersions") or {}), **package_versions},
+                    "pymssVersion": (package_versions.get("pymss") or state.get("pymssVersion")),
+                    "pymssCoreVersion": (package_versions.get("pymss-core") or state.get("pymssCoreVersion")),
                 })
                 seen_backends.add(backend)
-    bootstrap_python = Path(os.environ.get("PYMSS_STUDIO_BOOTSTRAP_PYTHON") or sys.executable)
-    if not bootstrap_python.is_file():
-        bootstrap_python = Path(sys.executable)
+    bootstrap_python = _bootstrap_python_path()
     if bootstrap_python.is_file():
         try:
-            # On macOS the bundled runtime ships MLX alongside a CPU torch build, so probe for it:
+            # On macOS the preinstalled runtime ships MLX alongside a CPU torch build, so probe for it:
             # without this the environment is reported as plain "cpu" and MLX never surfaces.
             probed = _probe_python_runtime(bootstrap_python, ["mlx"] if sys.platform == "darwin" else None)
             packages = dict(probed.get("packages") or {})
@@ -372,7 +427,11 @@ def _installed_envs(manifest: dict[str, Any]) -> list[dict[str, Any]]:
                         "torchBackend": torch_backend,
                         "acceleratorAvailable": bool(probed.get("acceleratorAvailable")),
                         "packages": probed.get("packages"),
-                        "source": "bundled",
+                        "packageVersions": probed.get("packageVersions"),
+                        "pymssVersion": probed.get("pymssVersion"),
+                        "pymssCoreVersion": probed.get("pymssCoreVersion"),
+                        "source": "preinstalled",
+                        "coreUpdateSupported": False,
                     })
         except Exception:
             pass
@@ -411,9 +470,84 @@ def _envs_with_live_active(
             # Merged, not replaced: the probe's extras follow the requested backend, so a
             # replace could drop a key (mlx) the recording legitimately carries.
             "packages": {**(entry.get("packages") or {}), **(active_probe.get("packages") or {})},
+            "packageVersions": {**(entry.get("packageVersions") or {}), **(active_probe.get("packageVersions") or {})},
+            "pymssVersion": active_probe.get("pymssVersion") or entry.get("pymssVersion"),
+            "pymssCoreVersion": active_probe.get("pymssCoreVersion") or entry.get("pymssCoreVersion"),
         })
         break
     return environments
+
+
+def _latest_pypi_version(distribution: str) -> str | None:
+    url = f"https://pypi.org/pypi/{distribution}/json"
+    with urllib.request.urlopen(url, timeout=12) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    version = payload.get("info", {}).get("version")
+    return str(version) if version else None
+
+
+def _runtime_env_dir_for_python(python_path: Path) -> Path:
+    return python_path.parent.parent if python_path.parent.name.lower() in {"scripts", "bin"} else python_path.parent
+
+
+def _target_runtime_from_payload(payload: dict[str, Any], backend: str) -> tuple[dict[str, Any] | None, Path, Path, Path, str] | None:
+    target_python = Path(str(payload.get("pythonPath"))) if payload.get("pythonPath") else None
+    target_source = str(payload.get("source") or "").strip().lower()
+    if target_source == "bundled":
+        target_source = "preinstalled"
+
+    if target_python:
+        if not target_python.is_file():
+            return None
+        env_dir = _runtime_env_dir_for_python(target_python)
+        env_state_path = env_dir / "pymss-runtime-state.json"
+        state = None
+        if env_state_path.is_file():
+            try:
+                state = json.loads(env_state_path.read_text(encoding="utf-8"))
+            except Exception:
+                state = None
+            if state and str(state.get("backend") or "").strip().lower() not in {"", backend}:
+                return None
+        return state, env_dir, env_state_path, target_python, target_source or "active"
+
+    active = _read_runtime_state()
+    active_python = Path(str(active.get("pythonPath"))) if active and active.get("pythonPath") else None
+    if active and str(active.get("backend") or "").strip().lower() == backend and active_python and active_python.is_file():
+        source = str(active.get("source") or "active").strip().lower()
+        if source == "bundled":
+            source = "preinstalled"
+        env_dir = _runtime_env_dir_for_python(active_python)
+        env_state_path = env_dir / "pymss-runtime-state.json"
+        state = dict(active)
+        if env_state_path.is_file():
+            try:
+                state = json.loads(env_state_path.read_text(encoding="utf-8"))
+            except Exception:
+                state = dict(active)
+        return state, env_dir, env_state_path, active_python, source
+
+    state = _read_installed_env_state(backend)
+    env_dir = _env_dir(backend)
+    env_state_path = _env_state_path(backend)
+    python_path = _env_python_path(backend)
+    if state and python_path.is_file():
+        return state, env_dir, env_state_path, python_path, "managed"
+
+    if BUNDLED_RUNTIME_ENVS_DIR and BUNDLED_RUNTIME_ENVS_DIR.is_dir():
+        bundled_env = BUNDLED_RUNTIME_ENVS_DIR / backend
+        bundled_state_path = bundled_env / "pymss-runtime-state.json"
+        bundled_python = bundled_env / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        if bundled_python.is_file():
+            bundled_state = None
+            if bundled_state_path.is_file():
+                try:
+                    bundled_state = json.loads(bundled_state_path.read_text(encoding="utf-8"))
+                except Exception:
+                    bundled_state = None
+            return bundled_state, bundled_env, bundled_state_path, bundled_python, "preinstalled"
+
+    return None
 
 
 def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -421,6 +555,9 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
     backend = str(payload.get("backend") or "").strip() or None
     install_state = _read_runtime_state()
     packages = {name: _module_available(PACKAGE_IMPORT_NAMES.get(name, name)) for name in manifest["common"]}
+    package_versions = None
+    pymss_version = None
+    pymss_core_version = None
     extra_names = _backend_extra_names(manifest, backend)
     # With no explicit backend the caller is asking "what am I running on"; on macOS that answer
     # depends on whether MLX is present, so probe for it even though no backend was requested.
@@ -438,16 +575,28 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
             probed = _probe_python_runtime(active_python, extra_names)
             active_probe = probed
             packages = dict(probed.get("packages") or packages)
+            package_versions = probed.get("packageVersions")
+            pymss_version = probed.get("pymssVersion")
+            pymss_core_version = probed.get("pymssCoreVersion")
             torch_version = probed.get("torchVersion")
             torch_backend = str(probed.get("torchBackend") or torch_backend)
             accelerator_available = bool(probed.get("acceleratorAvailable"))
         except Exception:
             packages = dict(install_state.get("packages") or packages)
+            package_versions = install_state.get("packageVersions")
+            pymss_version = install_state.get("pymssVersion")
+            pymss_core_version = install_state.get("pymssCoreVersion")
             torch_version = install_state.get("torchVersion")
             torch_backend = str(install_state.get("torchBackend") or torch_backend)
             accelerator_available = bool(install_state.get("acceleratorAvailable"))
     elif _module_available("torch"):
         try:
+            probed = _probe_python_runtime(Path(sys.executable), extra_names)
+            active_probe = probed
+            packages = dict(probed.get("packages") or packages)
+            package_versions = probed.get("packageVersions")
+            pymss_version = probed.get("pymssVersion")
+            pymss_core_version = probed.get("pymssCoreVersion")
             import torch
             torch_version = torch.__version__
             torch_backend = "rocm" if getattr(torch.version, "hip", None) else "cuda" if getattr(torch.version, "cuda", None) else "cpu"
@@ -455,12 +604,16 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             packages["torch"] = False
             torch_backend = f"error:{exc}"
+    if not pymss_version and package_versions:
+        pymss_version = package_versions.get("pymss")
+    if not pymss_core_version and package_versions:
+        pymss_core_version = package_versions.get("pymss-core")
     return {
         "manifestVersion": manifest["manifestVersion"],
         "pythonVersion": platform.python_version(),
         "platform": sys.platform,
         "machine": platform.machine(),
-        "bootstrapPython": str(Path(os.environ.get("PYMSS_STUDIO_BOOTSTRAP_PYTHON") or sys.executable)),
+        "bootstrapPython": str(_bootstrap_python_path()),
         "runtimeEnvsDir": str(RUNTIME_ENVS_DIR),
         "activeRuntimeFile": str(ACTIVE_RUNTIME_FILE),
         "bundledRuntimeEnvsDir": str(BUNDLED_RUNTIME_ENVS_DIR) if BUNDLED_RUNTIME_ENVS_DIR else None,
@@ -475,6 +628,9 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "torchBackend": torch_backend,
         "acceleratorAvailable": accelerator_available,
         "packages": packages,
+        "packageVersions": package_versions,
+        "pymssVersion": pymss_version,
+        "pymssCoreVersion": pymss_core_version,
         # mlx is an optional extra: it must not drag readiness down when it was probed
         # speculatively (no backend requested). An explicit mlx backend still requires it below.
         "ready": all(v for k, v in packages.items() if k != "mlx" or backend == "mlx") and torch_backend != "missing" and not torch_backend.startswith("error:") and (
@@ -488,6 +644,18 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def cmd_runtime_info(payload: dict[str, Any]) -> int:
     _emit("runtime_info", _runtime_info_payload(payload))
+    return 0
+
+
+def cmd_runtime_core_versions(payload: dict[str, Any]) -> int:
+    del payload
+    packages: dict[str, dict[str, str | None]] = {}
+    for name in ("pymss", "pymss-core"):
+        try:
+            packages[name] = {"latestVersion": _latest_pypi_version(name)}
+        except Exception as exc:
+            packages[name] = {"latestVersion": None, "error": str(exc)}
+    _emit("runtime_core_versions", {"packages": packages})
     return 0
 
 
@@ -524,40 +692,21 @@ def cmd_activate_runtime(payload: dict[str, Any]) -> int:
         from worker_protocol import emit_error
         return emit_error("RUNTIME_BACKEND_UNSUPPORTED", "Missing runtime backend")
     active: dict[str, Any] | None = None
-    # 1. Check user-managed environments
-    state = _read_installed_env_state(backend)
-    python_path = _env_python_path(backend)
-    if state and python_path.is_file():
+    target = _target_runtime_from_payload(payload, backend)
+    if target:
+        state, env_dir, _env_state_path_value, python_path, source = target
         active = {
-            **state,
+            **(state or {}),
             "backend": backend,
             "pythonPath": str(python_path),
-            "logPath": str(_env_log_path(backend)),
-            "source": "managed",
+            "logPath": str(env_dir / "pymss-runtime-install.log"),
+            "source": source,
             "activatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-    # 2. Check bundled pre-installed environments
-    if not active and BUNDLED_RUNTIME_ENVS_DIR and BUNDLED_RUNTIME_ENVS_DIR.is_dir():
-        bundled_env = BUNDLED_RUNTIME_ENVS_DIR / backend
-        bundled_state_path = bundled_env / "pymss-runtime-state.json"
-        bundled_python = bundled_env / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-        if bundled_state_path.is_file() and bundled_python.is_file():
-            try:
-                bundled_state = json.loads(bundled_state_path.read_text(encoding="utf-8"))
-                active = {
-                    **bundled_state,
-                    "backend": backend,
-                    "pythonPath": str(bundled_python),
-                    "source": "preinstalled",
-                    "activatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                }
-            except Exception:
-                pass
-    # 3. Check bootstrap Python (fallback for old-style bundled builds)
+
+    # Bootstrap Python fallback for old-style builds without a dedicated runtime-envs entry.
     if not active:
-        bootstrap_python = Path(os.environ.get("PYMSS_STUDIO_BOOTSTRAP_PYTHON") or sys.executable)
-        if not bootstrap_python.is_file():
-            bootstrap_python = Path(sys.executable)
+        bootstrap_python = _bootstrap_python_path()
         if bootstrap_python.is_file():
             try:
                 probed = _probe_python_runtime(bootstrap_python)
@@ -569,7 +718,8 @@ def cmd_activate_runtime(payload: dict[str, Any]) -> int:
                         "torchBackend": backend,
                         "acceleratorAvailable": bool(probed.get("acceleratorAvailable")),
                         "packages": probed.get("packages"),
-                        "source": "bundled",
+                        "source": "preinstalled",
+                        "coreUpdateSupported": False,
                         "activatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     }
             except Exception:
@@ -587,21 +737,21 @@ def cmd_delete_runtime(payload: dict[str, Any]) -> int:
     if not backend:
         from worker_protocol import emit_error
         return emit_error("RUNTIME_BACKEND_UNSUPPORTED", "Missing runtime backend")
-    env_dir = _env_dir(backend)
-    python_path = _env_python_path(backend)
-    state = _read_installed_env_state(backend)
-    if not state and not python_path.is_file():
+    target = _target_runtime_from_payload(payload, backend)
+    if not target:
         from worker_protocol import emit_error
         return emit_error("RUNTIME_NOT_INSTALLED", f"Backend {backend} is not installed")
+    _state, env_dir, _env_state_path_value, python_path, _source = target
     active = _read_runtime_state()
-    if active and str(active.get("backend") or "").lower() == backend and active.get("source") != "bundled":
+    active_python = Path(str(active.get("pythonPath"))) if active and active.get("pythonPath") else None
+    if active and active_python and _same_path(active_python, python_path):
         from worker_protocol import emit_error
         return emit_error("RUNTIME_DELETE_ACTIVE", f"Cannot delete the currently active runtime ({backend}). Switch to another environment first.")
     import shutil
     try:
         if env_dir.is_dir():
             shutil.rmtree(str(env_dir), ignore_errors=True)
-        if active and str(active.get("backend") or "").lower() == backend:
+        if active_python and _same_path(active_python, python_path):
             try:
                 ACTIVE_RUNTIME_FILE.unlink()
             except Exception:
@@ -654,6 +804,8 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
 
     def run_pip(args: list[str], stage: str, package_index: str | None = None) -> None:
         command = [str(env_python), "-m", "pip", "install", "--no-cache-dir"]
+        if stage == "pymss":
+            command.append("--upgrade")
         if stage in {"common", "pymss"}:
             command.extend(["--only-binary=:all:", "--prefer-binary"])
         if package_index or (index_url and stage != "torch"):
@@ -707,12 +859,16 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
             "torchBackend": probed.get("torchBackend"),
             "acceleratorAvailable": bool(probed.get("acceleratorAvailable")),
             "packages": probed.get("packages"),
+            "packageVersions": probed.get("packageVersions"),
+            "pymssVersion": probed.get("pymssVersion"),
+            "pymssCoreVersion": probed.get("pymssCoreVersion"),
         }
         _env_state_path(backend).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         active = {
             **state,
             "pythonPath": str(env_python),
             "logPath": str(install_log_path),
+            "source": "managed",
             "activatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         _write_runtime_state(active)
@@ -728,4 +884,108 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
             task_id=task_id,
             recoverable=True,
             extra={"backend": backend, "logPath": str(install_log_path)},
+        )
+
+
+def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
+    task_id = str(payload.get("taskId") or f"runtime_core_update_{int(time.time() * 1000)}")
+    backend = str(payload.get("backend") or "").strip().lower()
+    mirror = str(payload.get("mirror") or "auto").strip().lower()
+    locale = str(payload.get("locale") or "").strip().lower()
+    if not backend:
+        from worker_protocol import emit_error
+        return emit_error("RUNTIME_BACKEND_UNSUPPORTED", "Missing runtime backend", task_id=task_id)
+
+    mirror, index_url = ("pypi", PYPI_MIRROR_URLS["pypi"]) if mirror == "auto" else _resolve_pypi_mirror(mirror, locale)
+    try:
+        target_pymss_version = _latest_pypi_version("pymss")
+    except Exception as exc:
+        from worker_protocol import emit_error
+        return emit_error("RUNTIME_CORE_UPDATE_FAILED", f"Failed to resolve latest pymss version from PyPI: {exc}", task_id=task_id, recoverable=True)
+    try:
+        target_pymss_core_version = _latest_pypi_version("pymss-core")
+    except Exception as exc:
+        from worker_protocol import emit_error
+        return emit_error("RUNTIME_CORE_UPDATE_FAILED", f"Failed to resolve latest pymss-core version from PyPI: {exc}", task_id=task_id, recoverable=True)
+    target = _target_runtime_from_payload(payload, backend)
+    if not target:
+        from worker_protocol import emit_error
+        return emit_error("RUNTIME_NOT_INSTALLED", f"Backend {backend} is not installed", task_id=task_id)
+    state, env_dir, env_state_path, python_path, source = target
+    if not python_path.is_file():
+        from worker_protocol import emit_error
+        return emit_error("RUNTIME_NOT_INSTALLED", f"Active runtime Python not found: {python_path}", task_id=task_id)
+    if _same_path(python_path, _bootstrap_python_path()):
+        from worker_protocol import emit_error
+        return emit_error("RUNTIME_CORE_UPDATE_UNSUPPORTED", "The app bootstrap Python runtime cannot be updated in place", task_id=task_id)
+    # Core update is only available for the currently active runtime
+    active = _read_runtime_state()
+    active_python = Path(str(active.get("pythonPath"))) if active and active.get("pythonPath") else None
+    if not active_python or not _same_path(active_python, python_path):
+        from worker_protocol import emit_error
+        return emit_error("RUNTIME_CORE_UPDATE_INACTIVE", "Core update is only available for the currently active runtime. Please switch to this environment first.", task_id=task_id, recoverable=True)
+    log_path = env_dir / "pymss-core-update.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] update pymss core mirror={mirror}\n", encoding="utf-8")
+    _emit("runtime_core_update_started", {"backend": backend, "logPath": str(log_path)}, task_id)
+
+    def append_log(stage: str, message: str) -> None:
+        with log_path.open("a", encoding="utf-8", errors="replace") as file:
+            file.write(f"[{stage}] {message}\n")
+
+    # Update pymss and pymss-core with their dependencies, but protect torch from being reinstalled.
+    # We explicitly avoid --no-deps so that new dependencies introduced by pymss updates are installed.
+    command = [str(python_path), "-m", "pip", "install", "--upgrade", "--no-cache-dir", "--only-binary=:all:", "--prefer-binary"]
+    if index_url:
+        command.extend(["--index-url", index_url])
+    pymss_requirement = f"pymss=={target_pymss_version}"
+    pymss_core_requirement = f"pymss-core=={target_pymss_core_version}"
+    command.extend([pymss_requirement, pymss_core_requirement])
+    try:
+        _emit("runtime_core_update_stage", {"stage": "pymss", "command": f"pip install --upgrade {pymss_requirement} {pymss_core_requirement}"}, task_id)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", env=os.environ.copy())
+        assert process.stdout is not None
+        for line in process.stdout:
+            message = line.rstrip()
+            append_log("pymss", message)
+            _emit("runtime_core_update_log", {"stage": "pymss", "message": message}, task_id)
+        if process.wait() != 0:
+            raise RuntimeError(f"pip failed with exit code {process.returncode}")
+        probed = _probe_python_runtime(python_path, _backend_extra_names(_manifest(), backend))
+        if probed.get("pymssVersion") != target_pymss_version:
+            raise RuntimeError(f"pymss stayed at {probed.get('pymssVersion') or 'unknown'} after update; expected {target_pymss_version}")
+        if probed.get("pymssCoreVersion") != target_pymss_core_version:
+            raise RuntimeError(f"pymss-core stayed at {probed.get('pymssCoreVersion') or 'unknown'} after update; expected {target_pymss_core_version}")
+        updated = {
+            **(state or {}),
+            "backend": backend,
+            "pythonPath": str(python_path),
+            "logPath": str(log_path),
+            "packages": probed.get("packages") or (state.get("packages") if state else None),
+            "packageVersions": probed.get("packageVersions") or (state.get("packageVersions") if state else None),
+            "pymssVersion": probed.get("pymssVersion") or (state.get("pymssVersion") if state else None),
+            "pymssCoreVersion": probed.get("pymssCoreVersion") or (state.get("pymssCoreVersion") if state else None),
+            "source": source,
+            "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        if env_state_path:
+            env_state = dict(updated)
+            env_state.pop("pythonPath", None)
+            env_state.pop("logPath", None)
+            env_state.pop("activatedAt", None)
+            env_state.pop("source", None)
+            env_state_path.write_text(json.dumps(env_state, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_runtime_state(updated)
+        _emit("runtime_core_update_finished", {"backend": backend, "state": updated, "logPath": str(log_path)}, task_id)
+        return 0
+    except Exception as exc:
+        from worker_protocol import emit_error
+        append_log("error", str(exc))
+        return emit_error(
+            "RUNTIME_CORE_UPDATE_FAILED",
+            str(exc),
+            detail=f"详细更新日志：{log_path}",
+            task_id=task_id,
+            recoverable=True,
+            extra={"backend": backend, "logPath": str(log_path)},
         )

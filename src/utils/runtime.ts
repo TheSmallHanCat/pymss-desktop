@@ -27,6 +27,61 @@ export function runtimeBackendLabel(backend: RuntimeBackend | string | null | un
   const key = String(backend || '')
   return isKnownRuntimeBackend(key) ? RUNTIME_BACKEND_LABELS[key] : key.toUpperCase()
 }
+export function activeRuntimeEnvironment(info: RuntimeInfo | null | undefined): InstalledRuntime | undefined {
+  const environments = info?.installedEnvironments || []
+  const activeBackend = String(info?.installedBackend || info?.installState?.backend || '')
+  if (activeBackend) {
+    const activeSource = String(info?.installState?.source || '')
+    const candidates = environments.filter((entry) => entry.backend === activeBackend)
+    return candidates.find((entry) => entry.source === activeSource) || candidates[0]
+  }
+
+  const backend = info?.packages?.mlx ? 'mlx' : info?.torchBackend
+  return backend ? environments.find((entry) => entry.backend === backend) : undefined
+}
+
+export function runtimeEnvironmentForBackend(
+  info: RuntimeInfo | null | undefined,
+  backend: RuntimeBackend | string,
+): InstalledRuntime | undefined {
+  const active = activeRuntimeEnvironment(info)
+  // Prioritize the active environment if it matches the backend
+  if (active?.backend === backend) return active
+  // Otherwise return the first matching backend
+  return (info?.installedEnvironments || []).find((entry) => entry.backend === backend)
+}
+
+export function preferredInstalledRuntimeBackend(info: RuntimeInfo | null | undefined): RuntimeBackend | null {
+  const active = activeRuntimeEnvironment(info)
+  const activeBackend = String(active?.backend || '')
+  if (isKnownRuntimeBackend(activeBackend)) return activeBackend
+
+  const installed = (info?.installedEnvironments || [])
+    .map((entry) => String(entry.backend || ''))
+    .filter(isKnownRuntimeBackend)
+  
+  if (installed.length === 1) return installed[0]
+  
+  // When multiple backends exist, check if there's only one unique backend across all sources
+  const uniqueBackends = [...new Set(installed)]
+  if (uniqueBackends.length === 1) return uniqueBackends[0]
+  
+  return null
+}
+
+export function runtimeCoreUpdateAvailable(
+  env: InstalledRuntime | undefined,
+  latestPymssVersion: string | null | undefined,
+  latestPymssCoreVersion: string | null | undefined,
+) {
+  if (!env || env.coreUpdateSupported === false) return false
+  const pymssVersion = env.pymssVersion || env.packageVersions?.pymss || ''
+  const pymssCoreVersion = env.pymssCoreVersion || env.packageVersions?.['pymss-core'] || ''
+  return Boolean(
+    latestPymssVersion && pymssVersion && latestPymssVersion !== pymssVersion
+    || latestPymssCoreVersion && pymssCoreVersion && latestPymssCoreVersion !== pymssCoreVersion,
+  )
+}
 
 /**
  * Whether the environment's accelerator is usable.
@@ -94,9 +149,4 @@ export function runtimeManifestStatus(
   const actual = String(env?.manifestVersion || '')
   if (!expected || !actual) return 'unknown'
   return actual === expected ? 'current' : 'outdated'
-}
-
-/** True when the active environment ships with the app and there is nothing useful to switch to. */
-export function isBuiltInRuntimeSource(source: string | undefined) {
-  return source === 'bundled' || source === 'preinstalled'
 }

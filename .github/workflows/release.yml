@@ -74,7 +74,7 @@ jobs:
         shell: bash
         run: |
           version="${RELEASE_VERSION_INPUT#v}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
             echo "Invalid semantic version: $RELEASE_VERSION_INPUT" >&2
             exit 1
           fi

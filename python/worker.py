@@ -22,6 +22,14 @@ def run_command(command: str, payload: dict) -> int:
         configure_process_proxy(load_proxy_config())
         from worker_bootstrap import cmd_install_runtime
         return cmd_install_runtime(payload)
+    if command == "runtime_core_versions":
+        configure_process_proxy(load_proxy_config())
+        from worker_bootstrap import cmd_runtime_core_versions
+        return cmd_runtime_core_versions(payload)
+    if command == "update_runtime_core":
+        configure_process_proxy(load_proxy_config())
+        from worker_bootstrap import cmd_update_runtime_core
+        return cmd_update_runtime_core(payload)
     if command == "activate_runtime":
         from worker_bootstrap import cmd_activate_runtime
         return cmd_activate_runtime(payload)

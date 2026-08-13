@@ -14,7 +14,7 @@ if ($NormalizedVersion.StartsWith('v')) {
   $NormalizedVersion = $NormalizedVersion.Substring(1)
 }
 
-if ($NormalizedVersion -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
+if ($NormalizedVersion -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
   throw "Invalid semantic version: $Version"
 }
 
@@ -29,10 +29,9 @@ function Update-JsonVersion {
     [string]$Path
   )
 
-  $Json = Get-Content -Path $Path -Raw | ConvertFrom-Json
-  $Json.version = $NormalizedVersion
-  $Updated = $Json | ConvertTo-Json -Depth 100
-  [System.IO.File]::WriteAllText($Path, $Updated + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+  $Content = Get-Content -Path $Path -Raw
+  $Updated = [regex]::Replace($Content, '(?m)^(\s*"version"\s*:\s*)"[^"]+"', "`${1}`"$NormalizedVersion`"", 1)
+  [System.IO.File]::WriteAllText($Path, $Updated, [System.Text.UTF8Encoding]::new($false))
 }
 
 Update-JsonVersion -Path $PackageJsonPath

@@ -2,12 +2,15 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  activeRuntimeEnvironment,
   detectRuntimePlatform,
-  isBuiltInRuntimeSource,
   isKnownRuntimeBackend,
+  preferredInstalledRuntimeBackend,
   recommendedRuntimeBackend,
   runtimeAcceleratorReady,
   runtimeBackendLabel,
+  runtimeCoreUpdateAvailable,
+  runtimeEnvironmentForBackend,
   runtimeManifestStatus,
   runtimeSizeHint,
 } from '../src/utils/runtime.ts'
@@ -60,11 +63,53 @@ test('accelerator readiness uses the reported flag for non-MLX backends', () => 
   assert.equal(runtimeAcceleratorReady(undefined, 'cuda'), false)
 })
 
-test('built-in sources are the ones shipped with the app', () => {
-  assert.equal(isBuiltInRuntimeSource('bundled'), true)
-  assert.equal(isBuiltInRuntimeSource('preinstalled'), true)
-  assert.equal(isBuiltInRuntimeSource('managed'), false)
-  assert.equal(isBuiltInRuntimeSource(undefined), false)
+test('active runtime environment follows active-runtime state', () => {
+  const info = {
+    installedBackend: 'cuda',
+    installState: { backend: 'cuda', source: 'preinstalled' },
+    installedEnvironments: [
+      { backend: 'cpu', source: 'managed' },
+      { backend: 'cuda', source: 'preinstalled', torchBackend: 'cuda' },
+    ],
+    torchBackend: 'cuda',
+  }
+  assert.equal(activeRuntimeEnvironment(info)?.backend, 'cuda')
+  assert.equal(preferredInstalledRuntimeBackend(info), 'cuda')
+})
+
+test('preferred installed backend falls back to the only installed environment', () => {
+  assert.equal(preferredInstalledRuntimeBackend({
+    installedEnvironments: [{ backend: 'cpu', source: 'managed' }],
+  }), 'cpu')
+})
+
+test('preferred installed backend avoids guessing when several inactive environments exist', () => {
+  assert.equal(preferredInstalledRuntimeBackend({
+    installedEnvironments: [
+      { backend: 'cpu', source: 'managed' },
+      { backend: 'cuda', source: 'managed' },
+    ],
+  }), null)
+})
+
+test('runtime environment lookup prefers the active source when backend appears twice', () => {
+  const info = {
+    installedBackend: 'cuda',
+    installState: { backend: 'cuda', source: 'preinstalled' },
+    installedEnvironments: [
+      { backend: 'cuda', source: 'managed', pythonPath: 'user/python.exe' },
+      { backend: 'cuda', source: 'preinstalled', pythonPath: 'package/python.exe' },
+    ],
+  }
+  assert.equal(runtimeEnvironmentForBackend(info, 'cuda')?.pythonPath, 'package/python.exe')
+})
+
+test('runtime core update is available when pymss-core alone is behind', () => {
+  assert.equal(runtimeCoreUpdateAvailable({ pymssVersion: '2.0.19', pymssCoreVersion: '0.1.4' }, '2.0.19', '0.1.6'), true)
+})
+
+test('runtime core update is hidden for non-updatable bootstrap runtimes', () => {
+  assert.equal(runtimeCoreUpdateAvailable({ pymssVersion: '2.0.18', pymssCoreVersion: '0.1.4', coreUpdateSupported: false }, '2.0.19', '0.1.6'), false)
 })
 
 test('backend labels stay readable for unknown backends', () => {

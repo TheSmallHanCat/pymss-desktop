@@ -544,6 +544,11 @@ pub async fn runtime_env_sizes(app: AppHandle) -> AppResult<Value> {
 }
 
 #[tauri::command]
+pub async fn runtime_core_versions(app: AppHandle) -> AppResult<Value> {
+    run_worker_with_payload(&app, "runtime_core_versions", None)
+}
+
+#[tauri::command]
 pub async fn start_runtime_install(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -618,7 +623,7 @@ fn debug_runtime_backup_path(path: &Path) -> AppResult<PathBuf> {
 fn debug_runtime_allowed_roots(app: &AppHandle) -> AppResult<Vec<(PathBuf, String)>> {
     let mut roots = vec![(storage::runtime_envs_dir(app)?, "user".to_string())];
     for dir in debug_bundled_runtime_envs_dirs(app)? {
-        roots.push((dir, "bundled".to_string()));
+        roots.push((dir, "preinstalled".to_string()));
     }
     Ok(roots)
 }
@@ -2415,6 +2420,30 @@ pub async fn reveal_path(app: AppHandle, path: String) -> AppResult<()> {
 pub struct TrashResult {
     pub trashed: Vec<String>,
     pub failed: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn start_runtime_core_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> AppResult<Value> {
+    if let Ok(tasks) = state.tasks.lock() {
+        if tasks.keys().any(|id| id.starts_with("runtime_core_update_")) {
+            return Err(AppError::Worker("runtime core update is already running".into()));
+        }
+    }
+    let task_id = payload
+        .get("taskId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("runtime_core_update_{}", chrono_like_timestamp()));
+    let mut payload = payload;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("taskId".to_string(), Value::String(task_id.clone()));
+    }
+    spawn_worker_background(app, state, "update_runtime_core", task_id.clone(), payload)?;
+    Ok(serde_json::json!({ "taskId": task_id, "started": true }))
 }
 
 fn is_ignored_empty_dir_file(path: &Path) -> bool {

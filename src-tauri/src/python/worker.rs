@@ -27,6 +27,7 @@ static PAYLOAD_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[serde(rename_all = "camelCase")]
 struct ActiveRuntimeRecord {
     python_path: String,
+    source: Option<String>,
 }
 
 fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
@@ -140,6 +141,10 @@ fn bundled_runtime_envs_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
 }
 
 fn try_resolve_active_runtime(file: &PathBuf) -> Option<String> {
+    resolve_active_runtime_record(file).map(|(python, _source)| python)
+}
+
+fn resolve_active_runtime_record(file: &PathBuf) -> Option<(String, Option<String>)> {
     if !file.is_file() {
         return None;
     }
@@ -148,12 +153,16 @@ fn try_resolve_active_runtime(file: &PathBuf) -> Option<String> {
     let python = PathBuf::from(&record.python_path);
     // Absolute path – check directly
     if python.is_absolute() {
-        return python.is_file().then(|| python.to_string_lossy().to_string());
+        return python
+            .is_file()
+            .then(|| (python.to_string_lossy().to_string(), record.source));
     }
     // Relative path – resolve against the directory containing the file
     let parent = file.parent()?;
     let resolved = parent.join(&python);
-    resolved.is_file().then(|| resolved.to_string_lossy().to_string())
+    resolved
+        .is_file()
+        .then(|| (resolved.to_string_lossy().to_string(), record.source))
 }
 
 fn materialize_bundled_runtime_env_templates(app: &AppHandle) -> AppResult<()> {
@@ -219,12 +228,10 @@ fn materialize_windows_venv_template(_env_dir: &PathBuf) -> AppResult<()> {
 }
 
 fn active_runtime_python_path(app: &AppHandle) -> AppResult<Option<String>> {
-    // 1. User data directory (highest priority)
     let user_file = storage::active_runtime_file(app)?;
     if let Some(result) = try_resolve_active_runtime(&user_file) {
         return Ok(Some(result));
     }
-    // 2. Bundled locations (fallback for pre-installed builds)
     for envs_dir in bundled_runtime_envs_dirs(app)? {
         let bundled_file = envs_dir.join("active-runtime.json");
         if let Some(result) = try_resolve_active_runtime(&bundled_file) {
@@ -337,6 +344,7 @@ fn build_worker_command(
             | "install_runtime"
             | "activate_runtime"
             | "delete_runtime"
+            | "update_runtime_core"
     ) {
         bootstrap_python.clone()
     } else {
@@ -654,6 +662,10 @@ fn is_background_terminal_event(command: &str, event_type: &str) -> bool {
         "install_runtime" => matches!(
             event_type,
             "error" | "runtime_install_finished" | "task_cancelled"
+        ),
+        "update_runtime_core" => matches!(
+            event_type,
+            "error" | "runtime_core_update_finished" | "task_cancelled"
         ),
         "import_custom_model" => matches!(
             event_type,
@@ -992,7 +1004,7 @@ pub fn spawn_worker_background(
 
 #[cfg(test)]
 mod tests {
-    use super::{materialize_windows_venv_template, try_resolve_active_runtime};
+    use super::{materialize_windows_venv_template, resolve_active_runtime_record, try_resolve_active_runtime};
     use std::path::PathBuf;
 
     #[cfg(windows)]
@@ -1030,6 +1042,32 @@ mod tests {
         assert_eq!(PathBuf::from(resolved), scripts_dir.join("python.exe"));
         assert!(cfg.contains(&format!("home = {}", runtime_dir.to_string_lossy())));
         assert!(!cfg.contains("__PYMSS_STUDIO"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn active_runtime_record_reports_source() {
+        let root = std::env::temp_dir().join(format!(
+            "pymss-worker-active-runtime-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let scripts_dir = root.join("runtime-envs").join("cuda").join("Scripts");
+        std::fs::create_dir_all(&scripts_dir).unwrap();
+        std::fs::write(scripts_dir.join("python.exe"), "stub").unwrap();
+        let active_file = root.join("runtime-envs").join("active-runtime.json");
+        std::fs::write(
+            &active_file,
+            r#"{"pythonPath":"cuda\\Scripts\\python.exe","source":"preinstalled"}"#,
+        )
+        .unwrap();
+
+        let (resolved, source) = resolve_active_runtime_record(&active_file).unwrap();
+        assert_eq!(PathBuf::from(resolved), scripts_dir.join("python.exe"));
+        assert_eq!(source.as_deref(), Some("preinstalled"));
 
         let _ = std::fs::remove_dir_all(root);
     }

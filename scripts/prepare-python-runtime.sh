@@ -46,7 +46,7 @@ PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir --only-binary=:al
 if [[ "$VARIANT" == "mlx" || "$VARIANT" == "mps" ]]; then
   PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir mlx
 fi
-PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir --no-deps "pymss>=2.0.15" pymss-core==0.1.6
+PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir --upgrade --no-deps "pymss>=2.0.15" "pymss-core>=0.1.6"
 
 bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR" --keep-venv
 PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RUNTIME_HOME" "$PY" - <<'PY'

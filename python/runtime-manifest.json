@@ -17,7 +17,7 @@
     "pyyaml": "pyyaml>=6.0.1,<7",
     "tqdm": "tqdm>=4.60,<5",
     "pymss": "pymss>=2.0.15",
-    "pymss-core": "pymss-core==0.1.6"
+    "pymss-core": "pymss-core>=0.1.6"
   },
   "backends": {
     "cpu": {

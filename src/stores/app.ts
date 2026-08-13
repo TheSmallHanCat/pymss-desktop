@@ -51,6 +51,9 @@ export type RuntimeInfo = {
     logPath?: string
     source?: string
     packages?: Record<string, boolean>
+    packageVersions?: Record<string, string | null>
+    pymssVersion?: string | null
+    pymssCoreVersion?: string | null
   } | null
   installedEnvironments?: InstalledRuntime[]
   /** GPU vendors detected without torch ('nvidia' | 'amd' | 'intel'); empty when undetectable. */
@@ -61,6 +64,9 @@ export type RuntimeInfo = {
   torchBackend?: string
   acceleratorAvailable?: boolean
   packages?: Record<string, boolean>
+  packageVersions?: Record<string, string | null>
+  pymssVersion?: string | null
+  pymssCoreVersion?: string | null
   ready?: boolean
 }
 
@@ -75,7 +81,18 @@ export type InstalledRuntime = {
   pythonPath?: string
   logPath?: string
   packages?: Record<string, boolean>
-  source?: 'managed' | 'bundled' | 'preinstalled'
+  packageVersions?: Record<string, string | null>
+  pymssVersion?: string | null
+  pymssCoreVersion?: string | null
+  coreUpdateSupported?: boolean
+  source?: 'managed' | 'preinstalled'
+}
+
+export type RuntimeCoreVersions = {
+  packages?: Record<string, {
+    latestVersion?: string | null
+    error?: string
+  }>
 }
 
 export type CudaDeviceInfo = {
@@ -107,6 +124,11 @@ export const useAppStore = defineStore('app', () => {
   const runtimeInstallBackend = ref<string | null>(null)
   const runtimeInstallMessage = ref('')
   const runtimeInstallLogs = ref<string[]>([])
+  const runtimeCoreVersions = ref<RuntimeCoreVersions | null>(null)
+  const runtimeCoreVersionsLoading = ref(false)
+  const runtimeCoreUpdateTaskId = ref<string | null>(null)
+  const runtimeCoreUpdateStatus = ref<'idle' | 'updating' | 'success' | 'error' | 'cancelled'>('idle')
+  const runtimeCoreUpdateMessage = ref('')
   const runtimeEnvSizes = ref<Record<string, number>>({})
   const runtimeEnvSizesLoading = ref(false)
   // Backends whose venv exists but never finished installing — leftover disk usage the user
@@ -307,6 +329,20 @@ export const useAppStore = defineStore('app', () => {
     return runtimeInfo.value
   }
 
+  async function loadRuntimeCoreVersions() {
+    runtimeCoreVersionsLoading.value = true
+    try {
+      if (!isTauriRuntime()) {
+        runtimeCoreVersions.value = null
+        return runtimeCoreVersions.value
+      }
+      runtimeCoreVersions.value = await invoke<RuntimeCoreVersions>('runtime_core_versions')
+      return runtimeCoreVersions.value
+    } finally {
+      runtimeCoreVersionsLoading.value = false
+    }
+  }
+
   async function installRuntime(backend: RuntimeBackend, mirror = 'auto', locale = '') {
     const taskId = `runtime_install_${crypto.randomUUID()}`
     runtimeInstallTaskId.value = taskId
@@ -324,9 +360,29 @@ export const useAppStore = defineStore('app', () => {
     return taskId
   }
 
-  async function activateRuntime(backend: RuntimeBackend) {
-    await invoke('activate_runtime', { payload: { backend } })
-    await Promise.all([checkRuntimeInfo(), checkEnv()])
+  async function updateRuntimeCore(
+    backend: RuntimeBackend,
+    mirror = 'auto',
+    locale = '',
+    target: { pythonPath?: string; source?: string } = {},
+  ) {
+    const taskId = `runtime_core_update_${crypto.randomUUID()}`
+    runtimeCoreUpdateTaskId.value = taskId
+    runtimeCoreUpdateStatus.value = 'updating'
+    runtimeCoreUpdateMessage.value = ''
+    try {
+      await invoke('start_runtime_core_update', { payload: { taskId, backend, mirror, locale, ...target } })
+    } catch (error) {
+      runtimeCoreUpdateStatus.value = 'error'
+      runtimeCoreUpdateMessage.value = error instanceof Error ? error.message : String(error)
+      throw error
+    }
+    return taskId
+  }
+
+  async function activateRuntime(backend: RuntimeBackend, target: { pythonPath?: string; source?: string } = {}) {
+    await invoke('activate_runtime', { payload: { backend, ...target } })
+    await Promise.all([checkRuntimeInfo(), checkEnv(), loadRuntimeCoreVersions()])
   }
 
   async function cancelRuntimeInstall() {
@@ -347,13 +403,44 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function deleteRuntime(backend: RuntimeBackend) {
-    await invoke('delete_runtime', { payload: { backend } })
+  async function deleteRuntime(backend: RuntimeBackend, target: { pythonPath?: string; source?: string } = {}) {
+    await invoke('delete_runtime', { payload: { backend, ...target } })
     await checkRuntimeInfo()
   }
 
   function handleRuntimeEvent(event: any) {
     const taskId = event?.taskId
+    if (runtimeCoreUpdateTaskId.value && taskId === runtimeCoreUpdateTaskId.value) {
+      if (event?.type === 'runtime_core_update_finished') {
+        runtimeCoreUpdateStatus.value = 'success'
+        runtimeCoreUpdateMessage.value = ''
+        runtimeCoreUpdateTaskId.value = null
+        if (event.payload?.state || event.payload?.logPath) {
+          runtimeInfo.value = {
+            ...(runtimeInfo.value || {}),
+            installState: event.payload?.state,
+            logPath: event.payload?.logPath,
+          }
+        }
+        void checkEnv()
+        void checkRuntimeInfo()
+        void loadRuntimeCoreVersions()
+      } else if (event?.type === 'runtime_core_update_started') {
+        runtimeCoreUpdateStatus.value = 'updating'
+        runtimeCoreUpdateMessage.value = event.payload?.backend || ''
+        if (event.payload?.logPath) runtimeInfo.value = { ...(runtimeInfo.value || {}), logPath: event.payload.logPath }
+      } else if (event?.type === 'runtime_core_update_stage' || event?.type === 'runtime_core_update_log') {
+        runtimeCoreUpdateMessage.value = event.payload?.message || event.payload?.stage || ''
+      } else if (event?.type === 'error') {
+        runtimeCoreUpdateStatus.value = 'error'
+        runtimeCoreUpdateMessage.value = event.payload?.message || 'Runtime core update failed'
+        runtimeCoreUpdateTaskId.value = null
+      } else if (event?.type === 'task_cancelled') {
+        runtimeCoreUpdateStatus.value = 'cancelled'
+        runtimeCoreUpdateTaskId.value = null
+      }
+      return
+    }
     if (!runtimeInstallTaskId.value || taskId !== runtimeInstallTaskId.value) return
     if (event?.type === 'runtime_install_finished') {
       runtimeInstallStatus.value = 'success'
@@ -368,6 +455,7 @@ export const useAppStore = defineStore('app', () => {
       }
       void checkEnv()
       void checkRuntimeInfo()
+      void loadRuntimeCoreVersions()
       void import('@/stores/model').then(({ useModelStore }) => useModelStore().loadModels())
     } else if (event?.type === 'runtime_install_started') {
       runtimeInstallStatus.value = 'installing'
@@ -408,6 +496,11 @@ export const useAppStore = defineStore('app', () => {
     runtimeInstallBackend,
     runtimeInstallMessage,
     runtimeInstallLogs,
+    runtimeCoreVersions,
+    runtimeCoreVersionsLoading,
+    runtimeCoreUpdateTaskId,
+    runtimeCoreUpdateStatus,
+    runtimeCoreUpdateMessage,
     runtimeEnvSizes,
     runtimeEnvSizesLoading,
     runtimeIncompleteBackends,
@@ -416,7 +509,9 @@ export const useAppStore = defineStore('app', () => {
     buildInfoUpdateSupported,
     loadRuntimeEnvSizes,
     checkRuntimeInfo,
+    loadRuntimeCoreVersions,
     installRuntime,
+    updateRuntimeCore,
     activateRuntime,
     cancelRuntimeInstall,
     waitForRuntimeInstall,
