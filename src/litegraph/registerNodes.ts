@@ -87,7 +87,7 @@ function makeNodeClass(spec: NodeSpec): any {
       /* Execution happens in pymss; the canvas is edit-only. */
     }
   }
-  klass._pymssSpec = spec
+  ;(klass as any)._pymssSpec = spec
   return klass
 }
 

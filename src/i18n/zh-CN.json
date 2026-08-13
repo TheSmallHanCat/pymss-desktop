@@ -1159,6 +1159,7 @@
     "saveFilenamePlaceholder": "自动：音频名_轨道名_模型名",
     "saveFilenameAuto": "自动命名",
     "addNote": "添加注释",
+    "addNode": "添加节点",
     "noteTitlePlaceholder": "输入注释标题",
     "noteContentPlaceholder": "记录处理说明、约束或输出要求。",
     "noteColorAmber": "琥珀",

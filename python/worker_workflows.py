@@ -1,15 +1,25 @@
+"""
+Workflow inference worker — thin shell over pymss.graph (in-process).
+
+Replaces the legacy v2-graph runtime + pymss CLI fallback. The frontend now
+sends a native comfy-mss JSON workflow (litegraph serialize output) or a pymss
+YAML workflow dict. We hand it straight to pymss.graph and forward progress as
+worker events.
+
+Contract (payload fields, sent by stores/task.ts via start_workflow_inference):
+  taskId, workflowName, workflow (dict: comfy-mss JSON or pymss YAML),
+  input (str path, single-file mode), inputs (list[str], batch mode),
+  output, outputFormat, outputLayout, modelDir, source, downloadMethod,
+  device, deviceIds, useTta, debug, audioParams.
+"""
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 import tempfile
 import traceback
 from pathlib import Path
 from typing import Any
 
-from worker_graph_workflows import is_graph_workflow_definition, run_graph_workflow_task
-from worker_infer import _normalize_output_layout, _resolve_separator_device, apply_output_naming, collect_changed_files, collect_outputs, snapshot_output_files
 from worker_protocol import emit, emit_error
 
 
@@ -18,346 +28,186 @@ def _normalize_output_dir(value: Any) -> str:
     return text or "results"
 
 
-def _write_workflow_definition(payload: dict[str, Any], task_id: str) -> Path:
-    workflow_path = payload.get("workflowPath")
-    if isinstance(workflow_path, str) and workflow_path.strip():
-        path = Path(workflow_path).expanduser()
-        if path.is_file():
-            return path
+def _normalize_output_layout(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in ("folders", "flat") else "folders"
 
+
+def _write_workflow_file(payload: dict[str, Any], task_id: str) -> tuple[Path, str]:
+    """Write the workflow dict to a temp file and return (path, format).
+
+    format is 'comfy' for a ComfyUI graph dict or 'yaml' for a pymss linear
+    workflow dict (detected by the presence of a top-level 'steps' list).
+    """
     definition = payload.get("workflow")
     if not isinstance(definition, dict):
-        return Path("")
+        return Path(""), "comfy"
 
+    fmt = "yaml" if "steps" in definition and "nodes" not in definition else "comfy"
+    ext = "yaml" if fmt == "yaml" else "json"
     temp_dir = Path(tempfile.gettempdir()) / "pymss-studio-workflows"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    path = temp_dir / f"{task_id}.json"
-    path.write_text(json.dumps(definition, ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
+    path = temp_dir / f"{task_id}.{ext}"
+    if fmt == "yaml":
+        # The YAML compiler consumes a parsed mapping; write the dict as JSON so
+        # pymss.workflow.load_workflow_data can read it back losslessly.
+        path.write_text(json.dumps(definition, ensure_ascii=False, indent=2), encoding="utf-8")
+    else:
+        path.write_text(json.dumps(definition, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path, fmt
 
 
-# --------------------------------------------------------------------------------------
-# Legacy CLI fallback
-#
-# Everything below runs a workflow by shelling out to the `pymss` CLI. It is only reached when
-# the definition is NOT a graph, and the desktop app never sends one of those: both
-# buildWorkflowRunConfig() and buildWorkflowDefinitionForRun() in stores/task.ts pass every
-# definition through readWorkflowGraphDefinition() first, including on re-run of a task restored
-# from history.
-#
-# It is kept for the one caller that can still reach it: running this worker directly, e.g.
-# `python worker.py infer_workflow --payload legacy.json` with a pre-graph workflow file.
-# --------------------------------------------------------------------------------------
+def _resolve_device(payload: dict[str, Any]) -> str | None:
+    device = str(payload.get("device") or "").strip().lower()
+    return device or None
 
 
-def _candidate_commands(workflow_path: Path, input_path: str, output_dir: str, payload: dict[str, Any], output_layout: str) -> list[list[str]]:
-    output_format = str(payload.get("outputFormat") or "wav")
-    audio_params = payload.get("audioParams") if isinstance(payload.get("audioParams"), dict) else {}
-    run_args = [
-        "workflow",
-        "run",
-        "-c",
-        str(workflow_path),
-        "-i",
-        input_path,
-        "-o",
-        output_dir,
-        "--output-layout",
-        output_layout,
-        "--download",
-        "--source",
-        str(payload.get("source") or "modelscope"),
-        "--format",
-        output_format,
-        "--wav-bit-depth",
-        str(audio_params.get("wav_bit_depth") or "FLOAT"),
-        "--flac-bit-depth",
-        str(audio_params.get("flac_bit_depth") or "PCM_16"),
-        "--mp3-bit-rate",
-        str(audio_params.get("mp3_bit_rate") or "320k"),
-        "--m4a-bit-rate",
-        str(audio_params.get("m4a_bit_rate") or "512k"),
-        "--m4a-codec",
-        str(audio_params.get("m4a_codec") or "aac"),
-    ]
-    model_dir = str(payload.get("modelDir") or "").strip()
-    if model_dir:
-        run_args.extend(["--model-dir", model_dir])
-    endpoint = str(payload.get("endpoint") or "").strip()
-    if endpoint:
-        run_args.extend(["--endpoint", endpoint])
-    requested_device = str(payload.get("device") or "auto").strip().lower() or "auto"
-    device, device_ids, _resolved_device_label = _resolve_separator_device(
-        requested_device, payload.get("deviceIds")
-    )
-    if requested_device == "cuda":
-        # pymss's explicit `cuda` path currently loses the selected index,
-        # while `auto` plus device_ids resolves to cuda:<id> correctly.
-        run_args.extend(["--device", device])
-        for device_id in device_ids:
-            run_args.extend(["--device-id", str(device_id)])
-    elif device and device != "auto":
-        run_args.extend(["--device", device])
-    if payload.get("useTta"):
-        run_args.append("--tta")
-    if payload.get("debug"):
-        run_args.append("--debug")
-    return [
-        [sys.executable, "-m", "pymss.cli", *run_args],
-    ]
+def _emit_progress(task_id: str) -> Any:
+    """Build a progress_callback(i, total, message) that emits task events."""
+    last_stage = {"sep": None}
 
+    def cb(index: int, total: int, message: str | None) -> None:
+        if total <= 0:
+            total = 1
+        # Map node index (1-based feel) onto the 35..92 progress band used by
+        # the UI's STAGE_META, leaving room for validate(12) and write(92).
+        progress = 35 + int((index / max(1, total)) * 55)
+        stage = "separating"
+        emit("task_progress", {
+            "stage": stage,
+            "done": index,
+            "total": total,
+            "message": message or "Running workflow",
+            "progress": min(92, progress),
+        }, task_id=task_id)
 
-def _run_workflow_cli(command: list[str], task_id: str) -> tuple[int, str]:
-    emit("task_log", {"level": "info", "message": " ".join(command)}, task_id=task_id)
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    lines: list[str] = []
-    assert process.stdout is not None
-    for line in process.stdout:
-        text = line.rstrip()
-        if not text:
-            continue
-        lines.append(text)
-        try:
-            event = json.loads(text)
-            if isinstance(event, dict) and isinstance(event.get("type"), str):
-                emit(event["type"], event.get("payload") if isinstance(event.get("payload"), dict) else {}, task_id=task_id)
-                continue
-        except Exception:
-            pass
-        emit("task_log", {"level": "info", "message": text}, task_id=task_id)
-    return process.wait(), "\n".join(lines[-40:])
+    return cb
 
 
 def _workflow_task_output_dir(output_dir: str, input_path: str, output_layout: str) -> Path:
     return Path(output_dir) / Path(input_path).stem if output_layout == "folders" else Path(output_dir)
 
 
-def _prepare_workflow_batch_tasks(raw_tasks: Any, root_task_id: str) -> tuple[list[dict[str, str]], str | None, str | None]:
-    if not isinstance(raw_tasks, list) or not raw_tasks:
-        return [], "WORKFLOW_INPUT_MISSING", "Missing workflow batch tasks"
-    batch_tasks: list[dict[str, str]] = []
-    for index, item in enumerate(raw_tasks):
-        if not isinstance(item, dict):
-            return [], "WORKFLOW_INPUT_MISSING", f"Invalid workflow batch task at index {index}"
-        task_id = str(item.get("taskId") or "").strip()
-        input_path = str(item.get("input") or "").strip()
-        if not task_id:
-            return [], "WORKFLOW_INPUT_MISSING", f"Missing taskId for workflow batch task {index + 1}"
-        if not input_path:
-            return [], "WORKFLOW_INPUT_MISSING", f"Missing input path for workflow batch task {task_id}"
-        source_path = Path(input_path)
-        if not source_path.exists():
-            return [], "INPUT_NOT_FOUND", f"Input not found: {input_path}"
-        batch_tasks.append({
-            "taskId": task_id,
-            "input": str(source_path),
-            "inputIndex": str(item.get("inputIndex") or index + 1),
-        })
-    return batch_tasks, None, None
+def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
+               input_paths: list[str] | None, output_dir: str, output_layout: str) -> dict[str, Any]:
+    import pymss.graph as graph
 
-
-def _emit_workflow_batch_error(raw_tasks: Any, fallback_task_id: str, code: str, message: str, detail: str = "") -> int:
-    task_ids: list[str] = []
-    if isinstance(raw_tasks, list):
-        for item in raw_tasks:
-            if not isinstance(item, dict):
-                continue
-            task_id = str(item.get("taskId") or "").strip()
-            if task_id and task_id not in task_ids:
-                task_ids.append(task_id)
-    if not task_ids and fallback_task_id:
-        task_ids.append(fallback_task_id)
-    for task_id in task_ids:
-        emit_error(code, message, detail, task_id=task_id)
-    return 1
-
-
-def cmd_infer_workflow_batch(payload: dict[str, Any]) -> int:
-    raw_tasks = payload.get("tasks")
-    first_task_id = ""
-    if isinstance(raw_tasks, list) and raw_tasks and isinstance(raw_tasks[0], dict):
-        first_task_id = str(raw_tasks[0].get("taskId") or "")
-    root_task_id = str(payload.get("taskId") or first_task_id or "")
-    output_dir = _normalize_output_dir(payload.get("output"))
-    output_format = str(payload.get("outputFormat") or "wav")
-    output_layout = _normalize_output_layout(payload.get("outputLayout"))
-    if not root_task_id:
-        return emit_error("WORKFLOW_TASK_ID_MISSING", "Workflow task id is required")
-
-    batch_tasks, error_code, error_message = _prepare_workflow_batch_tasks(raw_tasks, root_task_id)
-    if error_code:
-        return _emit_workflow_batch_error(
-            raw_tasks,
-            root_task_id,
-            error_code,
-            error_message or "Invalid workflow batch tasks",
-        )
-
-    workflow_path = _write_workflow_definition(payload, root_task_id)
+    workflow_path, fmt = _write_workflow_file(payload, task_id)
     if not workflow_path.is_file():
-        return _emit_workflow_batch_error(raw_tasks, root_task_id, "WORKFLOW_MISSING", "Workflow definition is required")
+        raise RuntimeError("Workflow definition is required")
 
-    failed = False
-    try:
-        graph_workflow = is_graph_workflow_definition(payload.get("workflow"))
-        output_root = Path(output_dir)
-        output_root.mkdir(parents=True, exist_ok=True)
-        for item in batch_tasks:
-            task_id = item["taskId"]
-            input_path = item["input"]
-            task_output_dir = _workflow_task_output_dir(output_dir, input_path, output_layout)
-            emit("task_started", {"workflow": payload.get("workflowName"), "input": input_path, "output": str(task_output_dir)}, task_id=task_id)
-            emit("task_stage", {"stage": "validating_input", "message": "Validating workflow input", "progress": 12}, task_id=task_id)
-            emit("task_stage", {"stage": "separating", "message": "Running workflow", "progress": 35}, task_id=task_id)
-            if graph_workflow:
-                try:
-                    result = run_graph_workflow_task(
-                        payload={**payload, "inputIndex": item.get("inputIndex")},
-                        task_id=task_id,
-                        input_path=input_path,
-                        output_dir=output_dir,
-                        output_layout=output_layout,
-                    )
-                except Exception as exc:
-                    failed = True
-                    emit_error("WORKFLOW_RUN_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
-                    continue
-                emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
-                emit("task_done", result, task_id=task_id)
-                continue
-            failures: list[str] = []
-            completed = False
-            for command in _candidate_commands(workflow_path, input_path, output_dir, payload, output_layout):
-                output_baseline = snapshot_output_files(str(task_output_dir), output_format)
-                try:
-                    code, tail = _run_workflow_cli(command, task_id)
-                except FileNotFoundError as exc:
-                    failures.append(str(exc))
-                    continue
-                if code != 0:
-                    failures.append(tail or f"command exited with {code}: {' '.join(command)}")
-                    continue
+    if fmt == "yaml":
+        import pymss.workflow as pwf
+        data = json.loads(workflow_path.read_text(encoding="utf-8"))
+        wf = pwf.load_workflow_data(data)
+        dag = graph.compile_workflow_to_dag(wf)
+    else:
+        dag = graph.load_comfy_file(workflow_path)
 
-                emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
-                outputs = apply_output_naming(
-                    collect_outputs(str(task_output_dir), [Path(input_path).name], output_format, output_baseline),
-                    payload.get("outputNaming"),
-                    input_path=input_path,
-                    input_index=int(item.get("inputIndex") or 1),
-                    model=str(payload.get("workflowName") or ""),
-                    output_format=output_format,
-                )
-                files = [output["path"] for output in outputs]
-                if not files and task_output_dir.exists():
-                    files = collect_changed_files(str(task_output_dir), output_baseline)
-                emit("task_done", {
-                    "files": files,
-                    "outputs": outputs,
-                    "outputDir": str(task_output_dir.resolve()),
-                    "outputFormat": output_format,
-                }, task_id=task_id)
-                completed = True
-                break
-            if not completed:
-                failed = True
-                emit_error(
-                    "WORKFLOW_RUN_FAILED",
-                    "Unable to run workflow with the installed pymss package.",
-                    "\n\n".join(failures),
-                    task_id=task_id,
-                )
-        return 1 if failed else 0
-    except Exception as exc:
-        detail = traceback.format_exc()
-        for item in batch_tasks:
-            emit_error("WORKFLOW_RUN_FAILED", str(exc), detail, task_id=item["taskId"])
-        return 1
+    task_output_dir = _workflow_task_output_dir(output_dir, input_path or (input_paths[0] if input_paths else ""), output_layout)
+    task_output_dir.mkdir(parents=True, exist_ok=True)
+
+    saved = graph.run_dag(
+        dag,
+        output_dir=task_output_dir,
+        input_path=input_path,
+        input_paths=input_paths,
+        progress_callback=_emit_progress(task_id),
+        device=_resolve_device(payload),
+        model_dir=payload.get("modelDir") or None,
+        download=bool(payload.get("downloadMethod") and payload.get("downloadMethod") != "never"),
+        source=str(payload.get("source") or "modelscope"),
+        output_format=str(payload.get("outputFormat") or "wav").lower() or None,
+        audio_params=payload.get("audioParams") if isinstance(payload.get("audioParams"), dict) else None,
+        debug=bool(payload.get("debug")),
+        strict=True,
+    )
+    output_format = str(payload.get("outputFormat") or "wav").lower()
+    return {
+        "files": saved,
+        "outputs": [{"path": p, "name": Path(p).name} for p in saved],
+        "outputDir": str(task_output_dir.resolve()),
+        "outputFormat": output_format,
+    }
 
 
 def cmd_infer_workflow(payload: dict[str, Any]) -> int:
-    if isinstance(payload.get("tasks"), list):
-        return cmd_infer_workflow_batch(payload)
+    # Batch mode: a list of per-input tasks shares one workflow.
+    raw_tasks = payload.get("tasks")
+    if isinstance(raw_tasks, list) and raw_tasks:
+        return _cmd_infer_workflow_batch(payload, raw_tasks)
 
     task_id = str(payload.get("taskId") or "")
     input_path = str(payload.get("input") or "").strip()
     output_dir = _normalize_output_dir(payload.get("output"))
-    output_format = str(payload.get("outputFormat") or "wav")
     output_layout = _normalize_output_layout(payload.get("outputLayout"))
     if not task_id:
         return emit_error("WORKFLOW_TASK_ID_MISSING", "Workflow task id is required")
     if not input_path:
         return emit_error("WORKFLOW_INPUT_MISSING", "Workflow input is required", task_id=task_id)
 
-    workflow_path = _write_workflow_definition(payload, task_id)
-    if not workflow_path.is_file():
-        return emit_error("WORKFLOW_MISSING", "Workflow definition is required", task_id=task_id)
-
     try:
         source_path = Path(input_path)
-        task_output_dir = _workflow_task_output_dir(output_dir, input_path, output_layout)
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        emit("task_started", {"workflow": payload.get("workflowName"), "input": input_path, "output": str(task_output_dir)}, task_id=task_id)
+        emit("task_started", {
+            "workflow": payload.get("workflowName"),
+            "input": input_path,
+            "output": str(_workflow_task_output_dir(output_dir, input_path, output_layout)),
+        }, task_id=task_id)
         emit("task_stage", {"stage": "validating_input", "message": "Validating workflow input", "progress": 12}, task_id=task_id)
         if not source_path.exists():
             return emit_error("INPUT_NOT_FOUND", f"Input not found: {input_path}", task_id=task_id)
 
         emit("task_stage", {"stage": "separating", "message": "Running workflow", "progress": 35}, task_id=task_id)
-        if is_graph_workflow_definition(payload.get("workflow")):
-            try:
-                result = run_graph_workflow_task(
-                    payload=payload,
-                    task_id=task_id,
-                    input_path=input_path,
-                    output_dir=output_dir,
-                    output_layout=output_layout,
-                )
-            except Exception as exc:
-                return emit_error("WORKFLOW_RUN_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
-            emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
-            emit("task_done", result, task_id=task_id)
-            return 0
-        failures: list[str] = []
-        for command in _candidate_commands(workflow_path, input_path, output_dir, payload, output_layout):
-            output_baseline = snapshot_output_files(str(task_output_dir), output_format)
-            try:
-                code, tail = _run_workflow_cli(command, task_id)
-            except FileNotFoundError as exc:
-                failures.append(str(exc))
-                continue
-            if code == 0:
-                emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
-                outputs = apply_output_naming(
-                    collect_outputs(str(task_output_dir), [source_path.name], output_format, output_baseline),
-                    payload.get("outputNaming"),
-                    input_path=input_path,
-                    input_index=int(payload.get("inputIndex") or 1),
-                    model=str(payload.get("workflowName") or ""),
-                    output_format=output_format,
-                )
-                files = [item["path"] for item in outputs]
-                if not files:
-                    files = collect_changed_files(str(task_output_dir), output_baseline)
-                emit("task_done", {
-                    "files": files,
-                    "outputs": outputs,
-                    "outputDir": str(task_output_dir.resolve()),
-                    "outputFormat": output_format,
-                }, task_id=task_id)
-                return 0
-            failures.append(tail or f"command exited with {code}: {' '.join(command)}")
-
-        return emit_error(
-            "WORKFLOW_RUN_FAILED",
-            "Unable to run workflow with the installed pymss package.",
-            "\n\n".join(failures),
-            task_id=task_id,
-        )
+        result = _run_pymss(payload, task_id, input_path=input_path, input_paths=None,
+                            output_dir=output_dir, output_layout=output_layout)
+        emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
+        emit("task_done", result, task_id=task_id)
+        return 0
     except Exception as exc:
         return emit_error("WORKFLOW_RUN_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
+
+
+def _cmd_infer_workflow_batch(payload: dict[str, Any], raw_tasks: list[Any]) -> int:
+    first_task_id = ""
+    if raw_tasks and isinstance(raw_tasks[0], dict):
+        first_task_id = str(raw_tasks[0].get("taskId") or "")
+    root_task_id = str(payload.get("taskId") or first_task_id or "")
+    output_dir = _normalize_output_dir(payload.get("output"))
+    output_layout = _normalize_output_layout(payload.get("outputLayout"))
+    output_format = str(payload.get("outputFormat") or "wav")
+    if not root_task_id:
+        return emit_error("WORKFLOW_TASK_ID_MISSING", "Workflow task id is required")
+
+    failed = False
+    try:
+        for item in raw_tasks:
+            if not isinstance(item, dict):
+                continue
+            task_id = str(item.get("taskId") or "")
+            input_path = str(item.get("input") or "").strip()
+            if not task_id or not input_path:
+                failed = True
+                emit_error("WORKFLOW_INPUT_MISSING", "Batch task missing taskId/input", task_id=task_id or root_task_id)
+                continue
+            emit("task_started", {
+                "workflow": payload.get("workflowName"),
+                "input": input_path,
+                "output": str(_workflow_task_output_dir(output_dir, input_path, output_layout)),
+            }, task_id=task_id)
+            emit("task_stage", {"stage": "validating_input", "message": "Validating workflow input", "progress": 12}, task_id=task_id)
+            try:
+                result = _run_pymss({**payload, "taskId": task_id}, task_id,
+                                    input_path=None, input_paths=[input_path],
+                                    output_dir=output_dir, output_layout=output_layout)
+                emit("task_stage", {"stage": "writing_output", "message": "Collecting workflow outputs", "progress": 92}, task_id=task_id)
+                emit("task_done", result, task_id=task_id)
+            except Exception as exc:
+                failed = True
+                emit_error("WORKFLOW_RUN_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
+        return 1 if failed else 0
+    except Exception as exc:
+        detail = traceback.format_exc()
+        for item in raw_tasks:
+            if isinstance(item, dict):
+                emit_error("WORKFLOW_RUN_FAILED", str(exc), detail, task_id=str(item.get("taskId") or ""))
+        return 1

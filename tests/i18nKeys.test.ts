@@ -28,7 +28,7 @@ const DYNAMIC_KEY_PREFIXES = ['settings.themeAccent', 'nav.']
  *
  * Anything not listed here and not referenced is dead and should be deleted.
  */
-const DORMANT_KEYS = ['projects.blankProject', 'projects.createBlank', 'projects.createSuccess']
+const DORMANT_KEYS = ['projects.blankProject', 'projects.createBlank', 'projects.createSuccess', 'settings.runtimeCoreUpdateInactive']
 
 function collectSourceFiles(dir: string): string[] {
   const files: string[] = []
