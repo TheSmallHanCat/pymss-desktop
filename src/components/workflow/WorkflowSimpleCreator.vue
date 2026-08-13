@@ -10,17 +10,12 @@ import {
 import type { ModelEntry } from '@/stores/model'
 import type { WorkflowEntry } from '@/stores/workflow'
 import {
-  createStepDraft,
-  getWorkflowValidationSummary,
-  hydrateWorkflowDefinition,
-  parseModelStems,
-  workflowValidationErrorMessage,
-  type WorkflowNodeEditorUi,
-  type WorkflowStepDraft,
-} from '@/utils/workflowDefinition'
-import {
   buildSimpleWorkflowDefinition,
+  configuredStemsFor,
+  createStepDraft,
   hydrateSimpleWorkflow,
+  type SimpleDraft,
+  type SimpleStepDraft,
   type SimpleWorkflowSavePayload,
 } from '@/utils/workflowSimple'
 
@@ -46,13 +41,7 @@ const description = ref('')
 const defaultDevice = ref('auto')
 const defaultFormat = ref('wav')
 const defaultNormalize = ref(false)
-const steps = ref<WorkflowStepDraft[]>([])
-const preservedUi = ref<WorkflowNodeEditorUi>({
-  viewport: { x: 0, y: 0, k: 1 },
-  nodes: {},
-  notes: [],
-  collapsedStepIds: [],
-})
+const steps = ref<SimpleStepDraft[]>([])
 const expectedUpdatedAt = ref<number | undefined>()
 const sourceDefinition = ref<Record<string, unknown> | undefined>()
 
@@ -81,14 +70,13 @@ function clone<T>(value: T): T {
 }
 
 function loadWorkflow(item?: WorkflowEntry | null) {
-  const draft = item ? hydrateSimpleWorkflow(item.definition) : hydrateWorkflowDefinition({})
+  const draft = hydrateSimpleWorkflow(item?.definition)
   name.value = item?.name || ''
   description.value = item?.description || ''
   defaultDevice.value = draft.defaultDevice
   defaultFormat.value = draft.defaultFormat
   defaultNormalize.value = draft.defaultNormalize
   steps.value = clone(draft.steps.length ? draft.steps : [createStepDraft(0)])
-  preservedUi.value = clone(draft.ui)
   expectedUpdatedAt.value = item?.updatedAt
   sourceDefinition.value = item ? clone(item.definition) : undefined
   reconcileConfiguredStems()
@@ -103,7 +91,7 @@ watch(modelStemSignature, () => reconcileConfiguredStems())
 
 function configuredStems(modelName: string) {
   const item = props.models.find(modelItem => modelItem.name === modelName)
-  return parseModelStems(item?.configInstruments || item?.configTargetInstrument || item?.targetStem)
+  return configuredStemsFor(item)
 }
 
 function filenamePart(value: string) {
@@ -154,7 +142,7 @@ function clearInvalidInputs() {
   })
 }
 
-function updateStepModel(step: WorkflowStepDraft, modelName: string) {
+function updateStepModel(step: SimpleStepDraft, modelName: string) {
   step.model = modelName
   const stems = configuredStems(modelName)
   step.stems = stems
@@ -162,20 +150,20 @@ function updateStepModel(step: WorkflowStepDraft, modelName: string) {
   clearInvalidInputs()
 }
 
-function savedStems(step: WorkflowStepDraft) {
+function savedStems(step: SimpleStepDraft) {
   return step.stems.filter(stem => Boolean(step.save?.[stem]?.trim()))
 }
 
-function defaultSaveFileName(step: WorkflowStepDraft, stem: string) {
+function defaultSaveFileName(step: SimpleStepDraft, stem: string) {
   return `%filename%_${filenamePart(stem)}_${modelFileStem(step.model)}.${defaultFormat.value || 'wav'}`
 }
 
-function saveFileNameValue(step: WorkflowStepDraft, stem: string) {
+function saveFileNameValue(step: SimpleStepDraft, stem: string) {
   const value = step.save?.[stem]?.trim() || ''
   return value && value !== stem ? value : defaultSaveFileName(step, stem)
 }
 
-function updateSaveFileName(step: WorkflowStepDraft, stem: string, value: string | null) {
+function updateSaveFileName(step: SimpleStepDraft, stem: string, value: string | null) {
   if (!savedStems(step).includes(stem)) return
   const filename = value?.trim() || defaultSaveFileName(step, stem)
   step.save = {
@@ -184,7 +172,7 @@ function updateSaveFileName(step: WorkflowStepDraft, stem: string, value: string
   }
 }
 
-function updateSavedStems(step: WorkflowStepDraft, values: string[]) {
+function updateSavedStems(step: SimpleStepDraft, values: string[]) {
   const selected = new Set(values)
   step.save = Object.fromEntries(step.stems
     .filter(stem => selected.has(stem))
@@ -206,11 +194,7 @@ const generatedDefinition = computed(() => buildSimpleWorkflowDefinition({
   defaultFormat: defaultFormat.value,
   defaultNormalize: defaultNormalize.value,
   steps: steps.value,
-  utilityNodes: [],
-  saveTargets: [],
-  ui: preservedUi.value,
-}, sourceDefinition.value))
-const validationSummary = computed(() => getWorkflowValidationSummary(generatedDefinition.value))
+}))
 
 const formError = computed(() => {
   if (!name.value.trim()) return t('workflows.nameRequired')
@@ -224,7 +208,8 @@ const formError = computed(() => {
     }
     if (!step.stems.length) return t('workflows.stepStemsRequired', { id: label })
   }
-  return workflowValidationErrorMessage(validationSummary.value, t)
+  // Deep validation (model availability, step graph) is delegated to pymss at run time.
+  return ''
 })
 
 const canSubmit = computed(() => !formError.value && !props.saving)
