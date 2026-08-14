@@ -9,6 +9,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LGraph, LGraphCanvas, LiteGraph, type LGraphNode } from '@comfyorg/litegraph'
+import '@comfyorg/litegraph/style.css'
 import { registerPymssNodes, setSeparateStems, NODE_SPECS, BUILTIN_SPECS } from '@/litegraph/registerNodes'
 import { litegraphToComfy, comfyLinksToLitegraph } from '@/litegraph/graphAdapter'
 import type { ModelEntry } from '@/stores/model'
@@ -198,7 +199,8 @@ onMounted(() => {
   graphRef.value = graph
   canvasRef.value = canvas
   // Hide the default search-on-double-click; we use our own palette.
-  ;(canvas as any).onSearchBox = null
+  // 保留 litegraph 默认交互: 双击空白/拖线释放弹节点搜索框,右键弹菜单。
+  // 样式由 @comfyorg/litegraph/style.css 提供(在组件 <style> 外全局引入)。
   // Track link/property edits so separate node stems follow the chosen model.
   graph.onNodeAdded = (node: any) => { /* stems set via watcher below */ }
   resizeObserver = new ResizeObserver(() => (canvas as any).resize())
