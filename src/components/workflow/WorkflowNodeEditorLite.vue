@@ -33,6 +33,51 @@ const showPalette = ref(false)
 const paletteQuery = ref('')
 const ready = ref(false)
 
+// --- undo/redo (serialize snapshots) --------------------------------------
+const undoStack = shallowRef<{ past: any[]; future: any[] }>({ past: [], future: [] })
+let lastSnapshot = ''
+function snapshotForHistory() {
+  const graph = graphRef.value
+  if (!graph) return
+  const snap = JSON.stringify(graph.serialize())
+  if (snap === lastSnapshot) return
+  if (lastSnapshot) {
+    undoStack.value = { past: [...undoStack.value.past.slice(-49), lastSnapshot], future: [] }
+  }
+  lastSnapshot = snap
+}
+function restoreSnapshot(snap: string) {
+  const graph = graphRef.value
+  if (!graph) return
+  graph.configure(JSON.parse(snap))
+  for (const n of (graph.nodes as any[])) syncSeparateNodeStems(n)
+  lastSnapshot = snap
+  scheduleSnap()
+}
+function undo() {
+  const { past, future } = undoStack.value
+  if (!past.length) return
+  const current = lastSnapshot
+  const prev = past[past.length - 1]
+  undoStack.value = { past: past.slice(0, -1), future: current ? [current, ...future].slice(0, 50) : future }
+  restoreSnapshot(prev)
+}
+function redo() {
+  const { past, future } = undoStack.value
+  if (!future.length) return
+  const current = lastSnapshot
+  const next = future[0]
+  undoStack.value = { past: current ? [...past, current] : past, future: future.slice(1) }
+  restoreSnapshot(next)
+}
+function onCanvasKey(e: KeyboardEvent) {
+  const mod = e.ctrlKey || e.metaKey
+  if (mod && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) { e.preventDefault(); undo() }
+  else if (mod && ((e.key === 'z' && e.shiftKey) || e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo() }
+}
+const canUndo = computed(() => undoStack.value.past.length > 0)
+const canRedo = computed(() => undoStack.value.future.length > 0)
+
 // --- theme: dark to match pymss-studio -------------------------------------
 function applyTheme() {
   LiteGraph.NODE_DEFAULT_BGCOLOR = '#262b33'
@@ -145,6 +190,7 @@ onMounted(() => {
   graph.onNodeAdded = (node: any) => { /* stems set via watcher below */ }
   resizeObserver = new ResizeObserver(() => (canvas as any).resize())
   resizeObserver.observe(canvasEl.value.parentElement || canvasEl.value)
+  canvasEl.value.addEventListener('keydown', onCanvasKey)
   // Load existing definition (e.g. reopening an editor) or seed a starter graph.
   if (definition.value && Object.keys(definition.value).length) {
     loadDefinition(definition.value)
@@ -159,6 +205,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
+  canvasEl.value?.removeEventListener('keydown', onCanvasKey)
   try { graphRef.value?.stop?.() } catch { /* ignore */ }
   canvasRef.value?.stopRendering?.()
   graphRef.value = null
@@ -193,6 +240,7 @@ function scheduleSnap() {
   pendingSnap = requestAnimationFrame(() => {
     pendingSnap = 0
     definition.value = snapshotDefinition()
+    snapshotForHistory()
   })
 }
 watch(ready, (v) => {
@@ -220,6 +268,8 @@ function onAddNodeClick(type: string) {
   <div class="litegraph-editor">
     <div class="toolbar">
       <n-button size="small" @click="showPalette = !showPalette">{{ t('workflows.addNode') || 'Add node' }}</n-button>
+      <n-button size="small" :disabled="!canUndo" @click="undo">{{ t('common.undo') || 'Undo' }}</n-button>
+      <n-button size="small" :disabled="!canRedo" @click="redo">{{ t('common.redo') || 'Redo' }}</n-button>
       <n-button size="small" @click="onSave" :disabled="!props.canSave" type="primary">{{ t('common.save') }}</n-button>
       <n-button size="small" @click="onClose">{{ t('common.close') }}</n-button>
       <span v-if="props.formError" class="err">{{ props.formError }}</span>
