@@ -43,6 +43,9 @@ Pymss Studio turns the [`pymss`](https://github.com/pymss-project/pymss) source-
 
 ## Install
 
+> [!WARNING]
+> Pymss Studio is still at an early stage of feature development and under active iteration. Please use with caution. **Breaking changes may occur between versions** during this phase.
+
 Download the latest Windows, Linux, or macOS package from the [Pymss Studio releases page](https://github.com/pymss-project/pymss-studio/releases).
 
 Choose the package variant that matches your machine:
@@ -235,3 +238,7 @@ python python/worker.py list_models
 ## License
 
 Pymss Studio is licensed under the GNU Affero General Public License v3.0. See [LICENSE](./LICENSE).
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for details on how to contribute to Pymss Studio.

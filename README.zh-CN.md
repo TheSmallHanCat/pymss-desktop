@@ -43,6 +43,9 @@ Pymss Studio 将 [`pymss`](https://github.com/pymss-project/pymss) 音乐源分�
 
 ## 下载安装
 
+> [!WARNING]
+> Pymss Studio 仍处于功能开发的早期阶段，正在积极迭代中。请谨慎使用。在此阶段，各版本之间可能存在**破坏性变更**（breaking changes）。
+
 请从 [Pymss Studio Releases](https://github.com/pymss-project/pymss-studio/releases) 下载最新的 Windows、Linux 或 macOS 安装包。
 
 请根据设备选择对应版本：
@@ -232,3 +235,7 @@ python python/worker.py list_models
 ## 许可证
 
 Pymss Studio 使用 GNU Affero General Public License v3.0 授权。详见 [LICENSE](./LICENSE)。
+
+## 贡献
+
+有关如何为 Pymss Studio 贡献的详细信息，请参阅 [CONTRIBUTING.md](./CONTRIBUTING.md)。

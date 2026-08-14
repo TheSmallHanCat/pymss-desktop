@@ -59,6 +59,7 @@ cookie.txt
 *.md
 !README.md
 !README.zh-CN.md
+!CONTRIBUTING.md
 docs/
 .omc/
 .spec-workflow/
