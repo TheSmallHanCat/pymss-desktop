@@ -9,9 +9,13 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LGraph, LGraphCanvas, LiteGraph, type LGraphNode } from '@comfyorg/litegraph'
-import { registerPymssNodes, setSeparateStems, NODE_SPECS } from '@/litegraph/registerNodes'
-import { litegraphToComfy } from '@/litegraph/graphAdapter'
+import { registerPymssNodes, setSeparateStems, NODE_SPECS, BUILTIN_SPECS } from '@/litegraph/registerNodes'
+import { litegraphToComfy, comfyLinksToLitegraph } from '@/litegraph/graphAdapter'
 import type { ModelEntry } from '@/stores/model'
+import type { NodeSpec } from '@/litegraph/nodeSpecs'
+
+// All node specs the palette offers (pymss nodes + ComfyUI builtin audio/string nodes).
+const ALL_SPECS: Record<string, NodeSpec> = { ...NODE_SPECS, ...BUILTIN_SPECS }
 
 const props = defineProps<{
   modelOptions: { label: string; value: string }[]
@@ -49,7 +53,11 @@ function snapshotForHistory() {
 function restoreSnapshot(snap: string) {
   const graph = graphRef.value
   if (!graph) return
-  graph.configure(JSON.parse(snap))
+  const data = JSON.parse(snap)
+  graph.configure({
+    ...data,
+    links: Array.isArray(data.links) ? comfyLinksToLitegraph(data.links) : data.links,
+  })
   for (const n of (graph.nodes as any[])) syncSeparateNodeStems(n)
   lastSnapshot = snap
   scheduleSnap()
@@ -107,13 +115,18 @@ function stemsForModel(modelName: string): string[] {
 }
 
 function syncSeparateNodeStems(node: LGraphNode) {
-  const spec = NODE_SPECS[String(node.type)]
+  const spec = ALL_SPECS[String(node.type)]
   if (!spec?.dynamicStems) return
+  // Nodes loaded from a serialized graph already carry their real stem output
+  // ports (e.g. "vocals (Audio)"); never rebuild those — that would sever the
+  // links. Only placeholder ports (stem_1/stem_2) are replaced by the model's
+  // stems when the model is known.
+  const outputs = node.outputs || []
+  const hasRealOutputs = outputs.some((o) => !String(o.name || '').startsWith('stem_'))
+  if (hasRealOutputs) return
   const modelName = String((node as any).properties?.model_name || '')
   const stems = stemsForModel(modelName)
-  if (stems.length && JSON.stringify(stems) !== JSON.stringify((node as any).stems || [])) {
-    setSeparateStems(node, stems)
-  }
+  if (stems.length) setSeparateStems(node, stems)
 }
 
 // --- node creation ---------------------------------------------------------
@@ -132,7 +145,7 @@ function addNode(type: string, x?: number, y?: number) {
 // --- search palette --------------------------------------------------------
 const paletteCategories = computed(() => {
   const groups: Record<string, { type: string; title: string }[]> = {}
-  for (const spec of Object.values(NODE_SPECS)) {
+  for (const spec of Object.values(ALL_SPECS)) {
     const cat = spec.category || 'pymss'
     ;(groups[cat] ||= []).push({ type: spec.type, title: spec.title })
   }
@@ -162,7 +175,7 @@ function loadDefinition(def: Record<string, unknown>) {
   // Configure from a comfy-shaped object litegraph can ingest.
   const data: any = {
     nodes,
-    links: links.map((l: any) => [l[0], l[1], l[2], l[3], l[4], l[5]]),
+    links: Array.isArray(links) ? comfyLinksToLitegraph(links) : links,
     last_node_id: def.last_node_id ?? (nodes.length ? Math.max(...nodes.map((n: any) => Number(n.id))) : 0),
     last_link_id: def.last_link_id ?? (links.length ? Math.max(...links.map((l: any) => Number(l[0]))) : 0),
     groups: [],
@@ -188,7 +201,23 @@ onMounted(() => {
   ;(canvas as any).onSearchBox = null
   // Track link/property edits so separate node stems follow the chosen model.
   graph.onNodeAdded = (node: any) => { /* stems set via watcher below */ }
-  resizeObserver = new ResizeObserver(() => (canvas as any).resize())
+  resizeObserver = new ResizeObserver(() => {
+    const el = canvasEl.value
+    if (!el || !el.parentElement) return
+    // litegraph 0.17 resize() 不乘 devicePixelRatio,Retina 屏上 canvas buffer
+    // 只有 CSS 尺寸一半,绘制内容只占左上角 1/4。手动设置 buffer 尺寸。
+    const parent = el.parentElement
+    const dpr = window.devicePixelRatio || 1
+    const w = parent.offsetWidth
+    const h = parent.offsetHeight
+    if (el.width !== Math.round(w * dpr) || el.height !== Math.round(h * dpr)) {
+      el.width = Math.round(w * dpr)
+      el.height = Math.round(h * dpr)
+      const c = canvasRef.value as any
+      if (c?.bgcanvas) { c.bgcanvas.width = el.width; c.bgcanvas.height = el.height }
+      c?.setDirty(true, true)
+    }
+  })
   resizeObserver.observe(canvasEl.value.parentElement || canvasEl.value)
   canvasEl.value.addEventListener('keydown', onCanvasKey)
   // Load existing definition (e.g. reopening an editor) or seed a starter graph.
