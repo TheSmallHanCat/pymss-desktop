@@ -34,6 +34,29 @@ if (typeof window !== 'undefined') {
   }
 }
 
+// 右键菜单/搜索框的子菜单默认需要点击才展开。litegraph 的 ContextMenu 支持
+// autoopen 选项(hover 自动展开子菜单)但没有全局开关,这里 patch 构造函数,
+// 所有菜单默认 autoopen: true。
+if (typeof window !== 'undefined') {
+  const CM = (LiteGraph as any).ContextMenu
+  if (CM && !CM.__pymssAutoopenPatched) {
+    const origCtor = CM
+    const PatchedCM = function (this: any, ...args: any[]) {
+      if (args[1] && typeof args[1] === 'object') args[1].autoopen = args[1].autoopen ?? true
+      return new origCtor(...args)
+    }
+    PatchedCM.prototype = origCtor.prototype
+    Object.setPrototypeOf(PatchedCM, origCtor)
+    for (const k of Object.getOwnPropertyNames(origCtor)) {
+      if (!['prototype', 'name', 'length'].includes(k)) {
+        try { (PatchedCM as any)[k] = (origCtor as any)[k] } catch { /* getter-only */ }
+      }
+    }
+    ;(LiteGraph as any).ContextMenu = PatchedCM
+    PatchedCM.__pymssAutoopenPatched = true
+  }
+}
+
 function widgetCallback(node: AnyNode, spec: WidgetSpec) {
   return (v: any) => {
     node.properties[spec.name] = v
