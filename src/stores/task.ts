@@ -7,8 +7,6 @@ import { useSettingsStore } from '@/stores/settings'
 import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
 import { useAppStore } from '@/stores/app'
 import type { WorkflowEntry } from '@/stores/workflow'
-import { getWorkflowBatchInputConfigs } from '@/utils/workflowDefinition'
-import { getWorkflowDefinitionDefaults, readWorkflowGraphDefinition, serializeWorkflowGraphDefinition } from '@/utils/workflowGraph'
 export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
 
 export type OutputLayout = 'folders' | 'flat'
@@ -1798,42 +1796,6 @@ export const useTaskStore = defineStore('task', () => {
     booleanParam('normalize')
     return params
   }
-
-  function withWorkflowModelParams(definition: Record<string, unknown>) {
-    const modelStore = useModelStore()
-    const graphDefinition = readWorkflowGraphDefinition(definition)
-    return serializeWorkflowGraphDefinition({
-      ...graphDefinition,
-      graph: {
-        ...graphDefinition.graph,
-        nodes: graphDefinition.graph.nodes.map((node) => {
-          if (node.type !== 'separate') return node
-          const data = node.data || {}
-          const existingParams = data.inferenceParams && typeof data.inferenceParams === 'object'
-            ? data.inferenceParams as Record<string, unknown>
-            : {}
-          if (Object.keys(existingParams).length) return node
-          const modelName = String(data.model || '').trim()
-          if (!modelName) return node
-          const entry = modelStore.models.find(item => item.name === modelName) || null
-          const modelType = typeof data.modelKind === 'string' && data.modelKind.trim()
-            ? data.modelKind
-            : entry?.modelType || null
-          const inferenceParams = modelInferenceParamsFromState(modelName, modelType)
-          if (!Object.keys(inferenceParams).length) return node
-          return {
-            ...node,
-            data: {
-              ...data,
-              inferenceParams,
-            },
-          }
-        }),
-      },
-    })
-  }
-
-
 
   function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputLayout: OutputLayout = 'folders', outputNaming?: OutputNamingConfig) {
     return createQueuedTask(input, model, inferenceParams, modelType, jobId, jobOutput, outputLayout, outputNaming)

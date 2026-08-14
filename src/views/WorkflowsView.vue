@@ -27,15 +27,6 @@ import {
   type WorkflowEntry,
 } from '@/stores/workflow'
 import {
-  getWorkflowBatchInputConfigs,
-  getWorkflowValidationSummary,
-  hydrateWorkflowDefinition,
-  workflowValidationErrorMessage,
-  type WorkflowValidationSummary,
-} from '@/utils/workflowDefinition'
-import { readWorkflowGraphDefinition, serializeWorkflowGraphDefinition } from '@/utils/workflowGraph'
-import { exportComfyMssWorkflow, importComfyMssWorkflow } from '@/utils/comfyMssWorkflow'
-import {
   analyzeSimpleWorkflow,
   resolveWorkflowOpenMode,
   type SimpleWorkflowReasonCode,
@@ -99,71 +90,55 @@ const isNodeEditorOpen = computed(() => isWorkflowEditorSurfaceLocked(
   simpleEditorOpen.value && !simpleEditorWorkflow.value,
 ))
 
-function workflowValidationError(summary: WorkflowValidationSummary) {
-  return workflowValidationErrorMessage(summary, t)
+// Minimal local validation: a workflow needs nodes (comfy) or steps (yaml) and at
+// least one save target. Deep cycle/type validation is delegated to pymss.
+function minimalWorkflowError(definition: Record<string, unknown>): string {
+  if (!definition || typeof definition !== 'object') return t('workflows.stepsRequired')
+  if (Array.isArray(definition.steps)) {
+    // pymss YAML workflow
+    if (!definition.steps.length) return t('workflows.stepsRequired')
+    return ''
+  }
+  const nodes = Array.isArray(definition.nodes) ? definition.nodes as any[] : []
+  if (!nodes.length) return t('workflows.stepsRequired')
+  if (!nodes.some(n => String(n.type || '').toLowerCase().includes('save'))) return t('workflows.workflowNoSaveOutputs')
+  return ''
 }
-
-function workflowRunBlocked(summary: WorkflowValidationSummary) {
-  return Boolean(workflowValidationError(summary) || summary.noSaveOutputs)
+function workflowRunBlocked(definition: Record<string, unknown>) {
+  return Boolean(minimalWorkflowError(definition))
 }
 
 // ---- Per-item lightweight status (memoized) ----
 const workflowStatusMap = computed(() => Object.fromEntries(
-  workflows.value.map(item => [item.id, workflowRunBlocked(getWorkflowValidationSummary(item.definition))]),
+  workflows.value.map(item => [item.id, workflowRunBlocked(item.definition)]),
 ))
 function isWorkflowBlocked(item: WorkflowEntry) {
   return Boolean(workflowStatusMap.value[item.id])
 }
 
-// ---- Batch task estimate ----
+// ---- Batch task estimate (batch input is now handled in-graph; stubbed) ----
 const workflowBatchTaskCounts = ref<Record<string, number | null>>({})
-let workflowBatchTaskCountToken = 0
 
 function refreshWorkflowBatchTaskCounts() {
-  const entries = workflows.value.map(item => ({
-    item,
-    configs: getWorkflowBatchInputConfigs(item.definition),
-    summary: getWorkflowValidationSummary(item.definition),
-  }))
   const next: Record<string, number | null> = {}
-  entries.forEach(({ item }) => {
-    next[item.id] = null
-  })
+  workflows.value.forEach((item) => { next[item.id] = null })
   workflowBatchTaskCounts.value = next
-  const token = ++workflowBatchTaskCountToken
-  entries.forEach(({ item, configs, summary }) => {
-    if (configs.length !== 1 || summary.batchInputMissingFolderCount || summary.batchInputMultipleUnsupported) return
-    const config = configs[0]
-    void invoke<{ files: string[] }>('scan_audio_paths_with_options', {
-      paths: [config.folder],
-      recursive: config.recursive,
-      sortFiles: config.sortFiles,
-    }).then((result) => {
-      if (token !== workflowBatchTaskCountToken) return
-      workflowBatchTaskCounts.value = {
-        ...workflowBatchTaskCounts.value,
-        [item.id]: Array.isArray(result.files) ? result.files.length : 0,
-      }
-    }).catch(() => {
-      if (token !== workflowBatchTaskCountToken) return
-      workflowBatchTaskCounts.value = {
-        ...workflowBatchTaskCounts.value,
-        [item.id]: null,
-      }
-    })
-  })
 }
 
-// ---- Selected workflow overview data ----
+// ---- Selected workflow overview data (simple-mode details; comfy graphs
+// show an empty overview since their structure is free-form) ----
+import { hydrateSimpleWorkflow } from '@/utils/workflowSimple'
 const selectedDraft = computed(() =>
-  selectedWorkflow.value ? hydrateWorkflowDefinition(selectedWorkflow.value.definition) : null)
-const selectedSummary = computed(() =>
-  selectedWorkflow.value ? getWorkflowValidationSummary(selectedWorkflow.value.definition) : null)
+  selectedWorkflow.value ? hydrateSimpleWorkflow(selectedWorkflow.value.definition) : null)
+const selectedSummary = computed((): { error: string } | null =>
+  selectedWorkflow.value ? { error: minimalWorkflowError(selectedWorkflow.value.definition) } : null)
 const selectedStemCount = computed(() =>
-  selectedDraft.value ? selectedDraft.value.steps.reduce((total, step) => total + step.stems.length, 0) : 0)
+  selectedDraft.value && selectedDraft.value.steps.length
+    ? selectedDraft.value.steps.reduce((total, step) => total + step.stems.length, 0)
+    : 0)
 const selectedModels = computed(() => {
   const draft = selectedDraft.value
-  if (!draft) return [] as { name: string; downloaded: boolean }[]
+  if (!draft || !draft.steps.length) return [] as { name: string; downloaded: boolean }[]
   const downloaded = new Set(downloadedModels.value.map(item => item.name))
   const seen = new Set<string>()
   const list: { name: string; downloaded: boolean }[] = []
@@ -175,18 +150,18 @@ const selectedModels = computed(() => {
   }
   return list
 })
-const selectedBatchConfigs = computed(() =>
-  selectedWorkflow.value ? getWorkflowBatchInputConfigs(selectedWorkflow.value.definition) : [])
+const selectedBatchConfigs = computed<unknown[]>(() => [])
 const selectedBatchTaskCount = computed(() => {
   const id = selectedWorkflow.value?.id
   if (!id) return null
   const value = workflowBatchTaskCounts.value[id]
   return typeof value === 'number' ? value : null
 })
-const selectedError = computed(() => {
-  const summary = selectedSummary.value
-  if (!summary) return ''
-  return workflowValidationError(summary) || (summary.noSaveOutputs ? t('workflows.workflowNoSaveOutputs') : '')
+const selectedError = computed(() => selectedSummary.value?.error || '')
+const selectedSaveOutputCount = computed(() => {
+  const def = selectedWorkflow.value?.definition
+  const nodes = def && Array.isArray(def.nodes) ? def.nodes as any[] : []
+  return nodes.filter(n => String(n.type || '').toLowerCase().includes('save')).length
 })
 const selectedReady = computed(() => Boolean(selectedWorkflow.value) && !selectedError.value)
 const selectedSimpleAnalysis = computed(() => selectedWorkflow.value
@@ -215,22 +190,31 @@ async function updateSelectedWorkflowDefaults(patch: {
   const current = selectedWorkflow.value
   const draft = selectedDraft.value
   if (!current || !draft || isNodeEditorOpen.value) return
-  const graph = readWorkflowGraphDefinition(current.definition)
-  graph.defaults = {
-    ...graph.defaults,
-    device: patch.defaultDevice ?? draft.defaultDevice,
-    output_format: patch.defaultFormat ?? draft.defaultFormat,
-    inference_params: {
-      ...graph.defaults.inference_params,
-      normalize: patch.defaultNormalize ?? draft.defaultNormalize,
-    },
+  const definition = JSON.parse(JSON.stringify(current.definition)) as Record<string, unknown>
+  const device = patch.defaultDevice ?? draft.defaultDevice
+  const fmt = patch.defaultFormat ?? draft.defaultFormat
+  const normalize = patch.defaultNormalize ?? draft.defaultNormalize
+  if (Array.isArray(definition.steps)) {
+    // pymss YAML workflow
+    const defaults = (definition.defaults as Record<string, unknown>) || {}
+    defaults.device = device
+    defaults.output_format = fmt
+    const ip = (defaults.inference_params as Record<string, unknown>) || {}
+    ip.normalize = normalize
+    defaults.inference_params = ip
+    definition.defaults = defaults
+  } else {
+    // comfy graph: stash on extra.appDefaults
+    const extra = (definition.extra as Record<string, unknown>) || {}
+    extra.appDefaults = { ...((extra.appDefaults as object) || {}), device, output_format: fmt }
+    definition.extra = extra
   }
   try {
     const entry = await workflow.saveWorkflow({
       id: current.id,
       name: current.name,
       description: current.description,
-      definition: serializeWorkflowGraphDefinition(graph),
+      definition,
       expectedUpdatedAt: current.updatedAt,
     })
     editWorkflow(entry)
@@ -567,17 +551,18 @@ async function handleImportComfyMss(event: Event) {
   try {
     const text = await file.text()
     const parsed = JSON.parse(text) as Record<string, unknown>
-    const result = importComfyMssWorkflow(parsed, { models: models.value })
+    // Native comfy-mss JSON is stored verbatim. Structural validation runs at
+    // execution time via pymss.graph.load_comfy_file.
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as any).nodes)) {
+      throw new Error('Not a ComfyUI/comfy-mss workflow (missing nodes array)')
+    }
     const entry = await workflow.saveWorkflow({
       name: workflowFileBasename(file.name) || t('workflows.newWorkflow'),
       description: '',
-      definition: result.definition,
+      definition: parsed,
     })
     editWorkflow(entry)
     message.success(t('workflows.comfyImportSuccess'))
-    if (result.warnings.length) {
-      message.warning(importWarningSummary(result.warnings))
-    }
   } catch (error) {
     message.error(`${t('workflows.comfyImportFailed')}: ${error instanceof Error ? error.message : String(error)}`)
   } finally {
@@ -590,7 +575,7 @@ async function exportWorkflowComfyMss(
   definition: Record<string, unknown>,
 ) {
   try {
-    const payload = exportComfyMssWorkflow(definition, { models: models.value })
+    const payload = definition
     const fileName = `${workflowSlug(workflowName || t('workflows.untitled'))}.comfy-mss.json`
     const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
     if (isTauri) {
@@ -785,11 +770,11 @@ watch(workflows, (items) => {
                 <span>{{ t('workflows.graphSummarySteps') }}</span>
               </div>
               <div class="wf-metric">
-                <strong>{{ selectedDraft.utilityNodes.length }}</strong>
+                <strong>0</strong>
                 <span>{{ t('workflows.metricTools') }}</span>
               </div>
               <div class="wf-metric">
-                <strong>{{ selectedSummary.saveOutputCount }}</strong>
+                <strong>{{ selectedSaveOutputCount }}</strong>
                 <span>{{ t('workflows.graphSummaryOutputs') }}</span>
               </div>
               <div class="wf-metric">
@@ -846,11 +831,11 @@ watch(workflows, (items) => {
               <h3>{{ t('workflows.batchInputTag') }}</h3>
               <div class="wf-batch-list">
                 <div v-for="(config, index) in selectedBatchConfigs" :key="index" class="wf-batch">
-                  <strong>{{ config.folder || t('workflows.batchInputFolderPlaceholder') }}</strong>
+                  <strong>{{ (config as any).folder || t('workflows.batchInputFolderPlaceholder') }}</strong>
                   <span>
-                    {{ t(config.recursive ? 'workflows.batchInputRecursiveOn' : 'workflows.batchInputRecursiveOff') }}
+                    {{ t((config as any).recursive ? 'workflows.batchInputRecursiveOn' : 'workflows.batchInputRecursiveOff') }}
                     ·
-                    {{ t(config.sortFiles ? 'workflows.batchInputSortOn' : 'workflows.batchInputSortOff') }}
+                    {{ t((config as any).sortFiles ? 'workflows.batchInputSortOn' : 'workflows.batchInputSortOff') }}
                   </span>
                 </div>
               </div>

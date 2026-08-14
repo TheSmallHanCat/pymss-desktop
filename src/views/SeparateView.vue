@@ -28,15 +28,13 @@ import {
   GridOutline,
   ListOutline,
 } from '@vicons/ionicons5'
-import { useModelStore } from '@/stores/model'
 import { useTaskStore, type ModelListSortMode, type OutputLayout, type SeparationTask, type StemOutput } from '@/stores/task'
 import { useWorkflowStore, type WorkflowEntry } from '@/stores/workflow'
 import { useSettingsStore } from '@/stores/settings'
+import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
 import { useAppStore } from '@/stores/app'
 import { buildModelCategoryOptionsFromModels, getModelCategoryLabel } from '@/utils/modelCategory'
 import { matchesModelQuery } from '@/utils/modelSearch'
-import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, workflowValidationErrorMessage, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
-import { createWorkflowGraphEdgeId, createWorkflowGraphNodeId, getWorkflowDefinitionDefaults } from '@/utils/workflowGraph'
 import { sortStemOutputsByOrder } from '@/utils/stemOrder'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 
@@ -326,43 +324,22 @@ const outputNamingSummary = computed(() => outputNamingConfig.value.enabled
   ? outputNamingConfig.value.template
   : t('separate.namingDefaultSummary'))
 const usesIndexToken = computed(() => outputNamingTemplate.value.includes('%index%'))
-const selectedWorkflowValidation = computed(() => selectedWorkflow.value
-  ? getWorkflowValidationSummary(selectedWorkflow.value.definition)
-  : null)
-const selectedWorkflowBatchConfigs = computed(() => selectedWorkflow.value
-  ? getWorkflowBatchInputConfigs(selectedWorkflow.value.definition)
-  : [])
-const workflowUsesBatchInput = computed(() => (
-  runMode.value === 'workflow'
-  && Boolean(selectedWorkflow.value)
-  && Boolean(selectedWorkflowValidation.value?.batchInputCount)
-))
-const workflowBatchInputInvalid = computed(() => (
-  runMode.value === 'workflow'
-  && Boolean(selectedWorkflow.value)
-  && Boolean(selectedWorkflowValidation.value?.batchInputMultipleUnsupported)
-))
-const workflowBatchInputMissingFolder = computed(() => (
-  runMode.value === 'workflow'
-  && Boolean(selectedWorkflow.value)
-  && Boolean(selectedWorkflowValidation.value?.batchInputMissingFolderCount)
-))
-const workflowUtilityInputInvalid = computed(() => (
-  runMode.value === 'workflow'
-  && Boolean(selectedWorkflow.value)
-  && Boolean(selectedWorkflowValidation.value?.utilityInputMissingCount)
-))
-function workflowValidationError(summary: WorkflowValidationSummary | null | undefined) {
-  if (!summary) return ''
-  // Separate page has a batch-input-specific hint; everything else is shared.
-  if (summary.batchInputMultipleUnsupported) return t('separate.startHintWorkflowBatchMultiple')
-  return workflowValidationErrorMessage(summary, t)
+// Workflow validation is now minimal on the frontend (nodes present, has a
+// save node). Deep validation runs in pymss.graph at execution time.
+const selectedWorkflowValidation = computed(() => null)
+const selectedWorkflowBatchConfigs = computed<unknown[]>(() => [])
+const workflowUsesBatchInput = computed(() => false)
+const workflowBatchInputInvalid = computed(() => false)
+const workflowBatchInputMissingFolder = computed(() => false)
+const workflowUtilityInputInvalid = computed(() => false)
+function workflowValidationError(_summary: unknown) {
+  if (!selectedWorkflow.value) return ''
+  const nodes = Array.isArray(selectedWorkflow.value.definition.nodes) ? selectedWorkflow.value.definition.nodes as any[] : []
+  if (!nodes.length) return t('workflows.stepsRequired')
+  if (!nodes.some(n => String(n.type || '').toLowerCase().includes('save'))) return t('workflows.workflowNoSaveOutputs')
+  return ''
 }
-const workflowStructureInvalid = computed(() => (
-  runMode.value === 'workflow'
-  && Boolean(selectedWorkflow.value)
-  && Boolean(workflowValidationError(selectedWorkflowValidation.value))
-))
+const workflowStructureInvalid = computed(() => runMode.value === 'workflow' && Boolean(workflowValidationError(null)))
 const startStatusText = computed(() => {
   if (runMode.value === 'workflow' && !selectedWorkflow.value) return t('separate.startHintNoWorkflow')
   const validationError = workflowValidationError(selectedWorkflowValidation.value)
@@ -430,8 +407,9 @@ const outputPreview = computed(() => {
 })
 const effectiveFormat = computed(() => {
   if (runMode.value === 'workflow' && selectedWorkflow.value) {
-    const defaults = getWorkflowDefinitionDefaults(selectedWorkflow.value.definition)
-    return String(defaults.output_format || settings.defaultFormat || 'wav').trim().toLowerCase() || 'wav'
+    const extra = (selectedWorkflow.value.definition.extra as Record<string, unknown> | undefined) || {}
+    const appDefaults = (extra.appDefaults as Record<string, unknown> | undefined) || {}
+    return String(appDefaults.output_format || settings.defaultFormat || 'wav').trim().toLowerCase() || 'wav'
   }
   return String(settings.defaultFormat || 'wav').trim().toLowerCase() || 'wav'
 })
@@ -449,13 +427,11 @@ const outputNamingPreviewParts = computed(() => {
 })
 const outputSummaryPath = computed(() => outputPreview.value)
 const canStart = computed(() => (
-  (workflowUsesBatchInput.value || inputFiles.value.length > 0)
-  && !workflowBatchInputInvalid.value
-  && !workflowBatchInputMissingFolder.value
-  && !workflowUtilityInputInvalid.value
-  && !workflowStructureInvalid.value
+  !workflowStructureInvalid.value
   && !outputDirectoryError.value
-  && (runMode.value === 'workflow' ? Boolean(selectedWorkflow.value) : ensembleEnabled.value ? ensembleReady.value : modelDownloaded.value)
+  && (runMode.value === 'workflow'
+    ? Boolean(selectedWorkflow.value) && inputFiles.value.length > 0
+    : ensembleEnabled.value ? ensembleReady.value : (modelDownloaded.value && inputFiles.value.length > 0))
 ))
 const newestRunningJob = computed(() => {
   return [...task.allJobs]
@@ -504,12 +480,6 @@ const isRunModeLocked = computed(() => taskPanelState.value === 'running')
 const inputCompactLine = computed(() => {
   if (currentBatchIsMulti.value && currentBatchTotal.value) return t('separate.batchInputCompact', { count: currentBatchTotal.value })
   if (currentTask.value) return getFileName(currentTask.value.input)
-  if (workflowUsesBatchInput.value) {
-    if (selectedWorkflowBatchConfigs.value.length > 1) {
-      return t('separate.batchInputFolderMultipleCompact', { count: selectedWorkflowBatchConfigs.value.length })
-    }
-    return t('separate.batchInputFolderCompact', { name: getFileName(selectedWorkflowBatchConfigs.value[0]?.folder || '') })
-  }
   if (!inputFiles.value.length) return t('separate.noInputSelected')
   const first = getFileName(inputFiles.value[0])
   if (inputFiles.value.length === 1) return first
@@ -1293,41 +1263,73 @@ function buildEnsembleInferenceParams(modelType?: string | null) {
 function buildEnsembleWorkflow(): WorkflowEntry {
   const outputStem = ensembleStem.value.trim()
   const runtimeDevice = settings.getRuntimeDeviceConfig(app.envInfo)
-  const stepNodes = ensembleModels.value.map((modelName, index) => {
+  const device = runtimeDevice.device || 'auto'
+  const fmt = effectiveFormat.value || 'wav'
+  const models = ensembleModels.value
+  const nodes: any[] = []
+  const links: any[] = []
+  let nodeId = 1
+  let linkId = 1
+  const nextId = () => nodeId++
+  const link = (srcNode: number, srcSlot: number, dstNode: number, dstSlot: number, type: string) => {
+    const id = linkId++
+    links.push([id, srcNode, srcSlot, dstNode, dstSlot, type])
+    return id
+  }
+
+  // 1. load_audio: outputs AUDIO(0), STRING(1)
+  const loadId = nextId()
+  nodes.push({ id: loadId, type: 'pymss_load_audio', pos: [72, 210], size: [220, 80], flags: {}, order: nodes.length, mode: 0, properties: { audio: 'input.wav' }, widgets_values: ['input.wav'], inputs: [{ name: 'audio', type: 'COMBO', widget: { name: 'audio' }, link: null }], outputs: [{ name: 'audio', type: 'AUDIO', links: [] }, { name: 'audio_name', type: 'STRING', links: [] }] })
+
+  // 2. per model: mss_params + mss_separate
+  const separateIds: number[] = []
+  const separateStemOutSlots: number[] = [] // the AUDIO slot for the chosen stem
+  models.forEach((modelName, index) => {
     const entry = ensembleModelEntries.value.find(item => item.name === modelName) || null
-    const stem = String(ensembleModelStems.value[modelName] || '').trim()
-    return {
-      id: createWorkflowGraphNodeId('ensemble_model'),
-      type: 'separate' as const,
-      position: { x: 360 + index * 260, y: 100 + (index % 2) * 180 },
-      data: {
-        model: modelName,
-        stems: [stem],
-        modelKind: null,
-        customModelType: null,
-        inferenceParams: buildEnsembleInferenceParams(entry?.modelType),
-      },
-    }
+    const stem = String(ensembleModelStems.value[modelName] || '').trim() || 'vocals'
+    const paramsId = nextId()
+    nodes.push({ id: paramsId, type: 'pymss_mss_params', pos: [300, 100 + index * 160], size: [220, 120], flags: {}, order: nodes.length, mode: 0, properties: {}, widgets_values: [1, 'Default', 'Default', false, false, false], inputs: [], outputs: [{ name: 'mss_params', type: 'PYMSS_MSS_PARAMS', links: [] }] })
+    const sepId = nextId()
+    // stem outputs: pairs of (stem Audio, stem String); find the Audio slot index
+    const audioSlot = index * 2 // we connect load.audio(0) -> sep.audio(0), params(0) -> sep.params(1)
+    const sepOutputs: any[] = [
+      { name: `${stem} (Audio)`, type: 'AUDIO', links: [] },
+      { name: `${stem} (String)`, type: 'STRING', links: [] },
+    ]
+    nodes.push({ id: sepId, type: 'mss_separate', pos: [560, 100 + index * 160], size: [240, 100], flags: {}, order: nodes.length, mode: 0, properties: {}, widgets_values: [modelName, device, true, settings.downloadSource, String(runtimeDevice.deviceIds.join(',') || '0'), false], inputs: [{ name: 'audio', type: 'AUDIO', link: null }, { name: 'params', type: 'PYMSS_MSS_PARAMS', shape: 7, link: null }], outputs: sepOutputs })
+    separateIds.push(sepId)
+    separateStemOutSlots.push(index) // stem Audio is output slot 0 of each sep (only one stem)
+    // wire load.audio -> sep.audio, params -> sep.params
+    const la = link(loadId, 0, sepId, 0, 'AUDIO')
+    nodes[nodes.length - 1].inputs[0].link = la
+    const lp = link(paramsId, 0, sepId, 1, 'PYMSS_MSS_PARAMS')
+    nodes[nodes.length - 1].inputs[1].link = lp
+    nodes[nodes.length - 1].outputs[0].links = []
+    void audioSlot
   })
-  const ensembleId = createWorkflowGraphNodeId('ensemble')
-  const edges = stepNodes.flatMap((node, index) => [
-    {
-      id: createWorkflowGraphEdgeId('ensemble_input'),
-      source: { nodeId: 'input', portId: 'audio' },
-      target: { nodeId: node.id, portId: 'input' },
-    },
-    {
-      id: createWorkflowGraphEdgeId('ensemble_output'),
-      source: { nodeId: node.id, portId: `stem:${node.data.stems[0] || ''}` },
-      target: { nodeId: ensembleId, portId: `input:${index}` },
-    },
-  ])
-  const ensembleOutputRef = `utility:${ensembleId}`
-  edges.push({
-    id: createWorkflowGraphEdgeId('ensemble_save'),
-    source: { nodeId: ensembleId, portId: 'audio' },
-    target: { nodeId: 'save', portId: `save:${ensembleOutputRef}` },
+
+  // 3. audio_ensemble: inputs audio_1..audio_N (slot 0..N-1), output audio(0)
+  const ensId = nextId()
+  const ensInputs: any[] = []
+  models.forEach((_, index) => ensInputs.push({ name: `audio_${index + 1}`, type: 'AUDIO', link: null }))
+  nodes.push({ id: ensId, type: 'pymss_audio_ensemble', pos: [900, 210], size: [220, 120], flags: {}, order: nodes.length, mode: 0, properties: {}, widgets_values: [models.length, ensembleType.value, ...models.map(m => { const w = Number(ensembleWeights.value[m]); return Number.isFinite(w) ? w : 1 })], inputs: ensInputs, outputs: [{ name: 'audio', type: 'AUDIO', links: [] }] })
+  // wire each sep stem Audio -> ensemble input slot index
+  models.forEach((_, index) => {
+    const lid = link(separateIds[index], 0, ensId, index, 'AUDIO')
+    nodes[nodes.length - 1].inputs[index].link = lid
+    // record outgoing link on sep output[0]
+    const sepNode = nodes.find((n) => n.id === separateIds[index])
+    if (sepNode) sepNode.outputs[0].links = [lid]
   })
+
+  // 4. save_audio: input audio(0), filename(1)
+  const saveId = nextId()
+  nodes.push({ id: saveId, type: 'pymss_save_audio', pos: [1180, 210], size: [240, 120], flags: {}, order: nodes.length, mode: 0, properties: {}, widgets_values: [fmt, 'Default', '44100', 'FLOAT', 'PCM_24', '320k'], inputs: [{ name: 'audio', type: 'AUDIO', link: null }, { name: 'filename', type: 'STRING', shape: 7, link: null }], outputs: [] })
+  const lsave = link(ensId, 0, saveId, 0, 'AUDIO')
+  nodes[nodes.length - 1].inputs[0].link = lsave
+  nodes[nodes.length - 1].outputs = []
+  nodes.find((n) => n.id === ensId)!.outputs[0].links = [lsave]
+
   return {
     id: 'temporary-ensemble',
     name: t('separate.ensembleWorkflowName'),
@@ -1335,37 +1337,12 @@ function buildEnsembleWorkflow(): WorkflowEntry {
     createdAt: Date.now(),
     updatedAt: Date.now(),
     definition: {
-      version: 2,
-      kind: 'pymss-studio-graph',
-      defaults: {
-        device: runtimeDevice.device,
-        output_format: effectiveFormat.value,
-        model_dir: settings.modelDir || null,
-        inference_params: {},
-      },
-      graph: {
-        viewport: { x: 0, y: 0, k: 1 },
-        nodes: [
-          { id: 'input', type: 'input_audio' as const, position: { x: 72, y: 210 }, data: {} },
-          ...stepNodes,
-          {
-            id: ensembleId,
-            type: 'audio_ensemble' as const,
-            position: { x: 680, y: 210 },
-            data: {
-              inputCount: stepNodes.length,
-              ensembleType: ensembleType.value,
-              weights: stepNodes.map((node) => {
-                const weight = Number(ensembleWeights.value[node.data.model])
-                return Number.isFinite(weight) ? weight : 1
-              }),
-              inputs: stepNodes.map(node => `${node.id}.${node.data.stems[0] || ''}`),
-            },
-          },
-          { id: 'save', type: 'save_outputs' as const, position: { x: 980, y: 210 }, data: { outputs: { [ensembleOutputRef]: outputStem } } },
-        ],
-        edges,
-      },
+      last_node_id: nodeId - 1,
+      last_link_id: linkId - 1,
+      nodes,
+      links,
+      version: 1,
+      extra: { appDefaults: { device, output_format: fmt } },
     } as Record<string, unknown>,
   }
 }
@@ -1389,10 +1366,6 @@ async function start() {
   }
   if (workflowBatchInputMissingFolder.value) {
     message.warning(t('workflows.batchInputFolderRequired'))
-    return
-  }
-  if (workflowUtilityInputInvalid.value) {
-    message.warning(t('workflows.utilityInputsRequired', { count: selectedWorkflowValidation.value?.utilityInputMissingCount || 0 }))
     return
   }
   const validationError = workflowValidationError(selectedWorkflowValidation.value)
