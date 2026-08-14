@@ -204,19 +204,30 @@ onMounted(() => {
   resizeObserver = new ResizeObserver(() => {
     const el = canvasEl.value
     if (!el || !el.parentElement) return
-    // litegraph 0.17 resize() 不乘 devicePixelRatio,Retina 屏上 canvas buffer
-    // 只有 CSS 尺寸一半,绘制内容只占左上角 1/4。手动设置 buffer 尺寸。
+    // litegraph 0.17 resize() 把 bgcanvas.width 设为 canvas.width（CSS 尺寸），
+    // 但 drawBackCanvas() 绘制时 ctx.setTransform(devicePixelRatio,...) 乘了 dpr，
+    // Retina 屏(dpr=2)下背景内容只占背景 buffer 左上角 1/4，前景 drawImage 再
+    // 除以 dpr 缩小 → 整体只显示左上角 1/4。正确模型：前景 canvas buffer = CSS
+    // 尺寸（前景按 CSS 空间 1:1 绘制），背景 bgcanvas buffer = CSS 尺寸 × dpr。
     const parent = el.parentElement
     const dpr = window.devicePixelRatio || 1
     const w = parent.offsetWidth
     const h = parent.offsetHeight
-    if (el.width !== Math.round(w * dpr) || el.height !== Math.round(h * dpr)) {
-      el.width = Math.round(w * dpr)
-      el.height = Math.round(h * dpr)
-      const c = canvasRef.value as any
-      if (c?.bgcanvas) { c.bgcanvas.width = el.width; c.bgcanvas.height = el.height }
-      c?.setDirty(true, true)
+    const c = canvasRef.value as any
+    if (el.width !== w || el.height !== h) {
+      el.width = w
+      el.height = h
     }
+    if (c?.bgcanvas) {
+      const bw = Math.round(w * dpr)
+      const bh = Math.round(h * dpr)
+      if (c.bgcanvas.width !== bw || c.bgcanvas.height !== bh) {
+        c.bgcanvas.width = bw
+        c.bgcanvas.height = bh
+        c.dirty_bgcanvas = true
+      }
+    }
+    c?.setDirty(true, true)
   })
   resizeObserver.observe(canvasEl.value.parentElement || canvasEl.value)
   canvasEl.value.addEventListener('keydown', onCanvasKey)
