@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -763,6 +764,20 @@ def cmd_delete_runtime(payload: dict[str, Any]) -> int:
         return emit_error("RUNTIME_DELETE_FAILED", str(exc))
 
 
+def _create_venv(env_dir: Path) -> None:
+    """Create the runtime venv.
+
+    macOS venv defaults to copying the interpreter binary. Copied binaries from
+    shared-library builds (uv-managed CPython) reference @rpath/libpythonX.dylib
+    without it being copied, so every subprocess (ensurepip first) aborts with
+    SIGABRT. Symlink mode has no such problem, so it is forced on.
+    """
+    import venv
+
+    builder = venv.EnvBuilder(with_pip=True, clear=True, symlinks=True)
+    builder.create(str(env_dir))
+
+
 def cmd_install_runtime(payload: dict[str, Any]) -> int:
     """Build and activate an environment for `backend`.
 
@@ -790,8 +805,26 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
     env_python = _env_python_path(backend)
     install_log_path = _env_log_path(backend)
     if not env_python.is_file():
-        builder = venv.EnvBuilder(with_pip=True, clear=True)
-        builder.create(str(env_dir))
+        env_dir.mkdir(parents=True, exist_ok=True)
+        _create_venv(env_dir)
+    else:
+        # A previous run (or a venv created with --copies from a shared-library
+        # build like uv's CPython) can leave a python that exists on disk but
+        # aborts at dyld time. Probe it; if dead, rebuild from scratch.
+        probe = subprocess.run(
+            [str(env_python), "-c", "import sys; print(sys.prefix)"],
+            capture_output=True,
+            text=True,
+        )
+        if probe.returncode != 0:
+            _emit(
+                "runtime_install_log",
+                {"stage": "venv", "message": f"existing env python is broken (exit {probe.returncode}), rebuilding: {probe.stderr.strip()[:500]}"},
+                task_id,
+            )
+            shutil.rmtree(env_dir, ignore_errors=True)
+            env_dir.mkdir(parents=True, exist_ok=True)
+            _create_venv(env_dir)
     install_log_path.write_text(
         f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] install backend={backend} mirror={mirror} manifest={manifest['manifestVersion']}\n",
         encoding="utf-8",
