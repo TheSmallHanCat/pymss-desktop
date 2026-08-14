@@ -12,24 +12,38 @@
     "networkx": "networkx>=3.0,<4",
     "sympy": "sympy>=1.12,<2",
     "typing-extensions": "typing-extensions>=4.8,<5",
-    "pysocks": "pysocks>=1.7.1,<2",
     "requests": "requests>=2.32,<3",
     "pyyaml": "pyyaml>=6.0.1,<7",
     "tqdm": "tqdm>=4.60,<5",
-    "pymss": "pymss>=2.0.15",
+    "pymss": "pymss[proxy]>=2.1.1",
     "pymss-core": "pymss-core>=0.1.6"
   },
   "backends": {
     "cpu": {
-      "platforms": ["win32", "linux", "darwin"],
-      "torch": {"requirement": "torch==2.7.1", "indexUrl": "https://download.pytorch.org/whl/cpu"}
+      "platforms": [
+        "win32",
+        "linux",
+        "darwin"
+      ],
+      "torch": {
+        "requirement": "torch==2.7.1",
+        "indexUrl": "https://download.pytorch.org/whl/cpu"
+      }
     },
     "cuda": {
-      "platforms": ["win32", "linux"],
-      "torch": {"requirement": "torch==2.7.1", "indexUrl": "https://download.pytorch.org/whl/cu128"}
+      "platforms": [
+        "win32",
+        "linux"
+      ],
+      "torch": {
+        "requirement": "torch==2.7.1",
+        "indexUrl": "https://download.pytorch.org/whl/cu128"
+      }
     },
     "rocm": {
-      "platforms": ["win32"],
+      "platforms": [
+        "win32"
+      ],
       "python": "3.12",
       "torch": {
         "rocmRequirements": [
@@ -47,9 +61,15 @@
       }
     },
     "mlx": {
-      "platforms": ["darwin"],
-      "torch": {"requirement": "torch==2.7.1"},
-      "extras": ["mlx"]
+      "platforms": [
+        "darwin"
+      ],
+      "torch": {
+        "requirement": "torch==2.7.1"
+      },
+      "extras": [
+        "mlx"
+      ]
     }
   }
 }

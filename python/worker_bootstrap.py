@@ -24,7 +24,6 @@ BUNDLED_RUNTIME_ENVS_DIR: Path | None = Path(v) if (v := os.environ.get("PYMSS_S
 # probe script below — share this table so they can never disagree.
 PACKAGE_IMPORT_NAMES = {
     "pyyaml": "yaml",
-    "pysocks": "socks",
     "pymss-core": "pymss_core",
     "typing-extensions": "typing_extensions",
 }
@@ -764,6 +763,24 @@ def cmd_delete_runtime(payload: dict[str, Any]) -> int:
         return emit_error("RUNTIME_DELETE_FAILED", str(exc))
 
 
+def _env_python_alive(env_python: Path) -> bool:
+    """Whether an existing env interpreter can actually run.
+
+    A venv left by an interrupted install, or created with ``--copies`` from a
+    shared-library build (uv-managed CPython), can hold a python binary that
+    exists on disk but aborts at startup. File existence alone is not proof.
+    """
+    try:
+        process = subprocess.Popen(
+            [str(env_python), "-c", "import sys; print(sys.prefix)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return process.wait() == 0
+    except OSError:
+        return False
+
+
 def _create_venv(env_dir: Path) -> None:
     """Create the runtime venv.
 
@@ -813,15 +830,10 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
         # A previous run (or a venv created with --copies from a shared-library
         # build like uv's CPython) can leave a python that exists on disk but
         # aborts at dyld time. Probe it; if dead, rebuild from scratch.
-        probe = subprocess.run(
-            [str(env_python), "-c", "import sys; print(sys.prefix)"],
-            capture_output=True,
-            text=True,
-        )
-        if probe.returncode != 0:
+        if not _env_python_alive(env_python):
             _emit(
                 "runtime_install_log",
-                {"stage": "venv", "message": f"existing env python is broken (exit {probe.returncode}), rebuilding: {probe.stderr.strip()[:500]}"},
+                {"stage": "venv", "message": f"existing env python at {env_python} is broken; rebuilding the environment"},
                 task_id,
             )
             shutil.rmtree(env_dir, ignore_errors=True)

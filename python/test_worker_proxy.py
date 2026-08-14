@@ -3,21 +3,21 @@ import unittest
 from unittest import mock
 
 from worker_download import _test_url_for_source
-from worker_proxy import ProxyConfigError, aria2_proxy_args, configure_process_proxy, parse_proxy_config, redacted_proxy
+from worker_proxy import ProxyConfigError, configure_process_proxy, effective_proxy_url, parse_proxy_config, redacted_proxy
 
 
 class ProxyConfigTests(unittest.TestCase):
     def test_http_proxy_with_credentials_is_redacted(self):
         config = parse_proxy_config({"mode": "custom", "url": "https://user:secret@example.com:8443"})
         self.assertEqual(redacted_proxy(config), "https://example.com:8443")
-        self.assertIn("--all-proxy=https://example.com:8443", aria2_proxy_args(config))
-        self.assertIn("--all-proxy-user=user", aria2_proxy_args(config))
-        self.assertIn("--all-proxy-pass=secret", aria2_proxy_args(config))
+        self.assertEqual(effective_proxy_url(config), "https://user:secret@example.com:8443")
 
-    def test_socks5_and_socks5h_have_distinct_dns_modes(self):
-        for scheme, remote_dns in (("socks5", "false"), ("socks5h", "true")):
-            config = parse_proxy_config({"mode": "custom", "url": f"{scheme}://127.0.0.1:1080"})
-            self.assertIn(f"--socks5-remote-name-resolve={remote_dns}", aria2_proxy_args(config))
+    def test_socks5_proxy_passes_through_for_pymss(self):
+        # pymss 2.1.1+ routes SOCKS itself (PySocks via pymss[proxy]) and decides
+        # the downloader (aria2c cannot do SOCKS); the worker no longer translates
+        # proxy settings into aria2c arguments.
+        config = parse_proxy_config({"mode": "custom", "url": "socks5h://127.0.0.1:1080"})
+        self.assertEqual(effective_proxy_url(config), "socks5h://127.0.0.1:1080")
 
     def test_bypass_accepts_common_separators(self):
         config = parse_proxy_config({"mode": "custom", "url": "127.0.0.1:7890", "bypass": "localhost; 127.0.0.1\n*.local"})
