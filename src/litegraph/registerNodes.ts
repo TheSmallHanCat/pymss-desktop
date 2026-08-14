@@ -131,16 +131,23 @@ export function allNodeTypes(): string[] {
 export function registerPymssNodes() {
   if (registered) return
   registered = true
+  const register = (spec: NodeSpec, type = spec.type) => {
+    const cls = makeNodeClass(spec) as any
+    LiteGraph.registerNodeType(type, cls)
+    // registerNodeType 用 type 名派生 category(无 '/' 时置空串,覆盖类的
+    // static category),导致右键 Add Node 菜单按类别分组为空。补回 spec.category。
+    cls.category = spec.category
+  }
   for (const spec of Object.values(NODE_SPECS)) {
-    LiteGraph.registerNodeType(spec.type, makeNodeClass(spec) as any)
+    register(spec)
     // pymss registers `pymss_mss_separate` etc. as aliases of the bare names;
     // register the same class under the prefixed name so imported graphs load.
     if (spec.dynamicStems && spec.type.startsWith('mss_')) {
-      LiteGraph.registerNodeType(`pymss_${spec.type}`, makeNodeClass(spec) as any)
+      register(spec, `pymss_${spec.type}`)
     }
   }
   for (const spec of Object.values(BUILTIN_SPECS)) {
-    LiteGraph.registerNodeType(spec.type, makeNodeClass(spec) as any)
+    register(spec)
   }
 }
 
