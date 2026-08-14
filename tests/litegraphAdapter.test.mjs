@@ -15,7 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // Python interpreter used for pymss round-trip checks. The pymss dev
 // environment lives on the big disk: uv venv /Volumes/1T/pymss-venv &&
 // uv pip install -e /Volumes/data/pymss. Override via PYMSS_STUDIO_TEST_PYTHON.
-const PY = process.env.PYMSS_STUDIO_TEST_PYTHON || '/Volumes/1T/pymss-venv/bin/python'
+const PY = process.env.PYMSS_STUDIO_TEST_PYTHON || '/Volumes/2T/pymss-venv/bin/python'
 
 // Set up DOM globals first so vite's SSR-loaded litegraph (and registerNodes)
 // share the same module instance the test uses.
