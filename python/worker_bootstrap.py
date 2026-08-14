@@ -770,11 +770,13 @@ def _create_venv(env_dir: Path) -> None:
     macOS venv defaults to copying the interpreter binary. Copied binaries from
     shared-library builds (uv-managed CPython) reference @rpath/libpythonX.dylib
     without it being copied, so every subprocess (ensurepip first) aborts with
-    SIGABRT. Symlink mode has no such problem, so it is forced on.
+    SIGABRT. Symlink mode has no such problem, so it is forced on for POSIX.
+    Windows keeps the default copies mode: os.symlink needs elevated privileges
+    there, and official/embedded CPython builds are fine when copied.
     """
     import venv
 
-    builder = venv.EnvBuilder(with_pip=True, clear=True, symlinks=True)
+    builder = venv.EnvBuilder(with_pip=True, clear=True, symlinks=sys.platform != "win32")
     builder.create(str(env_dir))
 
 
