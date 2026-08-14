@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import { writeFileSync, mkdtempSync } from 'node:fs'
+import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import test, { after } from 'node:test'
 
@@ -9,7 +10,11 @@ import { createServer } from 'vite'
 
 import { setupLitegraphEnvDom } from './_litegraphEnv.mjs'
 
-const PY = process.env.PYMSS_STUDIO_TEST_PYTHON || '/Users/baicai1145/miniconda3/envs/pymss/bin/python'
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
+// Python interpreter used for pymss round-trip checks. Defaults to the uv venv
+// created at the repo root (uv venv .venv && uv pip install -e /Volumes/data/pymss).
+const PY = process.env.PYMSS_STUDIO_TEST_PYTHON || join(__dirname, '..', '.venv', 'bin', 'python')
 
 // Set up DOM globals first so vite's SSR-loaded litegraph (and registerNodes)
 // share the same module instance the test uses.
@@ -56,7 +61,7 @@ function buildSimpleGraph() {
 }
 
 function pymssParse(jsonPath) {
-  // Round-trip through pymss.graph.load_comfy_file in the pymss conda env.
+  // Round-trip through pymss.graph.load_comfy_file in the repo's uv venv.
   const out = execFileSync(
     PY,
     ['-c', `import pymss.graph as g; d=g.load_comfy_file(${JSON.stringify(jsonPath)}); print('OK', len(d.nodes), sorted(n.type for n in d.nodes))`],
@@ -100,10 +105,6 @@ test('fixture files (real comfy-mss JSON) still parse through pymss', () => {
   }
 })
 
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname } from 'node:path'
-const __dirname = dirname(fileURLToPath(import.meta.url))
 function readFixture(name) {
   return readFileSync(join(__dirname, 'fixtures/comfy-mss', `${name}.json`), 'utf8')
 }
