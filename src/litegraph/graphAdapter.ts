@@ -90,3 +90,26 @@ export function litegraphToComfy(serialized: ISerialisedGraph | any): ComfyWorkf
 export function toComfyJson(serialized: ISerialisedGraph | any): string {
   return JSON.stringify(litegraphToComfy(serialized), null, 2)
 }
+
+/**
+ * Convert comfy-style link tuples ([id, src, srcSlot, dst, dstSlot, type])
+ * into the object format litegraph 0.17's LGraph.configure() expects
+ * ({ id, origin_id, origin_slot, target_id, target_slot, type }).
+ * Without this, configure() sees undefined link ids and collapses every link
+ * onto one entry.
+ */
+export function comfyLinksToLitegraph(links: unknown[]): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = []
+  for (const l of links || []) {
+    if (!Array.isArray(l) || l.length < 6) continue
+    out.push({
+      id: Number(l[0]),
+      type: String(l[5]),
+      origin_id: Number(l[1]),
+      origin_slot: Number(l[2]),
+      target_id: Number(l[3]),
+      target_slot: Number(l[4]),
+    })
+  }
+  return out
+}

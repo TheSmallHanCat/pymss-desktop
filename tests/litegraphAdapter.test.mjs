@@ -26,7 +26,7 @@ after(() => vite.close())
 
 const { LGraph, LGraphCanvas, LiteGraph } = await vite.ssrLoadModule('@comfyorg/litegraph')
 const { registerPymssNodes, setSeparateStems } = await vite.ssrLoadModule('/src/litegraph/registerNodes.ts')
-const { litegraphToComfy, toComfyJson } = await vite.ssrLoadModule('/src/litegraph/graphAdapter.ts')
+const { litegraphToComfy, toComfyJson, comfyLinksToLitegraph } = await vite.ssrLoadModule('/src/litegraph/graphAdapter.ts')
 
 registerPymssNodes()
 
@@ -104,6 +104,35 @@ test('fixture files (real comfy-mss JSON) still parse through pymss', () => {
     const result = pymssParse(jsonPath)
     assert.match(result, /^OK /, `${name} parsed`)
   }
+})
+
+test('a real comfy-mss workflow file loads into the litegraph editor and round-trips', () => {
+  // The user-facing import path: parse a comfy-mss JSON (like testflow.json),
+  // configure the litegraph graph with it, serialize back, and confirm the
+  // pymss DAG still parses it with all nodes/links intact.
+  const source = JSON.parse(readFileSync(join(__dirname, '..', 'testflow.json'), 'utf8'))
+  const graph = new LGraph()
+  graph.configure({
+    nodes: source.nodes,
+    links: comfyLinksToLitegraph(source.links),
+    last_node_id: source.last_node_id,
+    last_link_id: source.last_link_id,
+    groups: source.groups || [],
+    version: 1,
+  })
+  const serialized = graph.serialize()
+  const comfy = litegraphToComfy(serialized)
+
+  assert.equal(comfy.nodes.length, source.nodes.length,
+    `all ${source.nodes.length} nodes load into the editor`)
+  assert.equal(comfy.links.length, source.links.length,
+    `all ${source.links.length} links survive the round-trip`)
+
+  const dir = mkdtempSync(join(tmpdir(), 'lg-tf-'))
+  const jsonPath = join(dir, 'wf.json')
+  writeFileSync(jsonPath, toComfyJson(serialized))
+  const result = pymssParse(jsonPath)
+  assert.match(result, /^OK /, 'round-tripped graph still parses in pymss')
 })
 
 function readFixture(name) {

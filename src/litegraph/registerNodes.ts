@@ -6,7 +6,7 @@
  * pymss.graph.load_comfy_file.
  */
 import { LiteGraph, LGraphNode, type LGraphNode as LGraphNodeType } from '@comfyorg/litegraph'
-import { NODE_SPECS, NodeSpec, WidgetSpec, PORT } from './nodeSpecs'
+import { NODE_SPECS, BUILTIN_SPECS, NodeSpec, WidgetSpec, PORT } from './nodeSpecs'
 
 type AnyNode = any
 
@@ -93,12 +93,31 @@ function makeNodeClass(spec: NodeSpec): any {
 
 let registered = false
 
+/** Node type names pymss accepts (bare + pymss_ prefix alias for separates). */
+export function allNodeTypes(): string[] {
+  const types = new Set<string>()
+  for (const spec of Object.values(NODE_SPECS)) {
+    types.add(spec.type)
+    if (spec.dynamicStems && spec.type.startsWith('mss_')) types.add(`pymss_${spec.type}`)
+  }
+  for (const spec of Object.values(BUILTIN_SPECS)) types.add(spec.type)
+  return [...types]
+}
+
 export function registerPymssNodes() {
   if (registered) return
   registered = true
   for (const spec of Object.values(NODE_SPECS)) {
     LiteGraph.registerNodeType(spec.type, makeNodeClass(spec) as any)
+    // pymss registers `pymss_mss_separate` etc. as aliases of the bare names;
+    // register the same class under the prefixed name so imported graphs load.
+    if (spec.dynamicStems && spec.type.startsWith('mss_')) {
+      LiteGraph.registerNodeType(`pymss_${spec.type}`, makeNodeClass(spec) as any)
+    }
+  }
+  for (const spec of Object.values(BUILTIN_SPECS)) {
+    LiteGraph.registerNodeType(spec.type, makeNodeClass(spec) as any)
   }
 }
 
-export { NODE_SPECS }
+export { NODE_SPECS, BUILTIN_SPECS }
