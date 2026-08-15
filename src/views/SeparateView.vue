@@ -1411,7 +1411,8 @@ async function start() {
     message.warning(validationError)
     return
   }
-  if (!workflowUsesBatchInput.value && !inputFiles.value.length) {
+  if (!workflowUsesBatchInput.value && !inputFiles.value.length
+    && !workflowInputSlots.value.length && !workflowSelfContainedOnly.value) {
     message.warning(t('separate.startHintNoInput'))
     return
   }
