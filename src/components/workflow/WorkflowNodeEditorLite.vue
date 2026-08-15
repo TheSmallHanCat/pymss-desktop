@@ -22,6 +22,8 @@ const props = defineProps<{
   modelOptions: { label: string; value: string }[]
   models: ModelEntry[]
   formError?: string
+  /** Non-blocking warning shown next to the toolbar (e.g. missing models) */
+  advisory?: string
   canSave?: boolean
 }>()
 const definition = defineModel<Record<string, unknown>>('definition', { required: true })
@@ -288,6 +290,7 @@ function onAddNodeClick(type: string) {
       <n-button size="small" @click="onSave" :disabled="!props.canSave" type="primary">{{ t('common.save') }}</n-button>
       <n-button size="small" @click="onClose">{{ t('common.close') }}</n-button>
       <span v-if="props.formError" class="err">{{ props.formError }}</span>
+      <span v-if="props.advisory" class="warn">{{ props.advisory }}</span>
     </div>
 
     <div v-if="showPalette" class="palette">
@@ -312,6 +315,7 @@ function onAddNodeClick(type: string) {
 .litegraph-editor { display: flex; flex-direction: column; height: 100%; background: #16181d; color: #e6e8eb; }
 .toolbar { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid #2a2e36; background: #1c1f26; }
 .err { color: #ff6b6b; font-size: 12px; margin-left: auto; }
+.warn { color: #e0b34a; font-size: 12px; margin-left: auto; }
 .palette { position: absolute; top: 48px; left: 12px; width: 260px; max-height: 60%; background: #1c1f26; border: 1px solid #3a3f4a; border-radius: 6px; z-index: 10; display: flex; flex-direction: column; }
 .palette-input { margin: 8px; padding: 6px 8px; background: #16181d; border: 1px solid #3a3f4a; color: #e6e8eb; border-radius: 4px; }
 .palette-list { overflow-y: auto; padding: 0 8px 8px; }
