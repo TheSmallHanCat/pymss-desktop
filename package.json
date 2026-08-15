@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && vue-tsc --noEmit && vite build",
-    "test": "node --test tests/stemOrder.test.ts tests/workflowEditorState.test.ts tests/runtimeUtils.test.ts tests/asyncUtils.test.ts tests/i18nKeys.test.ts tests/modelSearch.test.ts tests/modelSource.test.ts tests/litegraphAdapter.test.mjs",
+    "test": "node --test tests/stemOrder.test.ts tests/workflowEditorState.test.ts tests/runtimeUtils.test.ts tests/asyncUtils.test.ts tests/i18nKeys.test.ts tests/modelSearch.test.ts tests/modelSource.test.ts tests/litegraphAdapter.test.mjs tests/litegraphWidgets.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:preview": "tauri dev --config src-tauri/tauri.preview.conf.json"
