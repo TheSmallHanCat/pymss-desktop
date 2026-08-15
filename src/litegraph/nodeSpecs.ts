@@ -258,6 +258,14 @@ export const NODE_SPECS: Record<string, NodeSpec> = {
     outputs: [{ name: 'STRING', type: PORT.STRING }],
     widgets: [],
   },
+  StringConstant: {
+    type: 'StringConstant',
+    title: 'String Constant',
+    category: 'pymss/string',
+    inputs: [],
+    outputs: [{ name: 'STRING', type: PORT.STRING }],
+    widgets: [{ name: 'string', type: 'text', default: '' }],
+  },
 }
 
 export const BUILTIN_SPECS: Record<string, NodeSpec> = {
