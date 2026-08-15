@@ -1161,6 +1161,10 @@
     "modelNotDownloadedShort": "Not downloaded",
     "runParams": "Run parameters",
     "statusReady": "Ready",
-    "runWorkflowAction": "Run"
+    "runWorkflowAction": "Run",
+    "metricNodes": "nodes",
+    "metricLinks": "links",
+    "inputSlots": "Runtime input slots",
+    "comfyReadOnlyHint": "Advanced (comfy) workflows are free-form; this page shows a read-only overview. Edit the graph in the advanced editor; the inference page asks for files per input slot."
   }
 }

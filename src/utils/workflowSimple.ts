@@ -71,6 +71,53 @@ export type SimpleDraft = {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
 
+export type ComfyOverview = {
+  nodeCount: number
+  linkCount: number
+  separateCount: number
+  outputCount: number
+  models: string[]
+  inputSlots: string[]
+}
+
+/** Read-only overview of a comfy-mss graph for the workflows page: node /
+ * separation / output counts, referenced models, and runtime input slots
+ * (load nodes with an input_name widget — pymss >= 2.1.2 contract). */
+export function analyzeComfyOverview(definition: unknown): ComfyOverview | null {
+  if (!isRecord(definition) || !Array.isArray(definition.nodes)) return null
+  const nodes = definition.nodes as any[]
+  const stripPrefix = (raw: string) => raw.replace(/^\[[^\]]*\]\s*/, '').trim()
+  const models: string[] = []
+  const inputSlots: string[] = []
+  let separateCount = 0
+  let outputCount = 0
+  for (const node of nodes) {
+    const type = String(node?.type || '')
+    if (type.endsWith('separate')) {
+      separateCount += 1
+      const raw = String(node.widgets_values?.[0] || '').trim()
+      const model = stripPrefix(raw)
+      if (model && !models.includes(model)) models.push(model)
+    }
+    if (type.toLowerCase().includes('save')) outputCount += 1
+    if (type === 'pymss_load_audio' || type === 'LoadAudio') {
+      const slot = String(node.widgets_values?.[1] || '').trim()
+      if (slot) inputSlots.push(slot)
+    } else if (type === 'pymss_load_audio_batch') {
+      const slot = String(node.widgets_values?.[3] || '').trim()
+      if (slot) inputSlots.push(slot)
+    }
+  }
+  return {
+    nodeCount: nodes.length,
+    linkCount: Array.isArray(definition.links) ? definition.links.length : 0,
+    separateCount,
+    outputCount,
+    models,
+    inputSlots,
+  }
+}
+
 /** Read a pymss YAML workflow dict into the editor's draft shape. */
 export function hydrateSimpleWorkflow(definition: unknown): SimpleDraft {
   if (!isRecord(definition) || !Array.isArray(definition.steps)) {

@@ -9,6 +9,7 @@ import {
   CubeOutline,
   DownloadOutline,
   GitNetworkOutline,
+  MusicalNotesOutline,
   OpenOutline,
   PlayOutline,
   SearchOutline,
@@ -126,10 +127,12 @@ function refreshWorkflowBatchTaskCounts() {
 }
 
 // ---- Selected workflow overview data (simple-mode details; comfy graphs
-// show an empty overview since their structure is free-form) ----
-import { hydrateSimpleWorkflow } from '@/utils/workflowSimple'
+// show a read-only overview since their structure is free-form) ----
+import { hydrateSimpleWorkflow, analyzeComfyOverview } from '@/utils/workflowSimple'
+const selectedComfyOverview = computed(() => analyzeComfyOverview(selectedWorkflow.value?.definition))
+const isComfyWorkflow = computed(() => Boolean(selectedComfyOverview.value))
 const selectedDraft = computed(() =>
-  selectedWorkflow.value ? hydrateSimpleWorkflow(selectedWorkflow.value.definition) : null)
+  selectedWorkflow.value && !isComfyWorkflow.value ? hydrateSimpleWorkflow(selectedWorkflow.value.definition) : null)
 const selectedSummary = computed((): { error: string } | null =>
   selectedWorkflow.value ? { error: minimalWorkflowError(selectedWorkflow.value.definition) } : null)
 const selectedStemCount = computed(() =>
@@ -137,6 +140,10 @@ const selectedStemCount = computed(() =>
     ? selectedDraft.value.steps.reduce((total, step) => total + step.stems.length, 0)
     : 0)
 const selectedModels = computed(() => {
+  if (isComfyWorkflow.value) {
+    const downloaded = new Set(downloadedModels.value.map(item => item.name))
+    return (selectedComfyOverview.value?.models || []).map(name => ({ name, downloaded: downloaded.has(name) }))
+  }
   const draft = selectedDraft.value
   if (!draft || !draft.steps.length) return [] as { name: string; downloaded: boolean }[]
   const downloaded = new Set(downloadedModels.value.map(item => item.name))
@@ -764,7 +771,25 @@ watch(workflows, (items) => {
               />
             </div>
 
-            <div v-if="selectedDraft && selectedSummary" class="wf-metrics">
+            <div v-if="isComfyWorkflow && selectedComfyOverview" class="wf-metrics">
+              <div class="wf-metric">
+                <strong>{{ selectedComfyOverview.separateCount }}</strong>
+                <span>{{ t('workflows.graphSummarySteps') }}</span>
+              </div>
+              <div class="wf-metric">
+                <strong>{{ selectedComfyOverview.nodeCount }}</strong>
+                <span>{{ t('workflows.metricNodes') }}</span>
+              </div>
+              <div class="wf-metric">
+                <strong>{{ selectedComfyOverview.outputCount }}</strong>
+                <span>{{ t('workflows.graphSummaryOutputs') }}</span>
+              </div>
+              <div class="wf-metric">
+                <strong>{{ selectedComfyOverview.linkCount }}</strong>
+                <span>{{ t('workflows.metricLinks') }}</span>
+              </div>
+            </div>
+            <div v-else-if="selectedDraft && selectedSummary" class="wf-metrics">
               <div class="wf-metric">
                 <strong>{{ selectedDraft.steps.length }}</strong>
                 <span>{{ t('workflows.graphSummarySteps') }}</span>
@@ -825,6 +850,20 @@ watch(workflows, (items) => {
                   />
                 </div>
               </div>
+            </section>
+
+            <section v-if="isComfyWorkflow && selectedComfyOverview?.inputSlots?.length" class="wf-section">
+              <h3>{{ t('workflows.inputSlots') }}</h3>
+              <div class="wf-chips">
+                <span v-for="slot in selectedComfyOverview.inputSlots" :key="slot" class="wf-chip" :title="slot">
+                  <n-icon :component="MusicalNotesOutline" />
+                  <span class="wf-chip__name">{{ slot }}</span>
+                </span>
+              </div>
+            </section>
+
+            <section v-if="isComfyWorkflow" class="wf-section">
+              <p class="wf-muted">{{ t('workflows.comfyReadOnlyHint') }}</p>
             </section>
 
             <section v-if="selectedBatchConfigs.length" class="wf-section">

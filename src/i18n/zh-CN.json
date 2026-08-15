@@ -1161,6 +1161,10 @@
     "modelNotDownloadedShort": "未下载",
     "runParams": "运行参数",
     "statusReady": "配置就绪",
-    "runWorkflowAction": "运行"
+    "runWorkflowAction": "运行",
+    "metricNodes": "节点",
+    "metricLinks": "连线",
+    "inputSlots": "运行时输入槽",
+    "comfyReadOnlyHint": "高级(comfy)工作流为自由结构，此处仅展示概览。请使用高级编辑器修改图；推理页会按输入槽提示选择文件。"
   }
 }
