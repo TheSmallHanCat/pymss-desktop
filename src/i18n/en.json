@@ -185,7 +185,12 @@
     "namingTokenModel": "Model or workflow",
     "namingTokenDate": "Date",
     "namingTokenTime": "Time",
-    "namingTokenLegacyTime": "Day-minute-second"
+    "namingTokenLegacyTime": "Day-minute-second",
+    "workflowMissingSlots": "Input slots to fill: {names}",
+    "workflowSlotsReady": "{count} input slot(s) ready",
+    "workflowSelfContained": "Graph carries its own inputs — ready to run",
+    "workflowUnresolvedLoad": "{count} load node(s) have no input_name and no path; fix them in the editor",
+    "workflowMissingSlotFiles": "No file chosen for input slot(s): {names}"
   },
   "audio": {
     "wavBitDepth": "WAV bit depth",

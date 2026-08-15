@@ -70,7 +70,13 @@ export const NODE_SPECS: Record<string, NodeSpec> = {
       { name: 'audio', type: PORT.AUDIO },
       { name: 'audio_name', type: PORT.STRING },
     ],
-    widgets: [{ name: 'audio', type: 'text', default: 'input.wav' }],
+    widgets: [
+      { name: 'audio', type: 'text', default: 'input.wav' },
+      // Runtime input slot name: hosts (pymss-studio inference page / pymss CLI)
+      // key their inputs mapping by this. Leave empty for graphs that carry
+      // their own file path.
+      { name: 'input_name', type: 'text', default: '' },
+    ],
   },
   pymss_load_audio_batch: {
     type: 'pymss_load_audio_batch',
@@ -89,6 +95,8 @@ export const NODE_SPECS: Record<string, NodeSpec> = {
       { name: 'folder', type: 'text', default: '' },
       { name: 'recursive', type: 'toggle', default: false },
       { name: 'sort_files', type: 'toggle', default: true },
+      // Runtime input slot name — same semantics as pymss_load_audio.
+      { name: 'input_name', type: 'text', default: '' },
     ],
   },
   pymss_mss_params: {

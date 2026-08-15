@@ -28,6 +28,8 @@ export type SeparationRunConfig = {
   workflowId?: string
   workflowName?: string
   workflowDefinition?: Record<string, unknown>
+  /** runtime input slot name -> file path (comfy graphs with named load nodes) */
+  workflowInputs?: Record<string, string>
   modelType?: string | null
   outputLayout: OutputLayout
   outputNaming?: OutputNamingConfig
@@ -519,6 +521,13 @@ export const useTaskStore = defineStore('task', () => {
   const focusedResultTaskId = ref<string | null>(null)
   const focusedTaskId = ref<string | null>(null)
   const inputFiles = ref<string[]>([])
+  /** Per-workflow runtime input slot picks: workflowId -> {slotName: filePath} */
+  const workflowSlotFiles = ref<Record<string, Record<string, string>>>({})
+
+  function setWorkflowSlotFile(workflowId: string, slotName: string, filePath: string) {
+    const current = workflowSlotFiles.value[workflowId] || {}
+    workflowSlotFiles.value = { ...workflowSlotFiles.value, [workflowId]: { ...current, [slotName]: filePath } }
+  }
   const separateRunMode = ref<'model' | 'workflow'>('model')
   const ensembleEnabled = ref(false)
   const ensembleModels = ref<string[]>([])
@@ -971,6 +980,7 @@ export const useTaskStore = defineStore('task', () => {
     const app = useAppStore()
     const runtimeDevice = settings.getRuntimeDeviceConfig(app.envInfo)
     const appDefaults = (((workflow.definition || {}).extra as Record<string, unknown> | undefined)?.appDefaults as Record<string, unknown> | undefined) || {}
+    const workflowInputs = workflowSlotFiles.value[workflow.id] || {}
     const workflowDevice = typeof appDefaults.device === 'string' && appDefaults.device.trim()
       ? appDefaults.device.trim()
       : runtimeDevice.device
@@ -985,6 +995,7 @@ export const useTaskStore = defineStore('task', () => {
     return {
       runMode: 'workflow',
       modelDir: workflowModelDir,
+      workflowInputs,
       downloadSource: settings.downloadSource,
       downloadMethod: settings.downloadMethod,
       workflowId: workflow.id,
@@ -1085,7 +1096,8 @@ export const useTaskStore = defineStore('task', () => {
             taskId: task.id,
             workflowName: config.workflowName || task.model,
             workflow: config.workflowDefinition || {},
-            input: task.input,
+            input: task.input || null,
+            inputs: config.workflowInputs || null,
             output: config.outputLayout === 'folders' ? (task.jobOutput || task.output) : task.output,
             modelDir: config.modelDir ?? (settings.modelDir || null),
             source: config.downloadSource || settings.downloadSource,
@@ -1858,6 +1870,41 @@ export const useTaskStore = defineStore('task', () => {
     }
     const validationError = minimalComfyValidationError(workflow.definition)
     if (validationError) throw new Error(validationError)
+    const settings = useSettingsStore()
+    // Runtime input slots (pymss >= 2.1.2 strict contract): comfy graphs
+    // declare named slots on load nodes; this run fills each slot with one
+    // file. Graphs without slots keep the legacy one-task-per-file behavior.
+    const { analyzeWorkflowInputs } = await import('../utils/workflowInputs')
+    const analysis = analyzeWorkflowInputs(workflow.definition)
+    const slotFiles = workflowSlotFiles.value[workflow.id] || {}
+    if (analysis.slots.length) {
+      const missing = analysis.slots.filter(slot => !(slotFiles[slot.name] || '').trim()).map(slot => slot.name)
+      if (missing.length) {
+        throw new Error(i18n.global.t('separate.workflowMissingSlotFiles', { names: missing.join(', ') }))
+      }
+      const jobId = createRunId('job')
+      const outputLayout = normalizeOutputLayout(options.outputLayout)
+      const jobOutput = normalizeOutputPath(options.outputDir || settings.outputDir)
+      const createdTasks = [createQueuedWorkflowTask(
+        slotFiles[analysis.slots[0].name] || '',
+        workflow,
+        jobId,
+        jobOutput,
+        outputLayout,
+        options.outputNaming,
+      )]
+      scheduleQueue()
+      return { succeeded: 1, failed: 0, total: 1, jobId, tasks: createdTasks }
+    }
+    if (analysis.selfContained && !inputFiles.value.length && !analysis.unresolved.length) {
+      // self-contained graph: runs with no runtime input at all
+      const jobId = createRunId('job')
+      const outputLayout = normalizeOutputLayout(options.outputLayout)
+      const jobOutput = normalizeOutputPath(options.outputDir || settings.outputDir)
+      const createdTasks = [createQueuedWorkflowTask('', workflow, jobId, jobOutput, outputLayout, options.outputNaming)]
+      scheduleQueue()
+      return { succeeded: 1, failed: 0, total: 1, jobId, tasks: createdTasks }
+    }
     // Batch input is now handled inside the comfy workflow itself via
     // pymss_load_audio_batch, so the frontend always runs a single task per
     // input file (or one task for a batch workflow).
@@ -1866,7 +1913,6 @@ export const useTaskStore = defineStore('task', () => {
       throw new Error(i18n.global.t('separate.startHintNoInput'))
     }
     const jobId = createRunId('job')
-    const settings = useSettingsStore()
     const batchMode = targets.length > 1
     const outputLayout = normalizeOutputLayout(options.outputLayout)
     const jobOutput = normalizeOutputPath(options.outputDir || settings.outputDir)
@@ -1886,7 +1932,6 @@ export const useTaskStore = defineStore('task', () => {
     }
     return { succeeded: targets.length, failed: 0, total: targets.length, jobId, tasks: createdTasks }
   }
-
   async function retryTask(taskId: string) {
     const existing = tasks.value.find((t) => t.id === taskId)
     if (!existing) return
@@ -1930,6 +1975,8 @@ export const useTaskStore = defineStore('task', () => {
     focusedResultTaskId,
     focusedTaskId,
     inputFiles,
+    workflowSlotFiles,
+    setWorkflowSlotFile,
     inputPath,
     separateRunMode,
     ensembleEnabled,

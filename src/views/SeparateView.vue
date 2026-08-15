@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, ref, toRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
-import { convertFileSrc } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
@@ -31,6 +31,7 @@ import {
 import { useTaskStore, type ModelListSortMode, type OutputLayout, type SeparationTask, type StemOutput } from '@/stores/task'
 import { useWorkflowStore, type WorkflowEntry } from '@/stores/workflow'
 import { useSettingsStore } from '@/stores/settings'
+import { analyzeWorkflowInputs } from '@/utils/workflowInputs'
 import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
 import { useAppStore } from '@/stores/app'
 import { buildModelCategoryOptionsFromModels, getModelCategoryLabel } from '@/utils/modelCategory'
@@ -80,6 +81,25 @@ const {
 } = storeToRefs(task)
 const { selectedModel, downloadedModels, models: modelEntries, isLoading, detailLoading, modelPreferences } = storeToRefs(model)
 const { workflows, selectedWorkflow, selectedWorkflowId } = storeToRefs(workflow)
+const workflowSlotFiles = toRef(task, 'workflowSlotFiles')
+
+// Runtime input slots of the selected comfy workflow (pymss >= 2.1.2):
+// each named load node becomes a file slot in the UI instead of the shared
+// input-file list.
+const workflowInputAnalysis = computed(() => analyzeWorkflowInputs(selectedWorkflow.value?.definition))
+const workflowInputSlots = computed(() => (runMode.value === 'workflow' ? workflowInputAnalysis.value.slots : []))
+const workflowUnresolvedLoads = computed(() => (runMode.value === 'workflow' ? workflowInputAnalysis.value.unresolved : []))
+const workflowSelfContainedOnly = computed(() => (
+  runMode.value === 'workflow'
+  && workflowInputAnalysis.value.selfContained > 0
+  && !workflowInputSlots.value.length
+  && !workflowUnresolvedLoads.value.length
+))
+const workflowSlotValues = computed<Record<string, string>>(() => {
+  if (!selectedWorkflow.value) return {}
+  return workflowSlotFiles.value[selectedWorkflow.value.id] || {}
+})
+const workflowMissingSlots = computed(() => workflowInputSlots.value.filter(slot => !(workflowSlotValues.value[slot.name] || '').trim()).map(slot => slot.name))
 
 const isDragging = ref(false)
 const showSettingsDrawer = ref(false)
@@ -327,7 +347,15 @@ const usesIndexToken = computed(() => outputNamingTemplate.value.includes('%inde
 // Workflow validation is now minimal on the frontend (nodes present, has a
 // save node). Deep validation runs in pymss.graph at execution time.
 const selectedWorkflowValidation = computed(() => null)
-const selectedWorkflowBatchConfigs = computed<unknown[]>(() => [])
+function pickWorkflowSlotFile(slotName: string) {
+  if (!selectedWorkflow.value) return
+  void invoke<string[]>('pick_audio_files')
+    .then((files) => {
+      const file = (files || [])[0]
+      if (file) task.setWorkflowSlotFile(selectedWorkflow.value!.id, slotName, file)
+    })
+    .catch(() => {})
+}
 const workflowUsesBatchInput = computed(() => false)
 const workflowBatchInputInvalid = computed(() => false)
 const workflowBatchInputMissingFolder = computed(() => false)
@@ -345,6 +373,13 @@ const startStatusText = computed(() => {
   const validationError = workflowValidationError(selectedWorkflowValidation.value)
   if (validationError) return validationError
   if (outputDirectoryError.value) return outputDirectoryError.value
+  if (workflowUnresolvedLoads.value.length) return t('separate.workflowUnresolvedLoad', { count: workflowUnresolvedLoads.value.length })
+  if (workflowInputSlots.value.length) {
+    return workflowMissingSlots.value.length
+      ? t('separate.workflowMissingSlots', { names: workflowMissingSlots.value.join(', ') })
+      : t('separate.workflowSlotsReady', { count: workflowInputSlots.value.length })
+  }
+  if (workflowSelfContainedOnly.value) return t('separate.workflowSelfContained')
   if (workflowUsesBatchInput.value) return t('separate.startHintWorkflowBatchFolder')
   if (!inputFiles.value.length) return t('separate.startHintNoInput')
   if (runMode.value === 'model' && ensembleEnabled.value && !ensembleReady.value) return t('separate.ensembleNotReady')
@@ -430,7 +465,10 @@ const canStart = computed(() => (
   !workflowStructureInvalid.value
   && !outputDirectoryError.value
   && (runMode.value === 'workflow'
-    ? Boolean(selectedWorkflow.value) && inputFiles.value.length > 0
+    ? Boolean(selectedWorkflow.value)
+      && (workflowInputSlots.value.length
+        ? workflowMissingSlots.value.length === 0
+        : workflowSelfContainedOnly.value ? true : inputFiles.value.length > 0)
     : ensembleEnabled.value ? ensembleReady.value : (modelDownloaded.value && inputFiles.value.length > 0))
 ))
 const newestRunningJob = computed(() => {
@@ -1522,7 +1560,27 @@ async function retryCurrentTask() {
             </div>
           </div>
           <div class="rail-card__body">
-            <div class="picker-buttons">
+            <div v-if="workflowInputSlots.length" class="workflow-slots">
+              <div
+                v-for="slot in workflowInputSlots"
+                :key="`${slot.nodeId}-${slot.name}`"
+                class="workflow-slot"
+                :class="{ 'workflow-slot--filled': (workflowSlotValues[slot.name] || '').trim() }"
+              >
+                <div class="workflow-slot__head">
+                  <n-icon :component="MusicalNotesOutline" />
+                  <strong :title="slot.name">{{ slot.name }}</strong>
+                </div>
+                <button type="button" class="picker-btn" @click="pickWorkflowSlotFile(slot.name)">
+                  <n-icon :component="slot.nodeType.endsWith('_batch') ? FolderOutline : MusicalNotesOutline" />
+                  <span>{{ (workflowSlotValues[slot.name] || '').trim() ? getFileName(workflowSlotValues[slot.name]) : t('separate.chooseFiles') }}</span>
+                </button>
+              </div>
+            </div>
+            <div v-if="workflowUnresolvedLoads.length" class="workflow-slots-warning">
+              {{ t('separate.workflowUnresolvedLoad', { count: workflowUnresolvedLoads.length }) }}
+            </div>
+            <div v-if="!workflowInputSlots.length && !workflowSelfContainedOnly" class="picker-buttons">
               <button type="button" class="picker-btn" :disabled="isRunModeLocked" @click="handlePickFiles">
                 <n-icon :component="MusicalNotesOutline" />
                 <span>{{ t('separate.chooseFiles') }}</span>
@@ -1534,6 +1592,7 @@ async function retryCurrentTask() {
             </div>
 
             <div
+              v-if="!workflowInputSlots.length && !workflowSelfContainedOnly"
               class="dropzone"
               :class="{ 'dropzone--dragging': isDragging, 'dropzone--filled': inputFiles.length, 'dropzone--clickable': !inputFiles.length && !isRunModeLocked }"
               @click="(!inputFiles.length && !isRunModeLocked) ? handlePickFiles() : undefined"
@@ -2523,6 +2582,32 @@ async function retryCurrentTask() {
 }
 
 /* pick buttons */
+.workflow-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.workflow-slot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color, rgba(128, 128, 128, 0.3));
+  border-radius: 8px;
+}
+.workflow-slot--filled { border-color: var(--primary-strong); }
+.workflow-slot__head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.workflow-slot__head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-slots-warning {
+  padding: 8px 10px;
+  border: 1px dashed rgba(224, 148, 52, 0.6);
+  border-radius: 8px;
+  color: #e09434;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
 .picker-buttons {
   display: grid;
   grid-template-columns: 1fr 1fr;

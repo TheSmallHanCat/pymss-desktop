@@ -185,7 +185,12 @@
     "namingTokenModel": "模型或工作流",
     "namingTokenDate": "日期",
     "namingTokenTime": "时间",
-    "namingTokenLegacyTime": "日分秒"
+    "namingTokenLegacyTime": "日分秒",
+    "workflowMissingSlots": "待填输入槽：{names}",
+    "workflowSlotsReady": "{count} 个输入槽已就绪",
+    "workflowSelfContained": "图自带输入，可直接运行",
+    "workflowUnresolvedLoad": "有 {count} 个加载节点未命名且非路径，请在编辑器填写 input_name 或文件路径",
+    "workflowMissingSlotFiles": "输入槽未选择文件：{names}"
   },
   "audio": {
     "wavBitDepth": "WAV 位深",
