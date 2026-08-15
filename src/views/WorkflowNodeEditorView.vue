@@ -80,14 +80,17 @@ const formError = computed(() => {
 
 /** Advisory (non-blocking): separate nodes referencing models that are not in
  * the downloaded list. Saving a graph must never be blocked by model state —
- * the model may be downloaded later, or the graph shared to another machine. */
+ * the model may be downloaded later, or the graph shared to another machine.
+ * comfy-mss serializes model widgets as ``[category] filename`` — strip the
+ * annotation prefix before matching (mirrors pymss' runtime behaviour). */
 const missingModelNodes = computed(() => {
   const nodes = Array.isArray(definition.value.nodes) ? definition.value.nodes as any[] : []
   const downloaded = new Set(downloadedModels.value.map(item => item.name))
   const missing: string[] = []
   for (const n of nodes) {
     if (String(n.type).endsWith('separate')) {
-      const model = String((n as any).widgets_values?.[0] || '').trim()
+      const raw = String((n as any).widgets_values?.[0] || '').trim()
+      const model = raw.replace(/^\[[^\]]*\]\s*/, '').trim()
       if (model && !downloaded.has(model)) missing.push(String(n.id))
     }
   }
