@@ -199,9 +199,13 @@ type ModelEntryLike = {
   targetStem?: string
 }
 
-/** A simple workflow is always "editable" in simple mode now — it IS the source
- * format. Kept for callers that still ask. */
-export function analyzeSimpleWorkflow(_definition: unknown): { editable: boolean; reasonCodes: SimpleWorkflowReasonCode[] } {
+/** Whether the simple creator can edit this definition: only pymss YAML
+ * workflows (a steps list). Comfy graphs (nodes list) are free-form and use
+ * the advanced editor + read-only overview. */
+export function analyzeSimpleWorkflow(definition: unknown): { editable: boolean; reasonCodes: SimpleWorkflowReasonCode[] } {
+  if (isRecord(definition) && Array.isArray(definition.nodes)) {
+    return { editable: false, reasonCodes: ['comfy_metadata'] }
+  }
   return { editable: true, reasonCodes: [] }
 }
 
