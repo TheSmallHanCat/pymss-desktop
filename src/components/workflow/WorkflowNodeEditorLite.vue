@@ -102,7 +102,10 @@ function applyTheme() {
 }
 
 // --- model -> stems lookup for separate nodes ------------------------------
-function stemsForModel(modelName: string): string[] {
+function stemsForModel(modelNameRaw: string): string[] {
+  // comfy-mss serializes model widgets as "[category] filename" — strip the
+  // annotation prefix before matching against the catalog.
+  const modelName = modelNameRaw.replace(/^\[[^\]]*\]\s*/, '').trim()
   const m = props.models.find((x) => x.name === modelName || x.aliases?.includes(modelName))
   if (!m) return []
   // Catalog models expose target_stem; two-stem models split into target/rest.
@@ -120,16 +123,41 @@ function stemsForModel(modelName: string): string[] {
 function syncSeparateNodeStems(node: LGraphNode) {
   const spec = ALL_SPECS[String(node.type)]
   if (!spec?.dynamicStems) return
-  // Nodes loaded from a serialized graph already carry their real stem output
-  // ports (e.g. "vocals (Audio)"); never rebuild those — that would sever the
-  // links. Only placeholder ports (stem_1/stem_2) are replaced by the model's
-  // stems when the model is known.
+  // Loaded graphs may mix real stem ports ("vocals (Audio)") with leftover
+  // editor placeholders (stem_1/stem_2 — ports created before a model was
+  // chosen; common in imported comfy-mss graphs). Rename placeholder ports in
+  // place to the model's not-yet-present stems. Links live on the port
+  // objects; renaming keeps them attached.
   const outputs = node.outputs || []
-  const hasRealOutputs = outputs.some((o) => !String(o.name || '').startsWith('stem_'))
-  if (hasRealOutputs) return
-  const modelName = String((node as any).properties?.model_name || '')
+  if (!outputs.length) {
+    const stems = stemsForModel(String((node as any).properties?.model_name || ''))
+    if (stems.length) setSeparateStems(node, stems)
+    return
+  }
+  if (!outputs.some((o) => /^stem_\d+$/.test(String(o.name || '')))) return
+  const modelName = String((node as any).properties?.model_name
+    || (node as any).widgets?.find((w: any) => w.name === 'model_name')?.value
+    || '')
   const stems = stemsForModel(modelName)
-  if (stems.length) setSeparateStems(node, stems)
+  if (!stems.length) return
+  const present = new Set(
+    outputs
+      .map((o) => String(o.name || '').replace(/ \((Audio|String)\)$/, ''))
+      .filter((name) => name && !/^stem_\d+$/.test(name)),
+  )
+  const missing = stems.filter((s) => !present.has(s))
+  let cursor = 0
+  for (let i = 0; i < outputs.length; i++) {
+    if (!/^stem_\d+$/.test(String(outputs[i].name || ''))) continue
+    const stem = missing[cursor++]
+    if (!stem) break
+    outputs[i].name = `${stem} (Audio)`
+    const strPort = outputs[i + 1]
+    if (strPort && /^stem_\d+$/.test(String(strPort.name || ''))) {
+      strPort.name = `${stem} (String)`
+      i += 1
+    }
+  }
 }
 
 // --- node creation ---------------------------------------------------------

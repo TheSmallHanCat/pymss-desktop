@@ -25,14 +25,14 @@ export interface ComfyNode {
   title?: string
 }
 
-export interface ComfyLink {
-  0: number // link id
-  1: number // source node id
-  2: number // source slot
-  3: number // target node id
-  4: number // target slot
-  5: string // type
-}
+export type ComfyLink = [
+  number, // link id
+  number, // source node id
+  number, // source slot
+  number, // target node id
+  number, // target slot
+  string, // type
+]
 
 export interface ComfyWorkflow {
   last_node_id: number
@@ -73,22 +73,25 @@ export function litegraphToComfy(serialized: ISerialisedGraph | any): ComfyWorkf
   for (const l of serialized.links || []) {
     if (Array.isArray(l)) {
       if (l.length < 6) continue
-      links.push({ 0: Number(l[0]), 1: Number(l[1]), 2: Number(l[2]), 3: Number(l[3]), 4: Number(l[4]), 5: String(l[5]) } as ComfyLink)
+      links.push([Number(l[0]), Number(l[1]), Number(l[2]), Number(l[3]), Number(l[4]), String(l[5])])
       continue
     }
     // litegraph serialize() emits object-format links
     // ({id, origin_id, origin_slot, target_id, target_slot, type});
     // convert them into the comfy 6-tuple so pymss/comfy-mss can read them.
+    // NOTE: the tuple MUST be a real array — pymss' comfy loader rejects
+    // anything that is not isinstance(entry, list); numeric-key objects
+    // ({0: id, ...}) serialize to {"0": id} in JSON and get silently dropped.
     const obj = l as Record<string, any>
     if (!obj || typeof obj !== 'object' || obj.id === undefined) continue
-    links.push({
-      0: Number(obj.id),
-      1: Number(obj.origin_id),
-      2: Number(obj.origin_slot),
-      3: Number(obj.target_id),
-      4: Number(obj.target_slot),
-      5: String(obj.type ?? ''),
-    } as ComfyLink)
+    links.push([
+      Number(obj.id),
+      Number(obj.origin_id),
+      Number(obj.origin_slot),
+      Number(obj.target_id),
+      Number(obj.target_slot),
+      String(obj.type ?? ''),
+    ])
   }
 
   const wf: ComfyWorkflow = {
