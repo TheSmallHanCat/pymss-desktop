@@ -91,6 +91,25 @@ export function setSeparateStems(node: LGraphNodeType, stems: string[]) {
   n.stems = list
 }
 
+/** Inject the downloaded-model list into every separate node's model_name
+ * combo: spec defaults (new nodes) + live widgets (editor calls refresh below). */
+export function applyModelOptions(values: string[]) {
+  for (const spec of Object.values(NODE_SPECS)) {
+    for (const w of spec.widgets) {
+      if (w.name === 'model_name') w.options = values
+    }
+  }
+}
+
+/** Refresh one node instance's model_name combo options (call after graph
+ * configure and whenever the model list changes). */
+export function refreshNodeModelOptions(node: any, values: string[]) {
+  const widget = (node.widgets || []).find((w: any) => w.name === 'model_name')
+  if (!widget) return
+  widget.options = widget.options || {}
+  widget.options.values = values
+}
+
 function makeNodeClass(spec: NodeSpec): any {
   const klass = class extends LGraphNode {
     static title = spec.title

@@ -10,7 +10,7 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import { useI18n } from 'vue-i18n'
 import { LGraph, LGraphCanvas, LiteGraph, type LGraphNode } from '@comfyorg/litegraph'
 import '@comfyorg/litegraph/style.css'
-import { registerPymssNodes, setSeparateStems, NODE_SPECS, BUILTIN_SPECS } from '@/litegraph/registerNodes'
+import { registerPymssNodes, setSeparateStems, applyModelOptions, refreshNodeModelOptions, NODE_SPECS, BUILTIN_SPECS } from '@/litegraph/registerNodes'
 import { litegraphToComfy, comfyLinksToLitegraph } from '@/litegraph/graphAdapter'
 import type { ModelEntry } from '@/stores/model'
 import type { NodeSpec } from '@/litegraph/nodeSpecs'
@@ -213,8 +213,12 @@ function loadDefinition(def: Record<string, unknown>) {
     version: 1,
   }
   graph.configure(data)
-  // After configure, rebuild dynamic stem outputs for separate nodes.
-  for (const n of graph.nodes as any[]) syncSeparateNodeStems(n)
+  // After configure, rebuild dynamic stem outputs for separate nodes and
+  // populate model_name combos with the current downloaded list.
+  for (const n of graph.nodes as any[]) {
+    syncSeparateNodeStems(n)
+    refreshNodeModelOptions(n, modelValues.value)
+  }
 }
 
 // --- lifecycle -------------------------------------------------------------
@@ -273,8 +277,17 @@ function seedStarterGraph() {
   sep.connect(0, save, 0)
 }
 
-// Keep separate-node stem outputs in sync when the model_name widget changes.
+// Keep separate-node stem outputs in sync when the model_name widget changes,
+// and keep the model_name combo populated with the downloaded models.
+const modelValues = computed(() => props.modelOptions.map((o) => o.value))
+watch(modelValues, (values) => { applyModelOptions(values) }, { immediate: true })
+function refreshAllModelOptions() {
+  const values = modelValues.value
+  applyModelOptions(values)
+  for (const n of (graphRef.value?.nodes || []) as any[]) refreshNodeModelOptions(n, values)
+}
 watch(() => props.models, () => {
+  refreshAllModelOptions()
   for (const n of (graphRef.value?.nodes || []) as any[]) syncSeparateNodeStems(n)
 }, { deep: false })
 
