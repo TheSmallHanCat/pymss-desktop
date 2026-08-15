@@ -205,6 +205,9 @@ export function analyzeSimpleWorkflow(_definition: unknown): { editable: boolean
   return { editable: true, reasonCodes: [] }
 }
 
-export function resolveWorkflowOpenMode(_definition: unknown): 'simple' | 'advanced' {
+export function resolveWorkflowOpenMode(definition: unknown): 'simple' | 'advanced' {
+  // Comfy graphs (nodes list) open as read-only overview + advanced editor;
+  // only pymss YAML workflows (steps list) open the simple creator.
+  if (isRecord(definition) && Array.isArray(definition.nodes)) return 'advanced'
   return 'simple'
 }
