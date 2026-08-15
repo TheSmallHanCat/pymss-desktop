@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs'
+import { writeFileSync, mkdtempSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,10 +12,13 @@ import { setupLitegraphEnvDom } from './_litegraphEnv.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-// Python interpreter used for pymss round-trip checks. The pymss dev
-// environment lives on the big disk: uv venv /Volumes/1T/pymss-venv &&
-// uv pip install -e /Volumes/data/pymss. Override via PYMSS_STUDIO_TEST_PYTHON.
-const PY = process.env.PYMSS_STUDIO_TEST_PYTHON || '/Volumes/2T/pymss-venv/bin/python'
+// Python interpreter used for pymss round-trip checks. Resolution order:
+// PYMSS_STUDIO_TEST_PYTHON env var > project venv (.venv/bin/python) > python3.
+// The pymss dev environment can be set up with: uv venv .venv && uv pip install -e ../pymss
+const PY = process.env.PYMSS_STUDIO_TEST_PYTHON
+  || (existsSync(resolve(__dirname, '../.venv/bin/python'))
+    ? resolve(__dirname, '../.venv/bin/python')
+    : 'python3')
 
 // Set up DOM globals first so vite's SSR-loaded litegraph (and registerNodes)
 // share the same module instance the test uses.

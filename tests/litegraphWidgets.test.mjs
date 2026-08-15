@@ -91,46 +91,50 @@ test('object-format links survive comfyLinksToLitegraph round-trip', () => {
   assert.equal(g3.links.size, 1, 'configure must restore the link')
 })
 
-// Regression: real stored workflow (comfy array links) loads with all links.
-test('real comfy array links configure restores 37 links', async () => {
-  const { readFileSync } = await import('node:fs')
-  const def = JSON.parse(readFileSync('/Volumes/data/pymss-studio/testflow.json', 'utf8'))
-  const nodes = Array.isArray(def.nodes) ? def.nodes : []
-  const links = Array.isArray(def.links) ? def.links : []
-  assert.equal(nodes.length, 27, 'fixture node count')
-  assert.equal(links.length, 37, 'fixture link count')
-  assert.ok(Array.isArray(links[0]), 'fixture links are comfy array tuples')
+// Regression: stored workflows come in two link shapes — comfy array tuples
+// (real comfy-mss export) and numeric-key objects (older litegraphToComfy
+// output). comfyLinksToLitegraph must restore links from both.
+function twoLoadGraph() {
+  return [
+    { id: 1, type: 'pymss_load_audio', pos: [0, 0], size: [200, 80], flags: {}, order: 0, mode: 0,
+      inputs: [], widgets_values: ['/a/input.wav', 'audio1'],
+      outputs: [{ name: 'audio', type: 'AUDIO', links: [1] }, { name: 'audio_name', type: 'STRING', links: null }] },
+    { id: 2, type: 'pymss_load_audio', pos: [0, 120], size: [200, 80], flags: {}, order: 1, mode: 0,
+      inputs: [], widgets_values: ['/a/input2.wav', 'audio2'],
+      outputs: [{ name: 'audio', type: 'AUDIO', links: [2] }, { name: 'audio_name', type: 'STRING', links: null }] },
+    { id: 3, type: 'pymss_save_audio', pos: [300, 0], size: [200, 80], flags: {}, order: 2, mode: 0,
+      inputs: [{ name: 'audio', type: 'AUDIO', link: 1 }], widgets_values: ['wav'] },
+    { id: 4, type: 'pymss_save_audio', pos: [300, 120], size: [200, 80], flags: {}, order: 3, mode: 0,
+      inputs: [{ name: 'audio', type: 'AUDIO', link: 2 }], widgets_values: ['wav'] },
+  ]
+}
 
+test('comfy array-tuple links restore all links', () => {
+  const nodes = twoLoadGraph()
+  const links = [
+    [1, 1, 0, 3, 0, 'AUDIO'],
+    [2, 2, 0, 4, 0, 'AUDIO'],
+  ]
   const g4 = new LGraph()
   g4.configure({
     nodes: nodes.map(n => ({ ...n, inputs: n.inputs || [], outputs: n.outputs || [] })),
     links: comfyLinksToLitegraph(links),
-    last_node_id: def.last_node_id ?? Math.max(...nodes.map(n => Number(n.id))),
-    last_link_id: def.last_link_id ?? Math.max(...links.map(l => Number(l[0]))),
-    groups: [], version: 1,
+    last_node_id: 4, last_link_id: 2, groups: [], version: 1,
   })
-  assert.equal(g4.links.size, 37, 'all links restored after configure')
+  assert.equal(g4.links.size, 2, 'all links restored after configure')
 })
 
-// Regression: the ACTUAL stored definition (data/settings/workflows.json),
-// whose links are numeric-key objects ({0: id, 1: src, ...}) from litegraphToComfy.
-test('stored workflows.json definition restores all links', async () => {
-  const { readFileSync } = await import('node:fs')
-  const store = JSON.parse(readFileSync('/Volumes/data/pymss-studio/data/settings/workflows.json', 'utf8'))
-  const wfs = store.workflows || store
-  const w = (Array.isArray(wfs) ? wfs : []).find(x => x.name === 'testflow')
-  assert.ok(w, 'testflow in store')
-  const def = w.definition
-  const nodes = def.nodes, links = def.links
-  assert.ok(!Array.isArray(links[0]) && typeof links[0] === 'object', 'fixture uses numeric-key link objects')
-
+test('numeric-key object links (old litegraphToComfy output) restore all links', () => {
+  const nodes = twoLoadGraph()
+  const links = [
+    { 0: 1, 1: 1, 2: 0, 3: 3, 4: 0, 5: 'AUDIO' },
+    { 0: 2, 1: 2, 2: 0, 3: 4, 4: 0, 5: 'AUDIO' },
+  ]
   const g5 = new LGraph()
   g5.configure({
     nodes: nodes.map(n => ({ ...n, inputs: n.inputs || [], outputs: n.outputs || [] })),
     links: comfyLinksToLitegraph(links),
-    last_node_id: def.last_node_id ?? Math.max(...nodes.map(n => Number(n.id))),
-    last_link_id: def.last_link_id ?? Math.max(...links.map(l => Number(l[0]))),
-    groups: [], version: 1,
+    last_node_id: 4, last_link_id: 2, groups: [], version: 1,
   })
-  assert.equal(g5.links.size, links.length, 'all stored links restored')
+  assert.equal(g5.links.size, 2, 'all stored links restored')
 })
