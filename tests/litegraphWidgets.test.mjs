@@ -90,3 +90,47 @@ test('object-format links survive comfyLinksToLitegraph round-trip', () => {
   })
   assert.equal(g3.links.size, 1, 'configure must restore the link')
 })
+
+// Regression: real stored workflow (comfy array links) loads with all links.
+test('real comfy array links configure restores 37 links', async () => {
+  const { readFileSync } = await import('node:fs')
+  const def = JSON.parse(readFileSync('/Volumes/data/pymss-studio/testflow.json', 'utf8'))
+  const nodes = Array.isArray(def.nodes) ? def.nodes : []
+  const links = Array.isArray(def.links) ? def.links : []
+  assert.equal(nodes.length, 27, 'fixture node count')
+  assert.equal(links.length, 37, 'fixture link count')
+  assert.ok(Array.isArray(links[0]), 'fixture links are comfy array tuples')
+
+  const g4 = new LGraph()
+  g4.configure({
+    nodes: nodes.map(n => ({ ...n, inputs: n.inputs || [], outputs: n.outputs || [] })),
+    links: comfyLinksToLitegraph(links),
+    last_node_id: def.last_node_id ?? Math.max(...nodes.map(n => Number(n.id))),
+    last_link_id: def.last_link_id ?? Math.max(...links.map(l => Number(l[0]))),
+    groups: [], version: 1,
+  })
+  assert.equal(g4.links.size, 37, 'all links restored after configure')
+})
+
+// Regression: the ACTUAL stored definition (data/settings/workflows.json),
+// whose links are numeric-key objects ({0: id, 1: src, ...}) from litegraphToComfy.
+test('stored workflows.json definition restores all links', async () => {
+  const { readFileSync } = await import('node:fs')
+  const store = JSON.parse(readFileSync('/Volumes/data/pymss-studio/data/settings/workflows.json', 'utf8'))
+  const wfs = store.workflows || store
+  const w = (Array.isArray(wfs) ? wfs : []).find(x => x.name === 'testflow')
+  assert.ok(w, 'testflow in store')
+  const def = w.definition
+  const nodes = def.nodes, links = def.links
+  assert.ok(!Array.isArray(links[0]) && typeof links[0] === 'object', 'fixture uses numeric-key link objects')
+
+  const g5 = new LGraph()
+  g5.configure({
+    nodes: nodes.map(n => ({ ...n, inputs: n.inputs || [], outputs: n.outputs || [] })),
+    links: comfyLinksToLitegraph(links),
+    last_node_id: def.last_node_id ?? Math.max(...nodes.map(n => Number(n.id))),
+    last_link_id: def.last_link_id ?? Math.max(...links.map(l => Number(l[0]))),
+    groups: [], version: 1,
+  })
+  assert.equal(g5.links.size, links.length, 'all stored links restored')
+})

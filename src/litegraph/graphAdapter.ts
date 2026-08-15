@@ -71,8 +71,24 @@ export function litegraphToComfy(serialized: ISerialisedGraph | any): ComfyWorkf
 
   const links: ComfyLink[] = []
   for (const l of serialized.links || []) {
-    if (!Array.isArray(l) || l.length < 6) continue
-    links.push({ 0: Number(l[0]), 1: Number(l[1]), 2: Number(l[2]), 3: Number(l[3]), 4: Number(l[4]), 5: String(l[5]) } as ComfyLink)
+    if (Array.isArray(l)) {
+      if (l.length < 6) continue
+      links.push({ 0: Number(l[0]), 1: Number(l[1]), 2: Number(l[2]), 3: Number(l[3]), 4: Number(l[4]), 5: String(l[5]) } as ComfyLink)
+      continue
+    }
+    // litegraph serialize() emits object-format links
+    // ({id, origin_id, origin_slot, target_id, target_slot, type});
+    // convert them into the comfy 6-tuple so pymss/comfy-mss can read them.
+    const obj = l as Record<string, any>
+    if (!obj || typeof obj !== 'object' || obj.id === undefined) continue
+    links.push({
+      0: Number(obj.id),
+      1: Number(obj.origin_id),
+      2: Number(obj.origin_slot),
+      3: Number(obj.target_id),
+      4: Number(obj.target_slot),
+      5: String(obj.type ?? ''),
+    } as ComfyLink)
   }
 
   const wf: ComfyWorkflow = {
@@ -102,20 +118,27 @@ export function comfyLinksToLitegraph(links: unknown[]): Record<string, unknown>
   const out: Record<string, unknown>[] = []
   for (const l of links || []) {
     // litegraph serialize() already emits object-format links
-    // ({id, origin_id, ...}) — exactly what configure() wants. Only comfy
-    // array tuples ([id, src, srcSlot, dst, dstSlot, type]) need converting.
-    if (l && typeof l === 'object' && !Array.isArray(l)) {
+    // ({id, origin_id, ...}) — exactly what configure() wants.
+    if (l && typeof l === 'object' && !Array.isArray(l) && (l as any).origin_id !== undefined) {
       out.push(l as Record<string, unknown>)
       continue
     }
-    if (!Array.isArray(l) || l.length < 6) continue
+    // Comfy 6-tuple, either a real array or the numeric-key object
+    // ({0: id, 1: src, ...}) produced by litegraphToComfy — JSON round-trips
+    // the latter into objects with numeric keys that must be re-read by index.
+    const tuple = Array.isArray(l)
+      ? l
+      : l && typeof l === 'object' && (l as any)[0] !== undefined
+        ? [0, 1, 2, 3, 4, 5].map(i => (l as any)[i])
+        : null
+    if (!tuple || tuple.length < 6) continue
     out.push({
-      id: Number(l[0]),
-      type: String(l[5]),
-      origin_id: Number(l[1]),
-      origin_slot: Number(l[2]),
-      target_id: Number(l[3]),
-      target_slot: Number(l[4]),
+      id: Number(tuple[0]),
+      type: String(tuple[5]),
+      origin_id: Number(tuple[1]),
+      origin_slot: Number(tuple[2]),
+      target_id: Number(tuple[3]),
+      target_slot: Number(tuple[4]),
     })
   }
   return out
