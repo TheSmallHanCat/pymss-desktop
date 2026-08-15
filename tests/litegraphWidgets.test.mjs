@@ -65,3 +65,28 @@ test('round-trip: reload saved graph keeps input_name', () => {
   const w2 = g2.getNodeById(1).widgets.find((x) => x.name === 'input_name')
   assert.equal(w2.value, 'vocal')
 })
+
+// Regression: serialize() emits object-format links; restoreSnapshot used to
+// pass them through comfyLinksToLitegraph which dropped every non-array link,
+// wiping all connections on undo/redo.
+test('object-format links survive comfyLinksToLitegraph round-trip', () => {
+  const objLinks = [
+    { id: 1, origin_id: 1, origin_slot: 0, target_id: 2, target_slot: 0, type: 'AUDIO' },
+  ]
+  const converted = comfyLinksToLitegraph(objLinks)
+  assert.equal(converted.length, 1, 'object-format link must pass through')
+  assert.equal(converted[0].target_id, 2)
+
+  const g3 = new LGraph()
+  g3.configure({
+    nodes: [
+      { id: 1, type: 'pymss_load_audio', pos: [0, 0], size: [200, 80], flags: {}, order: 0, mode: 0,
+        inputs: [], outputs: [{ name: 'audio', type: 'AUDIO', links: [1] }, { name: 'audio_name', type: 'STRING', links: null }] },
+      { id: 2, type: 'pymss_save_audio', pos: [300, 0], size: [200, 80], flags: {}, order: 1, mode: 0,
+        inputs: [{ name: 'audio', type: 'AUDIO', link: 1 }], outputs: [] },
+    ],
+    links: converted,
+    version: 1,
+  })
+  assert.equal(g3.links.size, 1, 'configure must restore the link')
+})

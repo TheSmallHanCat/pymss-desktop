@@ -101,6 +101,13 @@ export function toComfyJson(serialized: ISerialisedGraph | any): string {
 export function comfyLinksToLitegraph(links: unknown[]): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = []
   for (const l of links || []) {
+    // litegraph serialize() already emits object-format links
+    // ({id, origin_id, ...}) — exactly what configure() wants. Only comfy
+    // array tuples ([id, src, srcSlot, dst, dstSlot, type]) need converting.
+    if (l && typeof l === 'object' && !Array.isArray(l)) {
+      out.push(l as Record<string, unknown>)
+      continue
+    }
     if (!Array.isArray(l) || l.length < 6) continue
     out.push({
       id: Number(l[0]),
