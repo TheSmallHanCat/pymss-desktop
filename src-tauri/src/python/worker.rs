@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -168,6 +168,25 @@ fn resolve_active_runtime_record(file: &PathBuf) -> Option<(String, Option<Strin
 fn materialize_bundled_runtime_env_templates(app: &AppHandle) -> AppResult<()> {
     if let Ok(dirs) = bundled_runtime_envs_dirs(app) {
         for envs_dir in dirs {
+            if let Err(error) = remove_rocm_offload_arch_launcher(&envs_dir) {
+                session_log::append(
+                    app,
+                    "WARNING",
+                    "runtime.rocm_launcher_cleanup",
+                    vec![
+                        (
+                            "path",
+                            envs_dir
+                                .join("rocm")
+                                .join("Scripts")
+                                .join("offload-arch.exe")
+                                .to_string_lossy()
+                                .to_string(),
+                        ),
+                        ("message", error.to_string()),
+                    ],
+                );
+            }
             let Ok(entries) = std::fs::read_dir(envs_dir) else {
                 continue;
             };
@@ -220,6 +239,23 @@ fn materialize_windows_venv_template(env_dir: &PathBuf) -> AppResult<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn remove_rocm_offload_arch_launcher(runtime_envs_dir: &Path) -> std::io::Result<bool> {
+    let launcher = runtime_envs_dir
+        .join("rocm")
+        .join("Scripts")
+        .join("offload-arch.exe");
+    if !launcher.is_file() {
+        return Ok(false);
+    }
+    std::fs::remove_file(launcher).map(|()| true)
+}
+
+#[cfg(not(windows))]
+fn remove_rocm_offload_arch_launcher(_runtime_envs_dir: &Path) -> std::io::Result<bool> {
+    Ok(false)
+}
+
 #[cfg(not(windows))]
 fn materialize_windows_venv_template(_env_dir: &PathBuf) -> AppResult<()> {
     Ok(())
@@ -258,6 +294,43 @@ fn bundled_bin_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
     }
 
     Ok(dirs.into_iter().filter(|dir| dir.is_dir()).collect())
+}
+
+#[cfg(windows)]
+fn rocm_native_tool_dir(runtime_envs_dir: &Path) -> Option<PathBuf> {
+    let site_packages = runtime_envs_dir.join("rocm").join("Lib").join("site-packages");
+    let entries = std::fs::read_dir(site_packages).ok()?;
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .find_map(|package_dir| {
+            let name = package_dir.file_name()?.to_str()?;
+            let tool_dir = package_dir.join("lib").join("llvm").join("bin");
+            (name.starts_with("_rocm_sdk_core")
+                && tool_dir.join("offload-arch.exe").is_file())
+            .then_some(tool_dir)
+        })
+}
+
+#[cfg(windows)]
+fn rocm_native_tool_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
+    Ok(bundled_runtime_envs_dirs(app)?
+        .iter()
+        .filter_map(|dir| rocm_native_tool_dir(dir))
+        .flat_map(|tool_dir| {
+            let sdk_bin = tool_dir
+                .parent()
+                .and_then(|path| path.parent())
+                .and_then(|path| path.parent())
+                .map(|path| path.join("bin"));
+            std::iter::once(tool_dir).chain(sdk_bin.filter(|dir| dir.is_dir()))
+        })
+        .collect())
+}
+
+#[cfg(not(windows))]
+fn rocm_native_tool_dirs(_app: &AppHandle) -> AppResult<Vec<PathBuf>> {
+    Ok(Vec::new())
 }
 
 #[cfg(target_os = "macos")]
@@ -385,7 +458,9 @@ fn build_worker_command(
         }
     }
     apply_proxy_env(app, &mut cmd);
-    if let Some(path) = prepend_path(std::env::var("PATH").ok(), bundled_bin_dirs(app)?) {
+    let mut tool_dirs = rocm_native_tool_dirs(app)?;
+    tool_dirs.extend(bundled_bin_dirs(app)?);
+    if let Some(path) = prepend_path(std::env::var("PATH").ok(), tool_dirs) {
         cmd.env("PATH", path);
     }
     #[cfg(target_os = "macos")]
@@ -694,6 +769,24 @@ fn read_lossy_lines<R: Read>(reader: R, mut on_line: impl FnMut(String)) {
     }
 }
 
+fn emit_worker_stdout(app: &AppHandle, line: String) {
+    let _ = app.emit(
+        "pymss://worker-event",
+        serde_json::json!({
+            "type": "worker_stdout",
+            "payload": { "message": line }
+        }),
+    );
+}
+
+fn is_rocm_offload_arch_diagnostic(line: &str) -> bool {
+    let message = line.trim();
+    message.starts_with("Fatal error in launcher: Unable to create process using")
+        || message.contains("offload-arch failed with return code")
+        || message == "[stderr]"
+        || message.starts_with("[rocm_sdk] offload-arch")
+}
+
 pub fn run_worker_once(app: &AppHandle, command: &str) -> AppResult<Value> {
     run_worker_with_payload(app, command, None)
 }
@@ -767,9 +860,13 @@ pub fn run_worker_with_payload(
             }
             Err(err) => {
                 log_worker_parse_error(app, command, None, &err, &line);
-                worker_error = Some(AppError::Worker(format!(
-                    "Invalid worker event: {err}; raw={line}"
-                )));
+                if is_rocm_offload_arch_diagnostic(&line) {
+                    emit_worker_stdout(app, line);
+                } else {
+                    worker_error = Some(AppError::Worker(format!(
+                        "Invalid worker event: {err}; raw={line}"
+                    )));
+                }
             }
         }
     });
@@ -921,12 +1018,18 @@ pub fn spawn_worker_background(
                 }
                 Err(err) => {
                     log_worker_parse_error(&app, &command_name, Some(&task_id), &err, &line);
-                    emit_task_error_to_all(
-                        &app,
-                        &registered_task_ids,
-                        format!("Invalid worker event: {err}"),
-                    );
-                    terminal_task_ids.extend(registered_task_ids.iter().cloned());
+                    if is_rocm_offload_arch_diagnostic(&line) {
+                        for registered_task_id in &registered_task_ids {
+                            emit_task_log(&app, registered_task_id, "warning", line.clone());
+                        }
+                    } else {
+                        emit_task_error_to_all(
+                            &app,
+                            &registered_task_ids,
+                            format!("Invalid worker event: {err}"),
+                        );
+                        terminal_task_ids.extend(registered_task_ids.iter().cloned());
+                    }
                 }
             }
         });
@@ -1127,6 +1230,69 @@ mod tests {
         std::fs::set_permissions(&cfg, permissions).unwrap();
         assert!(result.is_ok());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn finds_rocm_native_offload_arch_tool() {
+        let root = std::env::temp_dir().join(format!(
+            "pymss-worker-rocm-tool-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let tool_dir = root
+            .join("rocm")
+            .join("Lib")
+            .join("site-packages")
+            .join("_rocm_sdk_core")
+            .join("lib")
+            .join("llvm")
+            .join("bin");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::write(tool_dir.join("offload-arch.exe"), "stub").unwrap();
+
+        assert_eq!(super::rocm_native_tool_dir(&root), Some(tool_dir));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn removes_relocated_rocm_offload_arch_launcher() {
+        let root = std::env::temp_dir().join(format!(
+            "pymss-worker-rocm-launcher-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let launcher = root
+            .join("rocm")
+            .join("Scripts")
+            .join("offload-arch.exe");
+        std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        std::fs::write(&launcher, "launcher stub").unwrap();
+
+        assert!(super::remove_rocm_offload_arch_launcher(&root).unwrap());
+
+        assert!(!launcher.exists());
+        assert!(!super::remove_rocm_offload_arch_launcher(&root).unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recognizes_only_known_rocm_offload_arch_diagnostics() {
+        for line in [
+            "Fatal error in launcher: Unable to create process using 'D:\\a\\python.exe'",
+            "[WARNING] offload-arch failed with return code 1",
+            "[stderr]",
+            "[rocm_sdk] offload-arch not found",
+        ] {
+            assert!(super::is_rocm_offload_arch_diagnostic(line));
+        }
+        assert!(!super::is_rocm_offload_arch_diagnostic("unrelated Python traceback"));
     }
 
     #[test]

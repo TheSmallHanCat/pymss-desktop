@@ -599,6 +599,15 @@ jobs:
           Copy-Item "runtime-envs" "$stage/runtime-envs" -Recurse
           Copy-Item "release/bin" "$stage/bin" -Recurse
           ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
+          if (Test-Path "$stage\runtime-envs\rocm\Scripts\offload-arch.exe") { throw "Staged ROCm offload-arch launcher still embeds the build Python path" }
+          $rocmSdkPackage = Get-ChildItem "$stage\runtime-envs\rocm\Lib\site-packages" -Directory -Filter "_rocm_sdk_core*" |
+            Select-Object -First 1
+          if (-not $rocmSdkPackage) { throw "Staged ROCm SDK core package is missing" }
+          $rocmNativeTools = Join-Path $rocmSdkPackage.FullName "lib\llvm\bin"
+          $rocmRuntimeBin = Join-Path $rocmSdkPackage.FullName "bin"
+          if (!(Test-Path (Join-Path $rocmNativeTools "offload-arch.exe"))) { throw "Staged ROCm native offload-arch tool is missing" }
+          if (!(Test-Path $rocmRuntimeBin)) { throw "Staged ROCm runtime DLL directory is missing" }
+          $env:PATH = "$rocmNativeTools;$rocmRuntimeBin;$env:PATH"
           @"
           Pymss Studio ${{ steps.meta.outputs.version }} Windows x64 ROCm
           This package includes a base Python runtime and a pre-installed ROCm environment.

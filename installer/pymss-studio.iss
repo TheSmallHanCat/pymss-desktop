@@ -122,6 +122,12 @@ begin
   begin
     RaiseException('Failed to write Python venv config: ' + ConfigPath);
   end;
+
+  if Backend = 'rocm' then
+  begin
+    { ROCm's pip console launcher embeds the CI Python path and is not relocatable. }
+    RemoveIfExists(EnvDir + '\Scripts\offload-arch.exe');
+  end;
 end;
 
 procedure RepairBundledRuntimeEnvs();

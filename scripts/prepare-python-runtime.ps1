@@ -68,6 +68,35 @@ function Rewrite-WindowsRuntimeEnvConfigs {
     }
 }
 
+function Remove-RocmOffloadArchLauncher {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentDir
+    )
+
+    # ROCm's pip console-script wrapper embeds the build interpreter path. The SDK can use the
+    # relocatable native tool shipped under _rocm_sdk_core when this wrapper is absent from Scripts.
+    $launcher = Join-Path $EnvironmentDir "Scripts\offload-arch.exe"
+    $sitePackages = Join-Path $EnvironmentDir "Lib\site-packages"
+    $sdkPackage = Get-ChildItem -LiteralPath $sitePackages -Directory -Filter "_rocm_sdk_core*" | Select-Object -First 1
+    if (!$sdkPackage) {
+        throw "ROCm SDK core package was not found in $sitePackages"
+    }
+    $nativeTools = Join-Path $sdkPackage.FullName "lib\llvm\bin"
+    $runtimeBin = Join-Path $sdkPackage.FullName "bin"
+    if (!(Test-Path -LiteralPath (Join-Path $nativeTools "offload-arch.exe"))) {
+        throw "ROCm native offload-arch tool was not found in $nativeTools"
+    }
+    if (!(Test-Path -LiteralPath $runtimeBin)) {
+        throw "ROCm runtime DLL directory was not found in $runtimeBin"
+    }
+    if (Test-Path -LiteralPath $launcher) {
+        Remove-Item -LiteralPath $launcher -Force
+        Write-Host "Removed relocatability-breaking ROCm launcher $launcher"
+    }
+    return @($nativeTools, $runtimeBin)
+}
+
 if ($RewriteRuntimeEnvConfigs -or $TemplateRuntimeEnvConfigs) {
     Rewrite-WindowsRuntimeEnvConfigs -EnvsDir $RuntimeEnvsDir -PythonRuntimeDir $RuntimeDir -Template:$TemplateRuntimeEnvConfigs
     exit 0
@@ -144,25 +173,34 @@ if ($PreinstallBackend) {
         Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', 'mlx')
     }
     Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--upgrade', '--no-deps', 'pymss>=2.0.15', 'pymss-core>=0.1.6')
+    $rocmToolDirs = if ($PreinstallBackend -eq "rocm") { Remove-RocmOffloadArchLauncher -EnvironmentDir $envDir } else { @() }
     & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $envDir -KeepScripts
 
     # Step 4: Verify the environment
     $previousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
-    $env:PYTHONDONTWRITEBYTECODE = "1"
-    Invoke-NativeChecked -FilePath $envPython -Arguments @('-c', "import importlib.util, pymss, torch, librosa, av, yaml, tqdm; print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') is not None)")
-    if ($null -eq $previousDontWriteBytecode) {
-        Remove-Item Env:\PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
-    } else {
-        $env:PYTHONDONTWRITEBYTECODE = $previousDontWriteBytecode
+    $previousPath = $env:PATH
+    try {
+        $env:PYTHONDONTWRITEBYTECODE = "1"
+        if ($rocmToolDirs.Count -gt 0) {
+            $env:PATH = ($rocmToolDirs + $previousPath) -join ";"
+        }
+        Invoke-NativeChecked -FilePath $envPython -Arguments @('-c', "import importlib.util, pymss, torch, librosa, av, yaml, tqdm; print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') is not None)")
+
+        # Step 5: Read manifest version and write state files
+        $manifestPath = Join-Path $root "python\runtime-manifest.json"
+        $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+        $manifestVersion = $manifest.manifestVersion
+
+        # Probe torch info from the env
+        $probeResult = Invoke-NativeChecked -FilePath $envPython -Arguments @('-c', "import torch, json, platform; print(json.dumps({'torchVersion': torch.__version__, 'torchBackend': 'rocm' if getattr(torch.version, 'hip', None) else 'cuda' if getattr(torch.version, 'cuda', None) else 'cpu', 'acceleratorAvailable': torch.cuda.is_available(), 'pythonVersion': platform.python_version()}))")
+    } finally {
+        if ($null -eq $previousDontWriteBytecode) {
+            Remove-Item Env:\PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
+        } else {
+            $env:PYTHONDONTWRITEBYTECODE = $previousDontWriteBytecode
+        }
+        $env:PATH = $previousPath
     }
-
-    # Step 5: Read manifest version and write state files
-    $manifestPath = Join-Path $root "python\runtime-manifest.json"
-    $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
-    $manifestVersion = $manifest.manifestVersion
-
-    # Probe torch info from the env
-    $probeResult = Invoke-NativeChecked -FilePath $envPython -Arguments @('-c', "import torch, json, platform; print(json.dumps({'torchVersion': torch.__version__, 'torchBackend': 'rocm' if getattr(torch.version, 'hip', None) else 'cuda' if getattr(torch.version, 'cuda', None) else 'cpu', 'acceleratorAvailable': torch.cuda.is_available(), 'pythonVersion': platform.python_version()}))")
     $probed = $probeResult | ConvertFrom-Json
     $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
