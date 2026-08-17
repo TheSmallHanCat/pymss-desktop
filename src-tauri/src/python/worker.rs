@@ -637,6 +637,9 @@ fn worker_error_message(envelope: &WorkerEnvelope) -> String {
 }
 
 fn log_worker_event(app: &AppHandle, command: &str, envelope: &WorkerEnvelope) {
+    if envelope.event_type == "env_info" {
+        session_log::record_torch_diagnostics(app, &envelope.payload);
+    }
     let level = if envelope.event_type == "error" {
         "ERROR"
     } else if is_noisy_worker_event(&envelope.event_type) {

@@ -385,5 +385,84 @@ class DeleteLegacyCatalogEntryTests(unittest.TestCase):
         self.assertEqual(event["payload"]["modelInfo"]["configInstruments"], "")
 
 
+class EnvInfoTorchDiagnosticsTests(unittest.TestCase):
+    def _run_env_info(self):
+        output = io.StringIO()
+        with mock.patch.object(worker_models, "import_available", return_value=False), \
+             mock.patch.object(worker_models, "package_version", return_value=None), \
+             redirect_stdout(output):
+            self.assertEqual(worker_models.cmd_env_info(), 0)
+        return json.loads(output.getvalue().strip())["payload"]
+
+    def test_collects_device_count_even_when_accelerator_is_unavailable(self):
+        torch = mock.Mock()
+        torch.__version__ = "test-torch"
+        torch.version.hip = None
+        torch.version.cuda = None
+        torch.cuda.is_available.return_value = False
+        torch.cuda.device_count.return_value = 2
+        torch.cuda.get_device_name.side_effect = ["GPU A", "GPU B"]
+        torch.backends.mps.is_available.return_value = False
+
+        with mock.patch.dict("sys.modules", {"torch": torch}):
+            payload = self._run_env_info()
+
+        self.assertFalse(payload["cudaAvailable"])
+        self.assertEqual(payload["cudaDeviceCount"], 2)
+        self.assertEqual([item["name"] for item in payload["cudaDevices"]], ["GPU A", "GPU B"])
+
+    def test_records_device_enumeration_error_without_failing_env_info(self):
+        torch = mock.Mock()
+        torch.__version__ = "test-torch"
+        torch.version.hip = "7.2"
+        torch.version.cuda = None
+        torch.cuda.is_available.return_value = True
+        torch.cuda.device_count.return_value = 1
+        torch.cuda.get_device_name.side_effect = RuntimeError("device query failed")
+        torch.backends.mps.is_available.return_value = False
+
+        with mock.patch.dict("sys.modules", {"torch": torch}):
+            payload = self._run_env_info()
+
+        self.assertEqual(payload["cudaDeviceCount"], 1)
+        self.assertEqual(payload["cudaDevices"], [])
+        self.assertIn("device 0: device query failed", payload["cudaDeviceNamesError"])
+
+    def test_keeps_readable_devices_when_one_device_name_fails(self):
+        torch = mock.Mock()
+        torch.__version__ = "test-torch"
+        torch.version.hip = None
+        torch.version.cuda = "12.8"
+        torch.cuda.is_available.return_value = True
+        torch.cuda.device_count.return_value = 2
+        torch.cuda.get_device_name.side_effect = [RuntimeError("device 0 unavailable"), "GPU B"]
+        torch.backends.mps.is_available.return_value = False
+
+        with mock.patch.dict("sys.modules", {"torch": torch}):
+            payload = self._run_env_info()
+
+        self.assertEqual(payload["cudaDeviceCount"], 2)
+        self.assertEqual(payload["cudaDevices"], [{"id": 1, "name": "GPU B"}])
+        self.assertIn("device 0: device 0 unavailable", payload["cudaDeviceNamesError"])
+
+    def test_records_availability_error_without_skipping_device_diagnostics(self):
+        torch = mock.Mock()
+        torch.__version__ = "test-torch"
+        torch.version.hip = "7.2"
+        torch.version.cuda = None
+        torch.cuda.is_available.side_effect = RuntimeError("availability query failed")
+        torch.cuda.device_count.return_value = 1
+        torch.cuda.get_device_name.return_value = "GPU A"
+        torch.backends.mps.is_available.return_value = False
+
+        with mock.patch.dict("sys.modules", {"torch": torch}):
+            payload = self._run_env_info()
+
+        self.assertFalse(payload["cudaAvailable"])
+        self.assertIn("availability query failed", payload["cudaAvailableError"])
+        self.assertEqual(payload["cudaDeviceCount"], 1)
+        self.assertEqual([item["name"] for item in payload["cudaDevices"]], ["GPU A"])
+
+
 if __name__ == "__main__":
     unittest.main()

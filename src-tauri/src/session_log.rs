@@ -16,11 +16,26 @@ const PERSISTENT_LOG_BACKUPS: usize = 5;
 const READ_TAIL_BYTES: u64 = 256 * 1024;
 const REPORT_TAIL_BYTES: u64 = 96 * 1024;
 const REPORT_THROTTLE_MS: u64 = 5_000;
+const MAX_DIAGNOSTIC_VALUE_CHARS: usize = 4 * 1024;
 
 static LOG_CAP_REACHED: AtomicBool = AtomicBool::new(false);
 static DEVELOPER_MODE: AtomicBool = AtomicBool::new(false);
 static LAST_REPORT_MS: AtomicU64 = AtomicU64::new(0);
 static LOG_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static TORCH_DIAGNOSTICS: std::sync::Mutex<Option<TorchDiagnostics>> = std::sync::Mutex::new(None);
+
+#[derive(Clone)]
+struct TorchDiagnostics {
+    available: bool,
+    version: String,
+    error: String,
+    cuda_available: bool,
+    cuda_available_error: String,
+    device_count: u64,
+    device_count_error: String,
+    device_names: Vec<String>,
+    device_names_error: String,
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +86,9 @@ pub fn diagnostic_report_path(app: &AppHandle) -> AppResult<PathBuf> {
 pub fn init_session_log(app: &AppHandle) -> AppResult<()> {
     storage::ensure_app_directories(app)?;
     LOG_CAP_REACHED.store(false, Ordering::Relaxed);
+    if let Ok(mut diagnostics) = TORCH_DIAGNOSTICS.lock() {
+        *diagnostics = None;
+    }
     let settings = storage::read_app_store(app, "app-settings").unwrap_or_default();
     set_developer_mode(
         settings
@@ -146,6 +164,83 @@ pub fn append(app: &AppHandle, level: &str, event: &str, fields: Vec<(&str, Stri
 
 pub fn set_developer_mode(enabled: bool) {
     DEVELOPER_MODE.store(enabled, Ordering::Relaxed);
+}
+
+pub fn record_torch_diagnostics(app: &AppHandle, payload: &serde_json::Value) {
+    let diagnostics = torch_diagnostics_from_payload(payload);
+    if let Ok(mut current) = TORCH_DIAGNOSTICS.lock() {
+        *current = Some(diagnostics.clone());
+    }
+    append(
+        app,
+        "INFO",
+        "runtime.torch",
+        vec![
+            ("torchVersion", diagnostics.version),
+            ("torchAvailable", diagnostics.available.to_string()),
+            ("torchError", diagnostics.error),
+            ("cudaAvailable", diagnostics.cuda_available.to_string()),
+            ("cudaAvailableError", diagnostics.cuda_available_error),
+            ("cudaDeviceCount", diagnostics.device_count.to_string()),
+            ("cudaDeviceCountError", diagnostics.device_count_error),
+            ("cudaDeviceNames", diagnostics.device_names.join(" | ")),
+            ("cudaDeviceNamesError", diagnostics.device_names_error),
+        ],
+    );
+}
+
+fn torch_diagnostics_from_payload(payload: &serde_json::Value) -> TorchDiagnostics {
+    let device_names = payload
+        .get("cudaDevices")
+        .and_then(serde_json::Value::as_array)
+        .map(|devices| {
+            devices
+                .iter()
+                .filter_map(|device| device.get("name").and_then(serde_json::Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    TorchDiagnostics {
+        available: payload
+            .get("torchAvailable")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        version: payload
+            .get("torchVersion")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        error: payload
+            .get("torchError")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        cuda_available: payload
+            .get("cudaAvailable")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        cuda_available_error: payload
+            .get("cudaAvailableError")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        device_count: payload
+            .get("cudaDeviceCount")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default(),
+        device_count_error: payload
+            .get("cudaDeviceCountError")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        device_names,
+        device_names_error: payload
+            .get("cudaDeviceNamesError")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    }
 }
 
 pub fn developer_mode_enabled() -> bool {
@@ -228,6 +323,9 @@ pub fn clear(app: &AppHandle) -> AppResult<DebugLogInfo> {
         let _ = std::fs::remove_file(diagnostic_report_path(app)?);
         LOG_CAP_REACHED.store(false, Ordering::Relaxed);
         LAST_REPORT_MS.store(0, Ordering::Relaxed);
+        if let Ok(mut diagnostics) = TORCH_DIAGNOSTICS.lock() {
+            *diagnostics = None;
+        }
     }
     append(app, "INFO", "log.clear", Vec::new());
     info(app)
@@ -306,6 +404,7 @@ fn create_diagnostic_report_with_trigger(app: &AppHandle, trigger: &str, trigger
         std::fs::create_dir_all(parent)?;
     }
     let info = info(app)?;
+    let torch_diagnostics = torch_diagnostics_markdown();
     let session_tail = read_tail_path(session_log_path(app)?, REPORT_TAIL_BYTES)?.content;
     let persistent_tail = read_tail_path(persistent_log_path(app)?, REPORT_TAIL_BYTES)?.content;
     let content = format!(
@@ -318,6 +417,8 @@ Target: {}\n\
 Variant: {}\n\
 OS: {}\n\
 Arch: {}\n\n\
+## Torch Diagnostics\n\n\
+{}\n\
 ## Paths\n\n\
 - Data root: `{}`\n\
 - Logs dir: `{}`\n\
@@ -335,6 +436,7 @@ Arch: {}\n\n\
         option_env!("PYMSS_BUILD_VARIANT").unwrap_or("development"),
         std::env::consts::OS,
         std::env::consts::ARCH,
+        torch_diagnostics,
         storage::data_root_dir(app)?.to_string_lossy(),
         info.logs_dir,
         info.path,
@@ -353,6 +455,53 @@ Arch: {}\n\n\
         exists: meta.is_some(),
         size_bytes: meta.map(|value| value.len()).unwrap_or(0),
     })
+}
+
+fn torch_diagnostics_markdown() -> String {
+    let diagnostics = TORCH_DIAGNOSTICS
+        .lock()
+        .ok()
+        .and_then(|current| current.clone());
+    torch_diagnostics_markdown_for(diagnostics.as_ref())
+}
+
+fn torch_diagnostics_markdown_for(diagnostics: Option<&TorchDiagnostics>) -> String {
+    let Some(diagnostics) = diagnostics else {
+        return "- Environment probe: not recorded in this session".to_string();
+    };
+    let device_names = if diagnostics.device_names.is_empty() {
+        "None".to_string()
+    } else {
+        diagnostics.device_names.join(", ")
+    };
+    format!(
+        "- Torch available: {}\n- Torch version: {}\n- Torch error: {}\n- CUDA/ROCm available: {}\n- CUDA/ROCm availability error: {}\n- Device count: {}\n- Device count error: {}\n- Device names: {}\n- Device names error: {}",
+        diagnostics.available,
+        diagnostic_value(&diagnostics.version, "Unknown"),
+        diagnostic_value(&diagnostics.error, "None"),
+        diagnostics.cuda_available,
+        diagnostic_value(&diagnostics.cuda_available_error, "None"),
+        diagnostics.device_count,
+        diagnostic_value(&diagnostics.device_count_error, "None"),
+        diagnostic_value(&device_names, "None"),
+        diagnostic_value(&diagnostics.device_names_error, "None"),
+    )
+}
+
+fn diagnostic_value(value: &str, fallback: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        return fallback.to_string();
+    }
+    let mut value = redact_sensitive_text(&value.replace(['\r', '\n'], " "));
+    if value.chars().count() > MAX_DIAGNOSTIC_VALUE_CHARS {
+        value = value
+            .chars()
+            .take(MAX_DIAGNOSTIC_VALUE_CHARS)
+            .collect::<String>();
+        value.push_str(" ...[truncated]");
+    }
+    value
 }
 
 fn timestamp() -> String {
@@ -508,4 +657,74 @@ fn truncate_line(line: &mut String) {
     let mut truncated = line.chars().take(MAX_LINE_CHARS).collect::<String>();
     truncated.push_str(" ...[truncated]");
     *line = truncated;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn torch_diagnostics_preserve_probe_errors_for_logs_and_reports() {
+        let diagnostics = torch_diagnostics_from_payload(&json!({
+            "torchAvailable": true,
+            "torchVersion": "2.9.1+rocm",
+            "cudaAvailable": false,
+            "cudaAvailableError": "availability query failed",
+            "cudaDeviceCount": 2,
+            "cudaDeviceCountError": "count query failed",
+            "cudaDevices": [{"id": 1, "name": "AMD GPU"}],
+            "cudaDeviceNamesError": "device 0: name query failed"
+        }));
+
+        let report = torch_diagnostics_markdown_for(Some(&diagnostics));
+
+        assert!(report.contains("Torch version: 2.9.1+rocm"));
+        assert!(report.contains("availability query failed"));
+        assert!(report.contains("count query failed"));
+        assert!(report.contains("Device names: AMD GPU"));
+        assert!(report.contains("device 0: name query failed"));
+    }
+
+    #[test]
+    fn torch_diagnostics_redact_and_flatten_error_text() {
+        let diagnostics = TorchDiagnostics {
+            available: false,
+            version: String::new(),
+            error: "token=secret-value\nsecond line".to_string(),
+            cuda_available: false,
+            cuda_available_error: String::new(),
+            device_count: 0,
+            device_count_error: String::new(),
+            device_names: Vec::new(),
+            device_names_error: String::new(),
+        };
+
+        let report = torch_diagnostics_markdown_for(Some(&diagnostics));
+
+        assert!(report.contains("Torch error: token=<redacted> second line"));
+        assert!(!report.contains("secret-value"));
+    }
+
+    #[test]
+    fn torch_diagnostics_sanitize_and_bound_device_names() {
+        let diagnostics = TorchDiagnostics {
+            available: true,
+            version: "test".to_string(),
+            error: String::new(),
+            cuda_available: true,
+            cuda_available_error: String::new(),
+            device_count: 1,
+            device_count_error: String::new(),
+            device_names: vec![format!("token=device-secret\n{}", "x".repeat(MAX_DIAGNOSTIC_VALUE_CHARS))],
+            device_names_error: String::new(),
+        };
+
+        let report = torch_diagnostics_markdown_for(Some(&diagnostics));
+
+        assert!(report.contains("Device names: token=<redacted>"));
+        assert!(!report.contains("device-secret"));
+        assert!(report.contains("...[truncated]"));
+        assert!(!report.contains("\nxxxxxxxx"));
+    }
 }

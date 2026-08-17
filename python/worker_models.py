@@ -560,8 +560,11 @@ def cmd_env_info() -> int:
         "torchBackend": "missing",
         "hipVersion": None,
         "cudaAvailable": False,
+        "cudaAvailableError": None,
         "cudaDeviceCount": 0,
         "cudaDevices": [],
+        "cudaDeviceCountError": None,
+        "cudaDeviceNamesError": None,
         "mpsAvailable": False,
         "mlxAvailable": import_available("mlx"),
         "avAvailable": import_available("av"),
@@ -582,20 +585,34 @@ def cmd_env_info() -> int:
         payload["torchVersion"] = getattr(torch, "__version__", None)
         payload["hipVersion"] = getattr(torch.version, "hip", None)
         payload["torchBackend"] = "rocm" if payload["hipVersion"] else "cuda" if getattr(torch.version, "cuda", None) else "cpu"
-        payload["cudaAvailable"] = bool(torch.cuda.is_available())
-        payload["cudaDeviceCount"] = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+        try:
+            payload["cudaAvailable"] = bool(torch.cuda.is_available())
+        except Exception as exc:
+            payload["cudaAvailableError"] = str(exc)
         cuda_devices: list[dict[str, Any]] = []
-        if torch.cuda.is_available():
-            for index in range(int(torch.cuda.device_count())):
+        try:
+            device_count = max(0, int(torch.cuda.device_count()))
+            payload["cudaDeviceCount"] = device_count
+        except Exception as exc:
+            device_count = 0
+            payload["cudaDeviceCountError"] = str(exc)
+        device_name_errors: list[str] = []
+        for index in range(device_count):
+            try:
                 item: dict[str, Any] = {"id": index, "name": torch.cuda.get_device_name(index)}
-                try:
-                    props = torch.cuda.get_device_properties(index)
-                    item["totalMemoryBytes"] = int(getattr(props, "total_memory", 0) or 0)
-                    item["major"] = int(getattr(props, "major", 0) or 0)
-                    item["minor"] = int(getattr(props, "minor", 0) or 0)
-                except Exception:
-                    pass
-                cuda_devices.append(item)
+            except Exception as exc:
+                device_name_errors.append(f"device {index}: {exc}")
+                continue
+            try:
+                props = torch.cuda.get_device_properties(index)
+                item["totalMemoryBytes"] = int(getattr(props, "total_memory", 0) or 0)
+                item["major"] = int(getattr(props, "major", 0) or 0)
+                item["minor"] = int(getattr(props, "minor", 0) or 0)
+            except Exception:
+                pass
+            cuda_devices.append(item)
+        if device_name_errors:
+            payload["cudaDeviceNamesError"] = "; ".join(device_name_errors)
         payload["cudaDevices"] = cuda_devices
         mps = getattr(torch.backends, "mps", None)
         payload["mpsAvailable"] = bool(mps and mps.is_available())

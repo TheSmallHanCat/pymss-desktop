@@ -20,8 +20,11 @@ export type EnvInfo = {
   torchBackend?: 'cpu' | 'cuda' | 'rocm' | string
   hipVersion?: string | null
   cudaAvailable?: boolean
+  cudaAvailableError?: string | null
   cudaDeviceCount?: number
   cudaDevices?: CudaDeviceInfo[]
+  cudaDeviceCountError?: string | null
+  cudaDeviceNamesError?: string | null
   mpsAvailable?: boolean
   mlxAvailable?: boolean
   avAvailable?: boolean
