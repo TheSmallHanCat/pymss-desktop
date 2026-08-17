@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import re
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from worker_audio import _apply_stereo_pan, _equal_power_fade, _read_audio, _resample_audio
@@ -16,6 +18,15 @@ from worker_models import (
     model_path_for,
 )
 from worker_protocol import _as_bool, _as_float, _as_int, emit, emit_error
+
+
+class ModelNotFoundError(RuntimeError):
+    pass
+
+
+class ModelDownloadError(RuntimeError):
+    pass
+
 
 class JsonLogHandler:
     def __init__(self, task_id: str):
@@ -187,6 +198,24 @@ def _unique_output_path(path: Path, reserved: set[Path] | None = None) -> Path:
     return path.with_name(f"{path.stem}_{int(datetime.now().timestamp())}{path.suffix}")
 
 
+def _claim_output_path(path: Path, reserved: set[Path] | None = None) -> Path:
+    """Reserve an unused output path so concurrent workers cannot overwrite it."""
+    reserved = reserved or set()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for index in range(1, 1000):
+        candidate = path if index == 1 else path.with_name(f"{path.stem}_{index}{path.suffix}")
+        if candidate in reserved:
+            continue
+        try:
+            candidate.touch(exist_ok=False)
+        except FileExistsError:
+            continue
+        return candidate
+    fallback = path.with_name(f"{path.stem}_{int(datetime.now().timestamp_ns())}{path.suffix}")
+    fallback.touch(exist_ok=False)
+    return fallback
+
+
 def apply_output_naming(
     outputs: list[dict[str, str]],
     naming: Any,
@@ -230,6 +259,122 @@ def apply_output_naming(
         claimed_paths.add(target)
         renamed.append({"stem": stem, "path": str(target)})
     return renamed
+
+
+def _studio_separator_type() -> type[Any]:
+    """Build the pymss adapter lazily so non-inference worker commands do not import Torch."""
+    from pymss import MSSeparator, load_audio  # type: ignore
+
+    class StudioMSSeparator(MSSeparator):
+        def __init__(self, *args: Any, output_naming: Any = None, output_model: str = "", **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self._studio_naming = _normalize_output_naming(output_naming)
+            self._studio_output_model = output_model
+            self._studio_output_lock = Lock()
+            self._studio_claimed_paths: set[Path] = set()
+            self._studio_last_outputs: list[dict[str, str]] = []
+            self._studio_input_path = ""
+            self._studio_input_index = 1
+            self._studio_now = datetime.now()
+            stems = self._stems_to_save() or list(self.config.training.instruments)
+            ordered_stems = [stem for _, stem in sorted(
+                enumerate(stems),
+                key=lambda pair: (_stem_rank(str(pair[1]), self._studio_naming["stem_order"]), pair[0]),
+            )]
+            self._studio_stem_indices = {
+                str(stem).strip().lower(): index
+                for index, stem in enumerate(ordered_stems)
+            }
+
+        def _start_output_capture(self, input_path: str, input_index: int) -> None:
+            self._studio_input_path = input_path
+            self._studio_input_index = max(1, input_index)
+            self._studio_now = datetime.now()
+
+        def _discard_outputs_from(self, output_start: int) -> None:
+            stale_outputs = self._studio_last_outputs[output_start:]
+            for output in stale_outputs:
+                path = Path(str(output.get("path") or ""))
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    self.logger.warning(f"Cannot remove incomplete output: {path}, error: {exc}")
+                self._studio_claimed_paths.discard(path)
+            del self._studio_last_outputs[output_start:]
+
+        def _save_output(self, instr: str, audio: Any, sr: int, file_name: str, save_dir: str) -> None:
+            stem = str(instr or "").strip() or file_name
+            if self._studio_naming["enabled"]:
+                target_name = _replace_output_tokens(
+                    self._studio_naming["template"],
+                    input_path=self._studio_input_path,
+                    stem=stem,
+                    stem_index=self._studio_stem_indices.get(stem.lower(), len(self._studio_stem_indices)),
+                    input_index=self._studio_input_index,
+                    model=self._studio_output_model,
+                    now=self._studio_now,
+                )
+            else:
+                target_name = _safe_filename_part(f"{file_name}_{stem}")
+
+            # Saving and claiming happen under one lock because pymss writes stems concurrently.
+            # This prevents two stems or a prior result from ever sharing an output path.
+            with self._studio_output_lock:
+                target = _claim_output_path(
+                    Path(save_dir) / f"{target_name}.{self.output_format.lower()}",
+                    self._studio_claimed_paths,
+                )
+                try:
+                    self.save_audio(audio, sr, target.stem, str(target.parent))
+                except Exception:
+                    target.unlink(missing_ok=True)
+                    raise
+                self._studio_claimed_paths.add(target)
+                self._studio_last_outputs.append({"stem": stem, "path": str(target)})
+
+        def process_folder(self, input_folder: str, input_index: int = 1) -> list[str]:
+            """Run pymss separation while writing every stem under its final Studio name."""
+            source = Path(input_folder)
+            if source.is_file():
+                paths = [source]
+            elif source.is_dir():
+                paths = sorted(path for path in source.iterdir() if path.is_file())
+            else:
+                raise ValueError(f"Input path '{input_folder}' does not exist.")
+
+            sample_rate = int(self.config.audio.get("sample_rate", 44100))
+            success_files: list[str] = []
+            self._studio_last_outputs = []
+            for offset, path in enumerate(paths):
+                output_start = len(self._studio_last_outputs)
+                try:
+                    mix, sr = load_audio(str(path), sr=sample_rate, mono=False)
+                    self._start_output_capture(str(path), input_index + offset)
+                    saved = True
+                    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="pymss-save") as save_executor:
+                        for stems in self._stem_batches_to_save():
+                            results = self.separate(mix, pbar=False, stems=stems)
+                            futures = self._submit_save_outputs(save_executor, results, sr, path.stem)
+                            saved = self._wait_save_futures(str(path), futures) and saved
+                    if saved:
+                        success_files.append(path.name)
+                    else:
+                        self._discard_outputs_from(output_start)
+                except Exception as exc:
+                    self._discard_outputs_from(output_start)
+                    self.logger.warning(f"Cannot separate track: {path}, error: {exc}")
+            return success_files
+
+        def studio_outputs(self) -> list[dict[str, str]]:
+            return sorted(
+                self._studio_last_outputs,
+                key=lambda output: (
+                    self._studio_stem_indices.get(str(output.get("stem") or "").lower(), len(self._studio_stem_indices)),
+                    str(output.get("path") or "").lower(),
+                ),
+            )
+
+    return StudioMSSeparator
 
 
 def resolve_pymss_output_dir(output_dir: str, success_files: list[str], fallback_input: str, save_as_folder: bool) -> str:
@@ -409,29 +554,32 @@ def _prepare_separator(
         emit("task_stage", {"stage": "downloading_model", "message": "Checking model files"}, task_id=task_id)
     else:
         emit("task_stage", {"stage": "ensuring_model", "message": "Checking model files"}, task_id=task_id)
-    from pymss import MSSeparator  # type: ignore
+    StudioMSSeparator = _studio_separator_type()
     emit("task_stage", {"stage": "loading_model", "message": "Loading model"}, task_id=task_id)
     try:
         resolved = _resolve_studio_model(model_name, model_dir, require_supported=True, require_exists=True)
     except Exception as resolve_exc:
         if not download:
-            raise resolve_exc
+            raise ModelNotFoundError(str(resolve_exc)) from resolve_exc
         from pymss import model_download as pymss_model_download  # type: ignore
         from pymss.model_download import download_model  # type: ignore
         from worker_download import _aria2_args_for_current_proxy, download_studio_model, files_for_studio_model, prepare_pymss_download
         emit("task_stage", {"stage": "downloading_model", "message": "Downloading model files"}, task_id=task_id)
-        prepare_pymss_download(pymss_model_download, task_id, download_model, download_method)
-        _entry, files = files_for_studio_model(model_name, model_dir)
-        download_studio_model(
-            pymss_model_download,
-            model_name,
-            files,
-            source=source,
-            endpoint=endpoint,
-            aria2_args=_aria2_args_for_current_proxy(),
-            task_id=task_id,
-        )
-        resolved = _resolve_studio_model(model_name, model_dir, require_supported=True, require_exists=True)
+        try:
+            prepare_pymss_download(pymss_model_download, task_id, download_model, download_method)
+            _entry, files = files_for_studio_model(model_name, model_dir)
+            download_studio_model(
+                pymss_model_download,
+                model_name,
+                files,
+                source=source,
+                endpoint=endpoint,
+                aria2_args=_aria2_args_for_current_proxy(),
+                task_id=task_id,
+            )
+            resolved = _resolve_studio_model(model_name, model_dir, require_supported=True, require_exists=True)
+        except Exception as download_exc:
+            raise ModelDownloadError(str(download_exc)) from download_exc
     if not isinstance(resolved, dict):
         raise RuntimeError(f"resolve_model returned unexpected result for {model_name!r}: {type(resolved).__name__}")
     resolved_model_type = resolved.get('model_type')
@@ -444,7 +592,7 @@ def _prepare_separator(
         config_path=resolved.get('config_path'),
         inference_params=inference_params,
     )
-    return MSSeparator(
+    return StudioMSSeparator(
         model_type=resolved_model_type,
         model_path=resolved_model_path,
         config_path=resolved.get('config_path'),
@@ -459,6 +607,8 @@ def _prepare_separator(
         debug=debug,
         progress_callback=progress_callback,
         inference_params=runtime_inference_params,
+        output_naming=payload.get("outputNaming"),
+        output_model=str(model_name or ""),
     )
 
 
@@ -702,22 +852,13 @@ def cmd_infer_batch(payload: dict[str, Any]) -> int:
             task_id = item["taskId"]
             active_task_id = task_id
             emit("task_stage", {"stage": "separating", "message": "Separating"}, task_id=task_id)
-            task_output = resolve_pymss_output_dir(output_root, [], item["input"], save_as_folder)
-            item["baseline"] = snapshot_output_files(task_output, str(output_format))
-            success_files = separator.process_folder(item["input"])
+            success_files = separator.process_folder(item["input"], int(item.get("inputIndex") or 1))
             if Path(item["input"]).name not in {Path(name).name for name in success_files}:
                 emit_error("INFERENCE_FAILED", f"Batch separation did not produce outputs for {Path(item['input']).name}", task_id=task_id)
                 continue
             task_output = resolve_pymss_output_dir(output_root, success_files, item["input"], save_as_folder)
             emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
-            outputs = apply_output_naming(
-                collect_outputs(task_output, success_files, output_format, item.get("baseline")),
-                payload.get("outputNaming"),
-                input_path=item["input"],
-                input_index=int(item.get("inputIndex") or 1),
-                model=str(payload.get("model") or ""),
-                output_format=str(output_format),
-            )
+            outputs = separator.studio_outputs()
             emit("task_done", {
                 "files": [output["path"] for output in outputs],
                 "outputs": outputs,
@@ -757,35 +898,15 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         return emit_error("INPUT_NOT_FOUND", "Missing input path", task_id=task_id)
     if not Path(input_path).exists():
         return emit_error("INPUT_NOT_FOUND", f"Input path does not exist: {input_path}", task_id=task_id)
-
-    model_dir = payload.get("modelDir") or None
-    download = bool(payload.get("download", True))
-    source = payload.get("source") or "modelscope"
-    download_method = payload.get("downloadMethod") or "aria2c"
-    endpoint = payload.get("endpoint") or None
     try:
-        device, device_ids, resolved_device_label = _resolve_separator_device(
-            payload.get("device"), payload.get("deviceIds")
-        )
+        _resolve_separator_device(payload.get("device"), payload.get("deviceIds"))
     except Exception as exc:
         return emit_error("DEVICE_CONFIG_INVALID", str(exc), task_id=task_id)
+
     output_format = payload.get("outputFormat") or "wav"
     output_layout = _normalize_output_layout(payload.get("outputLayout"))
     save_as_folder = output_layout == "folders"
     task_output = resolve_pymss_output_dir(output_dir, [], input_path, save_as_folder)
-    selected_stems = _normalize_selected_stems(payload.get("selectedStems"))
-    use_tta = bool(payload.get("useTta", False))
-    debug = bool(payload.get("debug", False))
-    inference_params = normalize_inference_params(
-        payload.get("inferenceParams"),
-        payload.get("inferenceParamsVersion"),
-    )
-    audio_params = normalize_audio_params(payload.get("audioParams"))
-
-    emit("task_log", {
-        "level": "info",
-        "message": f"Runtime device: {resolved_device_label} (device_ids={device_ids})",
-    }, task_id=task_id)
 
     last_reported_done: float | None = None
     last_reported_total: float | None = None
@@ -822,15 +943,7 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         emit("task_started", {"model": model_name, "input": input_path, "output": task_output}, task_id=task_id)
         emit("task_stage", {"stage": "validating_input", "message": "Validating input"}, task_id=task_id)
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        output_baseline = snapshot_output_files(task_output, str(output_format))
 
-        if download:
-            emit("task_stage", {"stage": "downloading_model", "message": "Checking model files"}, task_id=task_id)
-        else:
-            emit("task_stage", {"stage": "ensuring_model", "message": "Checking model files"}, task_id=task_id)
-
-        from pymss import MSSeparator  # type: ignore
-        emit("task_stage", {"stage": "loading_model", "message": "Loading model"}, task_id=task_id)
         try:
             from pymss import get_separation_logger  # type: ignore
             logger = get_separation_logger()
@@ -839,76 +952,29 @@ def cmd_infer(payload: dict[str, Any]) -> int:
         except Exception:
             logger = None
 
-        try:
-            resolved = _resolve_studio_model(model_name, model_dir, require_supported=True, require_exists=True)
-        except Exception as resolve_exc:
-            if not download:
-                return emit_error("MODEL_NOT_FOUND", str(resolve_exc), traceback.format_exc(), task_id=task_id)
-
-            from pymss import model_download as pymss_model_download  # type: ignore
-            from pymss.model_download import download_model  # type: ignore
-            from worker_download import _aria2_args_for_current_proxy, download_studio_model, files_for_studio_model, prepare_pymss_download
-
-            try:
-                emit("task_stage", {"stage": "downloading_model", "message": "Downloading model files"}, task_id=task_id)
-                prepare_pymss_download(pymss_model_download, task_id, download_model, download_method)
-                _entry, files = files_for_studio_model(model_name, model_dir)
-                download_studio_model(
-                    pymss_model_download,
-                    model_name,
-                    files,
-                    source=source,
-                    endpoint=endpoint,
-                    aria2_args=_aria2_args_for_current_proxy(),
-                    task_id=task_id,
-                )
-                resolved = _resolve_studio_model(model_name, model_dir, require_supported=True, require_exists=True)
-            except Exception as exc:
-                return emit_error("MODEL_DOWNLOAD_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
-
-        if not isinstance(resolved, dict):
-            raise RuntimeError(f"resolve_model returned unexpected result for {model_name!r}: {type(resolved).__name__}")
-        resolved_model_type = resolved.get('model_type')
-        resolved_model_path = resolved.get('model_path')
-        if not resolved_model_type or not resolved_model_path:
-            missing = [key for key in ('model_type', 'model_path') if not resolved.get(key)]
-            raise RuntimeError(f"resolve_model result for {model_name!r} is missing required field(s): {', '.join(missing)}")
-        runtime_inference_params = _enrich_inference_params_for_model(
-            model_type=resolved_model_type,
-            config_path=resolved.get('config_path'),
-            inference_params=inference_params,
-        )
-
-        separator = MSSeparator(
-            model_type=resolved_model_type,
-            model_path=resolved_model_path,
-            config_path=resolved.get('config_path'),
-            device=device,
-            device_ids=device_ids,
-            output_format=output_format,
-            use_tta=use_tta,
-            store_dirs=_store_dirs_for_selected_stems(output_dir, selected_stems),
-            save_as_folder=save_as_folder,
-            audio_params=audio_params,
-            logger=logger,
-            debug=debug,
+        separator = _prepare_separator(
+            payload={
+                **payload,
+                "output": output_dir,
+                "saveAsFolder": save_as_folder,
+            },
+            task_id=task_id,
             progress_callback=emit_separation_progress,
-            inference_params=runtime_inference_params,
+            logger=logger,
         )
         emit("task_stage", {"stage": "separating", "message": "Separating"}, task_id=task_id)
-        success_files = separator.process_folder(input_path)
+        success_files = separator.process_folder(input_path, int(payload.get("inputIndex") or 1))
+        if Path(input_path).name not in {Path(name).name for name in success_files}:
+            return emit_error("INFERENCE_FAILED", f"Separation did not produce outputs for {Path(input_path).name}", task_id=task_id)
         emit("task_stage", {"stage": "writing_output", "message": "Collecting outputs"}, task_id=task_id)
         task_output = resolve_pymss_output_dir(output_dir, success_files, input_path, save_as_folder)
-        outputs = apply_output_naming(
-            collect_outputs(task_output, success_files, output_format, output_baseline),
-            payload.get("outputNaming"),
-            input_path=str(input_path),
-            input_index=int(payload.get("inputIndex") or 1),
-            model=str(model_name or ""),
-            output_format=str(output_format),
-        )
+        outputs = separator.studio_outputs()
         emit("task_done", {"files": [output["path"] for output in outputs], "outputs": outputs, "outputDir": str(Path(task_output).resolve()), "outputFormat": output_format}, task_id=task_id)
         return 0
+    except ModelNotFoundError as exc:
+        return emit_error("MODEL_NOT_FOUND", str(exc), traceback.format_exc(), task_id=task_id)
+    except ModelDownloadError as exc:
+        return emit_error("MODEL_DOWNLOAD_FAILED", str(exc), traceback.format_exc(), task_id=task_id)
     except Exception as exc:
         message = str(exc)
         lowered = message.lower()

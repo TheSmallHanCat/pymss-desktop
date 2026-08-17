@@ -6,7 +6,14 @@ from typing import Any
 
 import numpy as np
 
-from worker_infer import JsonLogHandler, _prepare_separator, _safe_filename_part, normalize_audio_params, resolve_pymss_output_dir
+from worker_infer import (
+    JsonLogHandler,
+    _claim_output_path,
+    _prepare_separator,
+    _safe_filename_part,
+    normalize_audio_params,
+    resolve_pymss_output_dir,
+)
 from worker_protocol import emit
 
 
@@ -763,8 +770,12 @@ def run_graph_workflow_task(
                 )
             file_name = _unique_file_name(_output_file_name(file_label, output_format), seen_file_names)
             seen_file_names.add(file_name.lower())
-            output_path = task_output_dir / file_name
-            save_audio(str(output_path), _to_save_audio(artifact.audio), artifact.sample_rate, output_format, audio_params)
+            output_path = _claim_output_path(task_output_dir / file_name)
+            try:
+                save_audio(str(output_path), _to_save_audio(artifact.audio), artifact.sample_rate, output_format, audio_params)
+            except Exception:
+                output_path.unlink(missing_ok=True)
+                raise
             outputs.append({
                 "stem": target.stem_label,
                 "path": str(output_path),

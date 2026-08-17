@@ -7,6 +7,7 @@ workflow runs at all.
 
 import json
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -229,6 +230,17 @@ class SaveTargetTests(unittest.TestCase):
 
         self.assertEqual(first, "song_vocals_same_model.wav")
         self.assertEqual(second, "song_vocals_same_model_2.wav")
+
+    def test_existing_output_file_is_not_reused_as_a_graph_workflow_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            existing = root / "song_vocals_same_model.wav"
+            existing.write_bytes(b"keep")
+
+            claimed = gw._claim_output_path(existing)
+
+            self.assertEqual(existing.read_bytes(), b"keep")
+            self.assertEqual(claimed.name, "song_vocals_same_model_2.wav")
 
     def test_duplicate_save_labels_are_kept_with_source_ref_fallback(self):
         nodes = {
