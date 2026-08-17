@@ -125,8 +125,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Staged CUDA list_models failed with exit code $LASTEXITCODE" }
           ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
           $workspacePattern = [regex]::Escape((Resolve-Path ".").Path)
-          $leakedConfig = Get-ChildItem "$stage/runtime-envs" -Recurse -Filter pyvenv.cfg | Select-String -Pattern $workspacePattern -List
-          if ($leakedConfig) { throw "CI workspace path leaked into staged CUDA pyvenv.cfg" }
+          $leakedConfig = Get-ChildItem "$stage/runtime-envs" -Recurse -File |
+            Where-Object { $_.Extension -in @('.cfg', '.json', '.txt', '.ini') } |
+            Select-String -Pattern $workspacePattern -List
+          if ($leakedConfig) { throw "CI workspace path leaked into staged CUDA runtime env config" }
 
       - name: Upload CUDA stage artifact
         uses: actions/upload-artifact@v4
@@ -297,8 +299,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Staged CPU list_models failed with exit code $LASTEXITCODE" }
           ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
           $workspacePattern = [regex]::Escape((Resolve-Path ".").Path)
-          $leakedConfig = Get-ChildItem "$stage/runtime-envs" -Recurse -Filter pyvenv.cfg | Select-String -Pattern $workspacePattern -List
-          if ($leakedConfig) { throw "CI workspace path leaked into staged CPU pyvenv.cfg" }
+          $leakedConfig = Get-ChildItem "$stage/runtime-envs" -Recurse -File |
+            Where-Object { $_.Extension -in @('.cfg', '.json', '.txt', '.ini') } |
+            Select-String -Pattern $workspacePattern -List
+          if ($leakedConfig) { throw "CI workspace path leaked into staged CPU runtime env config" }
 
       - name: Upload CPU stage artifact
         uses: actions/upload-artifact@v4
@@ -610,8 +614,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Staged ROCm list_models failed" }
           ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
           $workspacePattern = [regex]::Escape((Resolve-Path ".").Path)
-          $leakedConfig = Get-ChildItem "$stage/runtime-envs" -Recurse -Filter pyvenv.cfg | Select-String -Pattern $workspacePattern -List
-          if ($leakedConfig) { throw "CI workspace path leaked into staged ROCm pyvenv.cfg" }
+          $leakedConfig = Get-ChildItem "$stage/runtime-envs" -Recurse -File |
+            Where-Object { $_.Extension -in @('.cfg', '.json', '.txt', '.ini') } |
+            Select-String -Pattern $workspacePattern -List
+          if ($leakedConfig) { throw "CI workspace path leaked into staged ROCm runtime env config" }
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.meta.outputs.stage_artifact }}

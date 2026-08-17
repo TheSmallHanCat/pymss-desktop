@@ -203,14 +203,6 @@ fn materialize_windows_venv_template(env_dir: &PathBuf) -> AppResult<()> {
         return Ok(());
     }
 
-    let Ok(existing) = std::fs::read_to_string(&cfg) else {
-        return Ok(());
-    };
-    if !existing.contains("__PYMSS_STUDIO_PYTHON_RUNTIME__")
-        && !existing.contains("__PYMSS_STUDIO_RUNTIME_ENV__")
-    {
-        return Ok(());
-    }
     let desired_home = format!("home = {}", runtime_dir.to_string_lossy());
     let desired_executable = format!("executable = {}", runtime_python.to_string_lossy());
     let content = format!(
@@ -218,6 +210,12 @@ fn materialize_windows_venv_template(env_dir: &PathBuf) -> AppResult<()> {
         runtime_python.to_string_lossy(),
         env_dir.to_string_lossy()
     );
+    if std::fs::read_to_string(&cfg)
+        .map(|existing| existing == content)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
     std::fs::write(&cfg, content)?;
     Ok(())
 }
@@ -1043,6 +1041,91 @@ mod tests {
         assert!(cfg.contains(&format!("home = {}", runtime_dir.to_string_lossy())));
         assert!(!cfg.contains("__PYMSS_STUDIO"));
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn packaged_venv_with_ci_path_materializes_to_current_package_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "pymss-worker-ci-path-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let package_root = root.join("installed-package");
+        let leaked_root = root.join("ci-workspace").join("pymss-studio").join("release").join("Pymss-Studio-test-windows-x64-rocm");
+        let env_dir = package_root.join("runtime-envs").join("rocm");
+        let scripts_dir = env_dir.join("Scripts");
+        let runtime_dir = package_root.join("python-runtime");
+        std::fs::create_dir_all(&scripts_dir).unwrap();
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        std::fs::write(scripts_dir.join("python.exe"), "stub").unwrap();
+        std::fs::write(runtime_dir.join("python.exe"), "stub").unwrap();
+        std::fs::write(
+            env_dir.join("pyvenv.cfg"),
+            format!(
+                "home = {}\r\ninclude-system-site-packages = false\r\nexecutable = {}\r\ncommand = {} -m venv {}\r\n",
+                leaked_root.join("python-runtime").to_string_lossy(),
+                leaked_root.join("python-runtime").join("python.exe").to_string_lossy(),
+                leaked_root.join("python-runtime").join("python.exe").to_string_lossy(),
+                env_dir.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        materialize_windows_venv_template(&env_dir).unwrap();
+        let cfg = std::fs::read_to_string(env_dir.join("pyvenv.cfg")).unwrap();
+        assert!(cfg.contains(&format!("home = {}", runtime_dir.to_string_lossy())));
+        assert!(cfg.contains(&format!(
+            "command = {} -m venv {}",
+            runtime_dir.join("python.exe").to_string_lossy(),
+            env_dir.to_string_lossy()
+        )));
+        assert!(!cfg.contains(&leaked_root.to_string_lossy().to_string()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn packaged_venv_with_current_path_does_not_need_write_access() {
+        let root = std::env::temp_dir().join(format!(
+            "pymss-worker-readonly-template-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let env_dir = root.join("runtime-envs").join("rocm");
+        let runtime_dir = root.join("python-runtime");
+        std::fs::create_dir_all(env_dir.join("Scripts")).unwrap();
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        std::fs::write(env_dir.join("Scripts").join("python.exe"), "stub").unwrap();
+        std::fs::write(runtime_dir.join("python.exe"), "stub").unwrap();
+        let cfg = env_dir.join("pyvenv.cfg");
+        std::fs::write(
+            &cfg,
+            format!(
+                "home = {}\r\ninclude-system-site-packages = false\r\nexecutable = {}\r\ncommand = {} -m venv {}\r\n",
+                runtime_dir.to_string_lossy(),
+                runtime_dir.join("python.exe").to_string_lossy(),
+                runtime_dir.join("python.exe").to_string_lossy(),
+                env_dir.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&cfg).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&cfg, permissions).unwrap();
+
+        let result = materialize_windows_venv_template(&env_dir);
+
+        let mut permissions = std::fs::metadata(&cfg).unwrap().permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&cfg, permissions).unwrap();
+        assert!(result.is_ok());
         let _ = std::fs::remove_dir_all(root);
     }
 
