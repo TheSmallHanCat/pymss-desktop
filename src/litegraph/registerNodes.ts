@@ -60,6 +60,9 @@ if (typeof window !== 'undefined') {
 function widgetCallback(node: AnyNode, spec: WidgetSpec) {
   return (v: any) => {
     node.properties[spec.name] = v
+    if (spec.name === 'model_name') {
+      node.onModelNameChanged?.(v)
+    }
     // Widget edits (changeValue path) do not notify the graph on their own —
     // canvas node ops wrap themselves in beforeChange/afterChange, but
     // widget edits don't. Fire afterChange so undo/save toolbars enable.

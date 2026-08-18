@@ -12,6 +12,7 @@ import { LGraph, LGraphCanvas, LiteGraph, type LGraphNode } from '@comfyorg/lite
 import '@comfyorg/litegraph/style.css'
 import { registerPymssNodes, setSeparateStems, applyModelOptions, refreshNodeModelOptions, NODE_SPECS, BUILTIN_SPECS } from '@/litegraph/registerNodes'
 import { litegraphToComfy, comfyLinksToLitegraph } from '@/litegraph/graphAdapter'
+import { parseModelStems } from '@/utils/workflowSimple'
 import type { ModelEntry } from '@/stores/model'
 import type { NodeSpec } from '@/litegraph/nodeSpecs'
 
@@ -108,13 +109,10 @@ function stemsForModel(modelNameRaw: string): string[] {
   const modelName = modelNameRaw.replace(/^\[[^\]]*\]\s*/, '').trim()
   const m = props.models.find((x) => x.name === modelName || x.aliases?.includes(modelName))
   if (!m) return []
-  // Catalog models expose target_stem; two-stem models split into target/rest.
+  const parsed = parseModelStems(m.configInstruments || m.configTargetInstrument || m.targetStem)
+  if (parsed.length >= 2) return parsed
   const target = (m.targetStem || '').trim()
   if (target) {
-    // Heuristic: VR/mss instrumental models produce {target, rest}; ensemble
-    // multi-stem models list configInstruments. Prefer configInstruments if set.
-    const instruments = (m.configInstruments || '').split(',').map((s) => s.trim()).filter(Boolean)
-    if (instruments.length >= 2) return instruments
     return [target, target.toLowerCase() === 'vocals' ? 'instrumental' : 'other']
   }
   return ['stem_1', 'stem_2']
@@ -123,40 +121,20 @@ function stemsForModel(modelNameRaw: string): string[] {
 function syncSeparateNodeStems(node: LGraphNode) {
   const spec = ALL_SPECS[String(node.type)]
   if (!spec?.dynamicStems) return
-  // Loaded graphs may mix real stem ports ("vocals (Audio)") with leftover
-  // editor placeholders (stem_1/stem_2 — ports created before a model was
-  // chosen; common in imported comfy-mss graphs). Rename placeholder ports in
-  // place to the model's not-yet-present stems. Links live on the port
-  // objects; renaming keeps them attached.
-  const outputs = node.outputs || []
-  if (!outputs.length) {
-    const stems = stemsForModel(String((node as any).properties?.model_name || ''))
-    if (stems.length) setSeparateStems(node, stems)
-    return
-  }
-  if (!outputs.some((o) => /^stem_\d+$/.test(String(o.name || '')))) return
   const modelName = String((node as any).properties?.model_name
     || (node as any).widgets?.find((w: any) => w.name === 'model_name')?.value
     || '')
   const stems = stemsForModel(modelName)
   if (!stems.length) return
-  const present = new Set(
-    outputs
-      .map((o) => String(o.name || '').replace(/ \((Audio|String)\)$/, ''))
-      .filter((name) => name && !/^stem_\d+$/.test(name)),
-  )
-  const missing = stems.filter((s) => !present.has(s))
-  let cursor = 0
-  for (let i = 0; i < outputs.length; i++) {
-    if (!/^stem_\d+$/.test(String(outputs[i].name || ''))) continue
-    const stem = missing[cursor++]
-    if (!stem) break
-    outputs[i].name = `${stem} (Audio)`
-    const strPort = outputs[i + 1]
-    if (strPort && /^stem_\d+$/.test(String(strPort.name || ''))) {
-      strPort.name = `${stem} (String)`
-      i += 1
-    }
+
+  const outputs = node.outputs || []
+  const hasPlaceholders = outputs.some((o) => /^stem_\d+/.test(String(o.name || '')))
+  const currentAudioOutputs = outputs.filter((o) => !String(o.name || '').endsWith('(String)'))
+  
+  // If outputs have never been set, or are placeholders, or the number of stems changed (e.g. 2 stems -> 6 stems):
+  if (!outputs.length || hasPlaceholders || currentAudioOutputs.length !== stems.length) {
+    setSeparateStems(node, stems)
+    return
   }
 }
 
@@ -216,6 +194,10 @@ function loadDefinition(def: Record<string, unknown>) {
   // After configure, rebuild dynamic stem outputs for separate nodes and
   // populate model_name combos with the current downloaded list.
   for (const n of graph.nodes as any[]) {
+    n.onModelNameChanged = () => {
+      syncSeparateNodeStems(n)
+      ;(canvasRef.value as any)?.setDirty(true, true)
+    }
     syncSeparateNodeStems(n)
     refreshNodeModelOptions(n, modelValues.value)
   }
@@ -236,7 +218,12 @@ onMounted(() => {
   // 保留 litegraph 默认交互: 双击空白/拖线释放弹节点搜索框,右键弹菜单。
   // 样式由 @comfyorg/litegraph/style.css 提供(在组件 <style> 外全局引入)。
   // Track link/property edits so separate node stems follow the chosen model.
-  graph.onNodeAdded = (node: any) => { /* stems set via watcher below */ }
+  graph.onNodeAdded = (node: any) => {
+    node.onModelNameChanged = () => {
+      syncSeparateNodeStems(node)
+      ;(canvasRef.value as any)?.setDirty(true, true)
+    }
+  }
   resizeObserver = new ResizeObserver(() => (canvas as any).resize())
   resizeObserver.observe(canvasEl.value.parentElement || canvasEl.value)
   canvasEl.value.addEventListener('keydown', onCanvasKey)

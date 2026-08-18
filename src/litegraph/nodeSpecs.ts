@@ -251,12 +251,16 @@ export const NODE_SPECS: Record<string, NodeSpec> = {
     title: 'String Concatenate',
     category: 'pymss/string',
     inputs: [
-      { name: 'string_a', type: PORT.STRING },
-      { name: 'string_b', type: PORT.STRING },
-      { name: 'delimiter', type: PORT.STRING, optional: true },
+      { name: 'string_a', type: PORT.STRING, widget: { name: 'string_a' } },
+      { name: 'string_b', type: PORT.STRING, widget: { name: 'string_b' } },
+      { name: 'delimiter', type: PORT.STRING, widget: { name: 'delimiter' } },
     ],
     outputs: [{ name: 'STRING', type: PORT.STRING }],
-    widgets: [],
+    widgets: [
+      { name: 'string_a', type: 'text', default: '' },
+      { name: 'string_b', type: 'text', default: '' },
+      { name: 'delimiter', type: 'text', default: '_' },
+    ],
   },
   StringConstant: {
     type: 'StringConstant',
@@ -398,7 +402,7 @@ export const BUILTIN_SPECS: Record<string, NodeSpec> = {
       { name: 'merge_method', type: PORT.COMBO, widget: { name: 'merge_method' } },
     ],
     outputs: [{ name: 'audio', type: PORT.AUDIO }],
-    widgets: [{ name: 'merge_method', type: 'combo', default: 'average', options: ['average', 'append', 'sum'] }],
+    widgets: [{ name: 'merge_method', type: 'combo', default: 'add', options: ['add', 'subtract', 'multiply', 'average'] }],
   },
   AudioAdjustVolume: {
     type: 'AudioAdjustVolume',
