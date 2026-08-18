@@ -2285,8 +2285,16 @@ onMounted(() => {
     max-width: 100%;
   }
 
+  /* Two controls per line instead of one: the search takes the first line by itself, the three
+     selects and the actions share the next two. A 700px-wide window drops its toolbar from four
+     stacked rows (~206px) to three (~140px) without any control losing width. */
+
   .toolbar-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .search-input {
+    grid-column: 1 / -1;
   }
 
   /* The card's own stacking is handled by its container query, which is correct whatever the
@@ -2296,6 +2304,11 @@ onMounted(() => {
   .source-select,
   .sort-select {
     width: 100%;
+  }
+
+  .toolbar-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .mc-tags {

@@ -1916,7 +1916,7 @@ async function retryCurrentTask() {
                         <span class="target-row__meta">
                           <span class="target-row__tag" :title="categoryLabel(item)">{{ categoryLabel(item) }}</span>
                           <span class="target-row__desc" :title="modelMetaLine(item)">{{ modelMetaLine(item) }}</span>
-                          <span class="target-row__usage">{{ t('models.useCountValue', { count: modelUseCount(item.name) }) }}</span>
+                          <span v-if="modelListViewMode === 'list'" class="target-row__usage">{{ t('models.useCountValue', { count: modelUseCount(item.name) }) }}</span>
                         </span>
                         <!-- Shown because it is searchable: matching on text the user cannot see
                              would make the result list look wrong. -->
@@ -1926,7 +1926,6 @@ async function retryCurrentTask() {
                           :title="modelNote(item.name)"
                         >{{ modelNote(item.name) }}</span>
                       </span>
-                     <n-icon v-if="ensembleEnabled ? ensembleModels.includes(item.name) : selectedModelName === item.name" class="target-row__check" :component="CheckmarkCircle" />
                     </button>
                   </div>
                   <div v-else class="stage-empty">
@@ -1990,7 +1989,6 @@ async function retryCurrentTask() {
                         <span class="target-row__desc" :title="item.description">{{ item.description || t('separate.workflowNoDescription') }}</span>
                       </span>
                     </span>
-                    <n-icon v-if="selectedWorkflowId === item.id" class="target-row__check" :component="CheckmarkCircle" />
                   </button>
                 </div>
                 <div v-else class="stage-empty">
@@ -2458,8 +2456,8 @@ async function retryCurrentTask() {
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
-  padding: 15px 16px;
+  gap: 14px;
+  padding: 17px 18px;
   border-radius: 18px;
   background: color-mix(in srgb, var(--surface-1) 78%, transparent);
   box-shadow:
@@ -2480,11 +2478,11 @@ async function retryCurrentTask() {
 
 .rail-card__index {
   flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
+  border-radius: 9px;
   font-size: 11px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -2546,7 +2544,7 @@ async function retryCurrentTask() {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 /* pick buttons */
@@ -2757,12 +2755,12 @@ async function retryCurrentTask() {
   margin-bottom: 2px;
 }
 
-.dropzone__empty strong { font-size: 13px; color: var(--on-surface-muted); font-weight: 500; max-width: 240px; }
+.dropzone__empty strong { font-size: 13px; color: color-mix(in srgb, var(--on-surface) 72%, var(--on-surface-muted)); font-weight: 500; max-width: 240px; }
 
 /* output fields */
-.rail-card__body--output { gap: 12px; }
+.rail-card__body--output { gap: 14px; }
 
-.ofield { display: grid; gap: 6px; min-width: 0; }
+.ofield { display: grid; gap: 7px; min-width: 0; }
 
 .ofield__label {
   font-size: 11px;
@@ -3171,8 +3169,10 @@ async function retryCurrentTask() {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 34px;
-  padding-top: 2px;
+  min-height: 38px;
+  margin-top: 4px;
+  padding: 10px 4px 2px;
+  border-top: 1px solid color-mix(in srgb, var(--outline) 72%, transparent);
   color: var(--on-surface-muted);
   font-size: 11px;
 }
@@ -3341,8 +3341,6 @@ async function retryCurrentTask() {
   color: color-mix(in srgb, var(--on-surface) 72%, transparent);
   text-align: left;
 }
-
-.target-row__check { flex: 0 0 auto; font-size: 18px; color: var(--primary); }
 
 .target-list--list .target-row {
   min-height: 48px;
