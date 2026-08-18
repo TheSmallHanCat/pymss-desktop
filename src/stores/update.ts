@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { check, Update } from '@tauri-apps/plugin-updater'
-import { relaunch } from '@tauri-apps/plugin-process'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { exit } from '@tauri-apps/plugin-process'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { isTauriRuntime, loadAppStore, saveAppStore } from '@/utils/appStore'
@@ -15,13 +15,13 @@ type UpdateStorePayload = {
   lastAcceptedVersion?: string
 }
 
-type DebugUpdateCheckResult = {
-  rid: number
+type ManagedUpdate = {
   currentVersion: string
   version: string
   date?: string
   body?: string
-  rawJson: Record<string, unknown>
+  prerelease: boolean
+  distribution: 'inno' | 'portable'
 }
 
 type UpdateDownloadEvent =
@@ -41,7 +41,7 @@ export const useUpdateStore = defineStore('update', () => {
   const releaseDate = ref('')
   const error = ref('')
   const lastCheckedAt = ref('')
-  const availableUpdate = ref<Update | null>(null)
+  const availableUpdate = ref<ManagedUpdate | null>(null)
   const lastCheckResult = ref<'idle' | 'checking' | 'available' | 'none' | 'failed'>('idle')
   const deferredVersion = ref('')
   const deferredAt = ref('')
@@ -52,7 +52,8 @@ export const useUpdateStore = defineStore('update', () => {
   const installFailed = ref(false)
   const initialized = ref(false)
   const autoCheckCompleted = ref(false)
-  let updateCheckInFlight: Promise<Update | null> | null = null
+  let updateCheckInFlight: Promise<ManagedUpdate | null> | null = null
+  let unlistenProgress: UnlistenFn | undefined
 
   const hasUpdate = computed(() => availableUpdate.value !== null)
   const isBusy = computed(() => ['checking', 'downloading', 'installing'].includes(status.value))
@@ -64,8 +65,7 @@ export const useUpdateStore = defineStore('update', () => {
   })
   const hasDeferredUpdate = computed(() => Boolean(deferredVersion.value))
   const updateIsPrerelease = computed(() => {
-    const raw = availableUpdate.value?.rawJson || {}
-    return raw.prerelease === true || isPrereleaseVersion(availableUpdate.value?.version || latestVersion.value)
+    return availableUpdate.value?.prerelease === true || isPrereleaseVersion(availableUpdate.value?.version || latestVersion.value)
   })
   const shouldShowDeferred = computed(() => Boolean(
     availableUpdate.value
@@ -105,6 +105,26 @@ export const useUpdateStore = defineStore('update', () => {
     deferredVersion.value = String(payload?.deferredVersion || '')
     deferredAt.value = String(payload?.deferredAt || '')
     lastAcceptedVersion.value = String(payload?.lastAcceptedVersion || '')
+    if (isTauriRuntime()) {
+      unlistenProgress?.()
+      unlistenProgress = await listen<UpdateDownloadEvent>('pymss://managed-update-event', (event) => {
+        if (event.payload.event === 'Started') {
+          const total = Number(event.payload.data.contentLength || 0)
+          downloadTotalBytes.value = Number.isFinite(total) && total > 0 ? total : 0
+          downloadDownloadedBytes.value = 0
+          return
+        }
+        if (event.payload.event === 'Progress') {
+          const chunk = Number(event.payload.data.chunkLength || 0)
+          if (Number.isFinite(chunk) && chunk > 0) downloadDownloadedBytes.value += chunk
+          return
+        }
+        if (event.payload.event === 'Finished') {
+          if (downloadTotalBytes.value > 0) downloadDownloadedBytes.value = downloadTotalBytes.value
+          status.value = 'installing'
+        }
+      })
+    }
   }
 
   function hasPendingDeferredVersion(version: string) {
@@ -154,9 +174,10 @@ export const useUpdateStore = defineStore('update', () => {
           error.value = ''
           installFailed.value = false
           const endpointOverride = settings.developerMode ? settings.updateEndpointOverride.trim() : ''
-          const update = endpointOverride
-            ? await invoke<DebugUpdateCheckResult | null>('debug_check_update_endpoint', { endpoint: endpointOverride }).then((result) => result ? new Update(result) : null)
-            : await check()
+          const update = await invoke<ManagedUpdate | null>('check_managed_update', {
+            channel: settings.updateChannel,
+            endpointOverride: endpointOverride || null,
+          })
           currentVersion.value = update?.currentVersion || app.buildInfoVersion || ''
           lastCheckedAt.value = new Date().toISOString()
           if (!update) {
@@ -202,27 +223,12 @@ export const useUpdateStore = defineStore('update', () => {
     installErrorVisible.value = false
     installFailed.value = false
     try {
-      await update.downloadAndInstall((event: UpdateDownloadEvent) => {
-        if (event.event === 'Started') {
-          const total = Number(event.data.contentLength || 0)
-          downloadTotalBytes.value = Number.isFinite(total) && total > 0 ? total : 0
-          downloadDownloadedBytes.value = 0
-          return
-        }
-        if (event.event === 'Progress') {
-          const chunk = Number(event.data.chunkLength || 0)
-          if (Number.isFinite(chunk) && chunk > 0) {
-            downloadDownloadedBytes.value += chunk
-            if (downloadTotalBytes.value > 0) {
-              downloadDownloadedBytes.value = Math.min(downloadDownloadedBytes.value, downloadTotalBytes.value)
-            }
-          }
-          return
-        }
-        if (event.event === 'Finished') {
-          if (downloadTotalBytes.value > 0) downloadDownloadedBytes.value = downloadTotalBytes.value
-          status.value = 'installing'
-        }
+      const settings = useSettingsStore()
+      const endpointOverride = settings.developerMode ? settings.updateEndpointOverride.trim() : ''
+      await invoke('start_managed_update', {
+        channel: settings.updateChannel,
+        endpointOverride: endpointOverride || null,
+        expectedVersion: update.version,
       })
       status.value = 'installing'
       lastAcceptedVersion.value = update.version
@@ -231,7 +237,7 @@ export const useUpdateStore = defineStore('update', () => {
       installErrorVisible.value = false
       installFailed.value = false
       await persistState()
-      await relaunch()
+      await exit(0)
       return true
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err)

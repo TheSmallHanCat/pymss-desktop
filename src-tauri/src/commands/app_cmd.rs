@@ -8,15 +8,14 @@ use crate::python::worker::{run_worker_once, run_worker_with_payload, spawn_work
 use crate::session_log::{self, DebugLogContent, DebugLogInfo, DebugLogReport};
 use crate::state::{AppState, ProxySettings};
 use crate::storage;
+use crate::update_manager;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Emitter, Manager, ResourceId, State, Webview, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_updater::UpdaterExt;
-use url::Url;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,24 +33,6 @@ pub struct BuildInfo {
     variant: &'static str,
     update_supported: bool,
     official: bool,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DebugUpdateCheckResult {
-    rid: ResourceId,
-    current_version: String,
-    version: String,
-    date: Option<String>,
-    body: Option<String>,
-    raw_json: Value,
-}
-
-fn is_portable_distribution() -> bool {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|parent| parent.join("pymss-studio.portable")))
-        .is_some_and(|marker| marker.is_file())
 }
 
 #[derive(Serialize)]
@@ -140,46 +121,29 @@ pub fn get_build_info() -> BuildInfo {
         target: option_env!("PYMSS_BUILD_TARGET").unwrap_or("dev"),
         variant: option_env!("PYMSS_BUILD_VARIANT").unwrap_or("development"),
         update_supported: option_env!("PYMSS_BUILD_UPDATE_SUPPORTED") == Some("true")
-            && !is_portable_distribution(),
+            && option_env!("PYMSS_BUILD_OFFICIAL") == Some("true")
+            && update_manager::update_supported(),
         official: option_env!("PYMSS_BUILD_OFFICIAL") == Some("true"),
     }
 }
 
 #[tauri::command]
-pub async fn debug_check_update_endpoint(webview: Webview, endpoint: String) -> AppResult<Option<DebugUpdateCheckResult>> {
-    let app = webview.app_handle().clone();
-    require_runtime_debug_developer_mode(&app)?;
-    let endpoint = endpoint.trim();
-    if endpoint.is_empty() {
-        return Err(AppError::Worker("Missing update endpoint".into()));
-    }
-    let url = Url::parse(endpoint).map_err(|err| AppError::Worker(format!("Invalid update endpoint: {err}")))?;
-    let updater = app
-        .updater_builder()
-        .endpoints(vec![url])
-        .map_err(|err| AppError::Worker(err.to_string()))?
-        .build()
-        .map_err(|err| AppError::Worker(err.to_string()))?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|err| AppError::Worker(err.to_string()))?;
-    Ok(update.map(|update| {
-        let current_version = update.current_version.clone();
-        let version = update.version.clone();
-        let date = update.date.map(|date| date.to_string());
-        let body = update.body.clone();
-        let raw_json = update.raw_json.clone();
-        let rid = webview.resources_table().add(update);
-        DebugUpdateCheckResult {
-            rid,
-            current_version,
-            version,
-            date,
-            body,
-            raw_json,
-        }
-    }))
+pub async fn check_managed_update(
+    app: AppHandle,
+    channel: update_manager::UpdateChannel,
+    endpoint_override: Option<String>,
+) -> AppResult<Option<update_manager::ManagedUpdateInfo>> {
+    update_manager::check(&app, channel, endpoint_override).await
+}
+
+#[tauri::command]
+pub async fn start_managed_update(
+    app: AppHandle,
+    channel: update_manager::UpdateChannel,
+    endpoint_override: Option<String>,
+    expected_version: String,
+) -> AppResult<()> {
+    update_manager::start(&app, channel, endpoint_override, expected_version).await
 }
 
 #[tauri::command]

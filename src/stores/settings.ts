@@ -101,11 +101,13 @@ type StoredSettings = {
   proxyMode?: ProxyMode
   proxyUrl?: string
   proxyBypass?: string
+  updateChannel?: UpdateChannel
   updateEndpointOverride?: string
 }
 
 export type ProxyMode = 'system' | 'none' | 'custom'
 export type DownloadMethod = 'aria2c' | 'urllib'
+export type UpdateChannel = 'stable' | 'prerelease'
 
 const DEFAULT_LOCALE: LocaleSetting = 'system'
 const DEFAULT_DOWNLOAD_SOURCE = 'modelscope'
@@ -117,7 +119,7 @@ const DEFAULT_CLEAR_INPUT_AFTER_SUBMIT = true
 const MAX_CONCURRENT_SEPARATIONS = 16
 const DEFAULT_PROXY_MODE: ProxyMode = 'system'
 const DEFAULT_PROXY_URL = ''
-export const DEFAULT_UPDATE_ENDPOINT = 'https://github.com/pymss-project/pymss-studio/releases/download/updater/latest.json'
+const DEFAULT_UPDATE_CHANNEL: UpdateChannel = 'stable'
 
 function displayModelDirPath(path: unknown): string {
   const value = String(path || '').trim()
@@ -237,6 +239,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const proxyMode = ref<ProxyMode>(DEFAULT_PROXY_MODE)
   const proxyUrl = ref(DEFAULT_PROXY_URL)
   const proxyBypass = ref('')
+  const updateChannel = ref<UpdateChannel>(DEFAULT_UPDATE_CHANNEL)
   const updateEndpointOverride = ref('')
   const startupOnboardingSeen = ref(false)
   const modelDirMigrationState = ref<ModelDirMigrationState>(createEmptyModelDirMigrationState())
@@ -273,6 +276,7 @@ export const useSettingsStore = defineStore('settings', () => {
     proxyMode: proxyMode.value,
     proxyUrl: proxyUrl.value,
     proxyBypass: proxyBypass.value,
+    updateChannel: updateChannel.value,
     updateEndpointOverride: updateEndpointOverride.value.trim() || undefined,
   }))
 
@@ -332,6 +336,7 @@ export const useSettingsStore = defineStore('settings', () => {
       : DEFAULT_PROXY_MODE
     proxyUrl.value = stored?.proxyUrl || DEFAULT_PROXY_URL
     proxyBypass.value = stored?.proxyBypass || ''
+    updateChannel.value = stored?.updateChannel === 'prerelease' ? 'prerelease' : DEFAULT_UPDATE_CHANNEL
     updateEndpointOverride.value = String(stored?.updateEndpointOverride || '').trim()
     startupOnboardingSeen.value = stored?.startupOnboardingSeen === true
       || String(stored?.startupOnboardingSeenVersion || '').trim().length > 0
@@ -395,6 +400,7 @@ export const useSettingsStore = defineStore('settings', () => {
       proxyMode,
       proxyUrl,
       proxyBypass,
+      updateChannel,
       updateEndpointOverride,
     ],
     () => queuePersist(),
@@ -870,6 +876,7 @@ export const useSettingsStore = defineStore('settings', () => {
     proxyMode,
     proxyUrl,
     proxyBypass,
+    updateChannel,
     updateEndpointOverride,
     startupOnboardingSeen,
     modelDirMigrationState,

@@ -18,7 +18,7 @@ import {
   WarningOutline,
 } from '@vicons/ionicons5'
 import { useAppStore, type DiagnosticLevel } from '@/stores/app'
-import { DEFAULT_UPDATE_ENDPOINT, useSettingsStore } from '@/stores/settings'
+import { useSettingsStore } from '@/stores/settings'
 import { useTaskStore } from '@/stores/task'
 import { useModelStore } from '@/stores/model'
 import { formatBytes } from '@/utils/format'
@@ -211,11 +211,11 @@ const debugModelOptions = computed(() => modelStore.models
     label: `${model.name}${model.source === 'user' ? ` · ${t('debug.userModelReadonly')}` : ''}`,
     value: model.name,
   })))
-const effectiveUpdateEndpoint = computed(() => updateEndpointOverride.value.trim() || DEFAULT_UPDATE_ENDPOINT)
+const effectiveUpdateEndpoint = computed(() => updateEndpointOverride.value.trim() || t('debug.updateEndpointManaged'))
 const updateEndpointMode = computed(() => updateEndpointOverride.value.trim() ? t('debug.updateEndpointCustom') : t('debug.updateEndpointDefault'))
 
 function beginUpdateEndpointEdit() {
-  updateEndpointDraft.value = effectiveUpdateEndpoint.value
+  updateEndpointDraft.value = updateEndpointOverride.value.trim()
   updateEndpointEditing.value = true
 }
 
@@ -238,14 +238,14 @@ function saveUpdateEndpointOverride() {
     message.error(t('debug.updateEndpointInvalid'))
     return
   }
-  updateEndpointOverride.value = endpoint === DEFAULT_UPDATE_ENDPOINT ? '' : endpoint
+  updateEndpointOverride.value = endpoint
   cancelUpdateEndpointEdit()
   message.success(t('debug.updateEndpointSaved'))
 }
 
 function resetUpdateEndpointOverride() {
   updateEndpointOverride.value = ''
-  updateEndpointDraft.value = DEFAULT_UPDATE_ENDPOINT
+  updateEndpointDraft.value = ''
   updateEndpointEditing.value = false
   message.success(t('debug.updateEndpointRestored'))
 }
@@ -1465,7 +1465,7 @@ watch(developerMode, (enabled) => {
             v-if="updateEndpointEditing"
             v-model:value="updateEndpointDraft"
             size="small"
-            :placeholder="DEFAULT_UPDATE_ENDPOINT"
+            :placeholder="t('debug.updateEndpointPlaceholder')"
             @keydown.enter.prevent="saveUpdateEndpointOverride"
             @keydown.esc.prevent="cancelUpdateEndpointEdit"
           />

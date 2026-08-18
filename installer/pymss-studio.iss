@@ -132,6 +132,7 @@ end;
 
 procedure RepairBundledRuntimeEnvs();
 begin
+  RepairVenvConfig('cpu');
   RepairVenvConfig('cuda');
   RepairVenvConfig('rocm');
 end;
@@ -147,5 +148,6 @@ begin
   begin
     RepairBundledRuntimeEnvs();
     CleanupInstallTree();
+    SaveStringToFile(ExpandConstant('{app}') + '\pymss-studio.inno-install', 'managed' + #13#10, False);
   end;
 end;

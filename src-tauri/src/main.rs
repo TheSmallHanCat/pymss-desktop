@@ -8,11 +8,18 @@ mod session_log;
 mod state;
 mod storage;
 mod terminal;
+mod update_manager;
 
 use state::AppState;
 use tauri::{Emitter, Manager};
 
 fn main() {
+    if let Some(code) = update_manager::run_helper_from_args() {
+        std::process::exit(code);
+    }
+    if let Some(code) = update_manager::recover_interrupted_update_from_startup() {
+        std::process::exit(code);
+    }
     terminal::attach_parent();
 
     let builder = tauri::Builder::default()
@@ -83,7 +90,8 @@ fn main() {
             commands::app_cmd::debug_log_create_report,
             commands::app_cmd::debug_log_info,
             commands::app_cmd::debug_log_read,
-            commands::app_cmd::debug_check_update_endpoint,
+            commands::app_cmd::check_managed_update,
+            commands::app_cmd::start_managed_update,
             commands::app_cmd::debug_runtime_override_active,
             commands::app_cmd::debug_runtime_pointers,
             commands::app_cmd::debug_runtime_restore_file,

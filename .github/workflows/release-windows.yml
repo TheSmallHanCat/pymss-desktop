@@ -58,6 +58,7 @@ jobs:
           PYMSS_BUILD_REPOSITORY_OWNER: ${{ github.repository_owner }}
           PYMSS_BUILD_TARGET: windows-x64
           PYMSS_BUILD_VARIANT: windows-x64-cuda
+          PYMSS_BUILD_UPDATE_SUPPORTED: 'true'
           PYMSS_BUILD_OFFICIAL: ${{ github.repository == 'pymss-project/pymss-studio' && github.repository_owner == 'pymss-project' && 'true' || 'false' }}
         run: pnpm tauri build --no-bundle
 
@@ -155,9 +156,10 @@ jobs:
           $stageName = '${{ needs.windows-cuda-prepare.outputs.stage_name }}'
           if (Test-Path "release/$stageName.7z") { Remove-Item "release/$stageName.7z" -Force }
           Set-Content "release/$stageName/pymss-studio.portable" -Value "portable" -Encoding ASCII
-          Push-Location "release"
-          & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
-          Pop-Location
+           Push-Location "release"
+           & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
+           if ($LASTEXITCODE -ne 0) { throw "Unable to create the CUDA portable archive" }
+           Pop-Location
 
       - name: Upload Windows portable archive artifact
         uses: actions/upload-artifact@v4
@@ -232,6 +234,7 @@ jobs:
           PYMSS_BUILD_REPOSITORY_OWNER: ${{ github.repository_owner }}
           PYMSS_BUILD_TARGET: windows-x64
           PYMSS_BUILD_VARIANT: windows-x64-cpu
+          PYMSS_BUILD_UPDATE_SUPPORTED: 'true'
           PYMSS_BUILD_OFFICIAL: ${{ github.repository == 'pymss-project/pymss-studio' && github.repository_owner == 'pymss-project' && 'true' || 'false' }}
         run: pnpm tauri build --no-bundle
 
@@ -328,9 +331,10 @@ jobs:
           $stageName = '${{ needs.windows-cpu-prepare.outputs.stage_name }}'
           if (Test-Path "release/$stageName.7z") { Remove-Item "release/$stageName.7z" -Force }
           Set-Content "release/$stageName/pymss-studio.portable" -Value "portable" -Encoding ASCII
-          Push-Location "release"
-          & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
-          Pop-Location
+           Push-Location "release"
+           & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
+           if ($LASTEXITCODE -ne 0) { throw "Unable to create the CPU portable archive" }
+           Pop-Location
 
       - name: Upload Windows CPU portable archive artifact
         uses: actions/upload-artifact@v4
@@ -398,7 +402,7 @@ jobs:
           PYMSS_BUILD_REPOSITORY: ${{ github.repository }}
           PYMSS_BUILD_REPOSITORY_OWNER: ${{ github.repository_owner }}
           PYMSS_BUILD_TARGET: windows-x64
-          PYMSS_BUILD_VARIANT: windows-x64-online
+          PYMSS_BUILD_VARIANT: windows-x64-managed
           PYMSS_BUILD_UPDATE_SUPPORTED: 'true'
           PYMSS_BUILD_OFFICIAL: ${{ github.repository == 'pymss-project/pymss-studio' && github.repository_owner == 'pymss-project' && 'true' || 'false' }}
         run: pnpm tauri build --no-bundle
@@ -418,49 +422,6 @@ jobs:
           if (-not $aria2) { throw "aria2c.exe not found" }
           Copy-Item $aria2.FullName "$bin/aria2c.exe" -Force
           Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "$bin/VC_redist.x64.exe"
-      - name: Build Tauri online updater bundle
-        shell: pwsh
-        env:
-          PYMSS_BUILD_GIT_COMMIT: ${{ github.sha }}
-          PYMSS_BUILD_GIT_TAG: v${{ steps.meta.outputs.version }}
-          PYMSS_BUILD_GIT_REF: ${{ github.ref_name }}
-          PYMSS_BUILD_RUN_ID: ${{ github.run_id }}
-          PYMSS_BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
-          PYMSS_BUILD_REPOSITORY: ${{ github.repository }}
-          PYMSS_BUILD_REPOSITORY_OWNER: ${{ github.repository_owner }}
-          PYMSS_BUILD_TARGET: windows-x64
-          PYMSS_BUILD_VARIANT: windows-x64-online
-          PYMSS_BUILD_UPDATE_SUPPORTED: 'true'
-          PYMSS_BUILD_OFFICIAL: ${{ github.repository == 'pymss-project/pymss-studio' && github.repository_owner == 'pymss-project' && 'true' || 'false' }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
-            throw "TAURI_SIGNING_PRIVATE_KEY secret is required to build updater artifacts"
-          }
-          $root = (Resolve-Path ".").Path
-          $config = @{
-            bundle = @{
-              targets = @("nsis")
-              createUpdaterArtifacts = $true
-              resources = @{
-                (Join-Path $root "python") = "python"
-                (Join-Path $root "python-runtime") = "python-runtime"
-                (Join-Path $root "release/bin") = "bin"
-              }
-            }
-          } | ConvertTo-Json -Depth 20
-          [System.IO.File]::WriteAllText("src-tauri/tauri.online-updater.resources.json", $config, [System.Text.UTF8Encoding]::new($false))
-          pnpm tauri build --bundles nsis --config src-tauri/tauri.online-updater.resources.json
-          $version = '${{ steps.meta.outputs.version }}'
-          $nsisDir = "src-tauri/target/release/bundle/nsis"
-          $installer = Get-ChildItem $nsisDir -File -Filter "*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if (-not $installer) { throw "Tauri NSIS updater installer not found" }
-          $signature = Get-Item "$($installer.FullName).sig" -ErrorAction SilentlyContinue
-          if (-not $signature) { throw "Tauri updater signature not found for $($installer.Name)" }
-          New-Item -ItemType Directory -Force -Path "release" | Out-Null
-          Copy-Item $installer.FullName "release/Pymss-Studio-$version-windows-x64-online-updater.exe" -Force
-          Copy-Item $signature.FullName "release/Pymss-Studio-$version-windows-x64-online-updater.exe.sig" -Force
       - name: Stage online portable directory
         shell: pwsh
         run: |
@@ -482,14 +443,6 @@ jobs:
           name: ${{ steps.meta.outputs.stage_artifact }}
           path: release/${{ steps.meta.outputs.stage_name }}
           compression-level: 0
-      - name: Upload online updater artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.meta.outputs.stage_artifact }}-updater
-          path: |
-            release/Pymss-Studio-${{ steps.meta.outputs.version }}-windows-x64-online-updater.exe
-            release/Pymss-Studio-${{ steps.meta.outputs.version }}-windows-x64-online-updater.exe.sig
-
   windows-online-7z:
     name: Windows x64 online portable 7z
     runs-on: windows-latest
@@ -504,13 +457,26 @@ jobs:
         run: |
           $stageName = '${{ needs.windows-online-prepare.outputs.stage_name }}'
           Set-Content "release/$stageName/pymss-studio.portable" -Value "portable" -Encoding ASCII
-          Push-Location release
-          & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
+          $updateArchive = (Resolve-Path "release").Path + "\Pymss-Studio-${{ needs.windows-online-prepare.outputs.version }}-windows-x64-update.zip"
+           Push-Location release
+           & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
+           if ($LASTEXITCODE -ne 0) { throw "Unable to create the Online portable archive" }
+           Pop-Location
+          Push-Location "release/$stageName"
+          & "C:\Program Files\7-Zip\7z.exe" a -tzip $updateArchive "Pymss Studio.exe" "python" "bin"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to create the managed update archive" }
           Pop-Location
+          $updateSize = (Get-Item -LiteralPath $updateArchive).Length
+          if ($updateSize -gt 512MB) { throw "Managed update archive exceeds the 512 MiB client limit" }
       - uses: actions/upload-artifact@v4
         with:
           name: Pymss-Studio-${{ needs.windows-online-prepare.outputs.version }}-windows-x64-online-portable
           path: release/${{ needs.windows-online-prepare.outputs.stage_name }}.7z
+      - name: Upload universal Windows update archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pymss-Studio-${{ needs.windows-online-prepare.outputs.version }}-windows-x64-update
+          path: release/Pymss-Studio-${{ needs.windows-online-prepare.outputs.version }}-windows-x64-update.zip
 
   windows-online-exe:
     name: Windows x64 online setup exe
@@ -572,6 +538,7 @@ jobs:
           PYMSS_BUILD_REPOSITORY_OWNER: ${{ github.repository_owner }}
           PYMSS_BUILD_TARGET: windows-x64
           PYMSS_BUILD_VARIANT: windows-x64-rocm
+          PYMSS_BUILD_UPDATE_SUPPORTED: 'true'
           PYMSS_BUILD_OFFICIAL: ${{ github.repository == 'pymss-project/pymss-studio' && github.repository_owner == 'pymss-project' && 'true' || 'false' }}
         run: pnpm tauri build --no-bundle
       - name: Prepare ROCm portable tools
@@ -647,9 +614,10 @@ jobs:
         run: |
           $stageName = '${{ needs.windows-rocm-prepare.outputs.stage_name }}'
           Set-Content "release/$stageName/pymss-studio.portable" -Value "portable" -Encoding ASCII
-          Push-Location release
-          & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
-          Pop-Location
+           Push-Location release
+           & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
+           if ($LASTEXITCODE -ne 0) { throw "Unable to create the ROCm portable archive" }
+           Pop-Location
       - uses: actions/upload-artifact@v4
         with:
           name: Pymss-Studio-${{ needs.windows-rocm-prepare.outputs.version }}-windows-x64-rocm-portable

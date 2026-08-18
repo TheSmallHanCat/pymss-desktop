@@ -118,6 +118,7 @@ const {
   proxyMode,
   proxyUrl,
   proxyBypass,
+  updateChannel,
 } = storeToRefs(settings)
 const { downloadTasks } = storeToRefs(modelStore)
 const { activeWorkerTasks } = storeToRefs(task)
@@ -734,6 +735,10 @@ const runtimeSummaryItems = computed(() => [
 const updateReleaseDateLabel = computed(() => {
   return formatDateTime(updates.releaseDate)
 })
+const updateChannelOptions = computed(() => [
+  { label: t('settings.updateChannelStable'), value: 'stable' },
+  { label: t('settings.updateChannelPrerelease'), value: 'prerelease' },
+])
 const aboutLinks = computed(() => [
   { label: t('settings.desktopRepository'), url: repoUrl, icon: LogoGithub },
   { label: t('settings.coreRepository'), url: coreRepoUrl, icon: LinkOutline },
@@ -762,6 +767,21 @@ async function checkForUpdates(manual = false) {
   } finally {
     updateChecking.value = false
   }
+}
+
+async function changeUpdateChannel(value: 'stable' | 'prerelease') {
+  if (value === updateChannel.value) return
+  if (value === 'prerelease') {
+    const confirmed = await confirmRuntimeAction(
+      t('settings.updateChannelPrereleaseTitle'),
+      t('settings.updateChannelPrereleaseContent'),
+      t('settings.updateChannelPrereleaseConfirm'),
+    )
+    if (!confirmed) return
+  }
+  updateChannel.value = value
+  updates.dismiss()
+  if (updateSupported.value) await checkForUpdates(true)
 }
 
 async function installUpdate() {
@@ -1133,6 +1153,14 @@ onMounted(async () => {
                 <span>{{ t('settings.updateLastChecked', { time: updateLastCheckedLabel }) }}</span>
                 <span v-if="updateReleaseDateLabel">{{ t('settings.updateReleaseDate', { time: updateReleaseDateLabel }) }}</span>
               </div>
+              <n-select
+                :value="updateChannel"
+                :options="updateChannelOptions"
+                :disabled="!updateSupported || updates.isBusy"
+                size="small"
+                @update:value="changeUpdateChannel"
+              />
+              <p class="update-panel__notes update-panel__notes--muted">{{ updateChannel === 'prerelease' ? t('settings.updateChannelPrereleaseHint') : t('settings.updateChannelStableHint') }}</p>
               <p v-if="updates.releaseNotes" class="update-panel__notes">{{ updates.releaseNotes }}</p>
               <p v-else class="update-panel__notes update-panel__notes--muted">{{ t('settings.updateNoNotes') }}</p>
               <div class="update-panel__actions">

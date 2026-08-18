@@ -68,7 +68,16 @@ jobs:
       QUARKPAN_VERSION: "0.4.0"
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MODELSCOPE_API_TOKEN: ${{ secrets.MODELSCOPE_API_TOKEN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Resolve release tag
         id: release_meta
         shell: bash
@@ -105,13 +114,13 @@ jobs:
           path: artifacts
           merge-multiple: true
           pattern: Pymss-Studio-${{ steps.release_meta.outputs.version }}-windows-x64-*-setup
-      - name: Download Windows updater artifacts
+      - name: Download Windows update archives
         if: needs.windows.result == 'success'
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
-          pattern: Pymss-Studio-${{ steps.release_meta.outputs.version }}-windows-x64-online-stage-updater
+          pattern: Pymss-Studio-${{ steps.release_meta.outputs.version }}-windows-x64-update
       - name: Download macOS release artifacts
         if: needs.macos.result == 'success'
         uses: actions/download-artifact@v4
@@ -119,23 +128,6 @@ jobs:
           path: artifacts
           merge-multiple: true
           pattern: Pymss-Studio-${{ steps.release_meta.outputs.version }}-macos-*-mlx
-      - name: Stage artifacts for mirror uploads
-        if: ${{ env.QUARK_COOKIE != '' || env.HF_TOKEN != '' || env.MODELSCOPE_API_TOKEN != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          staging="pms/${RELEASE_VERSION}"
-          mkdir -p "$staging"
-          shopt -s nullglob
-          copied=0
-          for f in artifacts/*; do
-            [ -f "$f" ] || continue
-            # Hard-link to preserve complete archives before oversized GitHub assets are split.
-            ln -f "$f" "$staging/"
-            copied=$((copied + 1))
-          done
-          echo "Staged $copied file(s) under $staging/"
-          ls -la "$staging"
       - name: Split oversized release assets
         shell: bash
         run: |
@@ -170,18 +162,35 @@ jobs:
           Download all parts for the same filename before merging.
           EOF
           fi
-      - name: Generate updater metadata
+      - name: Sign managed update assets
         if: needs.windows.result == 'success'
         shell: bash
         run: |
           set -euo pipefail
-          version="${RELEASE_TAG#v}"
-          sig="artifacts/Pymss-Studio-${version}-windows-x64-online-updater.exe.sig"
-          exe="artifacts/Pymss-Studio-${version}-windows-x64-online-updater.exe"
-          if [ ! -f "$sig" ] || [ ! -f "$exe" ]; then
-            echo "Online updater artifact or signature not found" >&2
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY secret is required to sign managed update assets" >&2
             exit 1
           fi
+          shopt -s nullglob
+          files=(artifacts/*-windows-x64-update.zip)
+          if [ "${#files[@]}" -ne 1 ]; then
+            echo "Expected one universal Windows update archive, found ${#files[@]}" >&2
+            printf '%s\n' "${files[@]}" >&2
+            exit 1
+          fi
+          max_update_size=$((512 * 1024 * 1024))
+          for file in "${files[@]}"; do
+            if [ "$(stat -c%s "$file")" -gt "$max_update_size" ]; then
+              echo "Managed update archive exceeds the 512 MiB client limit: $file" >&2
+              exit 1
+            fi
+            pnpm dlx @tauri-apps/cli@2.11.0 signer sign "$file"
+          done
+      - name: Generate managed update metadata
+        if: needs.windows.result == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
           python3 - <<'PY'
           import json
           import os
@@ -191,29 +200,51 @@ jobs:
           version = os.environ["RELEASE_TAG"].removeprefix("v")
           tag = os.environ["RELEASE_TAG"]
           prerelease = os.environ.get("RELEASE_PRERELEASE", "false").lower() == "true"
-          signature = Path(f"artifacts/Pymss-Studio-{version}-windows-x64-online-updater.exe.sig").read_text(encoding="utf-8").strip()
-          data = {
-              "version": version,
-              "notes": "See the GitHub release notes for details.",
-              "pub_date": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-              "prerelease": prerelease,
-              "channel": "prerelease" if prerelease else "stable",
-              "platforms": {
-                  "windows-x86_64": {
-                      "signature": signature,
-                      "url": f"https://github.com/pymss-project/pymss-studio/releases/download/{tag}/Pymss-Studio-{version}-windows-x64-online-updater.exe",
-                  }
-              },
-          }
-          Path("artifacts/latest.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          channels = ("prerelease",) if prerelease else ("stable", "prerelease")
+          generated = []
+          asset = f"Pymss-Studio-{version}-windows-x64-update.zip"
+          signature = Path(f"artifacts/{asset}.sig").read_text(encoding="utf-8").strip()
+          for channel in channels:
+              data = {
+                  "version": version,
+                  "notes": "See the GitHub release notes for details.",
+                  "pub_date": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                  "prerelease": prerelease,
+                  "channel": channel,
+                  "platforms": {
+                      "windows-x86_64": {
+                          "signature": signature,
+                          "url": f"https://github.com/pymss-project/pymss-studio/releases/download/{tag}/{asset}",
+                      }
+                  },
+              }
+              name = f"{channel}-windows-x64-update.json"
+              Path(f"artifacts/{name}").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+              generated.append(name)
+          Path("artifacts/managed-update-metadata.txt").write_text("\n".join(generated) + "\n", encoding="utf-8")
           PY
-      - name: Stage updater metadata for mirror uploads
-        if: ${{ needs.windows.result == 'success' && (env.QUARK_COOKIE != '' || env.HF_TOKEN != '' || env.MODELSCOPE_API_TOKEN != '') }}
+      - name: Generate release checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS' -printf '%f\n' | sort | xargs -r sha256sum > SHA256SUMS
+      - name: Stage artifacts for mirror uploads
+        if: ${{ env.QUARK_COOKIE != '' || env.HF_TOKEN != '' || env.MODELSCOPE_API_TOKEN != '' }}
         shell: bash
         run: |
           set -euo pipefail
           staging="pms/${RELEASE_VERSION}"
-          ln -f artifacts/latest.json "$staging/latest.json"
+          mkdir -p "$staging"
+          shopt -s nullglob
+          copied=0
+          for file in artifacts/*; do
+            [ -f "$file" ] || continue
+            # Hard-link to preserve complete archives before oversized GitHub assets are split.
+            ln -f "$file" "$staging/"
+            copied=$((copied + 1))
+          done
+          echo "Staged $copied file(s) under $staging/"
           ls -la "$staging"
       - uses: softprops/action-gh-release@v2
         with:
@@ -228,11 +259,11 @@ jobs:
         with:
           tag_name: updater
           name: Pymss Studio Update Channel
-          body: Latest updater metadata for Pymss Studio. This release is managed by CI.
+          body: Managed update metadata for Pymss Studio. This release is managed by CI.
           prerelease: true
           make_latest: false
           overwrite_files: true
-          files: artifacts/latest.json
+          files: artifacts/*-windows-x64-*.json
 
       - name: Download Quark netdisk CLI
         if: ${{ env.QUARK_COOKIE != '' }}
