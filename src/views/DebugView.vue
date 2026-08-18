@@ -1106,7 +1106,7 @@ function inferLogSeverity(level: string, text: string): DebugLogLevelFilter {
   const normalized = normalizeLogLevel(level).toLowerCase()
   if (normalized === 'fatal' || normalized === 'error') return 'error'
   if (normalized === 'warn' || normalized === 'warning') return 'warn'
-  if (normalized === 'debug' || normalized === 'trace' || normalized === 'py') return 'debug'
+  if (normalized === 'debug' || normalized === 'trace') return 'debug'
   const lowered = text.toLowerCase()
   if (lowered.includes('traceback') || lowered.includes('exception') || lowered.includes('failed')) return 'error'
   if (lowered.includes(' warn ') || lowered.includes('cannot separate') || lowered.includes('unable to')) return 'warn'

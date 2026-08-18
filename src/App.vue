@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { darkTheme } from 'naive-ui'
 import TitleBar from '@/components/TitleBar.vue'
 import SideNav from '@/components/SideNav.vue'
@@ -13,12 +13,14 @@ import { getResolvedThemeTokens, getThemeOverrides, resolvedIsDark } from '@/uti
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useWorkflowStore } from '@/stores/workflow'
+import { activeRuntimeEnvironment, runtimeBackendLabel, runtimeCoreUpdateAvailable as hasRuntimeCoreUpdate } from '@/utils/runtime'
 
 const settings = useSettingsStore()
 const app = useAppStore()
 const updates = useUpdateStore()
 const workflow = useWorkflowStore()
 const route = useRoute()
+const router = useRouter()
 const { t } = useI18n()
 const bootReady = ref(false)
 const backgroundWarmupsStarted = ref(false)
@@ -26,6 +28,8 @@ const deferredPromptShown = ref(false)
 const deferredUpdateModalVisible = ref(false)
 const deferredUpdateInstalling = ref(false)
 const deferredUpdateError = ref('')
+const runtimeCorePromptVisible = ref(false)
+const runtimeCorePromptShown = ref(false)
 let unlistenNodeEditorClosed: UnlistenFn | undefined
 
 const isDark = computed(() => resolvedIsDark(settings.themeMode))
@@ -37,6 +41,19 @@ const showStartupOnboarding = computed(() => bootReady.value && !isStandaloneRou
 const deferredUpdatePrompt = computed(() => updates.updateIsPrerelease
   ? t('settings.updatePrereleaseDeferredPrompt', { version: updates.latestVersion })
   : t('settings.updateDeferredPrompt', { version: updates.latestVersion }))
+const activeRuntime = computed(() => activeRuntimeEnvironment(app.runtimeInfo))
+const runtimeCoreUpdateAvailable = computed(() => hasRuntimeCoreUpdate(
+  activeRuntime.value,
+  app.runtimeCoreVersions?.packages?.pymss?.latestVersion,
+  app.runtimeCoreVersions?.packages?.['pymss-core']?.latestVersion,
+))
+const runtimeCorePromptContent = computed(() => t('settings.runtimeCoreStartupPrompt', {
+  backend: runtimeBackendLabel(activeRuntime.value?.backend || t('settings.envNotChecked')),
+  pymss: activeRuntime.value?.pymssVersion || activeRuntime.value?.packageVersions?.pymss || t('settings.runtimeCoreVersionUnknown'),
+  core: activeRuntime.value?.pymssCoreVersion || activeRuntime.value?.packageVersions?.['pymss-core'] || t('settings.runtimeCoreVersionUnknown'),
+  latest: app.runtimeCoreVersions?.packages?.pymss?.latestVersion || t('settings.runtimeCoreVersionUnknown'),
+  coreLatest: app.runtimeCoreVersions?.packages?.['pymss-core']?.latestVersion || t('settings.runtimeCoreVersionUnknown'),
+}))
 
 const routeWarmupLoaders = [
   () => import('@/views/SeparateView.vue'),
@@ -76,6 +93,17 @@ function showDeferredUpdatePrompt() {
   deferredPromptShown.value = true
   deferredUpdateError.value = ''
   deferredUpdateModalVisible.value = true
+}
+
+function showRuntimeCorePrompt() {
+  if (runtimeCorePromptShown.value || !bootReady.value || !runtimeCoreUpdateAvailable.value) return
+  runtimeCorePromptShown.value = true
+  runtimeCorePromptVisible.value = true
+}
+
+function openRuntimeSettings() {
+  runtimeCorePromptVisible.value = false
+  void router.push({ path: '/settings', query: { section: 'runtime' } })
 }
 
 async function installDeferredUpdate() {
@@ -126,6 +154,10 @@ watch([bootReady, () => updates.shouldShowDeferred, () => updates.latestVersion]
   if (bootReady.value) showDeferredUpdatePrompt()
 }, { immediate: true })
 
+watch([bootReady, runtimeCoreUpdateAvailable], () => {
+  showRuntimeCorePrompt()
+}, { immediate: true })
+
 const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, settings.themeAccent))
 </script>
 
@@ -173,6 +205,20 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
             </n-button>
             <n-button type="primary" :loading="deferredUpdateInstalling" @click="installDeferredUpdate">
               {{ t('settings.installUpdate') }}
+            </n-button>
+          </template>
+        </n-modal>
+        <n-modal v-model:show="runtimeCorePromptVisible" preset="dialog" type="warning" :mask-closable="false" :closable="false">
+          <template #header>
+            {{ t('settings.runtimeCoreStartupTitle') }}
+          </template>
+          <div>{{ runtimeCorePromptContent }}</div>
+          <template #action>
+            <n-button secondary @click="runtimeCorePromptVisible = false">
+              {{ t('settings.runtimeCoreStartupLater') }}
+            </n-button>
+            <n-button type="warning" @click="openRuntimeSettings">
+              {{ t('settings.runtimeCoreStartupOpenSettings') }}
             </n-button>
           </template>
         </n-modal>

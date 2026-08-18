@@ -535,7 +535,7 @@ fn extract_portable_payload(bytes: &[u8], stage: &Path) -> AppResult<()> {
         let mut output = fs::File::create(destination)?;
         std::io::copy(&mut entry, &mut output)?;
     }
-    for required in ["Pymss Studio.exe", "python/worker.py", "bin/ffmpeg.exe"] {
+    for required in ["Pymss Studio.exe", "python/worker.py"] {
         if !stage.join(required).is_file() {
             let _ = fs::remove_dir_all(stage);
             return Err(AppError::Worker(format!("Portable update archive is missing {required}")));
@@ -631,6 +631,10 @@ fn apply_managed_update(
     let mut replaced = Vec::new();
     let result = (|| -> AppResult<()> {
         for name in MANAGED_PATHS {
+            // Bundled tools are omitted from normal update archives and remain in place.
+            if !stage.join(name).exists() {
+                continue;
+            }
             let current = root.join(name);
             if current.exists() {
                 if name == "Pymss Studio.exe" {

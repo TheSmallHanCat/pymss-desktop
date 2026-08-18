@@ -440,8 +440,13 @@ jobs:
           Pymss Studio ${{ steps.meta.outputs.version }} Windows x64 Online
           This package installs the selected CPU, CUDA, or ROCm environment on first start.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
-          & "$stage\python-runtime\python.exe" "$stage\python\worker.py" runtime_info --payload "{}"
-          if ($LASTEXITCODE -ne 0) { throw "Online runtime bootstrap check failed" }
+           $env:PYTHONDONTWRITEBYTECODE = "1"
+           & "$stage\python-runtime\python.exe" "$stage\python\worker.py" runtime_info --payload "{}"
+           if ($LASTEXITCODE -ne 0) { throw "Online runtime bootstrap check failed" }
+           Get-ChildItem "$stage\python" -Recurse -Directory -Filter "__pycache__" |
+             Remove-Item -Recurse -Force
+           Get-ChildItem "$stage\python" -Recurse -File -Include "*.pyc", "*.pyo" |
+             Remove-Item -Force
       - name: Upload online stage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -467,8 +472,9 @@ jobs:
            & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=5 -mfb=128 -md=768m -ms=on -mf=BCJ2 -mmt=on "$stageName.7z" "$stageName"
            if ($LASTEXITCODE -ne 0) { throw "Unable to create the Online portable archive" }
            Pop-Location
-          Push-Location "release/$stageName"
-          & "C:\Program Files\7-Zip\7z.exe" a -tzip $updateArchive "Pymss Studio.exe" "python" "bin"
+           Push-Location "release/$stageName"
+           # Keep bundled tools in the portable archive only. Add bin here when a tool update needs to be distributed.
+           & "C:\Program Files\7-Zip\7z.exe" a -tzip $updateArchive "Pymss Studio.exe" "python" -xr!__pycache__ -xr!*.pyc -xr!*.pyo
           if ($LASTEXITCODE -ne 0) { throw "Unable to create the managed update archive" }
           Pop-Location
           $updateSize = (Get-Item -LiteralPath $updateArchive).Length

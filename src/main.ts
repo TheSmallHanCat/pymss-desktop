@@ -55,11 +55,18 @@ async function bootstrap() {
   }
   appState.checkRuntimeInfo().then((runtime) => {
     if (runtime.ready) {
-      return models.loadModels()
+      void models.loadModels().catch((error) => {
+        console.warn('Failed to preload model metadata', error)
+      })
+    }
+    if (runtime.installedEnvironments?.some((env) => env.coreUpdateSupported !== false)) {
+      void appState.loadRuntimeCoreVersions().catch((error) => {
+        console.warn('Failed to check runtime core versions', error)
+      })
     }
     return undefined
   }).catch((error) => {
-    console.warn('Failed to preload model metadata', error)
+    console.warn('Failed to load runtime info', error)
   })
   void updates.checkForUpdates().catch((error) => {
     console.warn('Failed to check for updates', error)

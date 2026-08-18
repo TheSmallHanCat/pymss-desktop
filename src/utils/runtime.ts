@@ -78,9 +78,27 @@ export function runtimeCoreUpdateAvailable(
   const pymssVersion = env.pymssVersion || env.packageVersions?.pymss || ''
   const pymssCoreVersion = env.pymssCoreVersion || env.packageVersions?.['pymss-core'] || ''
   return Boolean(
-    latestPymssVersion && pymssVersion && latestPymssVersion !== pymssVersion
-    || latestPymssCoreVersion && pymssCoreVersion && latestPymssCoreVersion !== pymssCoreVersion,
+    versionGreaterThan(latestPymssVersion, pymssVersion)
+    || versionGreaterThan(latestPymssCoreVersion, pymssCoreVersion),
   )
+}
+
+function versionGreaterThan(candidate: string | null | undefined, current: string | null | undefined) {
+  const left = parseVersionParts(candidate)
+  const right = parseVersionParts(current)
+  if (!left || !right) return false
+  const length = Math.max(left.length, right.length)
+  for (let index = 0; index < length; index += 1) {
+    const difference = (left[index] || 0) - (right[index] || 0)
+    if (difference !== 0) return difference > 0
+  }
+  return false
+}
+
+function parseVersionParts(value: string | null | undefined) {
+  const core = String(value || '').trim().match(/^\d+(?:\.\d+)*/)?.[0]
+  if (!core) return null
+  return core.split('.').map((part) => Number(part))
 }
 
 /**
