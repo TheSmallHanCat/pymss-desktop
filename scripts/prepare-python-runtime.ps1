@@ -192,7 +192,7 @@ if ($PreinstallBackend) {
         $manifestVersion = $manifest.manifestVersion
 
         # Probe torch info from the env
-        $probeResult = Invoke-NativeChecked -FilePath $envPython -Arguments @('-c', "import torch, json, platform; print(json.dumps({'torchVersion': torch.__version__, 'torchBackend': 'rocm' if getattr(torch.version, 'hip', None) else 'cuda' if getattr(torch.version, 'cuda', None) else 'cpu', 'acceleratorAvailable': torch.cuda.is_available(), 'pythonVersion': platform.python_version()}))")
+        $probeOutput = @(Invoke-NativeChecked -FilePath $envPython -Arguments @('-c', "import torch, json, platform; print(json.dumps({'torchVersion': torch.__version__, 'torchBackend': 'rocm' if getattr(torch.version, 'hip', None) else 'cuda' if getattr(torch.version, 'cuda', None) else 'cpu', 'acceleratorAvailable': torch.cuda.is_available(), 'pythonVersion': platform.python_version()}))"))
     } finally {
         if ($null -eq $previousDontWriteBytecode) {
             Remove-Item Env:\PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
@@ -201,7 +201,14 @@ if ($PreinstallBackend) {
         }
         $env:PATH = $previousPath
     }
-    $probed = $probeResult | ConvertFrom-Json
+    $probeJson = $probeOutput |
+        ForEach-Object { $_.ToString().Trim() } |
+        Where-Object { $_ -match '^\s*\{.*\}\s*$' } |
+        Select-Object -Last 1
+    if ([string]::IsNullOrWhiteSpace($probeJson)) {
+        throw "Runtime probe did not produce a JSON result"
+    }
+    $probed = $probeJson | ConvertFrom-Json
     $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
     $envState = @{

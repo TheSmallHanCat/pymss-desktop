@@ -92,9 +92,10 @@ jobs:
           if (-not $aria2Exe) { throw "aria2c.exe not found" }
           Copy-Item $aria2Exe.FullName "$bin/aria2c.exe" -Force
 
-          Invoke-WebRequest `
-            -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" `
-            -OutFile "$bin/VC_redist.x64.exe"
+          $vcRedist = "$bin/VC_redist.x64.exe"
+          if (Test-Path $vcRedist) { Remove-Item $vcRedist -Force }
+          & curl.exe --location --fail --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 600 --output $vcRedist "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $vcRedist)) { throw "VC_redist.x64.exe download failed with exit code $LASTEXITCODE" }
 
       - name: Stage portable directory
         shell: pwsh
@@ -268,9 +269,10 @@ jobs:
           if (-not $aria2Exe) { throw "aria2c.exe not found" }
           Copy-Item $aria2Exe.FullName "$bin/aria2c.exe" -Force
 
-          Invoke-WebRequest `
-            -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" `
-            -OutFile "$bin/VC_redist.x64.exe"
+          $vcRedist = "$bin/VC_redist.x64.exe"
+          if (Test-Path $vcRedist) { Remove-Item $vcRedist -Force }
+          & curl.exe --location --fail --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 600 --output $vcRedist "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $vcRedist)) { throw "VC_redist.x64.exe download failed with exit code $LASTEXITCODE" }
 
       - name: Stage portable directory
         shell: pwsh
@@ -421,7 +423,10 @@ jobs:
           $aria2 = Get-ChildItem "release/aria2" -Recurse -File -Filter "aria2c.exe" | Select-Object -First 1
           if (-not $aria2) { throw "aria2c.exe not found" }
           Copy-Item $aria2.FullName "$bin/aria2c.exe" -Force
-          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "$bin/VC_redist.x64.exe"
+          $vcRedist = "$bin/VC_redist.x64.exe"
+          if (Test-Path $vcRedist) { Remove-Item $vcRedist -Force }
+          & curl.exe --location --fail --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 600 --output $vcRedist "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $vcRedist)) { throw "VC_redist.x64.exe download failed with exit code $LASTEXITCODE" }
       - name: Stage online portable directory
         shell: pwsh
         run: |
@@ -554,7 +559,10 @@ jobs:
           Expand-Archive -Path "release/aria2.zip" -DestinationPath "release/aria2" -Force
           $aria2 = Get-ChildItem "release/aria2" -Recurse -File -Filter "aria2c.exe" | Select-Object -First 1
           Copy-Item $aria2.FullName "$bin/aria2c.exe" -Force
-          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "$bin/VC_redist.x64.exe"
+          $vcRedist = "$bin/VC_redist.x64.exe"
+          if (Test-Path $vcRedist) { Remove-Item $vcRedist -Force }
+          & curl.exe --location --fail --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 600 --output $vcRedist "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $vcRedist)) { throw "VC_redist.x64.exe download failed with exit code $LASTEXITCODE" }
       - name: Stage ROCm portable directory
         shell: pwsh
         run: |
