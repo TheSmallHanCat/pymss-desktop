@@ -1,6 +1,8 @@
 use crate::error::{AppError, AppResult};
+use crate::state::AppState;
 use base64::Engine;
 use minisign_verify::{PublicKey, Signature};
+use reqwest::{NoProxy, Proxy};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -10,8 +12,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
-use tauri_plugin_updater::UpdaterExt;
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_updater::{UpdaterBuilder, UpdaterExt};
 use url::Url;
 
 #[cfg(windows)]
@@ -158,10 +160,11 @@ pub async fn check(
         return Ok(None);
     };
     let endpoint = resolve_update_endpoint(channel, endpoint_override)?;
-    let updater = app
+    let updater_builder = app
         .updater_builder()
         .endpoints(vec![endpoint])
-        .map_err(|error| AppError::Worker(error.to_string()))?
+        .map_err(|error| AppError::Worker(error.to_string()))?;
+    let updater = configure_updater(app, updater_builder)?
         .build()
         .map_err(|error| AppError::Worker(error.to_string()))?;
     let update = updater
@@ -188,10 +191,11 @@ pub async fn start(
         return Err(AppError::Worker("This application directory is not managed by an installer or portable package".into()));
     };
     let endpoint = resolve_update_endpoint(channel, endpoint_override)?;
-    let updater = app
+    let updater_builder = app
         .updater_builder()
         .endpoints(vec![endpoint])
-        .map_err(|error| AppError::Worker(error.to_string()))?
+        .map_err(|error| AppError::Worker(error.to_string()))?;
+    let updater = configure_updater(app, updater_builder)?
         .build()
         .map_err(|error| AppError::Worker(error.to_string()))?;
     let Some(update) = updater
@@ -352,6 +356,40 @@ fn resolve_update_endpoint(channel: UpdateChannel, endpoint_override: Option<Str
             .map_err(|error| AppError::Worker(format!("Invalid update endpoint: {error}")));
     }
     Ok(managed_endpoint(channel))
+}
+
+fn configure_updater(app: &AppHandle, builder: UpdaterBuilder) -> AppResult<UpdaterBuilder> {
+    let Some(state) = app.try_state::<AppState>() else {
+        return Ok(builder);
+    };
+    let proxy_settings = state
+        .proxy_settings
+        .lock()
+        .map_err(|_| AppError::Worker("proxy_settings lock poisoned".into()))?
+        .clone();
+    match proxy_settings.mode.as_str() {
+        "none" => Ok(builder.no_proxy()),
+        "custom" => {
+            let value = proxy_settings.url.trim();
+            if value.is_empty() {
+                return Ok(builder.no_proxy());
+            }
+            let normalized = if value.contains("://") {
+                value.to_string()
+            } else {
+                format!("http://{value}")
+            };
+            let proxy_url = Url::parse(&normalized)
+                .map_err(|error| AppError::Worker(format!("Invalid updater proxy URL: {error}")))?;
+            let proxy = Proxy::all(proxy_url.as_str())
+                .map_err(|error| AppError::Worker(format!("Invalid updater proxy URL: {error}")))?;
+            let no_proxy = NoProxy::from_string(&proxy_settings.bypass);
+            Ok(builder.configure_client(move |client| {
+                client.proxy(proxy.clone().no_proxy(no_proxy.clone()))
+            }))
+        }
+        _ => Ok(builder),
+    }
 }
 
 fn is_official_build() -> bool {

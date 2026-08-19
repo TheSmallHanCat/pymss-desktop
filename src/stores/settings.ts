@@ -350,7 +350,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setLocale(locale.value)
     initialized.value = true
     if (shouldPersistNormalizedOnboarding) queuePersist()
-    void syncProxyToBackend().catch((error) => console.warn('Failed to sync proxy settings', error))
+    await syncProxyToBackend().catch((error) => console.warn('Failed to sync proxy settings', error))
   }
 
   watch(themeMode, (value) => {

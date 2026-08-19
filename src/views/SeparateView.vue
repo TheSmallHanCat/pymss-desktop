@@ -369,10 +369,10 @@ const startStatusText = computed(() => {
   if (validationError) return validationError
   if (outputDirectoryError.value) return outputDirectoryError.value
   if (workflowUsesBatchInput.value) return t('separate.startHintWorkflowBatchFolder')
-  if (!inputFiles.value.length) return t('separate.startHintNoInput')
+  if (!inputFiles.value.length) return t('separate.outputDirectorySummary')
   if (runMode.value === 'model' && ensembleEnabled.value && !ensembleReady.value) return t('separate.ensembleNotReady')
   if (runMode.value === 'model' && !ensembleEnabled.value && !modelDownloaded.value) return t('separate.startHintModelMissing')
-  return t('separate.readyToStart')
+  return t('separate.outputDirectorySummary')
 })
 const modelCategoryOptions = computed(() => [
   { label: t('common.all'), value: '' },
@@ -447,7 +447,7 @@ const outputNamingPreviewParts = computed(() => {
     parts: formatOutputNamingPreviewParts(stem, index),
   }))
 })
-const outputSummaryPath = computed(() => outputPreview.value)
+const outputSummaryPath = computed(() => runMode.value === 'workflow' ? normalizedOutputDir.value : outputPreview.value)
 const canStart = computed(() => (
   (workflowUsesBatchInput.value || inputFiles.value.length > 0)
   && !workflowBatchInputInvalid.value
@@ -2007,7 +2007,7 @@ async function retryCurrentTask() {
                 <span class="launch-bar__glyph"><n-icon :component="CheckmarkCircle" /></span>
                 <div class="launch-bar__text">
                   <strong>{{ startStatusText }}</strong>
-                  <span :title="outputPreview">{{ outputSummaryPath }}</span>
+                  <span :title="outputSummaryPath">{{ outputSummaryPath }}</span>
                 </div>
               </div>
               <div class="launch-bar__actions">
