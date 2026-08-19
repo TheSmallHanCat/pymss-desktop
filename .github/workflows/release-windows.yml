@@ -474,7 +474,7 @@ jobs:
            Pop-Location
            Push-Location "release/$stageName"
            # Keep bundled tools in the portable archive only. Add bin here when a tool update needs to be distributed.
-           & "C:\Program Files\7-Zip\7z.exe" a -tzip $updateArchive "Pymss Studio.exe" "python" -xr!__pycache__ -xr!*.pyc -xr!*.pyo
+           & "C:\Program Files\7-Zip\7z.exe" a -tzip $updateArchive "Pymss Studio.exe" "python"
           if ($LASTEXITCODE -ne 0) { throw "Unable to create the managed update archive" }
           Pop-Location
           $updateSize = (Get-Item -LiteralPath $updateArchive).Length
