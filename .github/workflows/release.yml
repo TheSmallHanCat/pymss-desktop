@@ -298,13 +298,17 @@ jobs:
           "$QUARKPAN_BIN" upload-dir --dir pms --pdir-fid 0 -c -o
           echo "Quark netdisk upload completed."
 
+      - name: Set up uv
+        if: ${{ env.HF_TOKEN != '' || env.MODELSCOPE_API_TOKEN != '' }}
+        uses: astral-sh/setup-uv@v6
+
       - name: Upload release files to HuggingFace dataset
         if: ${{ env.HF_TOKEN != '' }}
         shell: bash
         run: |
           set -euo pipefail
           echo "Uploading pms/${RELEASE_VERSION}/ to HuggingFace dataset HuanLin/Pymss-Studio-Dist:${RELEASE_VERSION}"
-          uvx hf upload --type dataset HuanLin/Pymss-Studio-Dist "pms/${RELEASE_VERSION}" "${RELEASE_VERSION}"
+          uvx --from "huggingface_hub[cli]" hf upload --type dataset HuanLin/Pymss-Studio-Dist "pms/${RELEASE_VERSION}" "${RELEASE_VERSION}"
           echo "HuggingFace dataset upload completed."
 
       - name: Upload release files to ModelScope dataset
