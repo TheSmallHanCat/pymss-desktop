@@ -55,8 +55,9 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
 }
 
 if ($sitePackages -and (Test-Path -LiteralPath $sitePackages)) {
+    # Keep pip: runtime core updates invoke the environment interpreter with `-m pip`.
     Get-ChildItem -LiteralPath $sitePackages -Force -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match "(?i)(^pip-|^setuptools-|^wheel-|^pip$|^setuptools$|^wheel$)" } |
+        Where-Object { $_.Name -match "(?i)(^setuptools-|^wheel-|^setuptools$|^wheel$)" } |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
 
     Get-ChildItem -LiteralPath $sitePackages -Recurse -Force -Directory -ErrorAction SilentlyContinue |

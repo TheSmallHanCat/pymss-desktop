@@ -175,6 +175,7 @@ if ($PreinstallBackend) {
     Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--upgrade', '--no-deps', 'pymss>=2.0.15', 'pymss-core>=0.1.6')
     $rocmToolDirs = if ($PreinstallBackend -eq "rocm") { Remove-RocmOffloadArchLauncher -EnvironmentDir $envDir } else { @() }
     & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $envDir -KeepScripts
+    Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', '--version')
 
     # Step 4: Verify the environment
     $previousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
@@ -243,6 +244,7 @@ if ($PreinstallBackend) {
     Write-Host "Wrote active runtime to $activeRuntimePath"
 
     & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $envDir -KeepScripts
+    Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', '--version')
     Write-Host "=== PreinstallBackend complete: $PreinstallBackend environment ready ==="
     exit 0
 }
@@ -305,6 +307,7 @@ if ($Variant -in @("mps", "mlx")) {
 Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--upgrade', '--no-deps', 'pymss>=2.0.15', 'pymss-core>=0.1.6')
 
 & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $runtime -KeepVenv
+Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', '--version')
 $previousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
 $env:PYTHONDONTWRITEBYTECODE = "1"
 Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-c', "import importlib.util, pymss, torch, librosa, av, yaml, tqdm; print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') is not None)")
@@ -314,3 +317,4 @@ if ($null -eq $previousDontWriteBytecode) {
     $env:PYTHONDONTWRITEBYTECODE = $previousDontWriteBytecode
 }
 & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $runtime -KeepVenv
+Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', '--version')

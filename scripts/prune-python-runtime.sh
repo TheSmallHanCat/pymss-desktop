@@ -45,11 +45,10 @@ find "$RUNTIME_DIR" -path '*/site-packages/torch/*' -type f -name '*.lib' -delet
 find "$RUNTIME_DIR" -path '*/site-packages/torch/include' -type d -prune -exec rm -rf {} + || true
 find "$RUNTIME_DIR" -path '*/site-packages/torch/share' -type d -prune -exec rm -rf {} + || true
 find "$RUNTIME_DIR" -path '*/site-packages/torch/utils/benchmark' -type d -prune -exec rm -rf {} + || true
+# Keep pip: runtime core updates invoke the environment interpreter with "-m pip".
 find "$RUNTIME_DIR" -type d -name 'site-packages' -print0 |
   while IFS= read -r -d '' site_packages; do
     find "$site_packages" -maxdepth 1 -type d \( \
-      -name 'pip' -o \
-      -name 'pip-*' -o \
       -name 'setuptools' -o \
       -name 'setuptools-*' -o \
       -name 'wheel' -o \
