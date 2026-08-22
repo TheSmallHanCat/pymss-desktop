@@ -37,9 +37,9 @@ jobs:
           echo "stage_name=$stageName" >> $env:GITHUB_OUTPUT
           echo "stage_artifact=$artifactName" >> $env:GITHUB_OUTPUT
 
-      - name: Prepare bootstrap runtime + pre-installed CUDA environment
+      - name: Prepare bootstrap runtime + CUDA environment seed
         shell: pwsh
-        run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL -PreinstallBackend cuda
+        run: ./scripts/prepare-python-runtime.ps1 -Variant cuda -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL -InitialBackend cuda
 
       - name: Sync build version metadata
         shell: pwsh
@@ -107,27 +107,26 @@ jobs:
           Copy-Item "src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
           Copy-Item "python" "$stage/python" -Recurse
           Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
-          Copy-Item "runtime-envs" "$stage/runtime-envs" -Recurse
           Copy-Item "release/bin" "$stage/bin" -Recurse
-          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
+          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -RuntimeEnvsDir "$stage/python-runtime/runtime-envs" -RuntimeDir "$stage/python-runtime"
           @"
           Pymss Studio $version Windows x64 CUDA
           Author: TheSmallHanCat
 
-          This package includes a base Python runtime and a pre-installed CUDA environment.
+          This package includes a base Python runtime and a CUDA environment.
           NVIDIA driver is required for GPU acceleration.
           Users can switch backends or install additional environments in Settings.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
-          $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR = (Resolve-Path "$stage/runtime-envs").Path
+          $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR = (Resolve-Path "$stage/python-runtime/runtime-envs").Path
           $env:PYMSS_STUDIO_ACTIVE_RUNTIME_FILE = (Join-Path $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR "active-runtime.json")
-          if (!(Test-Path "$stage\runtime-envs\cuda\Scripts\python.exe")) { throw "Staged CUDA Python executable is missing" }
-          & "$stage\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" env_info
+          if (!(Test-Path "$stage\python-runtime\runtime-envs\cuda\Scripts\python.exe")) { throw "Staged CUDA Python executable is missing" }
+          & "$stage\python-runtime\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" env_info
           if ($LASTEXITCODE -ne 0) { throw "Staged CUDA env_info failed with exit code $LASTEXITCODE" }
-          & "$stage\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
+          & "$stage\python-runtime\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
           if ($LASTEXITCODE -ne 0) { throw "Staged CUDA list_models failed with exit code $LASTEXITCODE" }
-          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
+          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/python-runtime/runtime-envs" -RuntimeDir "$stage/python-runtime"
           $workspacePattern = [regex]::Escape((Resolve-Path ".").Path)
-          $leakedConfig = Get-ChildItem "$stage/runtime-envs" -Recurse -File |
+          $leakedConfig = Get-ChildItem "$stage/python-runtime/runtime-envs" -Recurse -File |
             Where-Object { $_.Extension -in @('.cfg', '.json', '.txt', '.ini') } |
             Select-String -Pattern $workspacePattern -List
           if ($leakedConfig) { throw "CI workspace path leaked into staged CUDA runtime env config" }
@@ -214,9 +213,9 @@ jobs:
           echo "stage_name=$stageName" >> $env:GITHUB_OUTPUT
           echo "stage_artifact=$artifactName" >> $env:GITHUB_OUTPUT
 
-      - name: Prepare embedded CPU Python runtime
+      - name: Prepare bootstrap runtime + CPU environment seed
         shell: pwsh
-        run: ./scripts/prepare-python-runtime.ps1 -Variant default -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL -PreinstallBackend cpu
+        run: ./scripts/prepare-python-runtime.ps1 -Variant default -TorchVersion $env:TORCH_VERSION -TorchIndexUrl $env:TORCH_INDEX_URL -InitialBackend cpu
 
       - name: Sync build version metadata
         shell: pwsh
@@ -284,27 +283,26 @@ jobs:
           Copy-Item "src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
           Copy-Item "python" "$stage/python" -Recurse
           Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
-          Copy-Item "runtime-envs" "$stage/runtime-envs" -Recurse
           Copy-Item "release/bin" "$stage/bin" -Recurse
-          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
+           ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -RuntimeEnvsDir "$stage/python-runtime/runtime-envs" -RuntimeDir "$stage/python-runtime"
           @"
           Pymss Studio $version Windows x64 CPU
           Author: TheSmallHanCat
 
-          This package includes a base Python runtime and a pre-installed CPU environment.
+          This package includes a base Python runtime and a CPU environment.
           It is intended for users without NVIDIA CUDA GPUs.
           Users can switch backends or install additional environments in Settings.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
-          $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR = (Resolve-Path "$stage/runtime-envs").Path
+           $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR = (Resolve-Path "$stage/python-runtime/runtime-envs").Path
           $env:PYMSS_STUDIO_ACTIVE_RUNTIME_FILE = (Join-Path $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR "active-runtime.json")
-          if (!(Test-Path "$stage\runtime-envs\cpu\Scripts\python.exe")) { throw "Staged CPU Python executable is missing" }
-          & "$stage\runtime-envs\cpu\Scripts\python.exe" "$stage\python\worker.py" env_info
+          if (!(Test-Path "$stage\python-runtime\runtime-envs\cpu\Scripts\python.exe")) { throw "Staged CPU Python executable is missing" }
+          & "$stage\python-runtime\runtime-envs\cpu\Scripts\python.exe" "$stage\python\worker.py" env_info
           if ($LASTEXITCODE -ne 0) { throw "Staged CPU env_info failed with exit code $LASTEXITCODE" }
-          & "$stage\runtime-envs\cpu\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
+          & "$stage\python-runtime\runtime-envs\cpu\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
           if ($LASTEXITCODE -ne 0) { throw "Staged CPU list_models failed with exit code $LASTEXITCODE" }
-          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
+           ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/python-runtime/runtime-envs" -RuntimeDir "$stage/python-runtime"
           $workspacePattern = [regex]::Escape((Resolve-Path ".").Path)
-          $leakedConfig = Get-ChildItem "$stage/runtime-envs" -Recurse -File |
+           $leakedConfig = Get-ChildItem "$stage/python-runtime/runtime-envs" -Recurse -File |
             Where-Object { $_.Extension -in @('.cfg', '.json', '.txt', '.ini') } |
             Select-String -Pattern $workspacePattern -List
           if ($leakedConfig) { throw "CI workspace path leaked into staged CPU runtime env config" }
@@ -530,9 +528,9 @@ jobs:
           echo "version=$version" >> $env:GITHUB_OUTPUT
           echo "stage_name=$stageName" >> $env:GITHUB_OUTPUT
           echo "stage_artifact=$stageName-stage" >> $env:GITHUB_OUTPUT
-      - name: Prepare bootstrap runtime + pre-installed ROCm environment
+      - name: Prepare bootstrap runtime + ROCm environment seed
         shell: pwsh
-        run: ./scripts/prepare-python-runtime.ps1 -Variant rocm -TorchVersion 2.9.1 -TorchIndexUrl "" -PreinstallBackend rocm
+        run: ./scripts/prepare-python-runtime.ps1 -Variant rocm -TorchVersion 2.9.1 -TorchIndexUrl "" -InitialBackend rocm
       - name: Sync build version metadata
         shell: pwsh
         env:
@@ -577,11 +575,10 @@ jobs:
           Copy-Item "src-tauri/target/release/pymss-studio.exe" "$stage/Pymss Studio.exe"
           Copy-Item "python" "$stage/python" -Recurse
           Copy-Item "python-runtime" "$stage/python-runtime" -Recurse
-          Copy-Item "runtime-envs" "$stage/runtime-envs" -Recurse
           Copy-Item "release/bin" "$stage/bin" -Recurse
-          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
-          if (Test-Path "$stage\runtime-envs\rocm\Scripts\offload-arch.exe") { throw "Staged ROCm offload-arch launcher still embeds the build Python path" }
-          $rocmSdkPackage = Get-ChildItem "$stage\runtime-envs\rocm\Lib\site-packages" -Directory -Filter "_rocm_sdk_core*" |
+          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -RuntimeEnvsDir "$stage/python-runtime/runtime-envs" -RuntimeDir "$stage/python-runtime"
+          if (Test-Path "$stage\python-runtime\runtime-envs\rocm\Scripts\offload-arch.exe") { throw "Staged ROCm offload-arch launcher still embeds the build Python path" }
+          $rocmSdkPackage = Get-ChildItem "$stage\python-runtime\runtime-envs\rocm\Lib\site-packages" -Directory -Filter "_rocm_sdk_core*" |
             Select-Object -First 1
           if (-not $rocmSdkPackage) { throw "Staged ROCm SDK core package is missing" }
           $rocmNativeTools = Join-Path $rocmSdkPackage.FullName "lib\llvm\bin"
@@ -591,20 +588,20 @@ jobs:
           $env:PATH = "$rocmNativeTools;$rocmRuntimeBin;$env:PATH"
           @"
           Pymss Studio ${{ steps.meta.outputs.version }} Windows x64 ROCm
-          This package includes a base Python runtime and a pre-installed ROCm environment.
+          This package includes a base Python runtime and a ROCm environment.
           Requires Windows 11, a supported AMD GPU, and the matching AMD driver.
           Users can switch backends or install additional environments in Settings.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
-          $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR = (Resolve-Path "$stage/runtime-envs").Path
+          $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR = (Resolve-Path "$stage/python-runtime/runtime-envs").Path
           $env:PYMSS_STUDIO_ACTIVE_RUNTIME_FILE = (Join-Path $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR "active-runtime.json")
-          if (!(Test-Path "$stage\runtime-envs\rocm\Scripts\python.exe")) { throw "Staged ROCm Python executable is missing" }
-          & "$stage\runtime-envs\rocm\Scripts\python.exe" "$stage\python\worker.py" env_info
+          if (!(Test-Path "$stage\python-runtime\runtime-envs\rocm\Scripts\python.exe")) { throw "Staged ROCm Python executable is missing" }
+          & "$stage\python-runtime\runtime-envs\rocm\Scripts\python.exe" "$stage\python\worker.py" env_info
           if ($LASTEXITCODE -ne 0) { throw "Staged ROCm env_info failed" }
-          & "$stage\runtime-envs\rocm\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
+          & "$stage\python-runtime\runtime-envs\rocm\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
           if ($LASTEXITCODE -ne 0) { throw "Staged ROCm list_models failed" }
-          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/runtime-envs" -RuntimeDir "$stage/python-runtime"
+          ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/python-runtime/runtime-envs" -RuntimeDir "$stage/python-runtime"
           $workspacePattern = [regex]::Escape((Resolve-Path ".").Path)
-          $leakedConfig = Get-ChildItem "$stage/runtime-envs" -Recurse -File |
+          $leakedConfig = Get-ChildItem "$stage/python-runtime/runtime-envs" -Recurse -File |
             Where-Object { $_.Extension -in @('.cfg', '.json', '.txt', '.ini') } |
             Select-String -Pattern $workspacePattern -List
           if ($leakedConfig) { throw "CI workspace path leaked into staged ROCm runtime env config" }

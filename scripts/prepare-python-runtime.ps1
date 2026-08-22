@@ -6,8 +6,8 @@ param(
     [string]$TorchVersion = "2.7.1",
     [string]$TorchIndexUrl = "https://download.pytorch.org/whl/cu128",
     [switch]$Minimal,
-    [string]$PreinstallBackend = "",
-    [string]$RuntimeEnvsDir = "runtime-envs",
+    [string]$InitialBackend = "",
+    [string]$RuntimeEnvsDir = "",
     [switch]$RewriteRuntimeEnvConfigs,
     [switch]$TemplateRuntimeEnvConfigs
 )
@@ -15,6 +15,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $runtime = Join-Path $root $RuntimeDir
+$effectiveRuntimeEnvsDir = if ($RuntimeEnvsDir) { $RuntimeEnvsDir } else { Join-Path $runtime "runtime-envs" }
 
 function Invoke-NativeChecked {
     param(
@@ -103,10 +104,10 @@ if ($RewriteRuntimeEnvConfigs -or $TemplateRuntimeEnvConfigs) {
 }
 
 # ---------------------------------------------------------------------------
-# PreinstallBackend mode: create minimal bootstrap + pre-installed backend env
+# InitialBackend mode: create minimal bootstrap + initial backend env
 # ---------------------------------------------------------------------------
-if ($PreinstallBackend) {
-    Write-Host "=== PreinstallBackend mode: base runtime + $PreinstallBackend environment ==="
+if ($InitialBackend) {
+    Write-Host "=== InitialBackend mode: base runtime + $InitialBackend environment ==="
 
     # Step 1: Create minimal bootstrap runtime
     if (Test-Path -LiteralPath $runtime) {
@@ -129,12 +130,11 @@ if ($PreinstallBackend) {
     New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
     Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'ensurepip', '--upgrade')
     Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel')
-    Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', 'pysocks', 'pyyaml', 'pymss', 'pymss-core', 'requests', '--no-deps')
     Write-Host "Bootstrap runtime created at $runtime"
 
-    # Step 2: Create venv for the pre-installed backend
-    $envsDir = Join-Path (Split-Path $runtime -Parent) "runtime-envs"
-    $envDir = Join-Path $envsDir $PreinstallBackend
+    # Step 2: Create venv for the initial backend
+    $envsDir = if ([System.IO.Path]::IsPathRooted($effectiveRuntimeEnvsDir)) { $effectiveRuntimeEnvsDir } else { Join-Path $root $effectiveRuntimeEnvsDir }
+    $envDir = Join-Path $envsDir $InitialBackend
     if (Test-Path -LiteralPath $envDir) {
         Remove-Item -LiteralPath $envDir -Recurse -Force
     }
@@ -149,7 +149,7 @@ if ($PreinstallBackend) {
 
     # Step 3: Install packages for the backend
     $torchRequirement = if ([string]::IsNullOrWhiteSpace($TorchVersion)) { "torch" } else { "torch==$TorchVersion" }
-    if ($PreinstallBackend -eq "rocm") {
+    if ($InitialBackend -eq "rocm") {
         $rocmSdkWheels = @(
             "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
             "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
@@ -169,11 +169,11 @@ if ($PreinstallBackend) {
         Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', $torchRequirement, '--index-url', $TorchIndexUrl)
     }
     Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--only-binary=:all:', '--prefer-binary', 'av', 'filelock', 'fsspec', 'jinja2', 'librosa', 'networkx', 'numpy', 'pysocks', 'requests', 'pyyaml', 'sympy', 'tqdm', 'typing-extensions')
-    if ($PreinstallBackend -in @("mps", "mlx")) {
+    if ($InitialBackend -in @("mps", "mlx")) {
         Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', 'mlx')
     }
     Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', '--upgrade', '--no-deps', 'pymss>=2.0.15', 'pymss-core>=0.1.6')
-    $rocmToolDirs = if ($PreinstallBackend -eq "rocm") { Remove-RocmOffloadArchLauncher -EnvironmentDir $envDir } else { @() }
+    $rocmToolDirs = if ($InitialBackend -eq "rocm") { Remove-RocmOffloadArchLauncher -EnvironmentDir $envDir } else { @() }
     & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $envDir -KeepScripts
     Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', '--version')
 
@@ -213,7 +213,7 @@ if ($PreinstallBackend) {
     $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
     $envState = @{
-        backend = $PreinstallBackend
+        backend = $InitialBackend
         manifestVersion = $manifestVersion
         installedAt = $now
         pythonVersion = $probed.pythonVersion
@@ -226,9 +226,9 @@ if ($PreinstallBackend) {
     Write-Host "Wrote environment state to $envStatePath"
 
     # Use relative pythonPath (relative to runtime-envs dir) so it works on any machine
-    $relativePythonPath = Join-Path $PreinstallBackend "Scripts\python.exe"
+    $relativePythonPath = Join-Path $InitialBackend "Scripts\python.exe"
     $activeState = @{
-        backend = $PreinstallBackend
+        backend = $InitialBackend
         manifestVersion = $manifestVersion
         installedAt = $now
         pythonVersion = $probed.pythonVersion
@@ -237,7 +237,6 @@ if ($PreinstallBackend) {
         acceleratorAvailable = $probed.acceleratorAvailable
         pythonPath = $relativePythonPath
         activatedAt = $now
-        source = "preinstalled"
     } | ConvertTo-Json -Depth 4
     $activeRuntimePath = Join-Path $envsDir "active-runtime.json"
     Set-Content -Path $activeRuntimePath -Value $activeState -Encoding UTF8
@@ -245,7 +244,7 @@ if ($PreinstallBackend) {
 
     & (Join-Path $PSScriptRoot "prune-python-runtime.ps1") -RuntimeDir $envDir -KeepScripts
     Invoke-NativeChecked -FilePath $envPython -Arguments @('-m', 'pip', '--version')
-    Write-Host "=== PreinstallBackend complete: $PreinstallBackend environment ready ==="
+    Write-Host "=== InitialBackend complete: $InitialBackend environment ready ==="
     exit 0
 }
 
@@ -276,8 +275,7 @@ if ($Minimal) {
     }
     New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
     Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'ensurepip', '--upgrade')
-    Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install', '--no-cache-dir', 'pysocks', 'pyyaml', 'pymss', 'pymss-core', 'requests', '--no-deps')
-    Write-Host "Prepared minimal Python runtime without ML dependencies"
+    Write-Host "Prepared minimal Python runtime without inference dependencies"
     exit 0
 }
 $torchRequirement = if ([string]::IsNullOrWhiteSpace($TorchVersion)) { "torch" } else { "torch==$TorchVersion" }

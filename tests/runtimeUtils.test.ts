@@ -66,10 +66,10 @@ test('accelerator readiness uses the reported flag for non-MLX backends', () => 
 test('active runtime environment follows active-runtime state', () => {
   const info = {
     installedBackend: 'cuda',
-    installState: { backend: 'cuda', source: 'preinstalled' },
+    installState: { backend: 'cuda', pythonPath: 'package/python.exe' },
     installedEnvironments: [
-      { backend: 'cpu', source: 'managed' },
-      { backend: 'cuda', source: 'preinstalled', torchBackend: 'cuda' },
+      { backend: 'cpu', pythonPath: 'user/cpu/python.exe' },
+      { backend: 'cuda', pythonPath: 'package/python.exe', torchBackend: 'cuda' },
     ],
     torchBackend: 'cuda',
   }
@@ -79,15 +79,15 @@ test('active runtime environment follows active-runtime state', () => {
 
 test('preferred installed backend falls back to the only installed environment', () => {
   assert.equal(preferredInstalledRuntimeBackend({
-    installedEnvironments: [{ backend: 'cpu', source: 'managed' }],
+    installedEnvironments: [{ backend: 'cpu', pythonPath: 'user/cpu/python.exe' }],
   }), 'cpu')
 })
 
 test('preferred installed backend avoids guessing when several inactive environments exist', () => {
   assert.equal(preferredInstalledRuntimeBackend({
     installedEnvironments: [
-      { backend: 'cpu', source: 'managed' },
-      { backend: 'cuda', source: 'managed' },
+      { backend: 'cpu', pythonPath: 'user/cpu/python.exe' },
+      { backend: 'cuda', pythonPath: 'user/cuda/python.exe' },
     ],
   }), null)
 })
@@ -95,10 +95,10 @@ test('preferred installed backend avoids guessing when several inactive environm
 test('runtime environment lookup prefers the active source when backend appears twice', () => {
   const info = {
     installedBackend: 'cuda',
-    installState: { backend: 'cuda', source: 'preinstalled' },
+    installState: { backend: 'cuda', pythonPath: 'package/python.exe' },
     installedEnvironments: [
-      { backend: 'cuda', source: 'managed', pythonPath: 'user/python.exe' },
-      { backend: 'cuda', source: 'preinstalled', pythonPath: 'package/python.exe' },
+      { backend: 'cuda', pythonPath: 'user/python.exe' },
+      { backend: 'cuda', pythonPath: 'package/python.exe' },
     ],
   }
   assert.equal(runtimeEnvironmentForBackend(info, 'cuda')?.pythonPath, 'package/python.exe')

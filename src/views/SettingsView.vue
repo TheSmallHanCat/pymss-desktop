@@ -258,7 +258,7 @@ const runtimeBackendCards = computed(() => {
       const leftover = !env && app.runtimeIncompleteBackends.includes(String(item.backend))
       cards.push({
         ...item,
-        key: `${item.backend}:${env?.source || 'none'}:${env?.pythonPath || ''}`,
+        key: `${item.backend}:${env?.pythonPath || 'none'}`,
         env,
         state,
         recommended: runtimeRecommendedBackend.value === item.backend,
@@ -299,11 +299,6 @@ function runtimeCoreVersionLabel(card: { pymssVersion?: string; pymssCoreVersion
 // to be talking about something other than the card that opened it.
 function runtimeBackendLabel(value: RuntimeBackend | string | null | undefined) {
   return value ? runtimeBackendName(value) : t('settings.envNotChecked')
-}
-
-function runtimeSourceLabel(source: string | undefined) {
-  if (source === 'preinstalled') return t('settings.runtimeSourcePreinstalled')
-  return t('settings.runtimeSourceManaged')
 }
 
 function confirmRuntimeAction(title: string, content: string, positiveText: string) {
@@ -444,7 +439,6 @@ async function deleteRuntime(card: { backend: RuntimeBackend; env?: InstalledRun
   try {
     await app.deleteRuntime(backend, {
       pythonPath: card.env?.pythonPath,
-      source: card.env?.source,
     })
     await Promise.all([app.checkRuntimeInfo(), app.checkEnv(), app.loadRuntimeEnvSizes()])
   } catch (error) {
@@ -471,7 +465,6 @@ async function activateInstalledRuntime(card: { backend: RuntimeBackend; env?: I
   try {
     await app.activateRuntime(backend, {
       pythonPath: card.env?.pythonPath,
-      source: card.env?.source,
     })
     message.success(t('settings.runtimeActivateSuccess'))
     await Promise.all([app.checkRuntimeInfo(), app.loadRuntimeCoreVersions()])
@@ -503,7 +496,6 @@ async function updateRuntimeCore(card: { backend: RuntimeBackend; env?: Installe
   try {
     await app.updateRuntimeCore(card.backend, runtimeMirror.value, currentLocale.value, {
       pythonPath: runtime?.pythonPath,
-      source: runtime?.source,
     })
   } catch (error) {
     message.error(error instanceof Error ? error.message : String(error))
@@ -1410,9 +1402,6 @@ onMounted(async () => {
                   <n-tag v-else-if="card.state === 'installed'" :bordered="false" size="small" type="info" round>
                     {{ t('settings.runtimeInstalled') }}
                   </n-tag>
-                  <n-tag v-if="card.env?.source" :bordered="false" size="small" round>
-                    {{ runtimeSourceLabel(card.env.source) }}
-                  </n-tag>
                   <n-tag v-if="card.recommended" :bordered="false" size="small" type="warning" round>
                     {{ t('settings.runtimeRecommended') }}
                   </n-tag>
@@ -1516,7 +1505,7 @@ onMounted(async () => {
                     {{ t('settings.runtimeCleanLeftover') }}
                   </n-button>
                   <n-button
-                    v-if="card.env?.source === 'managed' && card.state === 'installed'"
+                    v-if="card.state === 'installed'"
                     size="tiny"
                     tertiary
                     type="error"

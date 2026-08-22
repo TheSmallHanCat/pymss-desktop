@@ -70,7 +70,6 @@ type DebugRuntimeFileInfo = {
 type DebugRuntimePointers = {
   runtimeEnvsDir: string
   activeRuntimeFile: string
-  bundledRuntimeEnvsDir?: string | null
   files: DebugRuntimeFileInfo[]
 }
 type RuntimeTreeChild = {
@@ -84,7 +83,6 @@ type RuntimeTreeNode = RuntimeTreeChild & {
 }
 type RuntimeDebugEnvironmentRow = {
   backend: string
-  source: string
   pythonPath: string
   editablePath: string
   editableFile: DebugRuntimeFileInfo | null
@@ -508,14 +506,12 @@ const runtimeTree = computed<RuntimeTreeNode[]>(() => {
       name: 'runtime-envs',
       role: t('debug.runtimeTreeManagedRootRole'),
       path: info?.runtimeEnvsDir || '-',
-      source: t('debug.runtimeTreeUserSource'),
+      source: t('debug.runtimeTreeAppSource'),
       children: environments.map((entry) => ({
         name: String(entry.backend || '-'),
-        role: entry.source === 'preinstalled'
-          ? t('debug.runtimeTreePreinstalledRole')
-          : t('debug.runtimeTreeManagedRole'),
+        role: t('debug.runtimeTreeManagedRole'),
         path: entry.pythonPath || '-',
-        source: entry.source || '-',
+        source: t('debug.runtimeTreeAppSource'),
         children: [
           { name: 'python', role: t('debug.runtimeTreePythonRole'), path: entry.pythonPath || '-' },
           { name: 'install.log', role: t('debug.runtimeTreeLogRole'), path: entry.logPath || '-' },
@@ -526,28 +522,19 @@ const runtimeTree = computed<RuntimeTreeNode[]>(() => {
       name: 'active-runtime.json',
       role: t('debug.runtimeTreeActiveRole'),
       path: info?.activeRuntimeFile || '-',
-      source: t('debug.runtimeTreeUserSource'),
-      children: [],
-    },
-    ...(info?.bundledRuntimeEnvsDir ? [{
-      name: 'preinstalled-runtime-envs',
-      role: t('debug.runtimeTreeBundleRootRole'),
-      path: info.bundledRuntimeEnvsDir,
       source: t('debug.runtimeTreeAppSource'),
       children: [],
-    }] : []),
+    },
   ]
 })
 const runtimeStatusRows = computed(() => [
   { label: t('debug.runtimeCurrentBackend'), value: app.runtimeInfo?.installedBackend || '-' },
   { label: t('debug.runtimeCurrentPython'), value: app.runtimeInfo?.installState?.pythonPath || '-' },
-  { label: t('debug.runtimeCurrentSource'), value: app.runtimeInfo?.installState?.source || '-' },
   { label: t('debug.runtimeInstalledCount'), value: String(app.runtimeInfo?.installedEnvironments?.length || 0) },
 ])
 const runtimePointerRows = computed(() => [
   { label: t('debug.runtimeDebugUserRoot'), value: runtimeDebugInfo.value?.runtimeEnvsDir || app.runtimeInfo?.runtimeEnvsDir || '' },
   { label: t('debug.runtimeDebugUserActive'), value: runtimeDebugInfo.value?.activeRuntimeFile || app.runtimeInfo?.activeRuntimeFile || '' },
-  { label: t('debug.runtimeDebugBundledRoot'), value: runtimeDebugInfo.value?.bundledRuntimeEnvsDir || app.runtimeInfo?.bundledRuntimeEnvsDir || '' },
   { label: t('debug.runtimeBootstrapPython'), value: app.runtimeInfo?.bootstrapPython || '' },
 ])
 const runtimeDebugFiles = computed(() => runtimeDebugInfo.value?.files || [])
@@ -562,7 +549,6 @@ const runtimeDebugEnvironments = computed<RuntimeDebugEnvironmentRow[]>(() => (a
   const editableFile = editablePath !== pythonPath ? runtimeDebugFileLookup.value.get(editablePath) || null : null
   return {
     backend: String(entry.backend || '-'),
-    source: String(entry.source || '-'),
     pythonPath,
     editablePath: editableFile?.path || editablePath,
     editableFile,
@@ -1286,7 +1272,7 @@ async function overrideActiveRuntimePointer() {
   runtimeDebugSaving.value = 'active-runtime'
   try {
     const info = await invoke<DebugRuntimePointers>('debug_runtime_override_active', {
-      payload: { backend: runtimeOverrideBackend.value, pythonPath: runtimeOverridePythonPath.value.trim(), source: 'debug' },
+      payload: { backend: runtimeOverrideBackend.value, pythonPath: runtimeOverridePythonPath.value.trim() },
     })
     setRuntimeDebugInfo(info)
     await app.checkRuntimeInfo().catch(() => {})
@@ -1573,7 +1559,7 @@ watch(developerMode, (enabled) => {
               <div class="runtime-file-editor__head">
                 <div class="runtime-file-editor__title">
                   <strong>{{ envItem.backend }}</strong>
-                  <span>{{ envItem.source }} · {{ envItem.editableFile ? t('debug.runtimeDebugConfigFile') : t('debug.runtimeDebugNoConfigFile') }}</span>
+                   <span>{{ envItem.editableFile ? t('debug.runtimeDebugConfigFile') : t('debug.runtimeDebugNoConfigFile') }}</span>
                 </div>
                 <div class="runtime-file-editor__actions">
                   <n-button size="tiny" secondary :disabled="!envItem.pythonPath" @click="revealPath(envItem.pythonPath)">{{ t('debug.runtimeOpenPython') }}</n-button>
@@ -1627,7 +1613,6 @@ watch(developerMode, (enabled) => {
           <div class="runtime-section-head">
             <div>
               <strong>{{ t('debug.runtimeTreeTitle') }}</strong>
-              <p>{{ t('debug.runtimeTreeHint') }}</p>
             </div>
           </div>
           <div class="runtime-tree">

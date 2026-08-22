@@ -296,7 +296,8 @@ async function finishOnboarding(event?: MouseEvent) {
   if (alreadyReady) return
   if (alreadyInstalled) {
     // Installed but not active — switching is enough, no need to download it again.
-    app.activateRuntime(backend).catch(() => {})
+    const installed = app.runtimeInfo?.installedEnvironments?.find((entry) => entry.backend === backend)
+    app.activateRuntime(backend, { pythonPath: installed?.pythonPath }).catch(() => {})
   } else {
     app.installRuntime(backend, runtimeMirror.value, currentLocale.value).catch(() => {})
   }

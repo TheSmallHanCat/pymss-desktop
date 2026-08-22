@@ -48,7 +48,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#SourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Do not install anything into system Python. The embedded python-runtime is private to this app.
+; The runtime is private to this app and is granted to the installing user below.
+
+[Dirs]
+Name: "{app}\python-runtime"; Permissions: users-modify
+Name: "{app}\python-runtime\runtime-envs"; Permissions: users-modify
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -103,7 +107,7 @@ var
   PythonExe: string;
   Content: string;
 begin
-  EnvDir := ExpandConstant('{app}') + '\runtime-envs\' + Backend;
+  EnvDir := ExpandConstant('{app}') + '\python-runtime\runtime-envs\' + Backend;
   ConfigPath := EnvDir + '\pyvenv.cfg';
   PythonRuntimeDir := ExpandConstant('{app}') + '\python-runtime';
   PythonExe := PythonRuntimeDir + '\python.exe';

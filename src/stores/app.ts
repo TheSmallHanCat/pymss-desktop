@@ -40,7 +40,6 @@ export type RuntimeInfo = {
   bootstrapPython?: string
   runtimeEnvsDir?: string
   activeRuntimeFile?: string
-  bundledRuntimeEnvsDir?: string | null
   backend?: RuntimeBackend | null
   installedBackend?: RuntimeBackend | string | null
   installState?: {
@@ -52,7 +51,6 @@ export type RuntimeInfo = {
     torchBackend?: string | null
     pythonPath?: string
     logPath?: string
-    source?: string
     packages?: Record<string, boolean>
     packageVersions?: Record<string, string | null>
     pymssVersion?: string | null
@@ -88,7 +86,6 @@ export type InstalledRuntime = {
   pymssVersion?: string | null
   pymssCoreVersion?: string | null
   coreUpdateSupported?: boolean
-  source?: 'managed' | 'preinstalled'
 }
 
 export type RuntimeCoreVersions = {
@@ -367,7 +364,7 @@ export const useAppStore = defineStore('app', () => {
     backend: RuntimeBackend,
     mirror = 'auto',
     locale = '',
-    target: { pythonPath?: string; source?: string } = {},
+    target: { pythonPath?: string } = {},
   ) {
     const taskId = `runtime_core_update_${crypto.randomUUID()}`
     runtimeCoreUpdateTaskId.value = taskId
@@ -383,7 +380,7 @@ export const useAppStore = defineStore('app', () => {
     return taskId
   }
 
-  async function activateRuntime(backend: RuntimeBackend, target: { pythonPath?: string; source?: string } = {}) {
+  async function activateRuntime(backend: RuntimeBackend, target: { pythonPath?: string } = {}) {
     await invoke('activate_runtime', { payload: { backend, ...target } })
     await Promise.all([checkRuntimeInfo(), checkEnv(), loadRuntimeCoreVersions()])
   }
@@ -406,7 +403,7 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function deleteRuntime(backend: RuntimeBackend, target: { pythonPath?: string; source?: string } = {}) {
+  async function deleteRuntime(backend: RuntimeBackend, target: { pythonPath?: string } = {}) {
     await invoke('delete_runtime', { payload: { backend, ...target } })
     await checkRuntimeInfo()
   }

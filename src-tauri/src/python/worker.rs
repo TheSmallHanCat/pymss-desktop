@@ -27,7 +27,6 @@ static PAYLOAD_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[serde(rename_all = "camelCase")]
 struct ActiveRuntimeRecord {
     python_path: String,
-    source: Option<String>,
 }
 
 fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
@@ -125,26 +124,11 @@ fn bootstrap_python_path(app: &AppHandle) -> AppResult<String> {
     }
 }
 
-fn bundled_runtime_envs_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
-    let mut dirs = Vec::new();
-    if let Ok(resource) = app.path().resource_dir() {
-        dirs.push(resource.join("runtime-envs"));
-        dirs.push(resource.join("_up_").join("runtime-envs"));
-        dirs.push(resource.join("resources").join("runtime-envs"));
-    }
-    let exe_dir = std::env::current_exe()?
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    dirs.push(exe_dir.join("runtime-envs"));
-    Ok(dirs.into_iter().filter(|dir| dir.is_dir()).collect())
-}
-
 fn try_resolve_active_runtime(file: &PathBuf) -> Option<String> {
-    resolve_active_runtime_record(file).map(|(python, _source)| python)
+    resolve_active_runtime_record(file)
 }
 
-fn resolve_active_runtime_record(file: &PathBuf) -> Option<(String, Option<String>)> {
+fn resolve_active_runtime_record(file: &PathBuf) -> Option<String> {
     if !file.is_file() {
         return None;
     }
@@ -155,124 +139,39 @@ fn resolve_active_runtime_record(file: &PathBuf) -> Option<(String, Option<Strin
     if python.is_absolute() {
         return python
             .is_file()
-            .then(|| (python.to_string_lossy().to_string(), record.source));
+            .then(|| python.to_string_lossy().to_string());
     }
     // Relative path – resolve against the directory containing the file
     let parent = file.parent()?;
     let resolved = parent.join(&python);
     resolved
         .is_file()
-        .then(|| (resolved.to_string_lossy().to_string(), record.source))
-}
-
-fn materialize_bundled_runtime_env_templates(app: &AppHandle) -> AppResult<()> {
-    if let Ok(dirs) = bundled_runtime_envs_dirs(app) {
-        for envs_dir in dirs {
-            if let Err(error) = remove_rocm_offload_arch_launcher(&envs_dir) {
-                session_log::append(
-                    app,
-                    "WARNING",
-                    "runtime.rocm_launcher_cleanup",
-                    vec![
-                        (
-                            "path",
-                            envs_dir
-                                .join("rocm")
-                                .join("Scripts")
-                                .join("offload-arch.exe")
-                                .to_string_lossy()
-                                .to_string(),
-                        ),
-                        ("message", error.to_string()),
-                    ],
-                );
-            }
-            let Ok(entries) = std::fs::read_dir(envs_dir) else {
-                continue;
-            };
-            for entry in entries {
-                let Ok(entry) = entry else {
-                    continue;
-                };
-                let env_dir = entry.path();
-                if env_dir.is_dir() {
-                    materialize_windows_venv_template(&env_dir)?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn materialize_windows_venv_template(env_dir: &PathBuf) -> AppResult<()> {
-    let cfg = env_dir.join("pyvenv.cfg");
-    if !cfg.is_file() {
-        return Ok(());
-    }
-    let Some(runtime_envs_dir) = env_dir.parent() else {
-        return Ok(());
-    };
-    let Some(package_dir) = runtime_envs_dir.parent() else {
-        return Ok(());
-    };
-    let runtime_dir = package_dir.join("python-runtime");
-    let runtime_python = runtime_dir.join("python.exe");
-    if !runtime_python.is_file() {
-        return Ok(());
-    }
-
-    let desired_home = format!("home = {}", runtime_dir.to_string_lossy());
-    let desired_executable = format!("executable = {}", runtime_python.to_string_lossy());
-    let content = format!(
-        "{desired_home}\r\ninclude-system-site-packages = false\r\n{desired_executable}\r\ncommand = {} -m venv {}\r\n",
-        runtime_python.to_string_lossy(),
-        env_dir.to_string_lossy()
-    );
-    if std::fs::read_to_string(&cfg)
-        .map(|existing| existing == content)
-        .unwrap_or(false)
-    {
-        return Ok(());
-    }
-    std::fs::write(&cfg, content)?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn remove_rocm_offload_arch_launcher(runtime_envs_dir: &Path) -> std::io::Result<bool> {
-    let launcher = runtime_envs_dir
-        .join("rocm")
-        .join("Scripts")
-        .join("offload-arch.exe");
-    if !launcher.is_file() {
-        return Ok(false);
-    }
-    std::fs::remove_file(launcher).map(|()| true)
-}
-
-#[cfg(not(windows))]
-fn remove_rocm_offload_arch_launcher(_runtime_envs_dir: &Path) -> std::io::Result<bool> {
-    Ok(false)
-}
-
-#[cfg(not(windows))]
-fn materialize_windows_venv_template(_env_dir: &PathBuf) -> AppResult<()> {
-    Ok(())
+        .then(|| resolved.to_string_lossy().to_string())
 }
 
 fn active_runtime_python_path(app: &AppHandle) -> AppResult<Option<String>> {
     let user_file = storage::active_runtime_file(app)?;
-    if let Some(result) = try_resolve_active_runtime(&user_file) {
-        return Ok(Some(result));
+    let Some(path) = try_resolve_active_runtime(&user_file) else {
+        return Ok(None);
+    };
+    if !is_user_runtime_python_path(app, &path)? {
+        return Ok(None);
     }
-    for envs_dir in bundled_runtime_envs_dirs(app)? {
-        let bundled_file = envs_dir.join("active-runtime.json");
-        if let Some(result) = try_resolve_active_runtime(&bundled_file) {
-            return Ok(Some(result));
-        }
-    }
-    Ok(None)
+    Ok(Some(path))
+}
+
+fn is_user_runtime_python_path(app: &AppHandle, path: &str) -> AppResult<bool> {
+    let runtime_envs = storage::runtime_envs_dir(app)?;
+    let runtime_root = runtime_envs.canonicalize().unwrap_or(runtime_envs);
+    let python_path = PathBuf::from(&path);
+    let env_dir = python_path
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    Ok(env_dir
+        .and_then(|path| path.canonicalize().ok())
+        .is_some_and(|path| path.starts_with(&runtime_root))
+    )
 }
 
 fn bundled_bin_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
@@ -314,17 +213,17 @@ fn rocm_native_tool_dir(runtime_envs_dir: &Path) -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn rocm_native_tool_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
-    Ok(bundled_runtime_envs_dirs(app)?
-        .iter()
-        .filter_map(|dir| rocm_native_tool_dir(dir))
-        .flat_map(|tool_dir| {
-            let sdk_bin = tool_dir
-                .parent()
-                .and_then(|path| path.parent())
-                .and_then(|path| path.parent())
-                .map(|path| path.join("bin"));
-            std::iter::once(tool_dir).chain(sdk_bin.filter(|dir| dir.is_dir()))
-        })
+    let runtime_envs = storage::runtime_envs_dir(app)?;
+    let Some(tool_dir) = rocm_native_tool_dir(&runtime_envs) else {
+        return Ok(Vec::new());
+    };
+    let sdk_bin = tool_dir
+        .parent()
+        .and_then(|path| path.parent())
+        .and_then(|path| path.parent())
+        .map(|path| path.join("bin"));
+    Ok(std::iter::once(tool_dir)
+        .chain(sdk_bin.filter(|dir| dir.is_dir()))
         .collect())
 }
 
@@ -404,22 +303,28 @@ fn build_worker_command(
 ) -> AppResult<Command> {
     let worker = worker_path(app)?;
     let bootstrap_python = bootstrap_python_path(app)?;
-    materialize_bundled_runtime_env_templates(app)?;
     // Runtime management must never run inside the environment it is managing: the bootstrap
     // interpreter is the only one guaranteed to exist while an environment is being built,
     // switched, or deleted.
     let python = if matches!(
         command,
-        "runtime_info"
+        "health"
+            | "runtime_info"
             | "runtime_env_sizes"
+            | "runtime_core_versions"
             | "install_runtime"
             | "activate_runtime"
             | "delete_runtime"
             | "update_runtime_core"
+            | "test_connection"
     ) {
         bootstrap_python.clone()
     } else {
-        active_runtime_python_path(app)?.unwrap_or_else(|| bootstrap_python.clone())
+        active_runtime_python_path(app)?.ok_or_else(|| {
+            AppError::Worker(
+                "No active runtime environment is installed. Open Settings to install one before running this operation.".into(),
+            )
+        })?
     };
     let python_for_log = python.clone();
     let worker_for_log = worker.clone();
@@ -452,11 +357,6 @@ fn build_worker_command(
     if let Ok(file) = storage::active_runtime_file(app) {
         cmd.env("PYMSS_STUDIO_ACTIVE_RUNTIME_FILE", file.to_string_lossy().to_string());
     }
-    if let Ok(dirs) = bundled_runtime_envs_dirs(app) {
-        if let Some(first) = dirs.first() {
-            cmd.env("PYMSS_STUDIO_BUNDLED_RUNTIME_ENVS_DIR", first.to_string_lossy().to_string());
-        }
-    }
     apply_proxy_env(app, &mut cmd);
     let mut tool_dirs = rocm_native_tool_dirs(app)?;
     tool_dirs.extend(bundled_bin_dirs(app)?);
@@ -464,9 +364,12 @@ fn build_worker_command(
         cmd.env("PATH", path);
     }
     #[cfg(target_os = "macos")]
-    if let Ok(Some(embedded)) = embedded_python_path(app) {
-        if let Some(runtime_root) = embedded.parent().and_then(|path| path.parent()) {
-            cmd.env("PYTHONHOME", runtime_root.to_string_lossy().to_string());
+    if python == bootstrap_python {
+        let embedded = embedded_python_path(app)?;
+        if let Some(embedded) = embedded {
+            if let Some(runtime_root) = embedded.parent().and_then(|path| path.parent()) {
+                cmd.env("PYTHONHOME", runtime_root.to_string_lossy().to_string());
+            }
         }
     }
     #[cfg(target_os = "macos")]
@@ -1108,133 +1011,6 @@ pub fn spawn_worker_background(
 
 #[cfg(test)]
 mod tests {
-    use super::{materialize_windows_venv_template, resolve_active_runtime_record, try_resolve_active_runtime};
-    use std::path::PathBuf;
-
-    #[cfg(windows)]
-    #[test]
-    fn packaged_venv_template_materializes_to_current_package_dir() {
-        let root = std::env::temp_dir().join(format!(
-            "pymss-worker-template-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let env_dir = root.join("runtime-envs").join("cuda");
-        let scripts_dir = env_dir.join("Scripts");
-        let runtime_dir = root.join("python-runtime");
-        std::fs::create_dir_all(&scripts_dir).unwrap();
-        std::fs::create_dir_all(&runtime_dir).unwrap();
-        std::fs::write(scripts_dir.join("python.exe"), "stub").unwrap();
-        std::fs::write(runtime_dir.join("python.exe"), "stub").unwrap();
-        std::fs::write(
-            env_dir.join("pyvenv.cfg"),
-            "home = __PYMSS_STUDIO_PYTHON_RUNTIME__\r\ninclude-system-site-packages = false\r\nexecutable = __PYMSS_STUDIO_PYTHON_RUNTIME__\\python.exe\r\ncommand = __PYMSS_STUDIO_PYTHON_RUNTIME__\\python.exe -m venv __PYMSS_STUDIO_RUNTIME_ENV__\r\n",
-        )
-        .unwrap();
-        let active_file = root.join("runtime-envs").join("active-runtime.json");
-        std::fs::write(
-            &active_file,
-            r#"{"pythonPath":"cuda\\Scripts\\python.exe"}"#,
-        )
-        .unwrap();
-
-        materialize_windows_venv_template(&env_dir).unwrap();
-        let resolved = try_resolve_active_runtime(&active_file).unwrap();
-        let cfg = std::fs::read_to_string(env_dir.join("pyvenv.cfg")).unwrap();
-        assert_eq!(PathBuf::from(resolved), scripts_dir.join("python.exe"));
-        assert!(cfg.contains(&format!("home = {}", runtime_dir.to_string_lossy())));
-        assert!(!cfg.contains("__PYMSS_STUDIO"));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn packaged_venv_with_ci_path_materializes_to_current_package_dir() {
-        let root = std::env::temp_dir().join(format!(
-            "pymss-worker-ci-path-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let package_root = root.join("installed-package");
-        let leaked_root = root.join("ci-workspace").join("pymss-studio").join("release").join("Pymss-Studio-test-windows-x64-rocm");
-        let env_dir = package_root.join("runtime-envs").join("rocm");
-        let scripts_dir = env_dir.join("Scripts");
-        let runtime_dir = package_root.join("python-runtime");
-        std::fs::create_dir_all(&scripts_dir).unwrap();
-        std::fs::create_dir_all(&runtime_dir).unwrap();
-        std::fs::write(scripts_dir.join("python.exe"), "stub").unwrap();
-        std::fs::write(runtime_dir.join("python.exe"), "stub").unwrap();
-        std::fs::write(
-            env_dir.join("pyvenv.cfg"),
-            format!(
-                "home = {}\r\ninclude-system-site-packages = false\r\nexecutable = {}\r\ncommand = {} -m venv {}\r\n",
-                leaked_root.join("python-runtime").to_string_lossy(),
-                leaked_root.join("python-runtime").join("python.exe").to_string_lossy(),
-                leaked_root.join("python-runtime").join("python.exe").to_string_lossy(),
-                env_dir.to_string_lossy()
-            ),
-        )
-        .unwrap();
-
-        materialize_windows_venv_template(&env_dir).unwrap();
-        let cfg = std::fs::read_to_string(env_dir.join("pyvenv.cfg")).unwrap();
-        assert!(cfg.contains(&format!("home = {}", runtime_dir.to_string_lossy())));
-        assert!(cfg.contains(&format!(
-            "command = {} -m venv {}",
-            runtime_dir.join("python.exe").to_string_lossy(),
-            env_dir.to_string_lossy()
-        )));
-        assert!(!cfg.contains(&leaked_root.to_string_lossy().to_string()));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn packaged_venv_with_current_path_does_not_need_write_access() {
-        let root = std::env::temp_dir().join(format!(
-            "pymss-worker-readonly-template-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let env_dir = root.join("runtime-envs").join("rocm");
-        let runtime_dir = root.join("python-runtime");
-        std::fs::create_dir_all(env_dir.join("Scripts")).unwrap();
-        std::fs::create_dir_all(&runtime_dir).unwrap();
-        std::fs::write(env_dir.join("Scripts").join("python.exe"), "stub").unwrap();
-        std::fs::write(runtime_dir.join("python.exe"), "stub").unwrap();
-        let cfg = env_dir.join("pyvenv.cfg");
-        std::fs::write(
-            &cfg,
-            format!(
-                "home = {}\r\ninclude-system-site-packages = false\r\nexecutable = {}\r\ncommand = {} -m venv {}\r\n",
-                runtime_dir.to_string_lossy(),
-                runtime_dir.join("python.exe").to_string_lossy(),
-                runtime_dir.join("python.exe").to_string_lossy(),
-                env_dir.to_string_lossy()
-            ),
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&cfg).unwrap().permissions();
-        permissions.set_readonly(true);
-        std::fs::set_permissions(&cfg, permissions).unwrap();
-
-        let result = materialize_windows_venv_template(&env_dir);
-
-        let mut permissions = std::fs::metadata(&cfg).unwrap().permissions();
-        permissions.set_readonly(false);
-        std::fs::set_permissions(&cfg, permissions).unwrap();
-        assert!(result.is_ok());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
     #[cfg(windows)]
     #[test]
     fn finds_rocm_native_offload_arch_tool() {
@@ -1261,30 +1037,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn removes_relocated_rocm_offload_arch_launcher() {
-        let root = std::env::temp_dir().join(format!(
-            "pymss-worker-rocm-launcher-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let launcher = root
-            .join("rocm")
-            .join("Scripts")
-            .join("offload-arch.exe");
-        std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
-        std::fs::write(&launcher, "launcher stub").unwrap();
-
-        assert!(super::remove_rocm_offload_arch_launcher(&root).unwrap());
-
-        assert!(!launcher.exists());
-        assert!(!super::remove_rocm_offload_arch_launcher(&root).unwrap());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
     #[test]
     fn recognizes_only_known_rocm_offload_arch_diagnostics() {
         for line in [
@@ -1298,29 +1050,4 @@ mod tests {
         assert!(!super::is_rocm_offload_arch_diagnostic("unrelated Python traceback"));
     }
 
-    #[test]
-    fn active_runtime_record_reports_source() {
-        let root = std::env::temp_dir().join(format!(
-            "pymss-worker-active-runtime-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let scripts_dir = root.join("runtime-envs").join("cuda").join("Scripts");
-        std::fs::create_dir_all(&scripts_dir).unwrap();
-        std::fs::write(scripts_dir.join("python.exe"), "stub").unwrap();
-        let active_file = root.join("runtime-envs").join("active-runtime.json");
-        std::fs::write(
-            &active_file,
-            r#"{"pythonPath":"cuda\\Scripts\\python.exe","source":"preinstalled"}"#,
-        )
-        .unwrap();
-
-        let (resolved, source) = resolve_active_runtime_record(&active_file).unwrap();
-        assert_eq!(PathBuf::from(resolved), scripts_dir.join("python.exe"));
-        assert_eq!(source.as_deref(), Some("preinstalled"));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
 }

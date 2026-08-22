@@ -53,7 +53,6 @@ pub struct DebugRuntimeFileInfo {
 pub struct DebugRuntimePointersPayload {
     runtime_envs_dir: String,
     active_runtime_file: String,
-    bundled_runtime_envs_dir: Option<String>,
     files: Vec<DebugRuntimeFileInfo>,
 }
 
@@ -76,7 +75,6 @@ pub struct DebugRuntimeRestoreRequest {
 pub struct DebugActiveRuntimeOverrideRequest {
     backend: String,
     python_path: String,
-    source: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -561,21 +559,6 @@ pub async fn delete_runtime(app: AppHandle, payload: Value) -> AppResult<Value> 
     run_worker_with_payload(&app, "delete_runtime", Some(payload))
 }
 
-fn debug_bundled_runtime_envs_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
-    let mut dirs = Vec::new();
-    if let Ok(resource) = app.path().resource_dir() {
-        dirs.push(resource.join("runtime-envs"));
-        dirs.push(resource.join("_up_").join("runtime-envs"));
-        dirs.push(resource.join("resources").join("runtime-envs"));
-    }
-    let exe_dir = std::env::current_exe()?
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    dirs.push(exe_dir.join("runtime-envs"));
-    Ok(dirs.into_iter().filter(|dir| dir.is_dir()).collect())
-}
-
 fn debug_runtime_backup_path(path: &Path) -> AppResult<PathBuf> {
     let name = path
         .file_name()
@@ -585,11 +568,7 @@ fn debug_runtime_backup_path(path: &Path) -> AppResult<PathBuf> {
 }
 
 fn debug_runtime_allowed_roots(app: &AppHandle) -> AppResult<Vec<(PathBuf, String)>> {
-    let mut roots = vec![(storage::runtime_envs_dir(app)?, "user".to_string())];
-    for dir in debug_bundled_runtime_envs_dirs(app)? {
-        roots.push((dir, "preinstalled".to_string()));
-    }
-    Ok(roots)
+    Ok(vec![(storage::runtime_envs_dir(app)?, "application".to_string())])
 }
 
 fn require_runtime_debug_developer_mode(app: &AppHandle) -> AppResult<()> {
@@ -697,11 +676,9 @@ fn create_debug_runtime_backup(path: &Path) -> AppResult<()> {
 #[tauri::command]
 pub async fn debug_runtime_pointers(app: AppHandle) -> AppResult<DebugRuntimePointersPayload> {
     require_runtime_debug_developer_mode(&app)?;
-    let bundled = debug_bundled_runtime_envs_dirs(&app)?.into_iter().next();
     Ok(DebugRuntimePointersPayload {
         runtime_envs_dir: storage::runtime_envs_dir(&app)?.to_string_lossy().to_string(),
         active_runtime_file: storage::active_runtime_file(&app)?.to_string_lossy().to_string(),
-        bundled_runtime_envs_dir: bundled.map(|path| path.to_string_lossy().to_string()),
         files: collect_debug_runtime_files(&app)?,
     })
 }
@@ -760,7 +737,6 @@ pub async fn debug_runtime_override_active(app: AppHandle, payload: DebugActiveR
     let content = serde_json::json!({
         "backend": backend,
         "pythonPath": python_path,
-        "source": payload.source.unwrap_or_else(|| "debug".to_string()),
     });
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

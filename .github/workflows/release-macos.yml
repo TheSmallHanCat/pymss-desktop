@@ -50,11 +50,12 @@ jobs:
           cargo.write_text(text, encoding="utf-8")
           PY
 
-      - name: Prepare embedded Python runtime with PyTorch + MLX support
+      - name: Prepare bootstrap and MLX runtime environment
         working-directory: .
         env:
           TORCH_VERSION: "2.7.1"
           TORCH_INDEX_URL: ""
+          INITIAL_BACKEND: mlx
         run: bash scripts/prepare-python-runtime.sh mlx
 
       - name: Verify prepared macOS runtime
@@ -66,7 +67,7 @@ jobs:
             otool -L python-runtime/bin/python3
             exit 1
           fi
-          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import sys, ssl, pymss; print(sys.prefix); print('ssl ok'); print('pymss ok')"
+          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import importlib.util, sys, ssl, venv, pip; assert importlib.util.find_spec('torch') is None; assert importlib.util.find_spec('pymss') is None; print(sys.prefix); print('bootstrap ok')"
 
       - name: Install macOS bundled tools
         run: brew install ffmpeg aria2
@@ -129,11 +130,15 @@ jobs:
           fi
 
           RES="$APP/Contents/Resources"
+          RESOURCE_ROOT="$RES"
+          if [ ! -d "$RESOURCE_ROOT/python-runtime/runtime-envs" ]; then RESOURCE_ROOT="$RES/resources"; fi
           test -f "$RES/python/worker.py" || test -f "$RES/resources/python/worker.py"
-          test -d "$RES/python-runtime" || test -d "$RES/resources/python-runtime"
+          test -d "$RESOURCE_ROOT/python-runtime"
+          test -d "$RESOURCE_ROOT/python-runtime/runtime-envs"
           test -x "$RES/bin/ffmpeg" || test -x "$RES/resources/bin/ffmpeg"
           test -x "$RES/bin/aria2c" || test -x "$RES/resources/bin/aria2c"
-          PY="$RES/python-runtime/bin/python3"
+          PY="$RESOURCE_ROOT/python-runtime/bin/python3"
+          ENV_PY="$RESOURCE_ROOT/python-runtime/runtime-envs/mlx/bin/python"
           WORKER="$RES/python/worker.py"
           if [ ! -f "$WORKER" ]; then
             WORKER="$RES/resources/python/worker.py"
@@ -143,6 +148,7 @@ jobs:
             BIN="$RES/resources/bin"
           fi
           test -f "$PY"
+          test -f "$ENV_PY"
           test -f "$WORKER"
           test -x "$BIN/ffmpeg"
           test -x "$BIN/ffprobe"
@@ -152,17 +158,17 @@ jobs:
           "$BIN/ffmpeg" -version
           "$BIN/ffprobe" -version
           OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" "$BIN/aria2c" --version
-          test -d "$RES/python-runtime/lib/python3.12"
+          test -d "$RESOURCE_ROOT/python-runtime/lib/python3.12"
           if otool -L "$PY" | grep -q '/Library/Frameworks/Python.framework/Versions/'; then
             echo "Bundled app runtime unexpectedly links system Python framework: $PY"
             otool -L "$PY"
             exit 1
           fi
-          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import sys, ssl, pymss; print(sys.prefix); print('ssl ok'); print('pymss ok')"
-          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "import shutil; assert shutil.which('ffmpeg'); assert shutil.which('aria2c'); print('bundled tools ok')"
-          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" -c "from pymss.model_download import ARIA2C_PATH; assert ARIA2C_PATH, 'pymss cannot see the bundled aria2c'; print('aria2 resolver ok:', ARIA2C_PATH)"
-          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" env_info
-          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RES/python-runtime" "$PY" "$WORKER" list_models --payload "{}"
+          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RESOURCE_ROOT/python-runtime" "$PY" -c "import importlib.util, sys, ssl, venv, pip; assert importlib.util.find_spec('torch') is None; assert importlib.util.find_spec('pymss') is None; print(sys.prefix); print('bootstrap ok')"
+          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RESOURCE_ROOT/python-runtime" "$PY" -c "import shutil; assert shutil.which('ffmpeg'); assert shutil.which('aria2c'); print('bundled tools ok')"
+          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 "$ENV_PY" -c "from pymss.model_download import ARIA2C_PATH; assert ARIA2C_PATH, 'pymss cannot see the bundled aria2c'; print('aria2 resolver ok:', ARIA2C_PATH)"
+          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 "$ENV_PY" "$WORKER" env_info
+          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 "$ENV_PY" "$WORKER" list_models --payload "{}"
           codesign --verify --deep --strict --verbose=4 "$APP"
 
       - name: Build DMG with hdiutil

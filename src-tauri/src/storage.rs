@@ -137,8 +137,26 @@ pub fn temp_dir(app: &AppHandle) -> AppResult<PathBuf> {
     Ok(data_root_dir(app)?.join("temp"))
 }
 
+pub fn runtime_root_dir(app: &AppHandle) -> AppResult<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(resource) = app.path().resource_dir() {
+        candidates.push(resource.join("python-runtime"));
+        candidates.push(resource.join("_up_").join("python-runtime"));
+        candidates.push(resource.join("resources").join("python-runtime"));
+    }
+    let exe_dir = std::env::current_exe()?
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| AppError::Worker("failed to resolve executable directory".into()))?;
+    candidates.push(exe_dir.join("python-runtime"));
+    Ok(candidates
+        .into_iter()
+        .find(|path| path.is_dir())
+        .unwrap_or_else(|| exe_dir.join("python-runtime")))
+}
+
 pub fn runtime_envs_dir(app: &AppHandle) -> AppResult<PathBuf> {
-    Ok(data_root_dir(app)?.join("runtime-envs"))
+    Ok(runtime_root_dir(app)?.join("runtime-envs"))
 }
 
 pub fn active_runtime_file(app: &AppHandle) -> AppResult<PathBuf> {
@@ -163,7 +181,6 @@ pub fn ensure_app_directories(app: &AppHandle) -> AppResult<()> {
         editor_projects_dir(app)?,
         logs_dir(app)?,
         temp_dir(app)?,
-        runtime_envs_dir(app)?,
     ] {
         std::fs::create_dir_all(dir)?;
     }

@@ -31,9 +31,9 @@ export function activeRuntimeEnvironment(info: RuntimeInfo | null | undefined): 
   const environments = info?.installedEnvironments || []
   const activeBackend = String(info?.installedBackend || info?.installState?.backend || '')
   if (activeBackend) {
-    const activeSource = String(info?.installState?.source || '')
+    const activePythonPath = String(info?.installState?.pythonPath || '')
     const candidates = environments.filter((entry) => entry.backend === activeBackend)
-    return candidates.find((entry) => entry.source === activeSource) || candidates[0]
+    return candidates.find((entry) => entry.pythonPath === activePythonPath) || candidates[0]
   }
 
   const backend = info?.packages?.mlx ? 'mlx' : info?.torchBackend
