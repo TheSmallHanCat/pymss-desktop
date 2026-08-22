@@ -12,6 +12,7 @@ import { useUpdateStore } from '@/stores/update'
 import { getResolvedThemeTokens, getThemeOverrides, resolvedIsDark } from '@/utils/theme'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { open } from '@tauri-apps/plugin-shell'
 import { useWorkflowStore } from '@/stores/workflow'
 import { activeRuntimeEnvironment, runtimeBackendLabel, runtimeCoreUpdateAvailable as hasRuntimeCoreUpdate } from '@/utils/runtime'
 
@@ -28,6 +29,9 @@ const deferredPromptShown = ref(false)
 const deferredUpdateModalVisible = ref(false)
 const deferredUpdateInstalling = ref(false)
 const deferredUpdateError = ref('')
+const manualUpdatePromptShown = ref(false)
+const manualUpdateModalVisible = ref(false)
+const manualUpdateError = ref('')
 const runtimeCorePromptVisible = ref(false)
 const runtimeCorePromptShown = ref(false)
 let unlistenNodeEditorClosed: UnlistenFn | undefined
@@ -41,6 +45,7 @@ const showStartupOnboarding = computed(() => bootReady.value && !isStandaloneRou
 const deferredUpdatePrompt = computed(() => updates.updateIsPrerelease
   ? t('settings.updatePrereleaseDeferredPrompt', { version: updates.latestVersion })
   : t('settings.updateDeferredPrompt', { version: updates.latestVersion }))
+const manualUpdatePrompt = computed(() => updates.updateMessage || t('settings.updateManualInstallPrompt', { version: updates.latestVersion }))
 const activeRuntime = computed(() => activeRuntimeEnvironment(app.runtimeInfo))
 const runtimeCoreUpdateAvailable = computed(() => hasRuntimeCoreUpdate(
   activeRuntime.value,
@@ -90,9 +95,28 @@ function startBackgroundWarmups() {
 function showDeferredUpdatePrompt() {
   if (deferredPromptShown.value) return
   if (!updates.shouldShowDeferred || !updates.latestVersion) return
+  if (updates.requiresManualInstall) return
   deferredPromptShown.value = true
   deferredUpdateError.value = ''
   deferredUpdateModalVisible.value = true
+}
+
+function showManualUpdatePrompt() {
+  if (manualUpdatePromptShown.value || !bootReady.value) return
+  if (!updates.requiresManualInstall || !updates.latestVersion) return
+  manualUpdatePromptShown.value = true
+  manualUpdateError.value = ''
+  manualUpdateModalVisible.value = true
+}
+
+async function openManualUpdate() {
+  const url = updates.manualInstallUrl || 'https://github.com/pymss-project/pymss-studio/releases/latest'
+  try {
+    await open(url)
+    manualUpdateModalVisible.value = false
+  } catch (error) {
+    manualUpdateError.value = error instanceof Error ? error.message : String(error)
+  }
 }
 
 function showRuntimeCorePrompt() {
@@ -154,6 +178,10 @@ watch([bootReady, () => updates.shouldShowDeferred, () => updates.latestVersion]
   if (bootReady.value) showDeferredUpdatePrompt()
 }, { immediate: true })
 
+watch([bootReady, () => updates.requiresManualInstall, () => updates.latestVersion], () => {
+  showManualUpdatePrompt()
+}, { immediate: true })
+
 watch([bootReady, runtimeCoreUpdateAvailable], () => {
   showRuntimeCorePrompt()
 }, { immediate: true })
@@ -205,6 +233,23 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
             </n-button>
             <n-button type="primary" :loading="deferredUpdateInstalling" @click="installDeferredUpdate">
               {{ t('settings.installUpdate') }}
+            </n-button>
+          </template>
+        </n-modal>
+        <n-modal v-model:show="manualUpdateModalVisible" preset="dialog" type="warning" :mask-closable="false" :closable="false">
+          <template #header>
+            {{ t('settings.updateManualInstallTitle') }}
+          </template>
+          <div>{{ manualUpdatePrompt }}</div>
+          <n-alert v-if="manualUpdateError" type="error" :bordered="false" style="margin-top: 12px">
+            {{ manualUpdateError }}
+          </n-alert>
+          <template #action>
+            <n-button secondary @click="manualUpdateModalVisible = false">
+              {{ t('common.close') }}
+            </n-button>
+            <n-button type="primary" @click="openManualUpdate">
+              {{ t('settings.updateOpenGitHub') }}
             </n-button>
           </template>
         </n-modal>

@@ -689,6 +689,7 @@ const aboutVersionItems = computed(() => [
 ])
 const updateStatusLabel = computed(() => {
   if (!updateSupported.value) return t('settings.updateUnsupported')
+  if (updates.requiresManualInstall) return t('settings.updateManualInstallTitle')
   if (updates.status === 'failed' && updates.installFailed) return t('settings.updateInstallFailed')
   if (updates.shouldShowDeferred) return t('settings.updateDeferred')
   if (updates.status === 'checking') return t('settings.updateChecking')
@@ -1133,7 +1134,7 @@ onMounted(async () => {
               <div class="update-panel__headline">
                 <div>
                   <strong>{{ updateStatusLabel }}</strong>
-                  <p>{{ updateSupported ? t('settings.updateStatusHint') : t('settings.updateUnsupportedHint') }}</p>
+                  <p>{{ !updateSupported ? t('settings.updateUnsupportedHint') : updates.requiresManualInstall ? (updates.updateMessage || t('settings.updateManualInstallPrompt', { version: updates.latestVersion })) : t('settings.updateStatusHint') }}</p>
                 </div>
                 <div class="update-panel__tags">
                   <n-tag :type="updateBadgeType" size="small">{{ updates.latestVersion || appVersion }}</n-tag>
@@ -1162,13 +1163,19 @@ onMounted(async () => {
                   </template>
                   {{ t('settings.checkForUpdates') }}
                 </n-button>
-                <n-button type="primary" :loading="updateInstalling" :disabled="!updateSupported || !updates.hasUpdate || updates.isBusy" @click="installUpdate">
+                <n-button v-if="!updates.requiresManualInstall" type="primary" :loading="updateInstalling" :disabled="!updateSupported || !updates.hasUpdate || updates.isBusy" @click="installUpdate">
                   <template #icon>
                     <n-icon :component="CloudDownloadOutline" />
                   </template>
                   {{ t('settings.installUpdate') }}
                 </n-button>
-                <n-button secondary :disabled="!updateSupported || !updates.hasUpdate || updates.isBusy" @click="deferUpdate">
+                <n-button v-else type="warning" @click="openExternalUrl(updates.manualInstallUrl || repoUrl + '/releases/latest')">
+                  <template #icon>
+                    <n-icon :component="OpenOutline" />
+                  </template>
+                  {{ t('settings.updateOpenGitHub') }}
+                </n-button>
+                <n-button v-if="!updates.requiresManualInstall" secondary :disabled="!updateSupported || !updates.hasUpdate || updates.isBusy" @click="deferUpdate">
                   {{ t('settings.updateRemindLater') }}
                 </n-button>
               </div>

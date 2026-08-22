@@ -36,6 +36,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const UPDATE_EVENT: &str = "pymss://managed-update-event";
 const UPDATE_ROOT: &str = "https://github.com/pymss-project/pymss-studio/releases/download/updater";
+const UPDATE_GENERATION: &str = "v1";
 const UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE5NzUyREY2NjAyNDVDQjAKUldTd1hDUmc5aTExcVFtUGM3ajB4R09ueU9xM3B6RG9xRDVKaUM0di9Qc1BpSGhYMXRFNUJvSWQK";
 // Replace the executable last so an interrupted update can still boot the old UI and recover.
 const MANAGED_PATHS: [&str; 3] = ["python", "bin", "Pymss Studio.exe"];
@@ -76,6 +77,10 @@ pub struct ManagedUpdateInfo {
     pub body: Option<String>,
     pub prerelease: bool,
     pub distribution: DistributionKind,
+    pub auto_update_supported: bool,
+    pub requires_manual_install: bool,
+    pub update_message: Option<String>,
+    pub manual_install_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -171,13 +176,31 @@ pub async fn check(
         .check()
         .await
         .map_err(|error| AppError::Worker(error.to_string()))?;
-    Ok(update.map(|update| ManagedUpdateInfo {
-        current_version: update.current_version,
-        prerelease: update.version.contains('-') || update.raw_json.get("prerelease").and_then(|value| value.as_bool()) == Some(true),
-        version: update.version,
-        date: update.date.map(|date| date.to_string()),
-        body: update.body,
-        distribution,
+    Ok(update.map(|update| {
+        let auto_update_supported = update_auto_install_supported(&update.raw_json);
+        let requires_manual_install = update_requires_manual_install(&update.raw_json);
+        ManagedUpdateInfo {
+            current_version: update.current_version,
+            prerelease: update.version.contains('-') || update.raw_json.get("prerelease").and_then(|value| value.as_bool()) == Some(true),
+            version: update.version,
+            date: update.date.map(|date| date.to_string()),
+            body: update.body,
+            distribution,
+            auto_update_supported,
+            requires_manual_install,
+            update_message: if requires_manual_install {
+                Some(update_manual_install_message(&update.raw_json))
+            } else {
+                update.raw_json
+                    .get("pymss_update_message")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            },
+            manual_install_url: update.raw_json
+                .get("pymss_manual_install_url")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+        }
     }))
 }
 
@@ -205,6 +228,11 @@ pub async fn start(
     else {
         return Err(AppError::Worker("No newer managed update is available".into()));
     };
+    if update_requires_manual_install(&update.raw_json) {
+        return Err(AppError::Worker(
+            update_manual_install_message(&update.raw_json),
+        ));
+    }
     if update.version != expected_version {
         return Err(AppError::Worker("The available update changed. Check for updates again before installing.".into()));
     }
@@ -343,8 +371,33 @@ fn cleanup_prepared_transaction(root: &Path, backup: &Path) -> AppResult<()> {
 }
 
 fn managed_endpoint(channel: UpdateChannel) -> Url {
-    Url::parse(&format!("{UPDATE_ROOT}/{}-windows-x64-update.json", channel.endpoint_name()))
+    Url::parse(&format!("{UPDATE_ROOT}/{}-{UPDATE_GENERATION}-windows-x64-update.json", channel.endpoint_name()))
         .expect("managed update endpoint is valid")
+}
+
+fn update_auto_install_supported(raw_json: &serde_json::Value) -> bool {
+    // A missing capability flag must never authorize a cross-generation install.
+    raw_json
+        .get("pymss_update_supported")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn update_requires_manual_install(raw_json: &serde_json::Value) -> bool {
+    raw_json
+        .get("pymss_requires_manual_install")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+        || !update_auto_install_supported(raw_json)
+}
+
+fn update_manual_install_message(raw_json: &serde_json::Value) -> String {
+    raw_json
+        .get("pymss_update_message")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("This update requires manual installation from GitHub because it cannot be applied safely in place.")
+        .to_string()
 }
 
 fn resolve_update_endpoint(channel: UpdateChannel, endpoint_override: Option<String>) -> AppResult<Url> {
@@ -1172,7 +1225,8 @@ fn rollback_managed_update(
 
 #[cfg(test)]
 mod tests {
-    use super::{distribution_at, pending_archive_path, restore_portable_backup, update_archive_path, update_stage_path, validate_payload_path, validate_update_version, DistributionKind, MAX_UPDATE_ARCHIVE_BYTES};
+    use super::{distribution_at, managed_endpoint, pending_archive_path, restore_portable_backup, update_archive_path, update_auto_install_supported, update_requires_manual_install, update_stage_path, update_manual_install_message, validate_payload_path, validate_update_version, DistributionKind, UpdateChannel, MAX_UPDATE_ARCHIVE_BYTES};
+    use serde_json::json;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -1195,6 +1249,33 @@ mod tests {
     #[test]
     fn update_archive_limit_matches_release_gate() {
         assert_eq!(MAX_UPDATE_ARCHIVE_BYTES, 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn manual_install_metadata_disables_in_place_updates() {
+        let payload = json!({
+            "pymss_update_supported": false,
+            "pymss_requires_manual_install": true,
+            "pymss_update_message": "Install this release from GitHub.",
+        });
+        assert!(!update_auto_install_supported(&payload));
+        assert!(update_requires_manual_install(&payload));
+        assert_eq!(update_manual_install_message(&payload), "Install this release from GitHub.");
+    }
+
+    #[test]
+    fn missing_manual_install_metadata_fails_closed() {
+        let payload = json!({"version": "1.2.3"});
+        assert!(!update_auto_install_supported(&payload));
+        assert!(update_requires_manual_install(&payload));
+    }
+
+    #[test]
+    fn managed_updates_use_the_v1_endpoint() {
+        assert_eq!(
+            managed_endpoint(UpdateChannel::Stable).as_str(),
+            "https://github.com/pymss-project/pymss-studio/releases/download/updater/stable-v1-windows-x64-update.json",
+        );
     }
 
     #[test]

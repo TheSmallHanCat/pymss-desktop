@@ -22,6 +22,10 @@ type ManagedUpdate = {
   body?: string
   prerelease: boolean
   distribution: 'inno' | 'portable'
+  autoUpdateSupported: boolean
+  requiresManualInstall: boolean
+  updateMessage?: string
+  manualInstallUrl?: string
 }
 
 type UpdateDownloadEvent =
@@ -39,6 +43,8 @@ export const useUpdateStore = defineStore('update', () => {
   const latestVersion = ref('')
   const releaseNotes = ref('')
   const releaseDate = ref('')
+  const updateMessage = ref('')
+  const manualInstallUrl = ref('')
   const error = ref('')
   const lastCheckedAt = ref('')
   const availableUpdate = ref<ManagedUpdate | null>(null)
@@ -67,6 +73,10 @@ export const useUpdateStore = defineStore('update', () => {
   const updateIsPrerelease = computed(() => {
     return availableUpdate.value?.prerelease === true || isPrereleaseVersion(availableUpdate.value?.version || latestVersion.value)
   })
+  const requiresManualInstall = computed(() => Boolean(
+    availableUpdate.value
+    && (availableUpdate.value.autoUpdateSupported === false || availableUpdate.value.requiresManualInstall === true),
+  ))
   const shouldShowDeferred = computed(() => Boolean(
     availableUpdate.value
     && deferredVersion.value
@@ -148,6 +158,8 @@ export const useUpdateStore = defineStore('update', () => {
     latestVersion.value = ''
     releaseNotes.value = ''
     releaseDate.value = ''
+    updateMessage.value = ''
+    manualInstallUrl.value = ''
   }
 
   function resetDownloadProgress() {
@@ -190,6 +202,8 @@ export const useUpdateStore = defineStore('update', () => {
           latestVersion.value = update.version
           releaseNotes.value = update.body || ''
           releaseDate.value = update.date || ''
+          updateMessage.value = update.updateMessage || ''
+          manualInstallUrl.value = update.manualInstallUrl || ''
           if (deferredVersion.value === update.version) {
             status.value = 'ready'
             lastCheckResult.value = 'available'
@@ -217,6 +231,9 @@ export const useUpdateStore = defineStore('update', () => {
   async function downloadAndInstall() {
     const update = availableUpdate.value
     if (!update) throw new Error('Update package is not available. Check for updates again.')
+    if (!update.autoUpdateSupported || update.requiresManualInstall) {
+      throw new Error(update.updateMessage || 'This update requires manual installation from GitHub.')
+    }
     status.value = 'downloading'
     resetDownloadProgress()
     error.value = ''
@@ -295,6 +312,8 @@ export const useUpdateStore = defineStore('update', () => {
     latestVersion,
     releaseNotes,
     releaseDate,
+    updateMessage,
+    manualInstallUrl,
     error,
     lastCheckedAt,
     downloadDownloadedBytes,
@@ -308,6 +327,7 @@ export const useUpdateStore = defineStore('update', () => {
     deferredAt,
     lastAcceptedVersion,
     updateIsPrerelease,
+    requiresManualInstall,
     hasDeferredUpdate,
     shouldShowDeferred,
     hasPendingDeferredVersion,

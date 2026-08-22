@@ -26,6 +26,11 @@ on:
         required: true
         default: false
         type: boolean
+      allow_auto_update:
+        description: "Allow this release to be installed through automatic updates"
+        required: true
+        default: false
+        type: boolean
   push:
     tags:
       - "v*"
@@ -100,6 +105,7 @@ jobs:
           else
             echo "RELEASE_PRERELEASE=${{ github.event_name == 'workflow_dispatch' && inputs.prerelease == true }}" >> "$GITHUB_ENV"
           fi
+          echo "RELEASE_AUTO_UPDATE_SUPPORTED=${{ github.event_name == 'workflow_dispatch' && inputs.allow_auto_update == true }}" >> "$GITHUB_ENV"
       - name: Download Windows portable artifacts
         if: needs.windows.result == 'success'
         uses: actions/download-artifact@v4
@@ -201,6 +207,10 @@ jobs:
           tag = os.environ["RELEASE_TAG"]
           prerelease = os.environ.get("RELEASE_PRERELEASE", "false").lower() == "true"
           channels = ("prerelease",) if prerelease else ("stable", "prerelease")
+          auto_update_supported = os.environ.get("RELEASE_AUTO_UPDATE_SUPPORTED", "false").lower() == "true"
+          manual_install = not auto_update_supported
+          manual_message = "This release requires manual installation from GitHub because it contains breaking runtime changes." if manual_install else ""
+          manual_url = f"https://github.com/pymss-project/pymss-studio/releases/tag/{tag}"
           generated = []
           asset = f"Pymss-Studio-{version}-windows-x64-update.zip"
           signature = Path(f"artifacts/{asset}.sig").read_text(encoding="utf-8").strip()
@@ -211,6 +221,10 @@ jobs:
                   "pub_date": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
                   "prerelease": prerelease,
                   "channel": channel,
+                  "pymss_update_supported": not manual_install,
+                  "pymss_requires_manual_install": manual_install,
+                  "pymss_update_message": manual_message,
+                  "pymss_manual_install_url": manual_url,
                   "platforms": {
                       "windows-x86_64": {
                           "signature": signature,
@@ -218,7 +232,7 @@ jobs:
                       }
                   },
               }
-              name = f"{channel}-windows-x64-update.json"
+              name = f"{channel}-v1-windows-x64-update.json"
               Path(f"artifacts/{name}").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
               generated.append(name)
           Path("artifacts/managed-update-metadata.txt").write_text("\n".join(generated) + "\n", encoding="utf-8")
