@@ -41,6 +41,15 @@ def _manifest() -> dict[str, Any]:
     return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
+def _supported_backend(backend: str, manifest: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]] | None:
+    normalized = str(backend or "").strip().lower()
+    if not normalized or "/" in normalized or "\\" in normalized or normalized in {".", ".."}:
+        return None
+    manifest = manifest or _manifest()
+    spec = manifest.get("backends", {}).get(normalized)
+    return (normalized, spec) if isinstance(spec, dict) else None
+
+
 def _emit(event_type: str, payload: dict[str, Any], task_id: str | None = None) -> None:
     from worker_protocol import emit
     emit(event_type, payload, task_id=task_id)
@@ -73,16 +82,42 @@ def _read_runtime_state() -> dict[str, Any] | None:
     state = _resolve_runtime_state_from(ACTIVE_RUNTIME_FILE)
     if not state or not state.get("pythonPath"):
         return state
+    supported = _supported_backend(str(state.get("backend") or ""))
+    if not supported:
+        return None
     try:
         env_dir = _runtime_env_dir_for_python(Path(str(state["pythonPath"])))
     except (OSError, ValueError):
         return None
-    return state if _is_user_runtime_env(env_dir) else None
+    return state if _is_user_runtime_env(env_dir) and env_dir.name == supported[0] else None
 
 
 def _write_runtime_state(state: dict[str, Any]) -> None:
     ACTIVE_RUNTIME_FILE.parent.mkdir(parents=True, exist_ok=True)
-    ACTIVE_RUNTIME_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_json(ACTIVE_RUNTIME_FILE, state)
+
+
+def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
+    _atomic_write_text(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def _env_dir(backend: str) -> Path:
@@ -109,7 +144,7 @@ def _recover_reinstall_backups() -> None:
         return
     for backup in RUNTIME_ENVS_DIR.glob(".*.reinstalling"):
         backend = backup.name.removeprefix(".").removesuffix(".reinstalling")
-        if not backend:
+        if not _supported_backend(backend):
             continue
         target = _env_dir(backend)
         try:
@@ -189,7 +224,7 @@ def _repaired_env_state(backend: str, state: dict[str, Any]) -> dict[str, Any]:
         repaired.update({"torchVersion": None, "torchBackend": None, "acceleratorAvailable": False})
         return repaired
     try:
-        _env_state_path(backend).write_text(json.dumps(repaired, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_json(_env_state_path(backend), repaired)
     except Exception:
         pass
     return repaired
@@ -459,13 +494,15 @@ def _is_user_runtime_env(env_dir: Path) -> bool:
 
 
 def _target_runtime_from_payload(payload: dict[str, Any], backend: str) -> tuple[dict[str, Any] | None, Path, Path, Path] | None:
+    if not _supported_backend(backend):
+        return None
     target_python = Path(str(payload.get("pythonPath"))) if payload.get("pythonPath") else None
 
     if target_python:
         if not target_python.is_file():
             return None
         env_dir = _runtime_env_dir_for_python(target_python)
-        if not _is_user_runtime_env(env_dir):
+        if not _is_user_runtime_env(env_dir) or env_dir.name != backend:
             return None
         env_state_path = env_dir / "pymss-runtime-state.json"
         state = None
@@ -594,6 +631,14 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def cmd_runtime_info(payload: dict[str, Any]) -> int:
     _recover_reinstall_backups()
+    manifest = _manifest()
+    for backend in manifest.get("backends", {}):
+        env_dir = _env_dir(backend)
+        if _env_python_path(backend).is_file():
+            try:
+                _repair_runtime_venv_config(env_dir)
+            except OSError:
+                pass
     _emit("runtime_info", _runtime_info_payload(payload))
     return 0
 
@@ -640,9 +685,11 @@ def cmd_runtime_env_sizes(payload: dict[str, Any]) -> int:
 
 def cmd_activate_runtime(payload: dict[str, Any]) -> int:
     backend = str(payload.get("backend") or "").strip().lower()
-    if not backend:
+    supported = _supported_backend(backend)
+    if not supported:
         from worker_protocol import emit_error
-        return emit_error("RUNTIME_BACKEND_UNSUPPORTED", "Missing runtime backend")
+        return emit_error("RUNTIME_BACKEND_UNSUPPORTED", f"Unsupported runtime backend: {backend or 'missing'}")
+    backend, _spec = supported
     target = _target_runtime_from_payload(payload, backend)
     if not target:
         from worker_protocol import emit_error
@@ -662,9 +709,11 @@ def cmd_activate_runtime(payload: dict[str, Any]) -> int:
 
 def cmd_delete_runtime(payload: dict[str, Any]) -> int:
     backend = str(payload.get("backend") or "").strip().lower()
-    if not backend:
+    supported = _supported_backend(backend)
+    if not supported:
         from worker_protocol import emit_error
-        return emit_error("RUNTIME_BACKEND_UNSUPPORTED", "Missing runtime backend")
+        return emit_error("RUNTIME_BACKEND_UNSUPPORTED", f"Unsupported runtime backend: {backend or 'missing'}")
+    backend, _spec = supported
     target = _target_runtime_from_payload(payload, backend)
     if not target:
         from worker_protocol import emit_error
@@ -694,24 +743,74 @@ def cmd_delete_runtime(payload: dict[str, Any]) -> int:
         )
 
 
+def _create_runtime_venv(env_dir: Path) -> None:
+    import venv
+
+    venv.EnvBuilder(with_pip=True, clear=True, symlinks=(os.name != "nt")).create(str(env_dir))
+
+
+def _runtime_python_works(python_path: Path) -> bool:
+    try:
+        return subprocess.run(
+            [str(python_path), "-c", "import sys; print(sys.prefix)"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _repair_runtime_venv_config(env_dir: Path) -> None:
+    cfg = env_dir / "pyvenv.cfg"
+    bootstrap = _bootstrap_python_path()
+    if not cfg.is_file() or not bootstrap.is_file():
+        return
+    runtime_root = bootstrap.parent.parent if bootstrap.parent.name.lower() in {"bin", "scripts"} else bootstrap.parent
+    content = "\n".join([
+        f"home = {runtime_root}",
+        "include-system-site-packages = false",
+        f"executable = {bootstrap}",
+        f"command = {bootstrap} -m venv {env_dir}",
+        "",
+    ])
+    if cfg.read_text(encoding="utf-8", errors="replace") != content:
+        _atomic_write_text(cfg, content)
+
+
+def _make_posix_venv_relocatable(env_dir: Path) -> None:
+    if os.name == "nt":
+        return
+    bin_dir = env_dir / "bin"
+    bootstrap = _bootstrap_python_path().resolve()
+    if not bin_dir.is_dir() or not bootstrap.is_file():
+        return
+    relative = os.path.relpath(bootstrap, bin_dir)
+    names = {"python", "python3", f"python{sys.version_info.major}.{sys.version_info.minor}"}
+    for name in names:
+        path = bin_dir / name
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        path.symlink_to(relative)
+
+
 def cmd_install_runtime(payload: dict[str, Any]) -> int:
     """Build and activate an environment for `backend`.
 
     Cancellation is not handled here: the desktop shell kills this process and its whole tree
     (see cancel_task in app_cmd.rs), which takes pip down with it. The interrupted venv is left
     on disk on purpose — _incomplete_env_backends() reports it so the space can be reclaimed."""
-    import venv
-
     task_id = str(payload.get("taskId") or f"runtime_install_{int(time.time() * 1000)}")
     backend = str(payload.get("backend") or "cpu").strip().lower()
     mirror = str(payload.get("mirror") or "auto").strip().lower()
     locale = str(payload.get("locale") or "").strip().lower()
     manifest = _manifest()
     _recover_reinstall_backups()
-    spec = manifest["backends"].get(backend)
-    if not spec:
+    supported = _supported_backend(backend, manifest)
+    if not supported:
         from worker_protocol import emit_error
         return emit_error("RUNTIME_BACKEND_UNSUPPORTED", f"Unsupported runtime backend: {backend}", task_id=task_id)
+    backend, spec = supported
     if sys.platform not in spec.get("platforms", []):
         from worker_protocol import emit_error
         return emit_error("RUNTIME_PLATFORM_UNSUPPORTED", f"Backend {backend} is not supported on {sys.platform}", task_id=task_id)
@@ -763,9 +862,16 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
             run_pip(args, stage, "https://pypi.org/simple")
 
     try:
+        _repair_runtime_venv_config(env_dir)
         if not env_python.is_file():
-            builder = venv.EnvBuilder(with_pip=True, clear=True)
-            builder.create(str(env_dir))
+            _create_runtime_venv(env_dir)
+        elif not _runtime_python_works(env_python):
+            _emit("runtime_install_log", {"stage": "venv", "message": "existing environment interpreter is unusable; rebuilding"}, task_id)
+            import shutil
+            shutil.rmtree(env_dir, ignore_errors=True)
+            env_dir.mkdir(parents=True, exist_ok=True)
+            _create_runtime_venv(env_dir)
+        _make_posix_venv_relocatable(env_dir)
         install_log_path.write_text(
             f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] install backend={backend} mirror={mirror} manifest={manifest['manifestVersion']}\n",
             encoding="utf-8",
@@ -801,7 +907,7 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
             "pymssVersion": probed.get("pymssVersion"),
             "pymssCoreVersion": probed.get("pymssCoreVersion"),
         }
-        _env_state_path(backend).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_json(_env_state_path(backend), state)
         active = {
             **state,
             "pythonPath": str(env_python),
@@ -840,9 +946,11 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
     backend = str(payload.get("backend") or "").strip().lower()
     mirror = str(payload.get("mirror") or "auto").strip().lower()
     locale = str(payload.get("locale") or "").strip().lower()
-    if not backend:
+    supported = _supported_backend(backend)
+    if not supported:
         from worker_protocol import emit_error
-        return emit_error("RUNTIME_BACKEND_UNSUPPORTED", "Missing runtime backend", task_id=task_id)
+        return emit_error("RUNTIME_BACKEND_UNSUPPORTED", f"Unsupported runtime backend: {backend or 'missing'}", task_id=task_id)
+    backend, _spec = supported
 
     mirror, index_url = ("pypi", PYPI_MIRROR_URLS["pypi"]) if mirror == "auto" else _resolve_pypi_mirror(mirror, locale)
     try:
@@ -881,9 +989,21 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
         with log_path.open("a", encoding="utf-8", errors="replace") as file:
             file.write(f"[{stage}] {message}\n")
 
-    # Update pymss and pymss-core with their dependencies, but protect torch from being reinstalled.
-    # We explicitly avoid --no-deps so that new dependencies introduced by pymss updates are installed.
+    # Keep dependency resolution enabled so new dependencies introduced by pymss are installed,
+    # but constrain Torch to the build already installed in this backend.
+    torch_version = str((state or {}).get("torchVersion") or "").strip()
+    if not torch_version:
+        try:
+            torch_version = str(_probe_python_runtime(python_path).get("torchVersion") or "").strip()
+        except Exception:
+            torch_version = ""
+    if not torch_version:
+        from worker_protocol import emit_error
+        return emit_error("RUNTIME_CORE_UPDATE_FAILED", "Unable to determine the installed Torch version; refusing to update the runtime core.", task_id=task_id, recoverable=True)
+    constraints_path = env_dir / ".pymss-core-update-constraints.txt"
+    _atomic_write_text(constraints_path, f"torch=={torch_version}\n")
     command = [str(python_path), "-m", "pip", "install", "--upgrade", "--no-cache-dir", "--only-binary=:all:", "--prefer-binary"]
+    command.extend(["--constraint", str(constraints_path)])
     if index_url:
         command.extend(["--index-url", index_url])
     pymss_requirement = f"pymss=={target_pymss_version}"
@@ -904,6 +1024,15 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
             raise RuntimeError(f"pymss stayed at {probed.get('pymssVersion') or 'unknown'} after update; expected {target_pymss_version}")
         if probed.get("pymssCoreVersion") != target_pymss_core_version:
             raise RuntimeError(f"pymss-core stayed at {probed.get('pymssCoreVersion') or 'unknown'} after update; expected {target_pymss_core_version}")
+        expected_torch_backend = "cpu" if backend == "mlx" else backend
+        if probed.get("torchBackend") != expected_torch_backend:
+            raise RuntimeError(
+                f"Torch backend changed to {probed.get('torchBackend') or 'unknown'} during update; expected {expected_torch_backend}"
+            )
+        if probed.get("torchVersion") != torch_version:
+            raise RuntimeError(
+                f"Torch version changed to {probed.get('torchVersion') or 'unknown'} during update; expected {torch_version}"
+            )
         updated = {
             **(state or {}),
             "backend": backend,
@@ -921,7 +1050,7 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
             env_state.pop("logPath", None)
             env_state.pop("activatedAt", None)
             env_state.pop("source", None)
-            env_state_path.write_text(json.dumps(env_state, ensure_ascii=False, indent=2), encoding="utf-8")
+            _atomic_write_json(env_state_path, env_state)
         _write_runtime_state(updated)
         _emit("runtime_core_update_finished", {"backend": backend, "state": updated, "logPath": str(log_path)}, task_id)
         return 0
@@ -936,3 +1065,8 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
             recoverable=True,
             extra={"backend": backend, "logPath": str(log_path)},
         )
+    finally:
+        try:
+            constraints_path.unlink()
+        except OSError:
+            pass

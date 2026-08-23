@@ -119,6 +119,38 @@ jobs:
             echo "Pymss Studio.app not found"
             exit 1
           fi
+          RES="$APP/Contents/Resources"
+          RESOURCE_ROOT="$RES"
+          if [ ! -d "$RESOURCE_ROOT/python-runtime/runtime-envs" ]; then RESOURCE_ROOT="$RES/resources"; fi
+          PYTHON_RUNTIME="$RESOURCE_ROOT/python-runtime"
+          MLX_ENV="$PYTHON_RUNTIME/runtime-envs/mlx"
+          PYVENVCFG="$MLX_ENV/pyvenv.cfg"
+          PYTHON="$PYTHON_RUNTIME/bin/python3"
+          if [ ! -f "$PYVENVCFG" ] || [ ! -f "$PYTHON" ]; then
+            echo "Bundled MLX venv config or bootstrap Python is missing"
+            exit 1
+          fi
+          PYTHON_RUNTIME="$PYTHON_RUNTIME" MLX_ENV="$MLX_ENV" PYTHON="$PYTHON" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          runtime = Path(os.environ["PYTHON_RUNTIME"])
+          env = Path(os.environ["MLX_ENV"])
+          python = Path(os.environ["PYTHON"])
+          content = "\n".join([
+              f"home = {runtime}",
+              "include-system-site-packages = false",
+              f"executable = {python}",
+              f"command = {python} -m venv {env}",
+              "",
+          ])
+          (env / "pyvenv.cfg").write_text(content, encoding="utf-8")
+          PY
+          if grep -q "__PYMSS_STUDIO\|/Users/runner/work/" "$PYVENVCFG"; then
+            echo "Build path leaked into bundled MLX pyvenv.cfg"
+            cat "$PYVENVCFG"
+            exit 1
+          fi
           bash scripts/resign-macos-app.sh "$APP"
 
       - name: Verify bundled macOS resources
@@ -149,6 +181,8 @@ jobs:
           fi
           test -f "$PY"
           test -f "$ENV_PY"
+          test "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["pythonPath"])' "$RESOURCE_ROOT/python-runtime/runtime-envs/active-runtime.json")" = "mlx/bin/python"
+          test "$(readlink "$ENV_PY")" = "../../../bin/python3"
           test -f "$WORKER"
           test -x "$BIN/ffmpeg"
           test -x "$BIN/ffprobe"

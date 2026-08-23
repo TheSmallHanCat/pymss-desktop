@@ -45,9 +45,12 @@ if [[ "$OSTYPE" == darwin* && "$INITIAL_BACKEND" == "mlx" ]]; then
   PYTHONHOME="$RUNTIME_HOME" "$PY" -m ensurepip --upgrade
   PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --upgrade pip setuptools wheel
   ENV_DIR="$RUNTIME_ENVS_DIR/mlx"
-  ENV_HOME="$(cd "$(dirname "$ENV_DIR")" && pwd)/$(basename "$ENV_DIR")"
-  PYTHONHOME="$RUNTIME_HOME" "$PY" -m venv --copies "$ENV_DIR"
+  PYTHONHOME="$RUNTIME_HOME" "$PY" -m venv --symlinks "$ENV_DIR"
   ENV_PY="$ENV_DIR/bin/python"
+  for name in python python3 "python${PBS_PYTHON_VERSION%.*}"; do
+    rm -f "$ENV_DIR/bin/$name"
+    ln -s "../../../bin/python3" "$ENV_DIR/bin/$name"
+  done
   "$ENV_PY" -m pip install --upgrade pip setuptools wheel
   if [[ -z "$TORCH_INDEX_URL" ]]; then
     "$ENV_PY" -m pip install --no-cache-dir "$TORCH_REQUIREMENT"
@@ -58,25 +61,46 @@ if [[ "$OSTYPE" == darwin* && "$INITIAL_BACKEND" == "mlx" ]]; then
   "$ENV_PY" -m pip install --no-cache-dir --upgrade --no-deps "pymss>=2.0.15" "pymss-core>=0.1.6"
   bash "$(dirname "$0")/prune-python-runtime.sh" "$ENV_DIR" --keep-venv
   "$ENV_PY" -m pip --version
-  python3 - "$RUNTIME_ENVS_DIR" "$ENV_PY" "$(dirname "$0")/../python/runtime-manifest.json" <<'PY'
+  "$ENV_PY" - "$RUNTIME_ENVS_DIR" "$(dirname "$0")/../python/runtime-manifest.json" <<'PY'
 import json
 import platform
 import sys
+from datetime import datetime, timezone
+from importlib import metadata
 from pathlib import Path
 
 envs = Path(sys.argv[1])
-python_path = Path(sys.argv[2]).resolve()
-manifest_version = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))["manifestVersion"]
+manifest_version = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))["manifestVersion"]
+python_path = Path("mlx/bin/python")
+packages = {}
+package_versions = {}
+for name in (
+    "torch", "av", "librosa", "numpy", "filelock", "fsspec", "jinja2", "networkx",
+    "sympy", "typing-extensions", "pysocks", "requests", "pyyaml", "tqdm",
+    "pymss", "pymss-core", "mlx",
+):
+    try:
+        package_versions[name] = metadata.version(name)
+        packages[name] = True
+    except metadata.PackageNotFoundError:
+        package_versions[name] = None
+        packages[name] = False
 state = {
     "backend": "mlx",
     "manifestVersion": manifest_version,
+    "stateVersion": 2,
     "pythonVersion": platform.python_version(),
+    "installedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "torchVersion": package_versions.get("torch"),
     "torchBackend": "cpu",
     "acceleratorAvailable": False,
-    "packages": {"mlx": True},
+    "packages": packages,
+    "packageVersions": package_versions,
+    "pymssVersion": package_versions.get("pymss"),
+    "pymssCoreVersion": package_versions.get("pymss-core"),
 }
-(python_path.parent.parent / "pymss-runtime-state.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-(envs / "active-runtime.json").write_text(json.dumps({**state, "pythonPath": str(python_path)} , indent=2) + "\n", encoding="utf-8")
+(envs / "mlx" / "pymss-runtime-state.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+(envs / "active-runtime.json").write_text(json.dumps({**state, "pythonPath": str(python_path), "activatedAt": state["installedAt"]}, indent=2) + "\n", encoding="utf-8")
 PY
   exit 0
 fi

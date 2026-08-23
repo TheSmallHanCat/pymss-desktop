@@ -228,6 +228,15 @@ class RuntimePathSafetyTests(unittest.TestCase):
              mock.patch.object(sys, "platform", "win32"):
             self.assertIsNone(worker_bootstrap._target_runtime_from_payload({"pythonPath": str(python_path)}, "cuda"))
 
+    def test_explicit_runtime_path_must_match_the_requested_backend(self):
+        python_path = self._make_env("cuda")
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.envs_dir):
+            self.assertIsNone(worker_bootstrap._target_runtime_from_payload({"pythonPath": str(python_path)}, "cpu"))
+
+    def test_unknown_backend_is_rejected_before_path_resolution(self):
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.envs_dir):
+            self.assertIsNone(worker_bootstrap._target_runtime_from_payload({"pythonPath": str(self.envs_dir / "../outside" / "bin" / "python")}, "../outside"))
+
     def test_environment_state_does_not_expose_a_source(self):
         self._make_env("cuda")
         with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.envs_dir), \
@@ -501,6 +510,7 @@ class InstallRecordsTheNewEnvironmentTests(unittest.TestCase):
              mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.active_file), \
              mock.patch.object(worker_bootstrap, "_manifest", return_value=manifest), \
              mock.patch.object(worker_bootstrap, "_probe_python_runtime", side_effect=self._probe), \
+             mock.patch.object(worker_bootstrap.subprocess, "run", return_value=mock.Mock(returncode=0)), \
              mock.patch.object(worker_bootstrap.subprocess, "Popen", pip), \
              mock.patch.object(sys, "platform", "win32"), \
              contextlib.redirect_stdout(io.StringIO()):
