@@ -439,6 +439,13 @@ def _installed_envs(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     seen_backends: set[str] = set()
     # User-managed environments (highest priority)
     for backend in manifest.get("backends", {}):
+        env_dir = _env_dir(backend)
+        if env_dir.is_dir() and not _is_bundled_runtime_env(env_dir):
+            try:
+                _repair_runtime_venv_config(env_dir)
+                _make_posix_venv_relocatable(env_dir)
+            except OSError:
+                pass
         state = _read_installed_env_state(backend)
         python_path = _env_python_path(backend)
         if state and python_path.is_file():
@@ -607,8 +614,9 @@ def _target_runtime_from_payload(payload: dict[str, Any], backend: str) -> tuple
         if not target_python.is_file():
             return None
         if _is_bundled_bootstrap_python(target_python):
-            state = _read_runtime_state()
+            state = _resolve_runtime_state_from(BUNDLED_RUNTIME_ENVS_DIR / "active-runtime.json") if BUNDLED_RUNTIME_ENVS_DIR else None
             if state and str(state.get("backend") or "").strip().lower() == backend:
+                state["source"] = "bundled"
                 return state, target_python.parent, Path(), target_python
             return None
         env_dir = _runtime_env_dir_for_python(target_python)
@@ -845,8 +853,19 @@ def cmd_activate_runtime(payload: dict[str, Any]) -> int:
         from worker_protocol import emit_error
         return emit_error("RUNTIME_NOT_INSTALLED", f"Backend {backend} has no completed installation state")
     if _is_bundled_runtime_env(env_dir) or _is_bundled_bootstrap_python(python_path):
-        from worker_protocol import emit_error
-        return emit_error("RUNTIME_BUNDLED_READ_ONLY", f"Bundled runtime {backend} cannot be activated as a user-managed environment; install it to the user runtime directory first.")
+        try:
+            ACTIVE_RUNTIME_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        active = {
+            **(state or {}),
+            "backend": backend,
+            "pythonPath": str(python_path),
+            "source": "bundled",
+            "activatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        _emit("runtime_activated", active)
+        return 0
     active = {
         **(state or {}),
         "backend": backend,
@@ -921,9 +940,8 @@ def _repair_runtime_venv_config(env_dir: Path) -> None:
     bootstrap = _bootstrap_python_path()
     if not cfg.is_file() or not bootstrap.is_file():
         return
-    runtime_root = bootstrap.parent.parent if bootstrap.parent.name.lower() in {"bin", "scripts"} else bootstrap.parent
     content = "\n".join([
-        f"home = {runtime_root}",
+        f"home = {bootstrap.parent}",
         "include-system-site-packages = false",
         f"executable = {bootstrap}",
         f"command = {bootstrap} -m venv {env_dir}",
@@ -944,9 +962,18 @@ def _make_posix_venv_relocatable(env_dir: Path) -> None:
     names = {"python", "python3", f"python{sys.version_info.major}.{sys.version_info.minor}"}
     for name in names:
         path = bin_dir / name
-        if path.is_symlink() or path.is_file():
-            path.unlink()
-        path.symlink_to(relative)
+        try:
+            if path.is_symlink() and path.resolve() == bootstrap:
+                continue
+        except OSError:
+            pass
+        temporary = bin_dir / f".{name}.{os.getpid()}.pymss-tmp"
+        try:
+            temporary.unlink(missing_ok=True)
+            temporary.symlink_to(relative)
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def cmd_install_runtime(payload: dict[str, Any]) -> int:

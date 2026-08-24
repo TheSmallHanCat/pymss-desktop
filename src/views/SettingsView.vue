@@ -1458,7 +1458,7 @@ onMounted(async () => {
                     {{ card.installing ? t('settings.runtimeInstalling') : t('settings.runtimeInstallBackend') }}
                   </n-button>
                   <n-button
-                    v-if="card.state === 'installed' && card.env?.source !== 'bundled'"
+                    v-if="card.state === 'installed'"
                     size="tiny"
                     secondary
                     type="primary"

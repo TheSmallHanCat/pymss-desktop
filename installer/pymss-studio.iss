@@ -48,7 +48,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#SourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "python-runtime\runtime-envs\*"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SourceDir}\python-runtime\runtime-envs\*"; DestDir: "{app}\python-runtime\runtime-envs"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Check: IsFreshInstall
+Source: "{#SourceDir}\python-runtime\runtime-envs\*"; DestDir: "{app}\python-runtime\runtime-envs"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Check: CachedFreshInstall
 ; The runtime is private to this app and is granted to the installing user below.
 
 [Dirs]
@@ -65,6 +65,10 @@ Filename: "{cmd}"; Parameters: "/C del /F /Q ""{app}\bin\VC_redist.x64.exe"""; F
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+var
+  FreshInstallKnown: Boolean;
+  FreshInstallResult: Boolean;
+
 function IsVCRedistX64Installed(): Boolean;
 var
   Installed: Cardinal;
@@ -76,8 +80,17 @@ end;
 
 function IsFreshInstall(): Boolean;
 begin
-  Result := not FileExists(ExpandConstant('{app}\pymss-studio.inno-install'))
-    and not FileExists(ExpandConstant('{app}\Pymss Studio.exe'));
+  Result := not FileExists(ExpandConstant('{app}\pymss-studio.inno-install'));
+end;
+
+function CachedFreshInstall(): Boolean;
+begin
+  if not FreshInstallKnown then
+  begin
+    FreshInstallResult := IsFreshInstall();
+    FreshInstallKnown := True;
+  end;
+  Result := FreshInstallResult;
 end;
 
 procedure RemoveIfExists(Path: string);
@@ -150,6 +163,11 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssInstall then
+  begin
+    FreshInstallResult := IsFreshInstall();
+    FreshInstallKnown := True;
+  end;
   if CurStep = ssPostInstall then
   begin
     RepairBundledRuntimeEnvs();

@@ -410,7 +410,7 @@ fn build_worker_command(
     };
     let python_for_log = python.clone();
     let worker_for_log = worker.clone();
-    let mut cmd = Command::new(python);
+    let mut cmd = Command::new(&python);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd.arg(worker)
@@ -418,7 +418,7 @@ fn build_worker_command(
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONUTF8", "1")
-        .env("PYMSS_STUDIO_BOOTSTRAP_PYTHON", bootstrap_python)
+        .env("PYMSS_STUDIO_BOOTSTRAP_PYTHON", &bootstrap_python)
         .env(
             "PYMSS_STUDIO_DEFAULT_OUTPUT_DIR",
             default_output_dir(app)?.to_string_lossy().to_string(),

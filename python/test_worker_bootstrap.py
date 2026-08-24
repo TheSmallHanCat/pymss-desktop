@@ -327,6 +327,45 @@ class BundledRuntimeFallbackTests(unittest.TestCase):
             items = worker_bootstrap._installed_envs(MANIFEST)
         self.assertEqual(sorted(item["backend"] for item in items), ["cpu", "mlx"])
 
+    def test_activating_bundled_mlx_clears_user_pointer(self):
+        cpu_python = self.user_envs / "cpu" / "bin" / "python"
+        cpu_python.parent.mkdir(parents=True)
+        cpu_python.write_text("stub", encoding="utf-8")
+        (self.user_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "cpu",
+            "pythonPath": str(cpu_python),
+        }), encoding="utf-8")
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(sys, "platform", "darwin"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            result = worker_bootstrap.cmd_activate_runtime({
+                "backend": "mlx",
+                "pythonPath": str(self.bootstrap_python),
+            })
+        self.assertEqual(result, 0)
+        self.assertFalse((self.user_envs / "active-runtime.json").exists())
+
+
+class RuntimeVenvRepairTests(unittest.TestCase):
+    def test_posix_venv_home_uses_the_bootstrap_bin_directory(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        bootstrap = root / "python-runtime" / "bin" / "python3"
+        env_dir = root / "runtime-envs" / "cpu"
+        bootstrap.parent.mkdir(parents=True)
+        bootstrap.write_text("stub", encoding="utf-8")
+        env_dir.mkdir(parents=True)
+        (env_dir / "pyvenv.cfg").write_text("home = old\n", encoding="utf-8")
+
+        with mock.patch.object(worker_bootstrap, "_bootstrap_python_path", return_value=bootstrap):
+            worker_bootstrap._repair_runtime_venv_config(env_dir)
+
+        content = (env_dir / "pyvenv.cfg").read_text(encoding="utf-8")
+        self.assertIn(f"home = {bootstrap.parent}", content)
+        self.assertIn(f"executable = {bootstrap}", content)
+
 
 class PackageImportNameTests(unittest.TestCase):
     """Package availability is decided with importlib, so every manifest package needs an
