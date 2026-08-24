@@ -39,73 +39,7 @@ else
   PY="$RUNTIME_DIR/bin/python"
 fi
 
-if [[ "$OSTYPE" == darwin* && "$INITIAL_BACKEND" == "mlx" ]]; then
-  rm -rf "$RUNTIME_ENVS_DIR"
-  mkdir -p "$RUNTIME_ENVS_DIR"
-  PYTHONHOME="$RUNTIME_HOME" "$PY" -m ensurepip --upgrade
-  PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --upgrade pip setuptools wheel
-  ENV_DIR="$RUNTIME_ENVS_DIR/mlx"
-  PYTHONHOME="$RUNTIME_HOME" "$PY" -m venv --symlinks "$ENV_DIR"
-  ENV_PY="$ENV_DIR/bin/python"
-  for name in python python3 "python${PBS_PYTHON_VERSION%.*}"; do
-    rm -f "$ENV_DIR/bin/$name"
-    ln -s "../../../bin/python3" "$ENV_DIR/bin/$name"
-  done
-  "$ENV_PY" -m pip install --upgrade pip setuptools wheel
-  if [[ -z "$TORCH_INDEX_URL" ]]; then
-    "$ENV_PY" -m pip install --no-cache-dir "$TORCH_REQUIREMENT"
-  else
-    "$ENV_PY" -m pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url "$TORCH_INDEX_URL"
-  fi
-  "$ENV_PY" -m pip install --no-cache-dir --only-binary=:all: --prefer-binary av filelock fsspec jinja2 librosa networkx numpy pysocks requests pyyaml sympy tqdm typing-extensions mlx
-  "$ENV_PY" -m pip install --no-cache-dir --upgrade --no-deps "pymss>=2.0.15" "pymss-core>=0.1.6"
-  bash "$(dirname "$0")/prune-python-runtime.sh" "$ENV_DIR" --keep-venv
-  "$ENV_PY" -m pip --version
-  "$ENV_PY" - "$RUNTIME_ENVS_DIR" "$(dirname "$0")/../python/runtime-manifest.json" <<'PY'
-import json
-import platform
-import sys
-from datetime import datetime, timezone
-from importlib import metadata
-from pathlib import Path
-
-envs = Path(sys.argv[1])
-manifest_version = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))["manifestVersion"]
-python_path = Path("mlx/bin/python")
-packages = {}
-package_versions = {}
-for name in (
-    "torch", "av", "librosa", "numpy", "filelock", "fsspec", "jinja2", "networkx",
-    "sympy", "typing-extensions", "pysocks", "requests", "pyyaml", "tqdm",
-    "pymss", "pymss-core", "mlx",
-):
-    try:
-        package_versions[name] = metadata.version(name)
-        packages[name] = True
-    except metadata.PackageNotFoundError:
-        package_versions[name] = None
-        packages[name] = False
-state = {
-    "backend": "mlx",
-    "manifestVersion": manifest_version,
-    "stateVersion": 2,
-    "pythonVersion": platform.python_version(),
-    "installedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-    "torchVersion": package_versions.get("torch"),
-    "torchBackend": "cpu",
-    "acceleratorAvailable": False,
-    "packages": packages,
-    "packageVersions": package_versions,
-    "pymssVersion": package_versions.get("pymss"),
-    "pymssCoreVersion": package_versions.get("pymss-core"),
-}
-(envs / "mlx" / "pymss-runtime-state.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-(envs / "active-runtime.json").write_text(json.dumps({**state, "pythonPath": str(python_path), "activatedAt": state["installedAt"]}, indent=2) + "\n", encoding="utf-8")
-PY
-  exit 0
-fi
-
-if [[ "$OSTYPE" == darwin* && -z "$INITIAL_BACKEND" ]]; then
+if [[ "$OSTYPE" == darwin* && -z "$INITIAL_BACKEND" && "$VARIANT" != "mlx" && "$VARIANT" != "mps" ]]; then
   PYTHONHOME="$RUNTIME_HOME" "$PY" -m ensurepip --upgrade
   PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --upgrade pip setuptools wheel
   bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR" --keep-venv
@@ -128,6 +62,52 @@ PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip install --no-cache-dir --upgrade --no-de
 
 bash "$(dirname "$0")/prune-python-runtime.sh" "$RUNTIME_DIR" --keep-venv
 PYTHONHOME="$RUNTIME_HOME" "$PY" -m pip --version
+
+if [[ "$OSTYPE" == darwin* && "$VARIANT" == "mlx" ]]; then
+  mkdir -p "$RUNTIME_ENVS_DIR"
+  PYTHONHOME="$RUNTIME_HOME" "$PY" - "$RUNTIME_ENVS_DIR" "$(dirname "$0")/../python/runtime-manifest.json" <<'PY'
+import json
+import platform
+import sys
+from datetime import datetime, timezone
+from importlib import metadata
+from pathlib import Path
+
+envs = Path(sys.argv[1])
+manifest = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+package_versions = {}
+packages = {}
+for name in (*manifest["common"], "mlx"):
+    try:
+        package_versions[name] = metadata.version(name)
+        packages[name] = True
+    except metadata.PackageNotFoundError:
+        package_versions[name] = None
+        packages[name] = False
+if not all(packages.values()):
+    missing = [name for name, available in packages.items() if not available]
+    raise SystemExit(f"Bundled MLX runtime is missing packages: {missing}")
+installed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+state = {
+    "backend": "mlx",
+    "manifestVersion": manifest["manifestVersion"],
+    "stateVersion": 2,
+    "installedAt": installed_at,
+    "pythonVersion": platform.python_version(),
+    "torchVersion": package_versions.get("torch"),
+    "torchBackend": "cpu",
+    "acceleratorAvailable": False,
+    "packages": packages,
+    "packageVersions": package_versions,
+    "pymssVersion": package_versions.get("pymss"),
+    "pymssCoreVersion": package_versions.get("pymss-core"),
+}
+(envs / "active-runtime.json").write_text(
+    json.dumps({**state, "pythonPath": "../bin/python3", "source": "bundled"}, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+fi
 PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RUNTIME_HOME" "$PY" - <<'PY'
 import importlib.util
 import pymss, torch, librosa, av, yaml, tqdm

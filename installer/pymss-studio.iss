@@ -47,7 +47,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#SourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "python-runtime\runtime-envs\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\python-runtime\runtime-envs\*"; DestDir: "{app}\python-runtime\runtime-envs"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Check: IsFreshInstall
 ; The runtime is private to this app and is granted to the installing user below.
 
 [Dirs]
@@ -71,6 +72,12 @@ begin
   Result :=
     RegQueryDWordValue(HKLM64, 'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64', 'Installed', Installed)
     and (Installed = 1);
+end;
+
+function IsFreshInstall(): Boolean;
+begin
+  Result := not FileExists(ExpandConstant('{app}\pymss-studio.inno-install'))
+    and not FileExists(ExpandConstant('{app}\Pymss Studio.exe'));
 end;
 
 procedure RemoveIfExists(Path: string);
@@ -143,11 +150,6 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssInstall then
-  begin
-    RemoveIfExists(ExpandConstant('{app}') + '\python-runtime');
-  end;
-
   if CurStep = ssPostInstall then
   begin
     RepairBundledRuntimeEnvs();

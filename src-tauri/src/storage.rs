@@ -155,8 +155,32 @@ pub fn runtime_root_dir(app: &AppHandle) -> AppResult<PathBuf> {
         .unwrap_or_else(|| exe_dir.join("python-runtime")))
 }
 
+pub fn bundled_runtime_envs_dir(app: &AppHandle) -> AppResult<Option<PathBuf>> {
+    let mut candidates = Vec::new();
+    if let Ok(resource) = app.path().resource_dir() {
+        candidates.push(resource.join("python-runtime").join("runtime-envs"));
+        candidates.push(resource.join("_up_").join("python-runtime").join("runtime-envs"));
+        candidates.push(resource.join("resources").join("python-runtime").join("runtime-envs"));
+    }
+    let exe_dir = std::env::current_exe()?
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| AppError::Worker("failed to resolve executable directory".into()))?;
+    candidates.push(exe_dir.join("python-runtime").join("runtime-envs"));
+    Ok(candidates
+        .into_iter()
+        .find(|path| path.is_dir()))
+}
+
 pub fn runtime_envs_dir(app: &AppHandle) -> AppResult<PathBuf> {
-    Ok(runtime_root_dir(app)?.join("runtime-envs"))
+    #[cfg(target_os = "macos")]
+    {
+        Ok(data_root_dir(app)?.join("runtime-envs"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(runtime_root_dir(app)?.join("runtime-envs"))
+    }
 }
 
 pub fn active_runtime_file(app: &AppHandle) -> AppResult<PathBuf> {

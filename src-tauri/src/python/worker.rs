@@ -27,6 +27,8 @@ static PAYLOAD_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[serde(rename_all = "camelCase")]
 struct ActiveRuntimeRecord {
     python_path: String,
+    backend: Option<String>,
+    source: Option<String>,
 }
 
 fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
@@ -125,10 +127,10 @@ fn bootstrap_python_path(app: &AppHandle) -> AppResult<String> {
 }
 
 fn try_resolve_active_runtime(file: &PathBuf) -> Option<String> {
-    resolve_active_runtime_record(file)
+    resolve_active_runtime_record(file).map(|(python, _source)| python)
 }
 
-fn resolve_active_runtime_record(file: &PathBuf) -> Option<String> {
+fn resolve_active_runtime_record(file: &PathBuf) -> Option<(String, Option<String>)> {
     if !file.is_file() {
         return None;
     }
@@ -138,26 +140,100 @@ fn resolve_active_runtime_record(file: &PathBuf) -> Option<String> {
     // Absolute path – check directly
     if python.is_absolute() {
         return python
-            .is_file()
-            .then(|| python.to_string_lossy().to_string());
+            .canonicalize()
+            .ok()
+            .filter(|path| path.is_file())
+            .map(|path| (path.to_string_lossy().to_string(), record.source));
     }
     // Relative path – resolve against the directory containing the file
     let parent = file.parent()?;
     let resolved = parent.join(&python);
     resolved
-        .is_file()
-        .then(|| resolved.to_string_lossy().to_string())
+        .canonicalize()
+        .ok()
+        .filter(|path| path.is_file())
+        .map(|path| (path.to_string_lossy().to_string(), record.source))
+}
+
+fn bundled_runtime_envs_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
+    let user_runtime = storage::runtime_envs_dir(app)?.canonicalize().ok();
+    Ok(storage::bundled_runtime_envs_dir(app)?
+        .into_iter()
+        .filter(|path| path.canonicalize().ok() != user_runtime)
+        .collect())
 }
 
 fn active_runtime_python_path(app: &AppHandle) -> AppResult<Option<String>> {
     let user_file = storage::active_runtime_file(app)?;
-    let Some(path) = try_resolve_active_runtime(&user_file) else {
-        return Ok(None);
+    if let Some(path) = try_resolve_active_runtime(&user_file) {
+        if is_user_runtime_python_path(app, &path)? && active_path_backend_matches(&user_file, &path) {
+            return Ok(Some(path));
+        }
     };
-    if !is_user_runtime_python_path(app, &path)? {
-        return Ok(None);
+    for envs_dir in bundled_runtime_envs_dirs(app)? {
+        let bundled_file = envs_dir.join("active-runtime.json");
+        if let Some(path) = try_resolve_active_runtime(&bundled_file) {
+            if !is_bundled_runtime_python_path(&bundled_file, &path)? {
+                continue;
+            }
+            return Ok(Some(path));
+        }
     }
-    Ok(Some(path))
+    Ok(None)
+}
+
+fn is_bundled_runtime_python_path(file: &Path, python_path: &str) -> AppResult<bool> {
+    let content = std::fs::read_to_string(file)?;
+    let record: ActiveRuntimeRecord = serde_json::from_str(&content)?;
+    let backend = record.backend.unwrap_or_default().trim().to_ascii_lowercase();
+    if !matches!(backend.as_str(), "cpu" | "cuda" | "rocm" | "mlx") {
+        return Ok(false);
+    }
+    let Some(envs_dir) = file.parent() else {
+        return Ok(false);
+    };
+    let envs_dir = envs_dir.canonicalize()?;
+    let runtime_root = envs_dir
+        .parent()
+        .ok_or_else(|| AppError::Worker("bundled runtime root is missing".into()))?;
+    let python = PathBuf::from(python_path).canonicalize()?;
+    let bootstrap_matches = [
+        runtime_root.join("python.exe"),
+        runtime_root.join("bin").join("python3"),
+        runtime_root.join("bin").join("python"),
+    ]
+    .into_iter()
+    .filter_map(|candidate| candidate.canonicalize().ok())
+    .any(|candidate| candidate == python);
+    if bootstrap_matches {
+        return Ok(backend == "mlx");
+    }
+    let Some(env_dir) = python.parent().and_then(Path::parent) else {
+        return Ok(false);
+    };
+    Ok(env_dir.starts_with(&envs_dir)
+        && env_dir.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.eq_ignore_ascii_case(&backend)))
+}
+
+fn active_path_backend_matches(file: &Path, python_path: &str) -> bool {
+    let Ok(content) = std::fs::read_to_string(file) else {
+        return false;
+    };
+    let Ok(record) = serde_json::from_str::<ActiveRuntimeRecord>(&content) else {
+        return false;
+    };
+    let Some(backend) = record.backend.filter(|value| !value.trim().is_empty()) else {
+        return false;
+    };
+    if !matches!(backend.trim().to_ascii_lowercase().as_str(), "cpu" | "cuda" | "rocm" | "mlx") {
+        return false;
+    }
+    let path = PathBuf::from(python_path);
+    path.parent()
+        .and_then(Path::parent)
+        .and_then(|env| env.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(backend.trim()))
 }
 
 fn is_user_runtime_python_path(app: &AppHandle, path: &str) -> AppResult<bool> {
@@ -213,18 +289,24 @@ fn rocm_native_tool_dir(runtime_envs_dir: &Path) -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn rocm_native_tool_dirs(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
-    let runtime_envs = storage::runtime_envs_dir(app)?;
-    let Some(tool_dir) = rocm_native_tool_dir(&runtime_envs) else {
-        return Ok(Vec::new());
-    };
-    let sdk_bin = tool_dir
-        .parent()
-        .and_then(|path| path.parent())
-        .and_then(|path| path.parent())
-        .map(|path| path.join("bin"));
-    Ok(std::iter::once(tool_dir)
-        .chain(sdk_bin.filter(|dir| dir.is_dir()))
-        .collect())
+    let mut runtime_envs_dirs = vec![storage::runtime_envs_dir(app)?];
+    runtime_envs_dirs.extend(bundled_runtime_envs_dirs(app)?);
+    let mut result = Vec::new();
+    for runtime_envs in runtime_envs_dirs {
+        let Some(tool_dir) = rocm_native_tool_dir(&runtime_envs) else {
+            continue;
+        };
+        let sdk_bin = tool_dir
+            .parent()
+            .and_then(|path| path.parent())
+            .and_then(|path| path.parent())
+            .map(|path| path.join("bin"));
+        result.push(tool_dir);
+        if let Some(sdk_bin) = sdk_bin.filter(|dir| dir.is_dir()) {
+            result.push(sdk_bin);
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(not(windows))]
@@ -356,6 +438,9 @@ fn build_worker_command(
     }
     if let Ok(file) = storage::active_runtime_file(app) {
         cmd.env("PYMSS_STUDIO_ACTIVE_RUNTIME_FILE", file.to_string_lossy().to_string());
+    }
+    if let Some(dir) = bundled_runtime_envs_dirs(app)?.first() {
+        cmd.env("PYMSS_STUDIO_BUNDLED_RUNTIME_ENVS_DIR", dir.to_string_lossy().to_string());
     }
     apply_proxy_env(app, &mut cmd);
     let mut tool_dirs = rocm_native_tool_dirs(app)?;
@@ -713,10 +798,26 @@ pub fn run_worker_with_payload(
         Some(value) => Some(make_payload_file(command, None, value)?),
         None => None,
     };
-    let mut cmd = build_worker_command(app, command, payload_file.as_ref())?;
+    let mut cmd = match build_worker_command(app, command, payload_file.as_ref()) {
+        Ok(command) => command,
+        Err(error) => {
+            if let Some(path) = payload_file.as_ref() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error);
+        }
+    };
     let started_at = std::time::Instant::now();
     session_log::append(app, "INFO", "worker.spawn", vec![("command", command.to_string())]);
-    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(path) = payload_file.as_ref() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error.into());
+        }
+    };
 
     let stdout = child
         .stdout
@@ -860,7 +961,13 @@ pub fn spawn_worker_background(
         ],
     );
     let payload_file = make_payload_file(command, Some(&task_id), payload)?;
-    let mut cmd = build_worker_command(&app, command, Some(&payload_file))?;
+    let mut cmd = match build_worker_command(&app, command, Some(&payload_file)) {
+        Ok(command) => command,
+        Err(error) => {
+            let _ = std::fs::remove_file(&payload_file);
+            return Err(error);
+        }
+    };
     let started_at = std::time::Instant::now();
     session_log::append(
         &app,
@@ -868,7 +975,13 @@ pub fn spawn_worker_background(
         "worker.spawn",
         vec![("command", command.to_string()), ("taskId", task_id.clone())],
     );
-    let mut child: Child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut child: Child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = std::fs::remove_file(&payload_file);
+            return Err(error.into());
+        }
+    };
     let stdout = child
         .stdout
         .take()
@@ -1011,6 +1124,142 @@ pub fn spawn_worker_background(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+    use std::fs;
+    use std::path::Path;
+
+    fn temp_root(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "pymss-worker-{label}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn write_bundled_pointer(root: &Path, backend: &str, python_path: &str) -> std::path::PathBuf {
+        let envs = root.join("python-runtime").join("runtime-envs");
+        fs::create_dir_all(&envs).unwrap();
+        let active = envs.join("active-runtime.json");
+        fs::write(
+            &active,
+            serde_json::to_vec(&json!({
+                "backend": backend,
+                "pythonPath": python_path,
+                "source": "bundled",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        active
+    }
+
+    #[test]
+    fn accepts_bundled_mlx_bootstrap_pointer() {
+        let root = temp_root("bundled-mlx-pointer");
+        let runtime = root.join("python-runtime");
+        let python = runtime.join("bin").join("python3");
+        fs::create_dir_all(python.parent().unwrap()).unwrap();
+        fs::write(&python, "stub").unwrap();
+        let active = write_bundled_pointer(&root, "mlx", "../bin/python3");
+
+        assert!(super::is_bundled_runtime_python_path(
+            &active,
+            &fs::canonicalize(&python).unwrap().to_string_lossy(),
+        )
+        .unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_bundled_bootstrap_pointer_for_non_mlx_backend() {
+        let root = temp_root("bundled-invalid-bootstrap");
+        let runtime = root.join("python-runtime");
+        let python = runtime.join("bin").join("python3");
+        fs::create_dir_all(python.parent().unwrap()).unwrap();
+        fs::write(&python, "stub").unwrap();
+        let active = write_bundled_pointer(&root, "cpu", "../bin/python3");
+
+        assert!(!super::is_bundled_runtime_python_path(
+            &active,
+            &fs::canonicalize(&python).unwrap().to_string_lossy(),
+        )
+        .unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_bundled_pointer_that_escapes_the_package() {
+        let root = temp_root("bundled-outside-pointer");
+        let outside = root.join("outside").join("python3");
+        fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        fs::write(&outside, "stub").unwrap();
+        let active = write_bundled_pointer(&root, "mlx", "../../outside/python3");
+
+        assert!(!super::is_bundled_runtime_python_path(
+            &active,
+            &fs::canonicalize(&outside).unwrap().to_string_lossy(),
+        )
+        .unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_bundled_environment_with_the_wrong_backend_directory() {
+        let root = temp_root("bundled-wrong-backend");
+        let envs = root.join("python-runtime").join("runtime-envs");
+        let python = envs.join("cpu").join("bin").join("python");
+        fs::create_dir_all(python.parent().unwrap()).unwrap();
+        fs::write(&python, "stub").unwrap();
+        let active = write_bundled_pointer(&root, "cuda", "cpu/bin/python");
+
+        assert!(!super::is_bundled_runtime_python_path(
+            &active,
+            &fs::canonicalize(&python).unwrap().to_string_lossy(),
+        )
+        .unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn active_user_pointer_requires_a_matching_known_backend() {
+        let root = temp_root("active-pointer-backend");
+        let active = root.join("active-runtime.json");
+        let python = root.join("runtime-envs").join("cuda").join("bin").join("python");
+        fs::create_dir_all(python.parent().unwrap()).unwrap();
+        fs::write(&python, "stub").unwrap();
+        let python = fs::canonicalize(python).unwrap();
+        fs::write(
+            &active,
+            serde_json::to_vec(&json!({"backend": "cuda", "pythonPath": python.to_string_lossy()})).unwrap(),
+        )
+        .unwrap();
+        assert!(super::active_path_backend_matches(&active, &python.to_string_lossy()));
+
+        fs::write(
+            &active,
+            serde_json::to_vec(&json!({"backend": "mlx", "pythonPath": python.to_string_lossy()})).unwrap(),
+        )
+        .unwrap();
+        assert!(!super::active_path_backend_matches(&active, &python.to_string_lossy()));
+
+        fs::write(
+            &active,
+            serde_json::to_vec(&json!({"backend": "../outside", "pythonPath": python.to_string_lossy()})).unwrap(),
+        )
+        .unwrap();
+        assert!(!super::active_path_backend_matches(&active, &python.to_string_lossy()));
+
+        fs::write(
+            &active,
+            serde_json::to_vec(&json!({"pythonPath": python.to_string_lossy()})).unwrap(),
+        )
+        .unwrap();
+        assert!(!super::active_path_backend_matches(&active, &python.to_string_lossy()));
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[cfg(windows)]
     #[test]
     fn finds_rocm_native_offload_arch_tool() {

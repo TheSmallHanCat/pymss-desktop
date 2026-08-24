@@ -12,7 +12,7 @@ from unittest import mock
 
 import worker_bootstrap
 
-COMMON_PACKAGES = ("av", "librosa", "numpy", "pymss")
+COMMON_PACKAGES = ("av", "librosa", "numpy", "pymss", "pymss-core")
 
 MANIFEST = {
     "manifestVersion": "test-1",
@@ -273,6 +273,59 @@ class RuntimePathSafetyTests(unittest.TestCase):
             worker_bootstrap._recover_reinstall_backups()
         self.assertTrue((self.envs_dir / "cuda" / "Scripts" / "python.exe").is_file())
         self.assertFalse(backup.exists())
+
+
+class BundledRuntimeFallbackTests(unittest.TestCase):
+    """Packaged runtimes remain usable when user-managed runtime state is absent."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.user_envs = self.root / "user" / "runtime-envs"
+        self.bundled_envs = self.root / "package" / "python-runtime" / "runtime-envs"
+        self.bootstrap_python = self.root / "package" / "python-runtime" / "bin" / "python3"
+        self.user_envs.mkdir(parents=True)
+        self.bundled_envs.mkdir(parents=True)
+        self.bootstrap_python.parent.mkdir(parents=True)
+        self.bootstrap_python.write_text("stub", encoding="utf-8")
+        (self.bundled_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "mlx",
+            "pythonPath": "../bin/python3",
+        }), encoding="utf-8")
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_packaged_mlx_is_used_when_user_active_state_is_missing(self):
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(sys, "platform", "darwin"):
+            state = worker_bootstrap._read_runtime_state()
+            target = worker_bootstrap._target_runtime_from_payload({}, "mlx")
+
+        self.assertEqual(state["backend"], "mlx")
+        self.assertEqual(state["source"], "bundled")
+        self.assertEqual(Path(state["pythonPath"]).resolve(), self.bootstrap_python.resolve())
+        self.assertIsNotNone(target)
+        self.assertEqual(target[3], self.bootstrap_python)
+
+    def test_packaged_mlx_remains_listed_when_user_cpu_runtime_is_active(self):
+        cpu_python = self.user_envs / "cpu" / "bin" / "python"
+        cpu_python.parent.mkdir(parents=True)
+        cpu_python.write_text("stub", encoding="utf-8")
+        (self.user_envs / "cpu" / "pymss-runtime-state.json").write_text(json.dumps({
+            "backend": "cpu",
+            "packages": {name: True for name in COMMON_PACKAGES},
+        }), encoding="utf-8")
+        (self.user_envs / "active-runtime.json").write_text(json.dumps({
+            "backend": "cpu",
+            "pythonPath": str(cpu_python),
+        }), encoding="utf-8")
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.user_envs), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", self.user_envs / "active-runtime.json"), \
+             mock.patch.object(worker_bootstrap, "BUNDLED_RUNTIME_ENVS_DIR", self.bundled_envs), \
+             mock.patch.object(worker_bootstrap, "_probe_python_runtime", return_value=probe_result("cpu", mlx=True)), \
+             mock.patch.object(sys, "platform", "darwin"):
+            items = worker_bootstrap._installed_envs(MANIFEST)
+        self.assertEqual(sorted(item["backend"] for item in items), ["cpu", "mlx"])
 
 
 class PackageImportNameTests(unittest.TestCase):

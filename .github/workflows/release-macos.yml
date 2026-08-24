@@ -67,7 +67,7 @@ jobs:
             otool -L python-runtime/bin/python3
             exit 1
           fi
-          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import importlib.util, sys, ssl, venv, pip; assert importlib.util.find_spec('torch') is None; assert importlib.util.find_spec('pymss') is None; print(sys.prefix); print('bootstrap ok')"
+          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$PWD/python-runtime" python-runtime/bin/python3 -c "import importlib.util, sys, ssl, venv, pip, pymss, pymss_core, torch; assert importlib.util.find_spec('mlx') is not None; assert torch.version.cuda is None; print(sys.prefix); print('bundled MLX runtime ok')"
 
       - name: Install macOS bundled tools
         run: brew install ffmpeg aria2
@@ -121,34 +121,16 @@ jobs:
           fi
           RES="$APP/Contents/Resources"
           RESOURCE_ROOT="$RES"
-          if [ ! -d "$RESOURCE_ROOT/python-runtime/runtime-envs" ]; then RESOURCE_ROOT="$RES/resources"; fi
+          if [ ! -f "$RESOURCE_ROOT/python-runtime/runtime-envs/active-runtime.json" ]; then RESOURCE_ROOT="$RES/resources"; fi
           PYTHON_RUNTIME="$RESOURCE_ROOT/python-runtime"
-          MLX_ENV="$PYTHON_RUNTIME/runtime-envs/mlx"
-          PYVENVCFG="$MLX_ENV/pyvenv.cfg"
           PYTHON="$PYTHON_RUNTIME/bin/python3"
-          if [ ! -f "$PYVENVCFG" ] || [ ! -f "$PYTHON" ]; then
-            echo "Bundled MLX venv config or bootstrap Python is missing"
+          ACTIVE="$PYTHON_RUNTIME/runtime-envs/active-runtime.json"
+          if [ ! -f "$ACTIVE" ] || [ ! -f "$PYTHON" ]; then
+            echo "Bundled MLX runtime state or bootstrap Python is missing"
             exit 1
           fi
-          PYTHON_RUNTIME="$PYTHON_RUNTIME" MLX_ENV="$MLX_ENV" PYTHON="$PYTHON" python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          runtime = Path(os.environ["PYTHON_RUNTIME"])
-          env = Path(os.environ["MLX_ENV"])
-          python = Path(os.environ["PYTHON"])
-          content = "\n".join([
-              f"home = {runtime}",
-              "include-system-site-packages = false",
-              f"executable = {python}",
-              f"command = {python} -m venv {env}",
-              "",
-          ])
-          (env / "pyvenv.cfg").write_text(content, encoding="utf-8")
-          PY
-          if grep -q "__PYMSS_STUDIO\|/Users/runner/work/" "$PYVENVCFG"; then
-            echo "Build path leaked into bundled MLX pyvenv.cfg"
-            cat "$PYVENVCFG"
+          if [ "$(python3 -c 'import json, sys; s=json.load(open(sys.argv[1])); assert s.get("backend")=="mlx" and s.get("source")=="bundled" and s.get("torchBackend")=="cpu" and s.get("packages",{}).get("mlx") and s.get("packages",{}).get("pymss") and s.get("packages",{}).get("pymss-core"); print(s.get("pythonPath"))' "$ACTIVE")" != "../bin/python3" ]; then
+            echo "Bundled MLX active runtime does not point to the bootstrap Python"
             exit 1
           fi
           bash scripts/resign-macos-app.sh "$APP"
@@ -163,14 +145,14 @@ jobs:
 
           RES="$APP/Contents/Resources"
           RESOURCE_ROOT="$RES"
-          if [ ! -d "$RESOURCE_ROOT/python-runtime/runtime-envs" ]; then RESOURCE_ROOT="$RES/resources"; fi
+          if [ ! -f "$RESOURCE_ROOT/python-runtime/runtime-envs/active-runtime.json" ]; then RESOURCE_ROOT="$RES/resources"; fi
           test -f "$RES/python/worker.py" || test -f "$RES/resources/python/worker.py"
           test -d "$RESOURCE_ROOT/python-runtime"
-          test -d "$RESOURCE_ROOT/python-runtime/runtime-envs"
+          test -f "$RESOURCE_ROOT/python-runtime/runtime-envs/active-runtime.json"
           test -x "$RES/bin/ffmpeg" || test -x "$RES/resources/bin/ffmpeg"
           test -x "$RES/bin/aria2c" || test -x "$RES/resources/bin/aria2c"
           PY="$RESOURCE_ROOT/python-runtime/bin/python3"
-          ENV_PY="$RESOURCE_ROOT/python-runtime/runtime-envs/mlx/bin/python"
+          ENV_PY="$RESOURCE_ROOT/python-runtime/bin/python3"
           WORKER="$RES/python/worker.py"
           if [ ! -f "$WORKER" ]; then
             WORKER="$RES/resources/python/worker.py"
@@ -181,8 +163,7 @@ jobs:
           fi
           test -f "$PY"
           test -f "$ENV_PY"
-          test "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["pythonPath"])' "$RESOURCE_ROOT/python-runtime/runtime-envs/active-runtime.json")" = "mlx/bin/python"
-          test "$(readlink "$ENV_PY")" = "../../../bin/python3"
+          test "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["pythonPath"])' "$RESOURCE_ROOT/python-runtime/runtime-envs/active-runtime.json")" = "../bin/python3"
           test -f "$WORKER"
           test -x "$BIN/ffmpeg"
           test -x "$BIN/ffprobe"
@@ -198,11 +179,11 @@ jobs:
             otool -L "$PY"
             exit 1
           fi
-          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RESOURCE_ROOT/python-runtime" "$PY" -c "import importlib.util, sys, ssl, venv, pip; assert importlib.util.find_spec('torch') is None; assert importlib.util.find_spec('pymss') is None; print(sys.prefix); print('bootstrap ok')"
+          PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RESOURCE_ROOT/python-runtime" "$PY" -c "import importlib.util, sys, ssl, venv, pip, pymss, pymss_core, torch; assert importlib.util.find_spec('mlx') is not None; assert torch.version.cuda is None; print(sys.prefix); print('bundled MLX runtime ok')"
           PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RESOURCE_ROOT/python-runtime" "$PY" -c "import shutil; assert shutil.which('ffmpeg'); assert shutil.which('aria2c'); print('bundled tools ok')"
-          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 "$ENV_PY" -c "from pymss.model_download import ARIA2C_PATH; assert ARIA2C_PATH, 'pymss cannot see the bundled aria2c'; print('aria2 resolver ok:', ARIA2C_PATH)"
-          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 "$ENV_PY" "$WORKER" env_info
-          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 "$ENV_PY" "$WORKER" list_models --payload "{}"
+          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RESOURCE_ROOT/python-runtime" "$ENV_PY" -c "from pymss.model_download import ARIA2C_PATH; assert ARIA2C_PATH, 'pymss cannot see the bundled aria2c'; print('aria2 resolver ok:', ARIA2C_PATH)"
+          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RESOURCE_ROOT/python-runtime" "$ENV_PY" "$WORKER" env_info
+          PATH="$BIN:$PATH" PYMSS_STUDIO_OPENSSL_CONF="$BIN/openssl/openssl.cnf" PYMSS_STUDIO_OPENSSL_MODULES="$BIN/openssl/ossl-modules" OPENSSL_CONF="$BIN/openssl/openssl.cnf" OPENSSL_MODULES="$BIN/openssl/ossl-modules" PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RESOURCE_ROOT/python-runtime" "$ENV_PY" "$WORKER" list_models --payload "{}"
           codesign --verify --deep --strict --verbose=4 "$APP"
 
       - name: Build DMG with hdiutil
