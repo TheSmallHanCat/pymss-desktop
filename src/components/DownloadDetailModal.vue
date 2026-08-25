@@ -11,6 +11,7 @@ import {
 } from '@vicons/ionicons5'
 import type { DownloadLogEntry, DownloadTask } from '@/stores/model'
 import { formatBytes, formatSpeedMBps } from '@/utils/format'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 
 const props = defineProps<{
   show: boolean
@@ -31,6 +32,16 @@ const message = useMessage()
 
 const logContainerRef = ref<HTMLElement | null>(null)
 const autoScroll = ref(true)
+
+// Focus trap for the dialog card.
+const dialogCardRef = ref<HTMLElement | null>(null)
+const focusTrap = useFocusTrap(dialogCardRef, {
+  onEsc: () => handleClose(),
+})
+watch(() => props.show, (visible) => {
+  if (visible) nextTick(() => focusTrap.trap())
+  else focusTrap.release()
+}, { immediate: true })
 
 const statusType = computed(() => {
   if (!props.task) return 'default'
@@ -161,11 +172,13 @@ function handleClose() {
     @update:show="(v: boolean) => emit('update:show', v)"
   >
     <n-card
+      ref="dialogCardRef"
       class="download-detail-modal"
       :bordered="false"
       closable
       role="dialog"
       aria-modal="true"
+      :aria-label="t('models.downloadDetailTitle')"
       @close="handleClose"
     >
       <template #header>

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import { invoke } from '@tauri-apps/api/core'
 import { DocumentAttachOutline, FolderOpenOutline } from '@vicons/ionicons5'
 import { useModelStore, type CustomModelInspection } from '@/stores/model'
 import { formatBytes } from '@/utils/format'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{
@@ -39,6 +40,16 @@ const force = ref(false)
 
 const importState = computed(() => modelStore.customImportState)
 const importing = computed(() => importState.value.status === 'importing')
+
+// Focus trap for the dialog card.
+const dialogCardRef = ref<HTMLElement | null>(null)
+const focusTrap = useFocusTrap(dialogCardRef, {
+  onEsc: () => { if (!importing.value) emit('update:show', false) },
+})
+watch(() => props.show, (visible) => {
+  if (visible) nextTick(() => focusTrap.trap())
+  else focusTrap.release()
+}, { immediate: true })
 
 const modelTypeOptions = computed(() => {
   const known = inspection.value?.knownModelTypes || []
@@ -223,11 +234,13 @@ const nextDisabled = computed(() => {
     @update:show="(v: boolean) => emit('update:show', v)"
   >
     <n-card
+      ref="dialogCardRef"
       class="cmi-modal"
       :bordered="false"
       :closable="!importing"
       role="dialog"
       aria-modal="true"
+      :aria-label="t('models.customImportTitle')"
       @close="emit('update:show', false)"
     >
       <template #header>

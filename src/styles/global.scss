@@ -65,6 +65,51 @@ body {
 button, input, select, textarea { font: inherit; }
 a { color: inherit; text-decoration: none; }
 
+/* ===== Accessible Focus Ring =====
+ * A single visible focus indicator for keyboard navigation across the whole app.
+ * `:focus-visible` only triggers on keyboard focus, so mouse clicks keep their
+ * clean look. The ring uses the primary token so it stays visible on both the
+ * dark and light themes. */
+:where(a, button, input, select, textarea, summary, [tabindex], [contenteditable="true"]):focus-visible {
+  outline: 2px solid var(--primary-strong);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Some custom controls render focusable surfaces that the generic rule above
+ * cannot reach (role=button on a div, or icon-only chips that paint their own
+ * background). Give them the same ring explicitly. */
+:where(.nav-item, .transport-chip, .transport-play, .chip, .track-row, .onboarding-chip, .onboarding-accent-card, .onboarding-runtime-card):focus-visible {
+  outline: 2px solid var(--primary-strong);
+  outline-offset: 2px;
+}
+
+/* Skip-to-content link: visually hidden until focused, then pinned to the
+ * top-left so keyboard users can bypass the sidebar on every page. */
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 10000;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: var(--shadow-soft);
+  /* Hidden until keyboard focus arrives. */
+  transform: translateY(-150%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+.skip-link:focus-visible {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
 /* ===== App Shell ===== */
 .app-shell {
   width: 100vw;

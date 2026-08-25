@@ -6,6 +6,8 @@ import TitleBar from '@/components/TitleBar.vue'
 import SideNav from '@/components/SideNav.vue'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 import StartupOnboarding from '@/components/StartupOnboarding.vue'
+import A11yProvider from '@/components/A11yProvider.vue'
+import ShortcutsHelpDialog from '@/components/ShortcutsHelpDialog.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { useUpdateStore } from '@/stores/update'
@@ -34,6 +36,7 @@ const manualUpdateModalVisible = ref(false)
 const manualUpdateError = ref('')
 const runtimeCorePromptVisible = ref(false)
 const runtimeCorePromptShown = ref(false)
+const shortcutsHelpVisible = ref(false)
 let unlistenNodeEditorClosed: UnlistenFn | undefined
 
 const isDark = computed(() => resolvedIsDark(settings.themeMode))
@@ -154,7 +157,28 @@ async function keepDeferredUpdateForNextLaunch() {
   }
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  return (
+    tag === 'INPUT' ||
+    tag === 'TEXTAREA' ||
+    tag === 'SELECT' ||
+    target.isContentEditable
+  )
+}
+
+function onShortcutsHelpKeydown(event: KeyboardEvent) {
+  // "?" (Shift+/ on most layouts) opens the keyboard shortcuts help. Ignore
+  // key presses inside form fields so users can type "?" into inputs.
+  if (event.key === '?' && !event.ctrlKey && !event.metaKey && !isEditableTarget(event.target)) {
+    event.preventDefault()
+    shortcutsHelpVisible.value = true
+  }
+}
+
 onMounted(async () => {
+  window.addEventListener('keydown', onShortcutsHelpKeydown)
   window.setTimeout(() => {
     bootReady.value = true
   }, 120)
@@ -167,6 +191,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', onShortcutsHelpKeydown)
   unlistenNodeEditorClosed?.()
 })
 
@@ -195,11 +220,12 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
       <n-message-provider>
         <n-dialog-provider>
         <div class="app-shell" :class="{ 'app-shell--editor': isStandaloneRoute, 'app-shell--workflow-node-editor': isWorkflowNodeEditorRoute, 'app-shell--native-titlebar': isMacOS, 'no-animations': !settings.animationsEnabled }">
+          <A11yProvider />
           <div class="app-backdrop" />
           <TitleBar v-if="!isWorkflowNodeEditorRoute" />
           <div class="app-body">
             <SideNav v-if="!isStandaloneRoute" />
-            <main class="app-content">
+            <main id="main-content" class="app-content" tabindex="-1">
               <router-view v-slot="{ Component, route }">
                 <component v-if="isWorkflowNodeEditorRoute" :is="Component" :key="route.fullPath" />
                 <transition v-else name="page" mode="out-in">
@@ -209,7 +235,7 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
             </main>
           </div>
           <transition name="boot-fade">
-            <div v-if="!bootReady" class="boot-splash">
+            <div v-if="!bootReady" class="boot-splash" aria-hidden="true">
               <AppBrandMark class="boot-splash__mark" :size="58" shadow />
             <div class="boot-splash__copy">
               <strong>Pymss Studio</strong>
@@ -218,6 +244,7 @@ const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, sett
             </div>
           </transition>
           <StartupOnboarding v-if="showStartupOnboarding" />
+          <ShortcutsHelpDialog v-model:show="shortcutsHelpVisible" />
         </div>
         <n-modal v-model:show="deferredUpdateModalVisible" preset="dialog" type="warning" :mask-closable="false" :closable="false">
           <template #header>

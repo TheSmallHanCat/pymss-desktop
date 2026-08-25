@@ -9,6 +9,7 @@ import AppBrandMark from '@/components/AppBrandMark.vue'
 import { SYSTEM_LOCALE, setLocale, type LocaleSetting } from '@/i18n'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore, type RuntimeBackend } from '@/stores/app'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 import { formatBytes } from '@/utils/format'
 import {
   detectRuntimePlatform,
@@ -303,6 +304,17 @@ async function finishOnboarding(event?: MouseEvent) {
   }
 }
 
+// Focus trap: confine Tab to the onboarding card so keyboard users don't
+// escape into the app behind it. Nested Naive UI modals (model-dir migration)
+// teleport to <body> and manage their own focus, so the trap is released while
+// any of them is open and re-armed when they close.
+const focusTrap = useFocusTrap(overlayRef)
+const hasOpenNestedModal = computed(() =>
+  checkingModelDir.value
+  || modelDirMigrationVisible.value
+  || modelDirMigrationState.value.status === 'confirm',
+)
+
 onMounted(() => {
   runtimeChecking.value = true
   app.checkRuntimeInfo()
@@ -311,17 +323,24 @@ onMounted(() => {
       runtimeChecking.value = false
     })
   void app.loadRuntimeCoreVersions().catch(() => {})
+  // Defer so the overlay DOM is settled before we capture focus.
+  requestAnimationFrame(() => focusTrap.trap())
+})
+
+watch(hasOpenNestedModal, (open) => {
+  if (open) focusTrap.release()
+  else requestAnimationFrame(() => focusTrap.trap())
 })
 </script>
 
 <template>
-  <div ref="overlayRef" class="onboarding-overlay">
+  <div ref="overlayRef" class="onboarding-overlay" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
     <div class="onboarding-card">
       <aside class="onboarding-rail">
         <div class="onboarding-brand">
           <AppBrandMark :size="46" variant="hero" shadow />
           <div class="onboarding-brand__text">
-            <strong>{{ t('onboarding.title') }}</strong>
+            <strong id="onboarding-title">{{ t('onboarding.title') }}</strong>
             <span>{{ t('onboarding.subtitle') }}</span>
           </div>
         </div>
@@ -348,6 +367,9 @@ onMounted(() => {
           </span>
           <h1>{{ stepMeta.title }}</h1>
           <p>{{ stepMeta.description }}</p>
+          <p v-if="step === 0" class="onboarding-hint onboarding-hint--a11y">
+            <router-link to="/simple" class="onboarding-simple-link">{{ t('simple.pageTitle') }} →</router-link>
+          </p>
         </header>
 
         <div class="onboarding-content__body">
@@ -818,6 +840,20 @@ onMounted(() => {
   color: var(--on-surface-muted);
   line-height: 1.6;
   font-size: 13px;
+}
+
+.onboarding-hint--a11y {
+  margin-top: 8px;
+}
+
+.onboarding-simple-link {
+  color: var(--primary-strong);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.onboarding-simple-link:hover {
+  text-decoration: underline;
 }
 
 .onboarding-content__body {

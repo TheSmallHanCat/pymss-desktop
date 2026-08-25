@@ -10,6 +10,7 @@ import {
   FolderOpenOutline,
   SettingsOutline,
   TerminalOutline,
+  AccessibilityOutline,
 } from '@vicons/ionicons5'
 
 const route = useRoute()
@@ -22,13 +23,14 @@ const mainItems = computed(() => [
   { name: 'results', path: '/results', icon: FolderOpenOutline, label: t('nav.results') },
 ])
 const bottomItems = computed(() => [
+  { name: 'simple', path: '/simple', icon: AccessibilityOutline, label: t('nav.simple') },
   ...(settings.developerMode ? [{ name: 'debug', path: '/debug', icon: TerminalOutline, label: t('nav.debug') }] : []),
   { name: 'settings', path: '/settings', icon: SettingsOutline, label: t('nav.settings') },
 ])
 </script>
 
 <template>
-  <aside class="side-nav">
+  <nav class="side-nav" :aria-label="t('a11y.primaryNav')">
     <div class="side-nav__main">
       <router-link
         v-for="item in mainItems"
@@ -37,6 +39,7 @@ const bottomItems = computed(() => [
         :class="{ active: route.name === item.name }"
         :to="item.path"
         :title="item.label"
+        :aria-current="route.name === item.name ? 'page' : undefined"
       >
         <span class="nav-icon">
           <n-icon :component="item.icon" :size="18" />
@@ -56,6 +59,7 @@ const bottomItems = computed(() => [
         ]"
         :to="item.path"
         :title="item.label"
+        :aria-current="route.name === item.name ? 'page' : undefined"
       >
         <span class="nav-icon">
           <n-icon :component="item.icon" :size="18" />
@@ -63,5 +67,5 @@ const bottomItems = computed(() => [
         <span>{{ item.label }}</span>
       </router-link>
     </div>
-  </aside>
+  </nav>
 </template>

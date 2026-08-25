@@ -159,6 +159,22 @@ function rowClass(source: EditorSource) {
   }
 }
 
+/**
+ * Accessible name for an asset row. Describes the "add to timeline" action and
+ * the asset's key metadata (duration, channels, sample rate) in plain English,
+ * since the row acts as a keyboard-activatable button.
+ */
+function assetRowAriaLabel(source: EditorSource) {
+  const duration = formatTime(source.duration)
+  const channels = source.channels
+    ? `${source.channels} channel${source.channels === 1 ? '' : 's'}`
+    : ''
+  const sampleRate = source.sampleRate ? `${Math.round(source.sampleRate / 100) / 10} kHz` : ''
+  const meta = [duration, channels, sampleRate].filter(Boolean).join(', ')
+  const status = source.missing ? ' (missing file)' : ''
+  return `Add ${source.name} to timeline. ${meta}${status}`
+}
+
 function hasSectionContent(type: 'local' | 'external') {
   if (search.value.trim()) {
     return type === 'local' ? filteredLocalSources.value.length > 0 : filteredExternalSources.value.length > 0
@@ -191,8 +207,13 @@ function hasSectionContent(type: 'local' | 'external') {
           class="asset-row"
           :class="rowClass(source)"
           :title="source.path"
+          tabindex="0"
+          role="button"
+          :aria-label="assetRowAriaLabel(source)"
           @mousedown="handleAssetPointerDown($event, source)"
           @dblclick="emit('sourceAdd', source)"
+          @keydown.enter.prevent="emit('sourceAdd', source)"
+          @keydown.space.prevent="emit('sourceAdd', source)"
           @contextmenu.stop.prevent="openContextMenu($event, source)"
         >
           <span class="asset-row__icon"><n-icon :component="source.missing ? AlertCircleOutline : MusicalNoteOutline" /></span>
@@ -211,8 +232,13 @@ function hasSectionContent(type: 'local' | 'external') {
           class="asset-row"
           :class="rowClass(source)"
           :title="source.path"
+          tabindex="0"
+          role="button"
+          :aria-label="assetRowAriaLabel(source)"
           @mousedown="handleAssetPointerDown($event, source)"
           @dblclick="emit('sourceAdd', source)"
+          @keydown.enter.prevent="emit('sourceAdd', source)"
+          @keydown.space.prevent="emit('sourceAdd', source)"
           @contextmenu.stop.prevent="openContextMenu($event, source)"
         >
           <span class="asset-row__icon"><n-icon :component="source.missing ? AlertCircleOutline : MusicalNoteOutline" /></span>

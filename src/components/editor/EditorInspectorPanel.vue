@@ -161,6 +161,7 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
                 :max="fadeMax"
                 :step="0.1"
                 size="small"
+                :input-props="{ 'aria-label': 'Fade in duration in seconds' }"
                 @update:value="(value: number | null) => selectedTrack && emit('setTrackFades', selectedTrack.id, { fadeIn: numberOrZero(value) })"
               />
             </label>
@@ -172,6 +173,7 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
                 :max="fadeMax"
                 :step="0.1"
                 size="small"
+                :input-props="{ 'aria-label': 'Fade out duration in seconds' }"
                 @update:value="(value: number | null) => selectedTrack && emit('setTrackFades', selectedTrack.id, { fadeOut: numberOrZero(value) })"
               />
             </label>

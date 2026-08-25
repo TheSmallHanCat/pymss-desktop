@@ -9,6 +9,15 @@ import { useAppStore } from '@/stores/app'
 import type { WorkflowEntry } from '@/stores/workflow'
 import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, stripWorkflowUi, workflowValidationErrorMessage, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
 import { getWorkflowDefinitionDefaults, readWorkflowGraphDefinition, serializeWorkflowGraphDefinition } from '@/utils/workflowGraph'
+import { useLiveAnnouncer } from '@/composables/useLiveAnnouncer'
+
+// Screen-reader announcement helper for task lifecycle events.
+// The announcer is a DOM-only singleton; safe to call from the store.
+const liveAnnouncer = useLiveAnnouncer()
+function announceTaskEvent(text: string, assertive = false) {
+  if (assertive) liveAnnouncer.announceAssertive(text)
+  else liveAnnouncer.announcePolite(text)
+}
 
 export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
 
@@ -1360,6 +1369,10 @@ export const useTaskStore = defineStore('task', () => {
       }
       if (!recoverable) markTaskFinished(task)
       appendTaskLogs(task, [`error: ${code}${message}`, detail ? `traceback:\n${detail}` : ''])
+      // Announce failure to screen readers (assertive — interrupts).
+      if (!recoverable) {
+        announceTaskEvent(i18n.global.t('simple.taskFailedAnnounce', { name: task.input.split(/[/\\]/).pop() || task.input }), true)
+      }
     } else if (event.type === 'task_done') {
       task.status = 'done'
       markTaskStarted(task)
@@ -1377,6 +1390,8 @@ export const useTaskStore = defineStore('task', () => {
       task.outputs = event.payload?.outputs?.length
         ? event.payload.outputs
         : outputsFromFiles(task.output, task.files, event.payload?.outputFormat || 'wav', task.outputPrefix)
+      // Announce completion to screen readers.
+      announceTaskEvent(i18n.global.t('simple.taskDoneAnnounce', { name: task.input.split(/[/\\]/).pop() || task.input }))
       task.error = undefined
       touch(task)
       markTaskFinished(task, task.updatedAt)

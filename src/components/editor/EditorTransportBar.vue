@@ -14,6 +14,7 @@ import {
   VolumeMuteOutline,
 } from '@vicons/ionicons5'
 import { formatTime } from '@/utils/editorTime'
+import SrText from '@/components/SrText.vue'
 import type { TransportPendingAction, TransportVisualState } from '@/stores/editorPlayback'
 
 const props = defineProps<{
@@ -115,7 +116,7 @@ function clearTransportPressed() {
             :disabled="disabled || !canUndo"
             @click="emit('undo')"
           >
-            <span class="sr-only">{{ t('common.undo') }}</span>
+            <SrText>{{ t('common.undo') }}</SrText>
             <n-icon :component="ArrowUndoOutline" />
           </button>
           <button
@@ -126,7 +127,7 @@ function clearTransportPressed() {
             :disabled="disabled || !canRedo"
             @click="emit('redo')"
           >
-            <span class="sr-only">{{ t('common.redo') }}</span>
+            <SrText>{{ t('common.redo') }}</SrText>
             <n-icon :component="ArrowRedoOutline" />
           </button>
           <button
@@ -393,18 +394,6 @@ function clearTransportPressed() {
   color: var(--on-surface-muted);
   background: transparent;
   transition: color 140ms ease, background 140ms ease;
-}
-
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
 }
 
 .transport-chip:not(:disabled):hover {
