@@ -38,7 +38,7 @@
 
 ### T1.3 `A11yProvider` 组件
 - **文件**: `src/components/A11yProvider.vue`(新增);`src/App.vue` 包一层
-- **做法**: 挂载 polite/assertive 两个 `aria-live` 区(absolute、clip、aria-hidden 视觉隐藏但读屏可读);提供跳转链接目标锚点;`<main id="main-content" tabindex="-1">` 由它管理 id
+- **做法**: 挂载 polite/assertive 两个 `aria-live` 区(absolute、clip 视觉隐藏,**不加 `aria-hidden`**——`aria-hidden` 会将节点从无障碍树中移除,导致读屏无法播报);提供跳转链接目标锚点;`<main id="main-content" tabindex="-1">` 由它管理 id
 - **验收**: DOM 里存在两个 live 区;读屏可读;`#main-content` 存在且可编程聚焦
 - **依赖**: T1.2
 
@@ -68,14 +68,14 @@
 
 ### T1.8 SideNav 语义化 + 跳转链接
 - **文件**: `src/components/SideNav.vue`(修改)、`src/App.vue`(修改)
-- **做法**: `<aside>` → `<nav aria-label="主导航">`;活动项加 `aria-current="page"`;App 顶部加"跳到主内容"跳转链接(首个可聚焦元素)
+- **做法**: `<aside>` → `<nav :aria-label="t('a11y.mainNav')">`;活动项加 `aria-current="page"`;App 顶部加跳转链接,文本用 `t('a11y.skipToContent')` i18n 键(所有新增导航标签与链接文本均通过 i18n 键提供,不硬编码中文,以保证英文界面读屏正确播报)
 - **验收**: 读屏识别为导航;活动项播报"当前页";跳转链接可 Tab 到并回车跳过导航
 - **依赖**: T1.3、T1.7
 
 ### T1.9 boot-splash 与 StartupOnboarding
 - **文件**: `src/App.vue`(修改)、`src/components/StartupOnboarding.vue`(修改)
-- **做法**: `boot-splash` 加 `aria-hidden="true"`(瞬态不读);`StartupOnboarding` 打开时焦点进首按钮 + 焦点陷阱
-- **验收**: 启动遮罩期读屏不读过渡;Onboarding 打开焦点进按钮、Tab 不逃逸
+- **做法**: `boot-splash` 加 `aria-hidden="true"`(瞬态不读);`StartupOnboarding` 打开时:①根节点改为 `role="dialog" aria-modal="true" :aria-labelledby` 指向内部标题;②焦点进首按钮 + 焦点陷阱;③Esc 关闭;④关闭后焦点回触发元素
+- **验收**: 启动遮罩期读屏不读过渡;Onboarding 打开焦点进按钮、Tab 不逃逸;读屏播报对话框标题;浏览模式不访问背景内容
 - **依赖**: T1.4
 
 **阶段 1 验收**: `pnpm build` 通过;纯键盘能跳过导航、切换视图、看到焦点环;读屏能播报路由标题;live 区已就位。
@@ -86,7 +86,7 @@
 
 ### T2.1 路由 + 视图骨架
 - **文件**: `src/router/index.ts`(加 `/simple` 路由)、`src/views/SimpleView.vue`(新增)
-- **做法**: hash 路由加 `{ path: '/simple', name: 'simple', component: ... }`;骨架为单列 `<main>` + `<h1>` + 若干 `<section aria-labelledby>`
+- **做法**: hash 路由加 `{ path: '/simple', name: 'simple', component: ... }`;骨架为单列普通容器 `<div>` + `<h1>` + 若干 `<section aria-labelledby>`(主 `<main>` landmark 由 App/A11yProvider 统一提供,视图内部不再渲染 `<main>`,避免嵌套 main landmark 导致读屏结构无效)
 - **验收**: 访问 `#/simple` 渲染骨架;读屏能读页面标题与各 section
 - **依赖**: 阶段 1
 
@@ -121,8 +121,8 @@
 - **依赖**: T2.1
 
 ### T2.7 i18n
-- **文件**: `src/i18n/zh-CN.json`、`src/i18n/en.json`(加 `simple.*` 键)、`tests/i18nKeys.test.ts`
-- **做法**: 所有简化页文案进 `simple` 命名空间;跑 i18n 键校验
+- **文件**: `src/i18n/zh-CN.json`、`src/i18n/en.json`(加 `simple.*` 键及 `nav.simple` 键)、`tests/i18nKeys.test.ts`
+- **做法**: 所有简化页文案进 `simple` 命名空间;**必须显式新增 `nav.simple` 键**(TitleBar 动态读取 `nav.${route.name}`，缺失时会显示/播报原始字符串 `nav.simple`)；同时在测试中加校验「每个命名路由都有对应 nav 标题键」；跑 i18n 键校验
 - **验收**: 两份 json 键一致;`pnpm test` i18n 用例通过
 - **依赖**: T2.3-T2.6
 
@@ -158,8 +158,8 @@
 ## 阶段 4 — 标准视图查漏(主界面)
 
 ### T4.1 SeparateView
-- **已有**: `role=listbox/option/aria-selected` ✓
-- **补**: 4 个 dialog 已在 T3.1 处理;文件拖放区改可键盘操作(`tabindex` + Enter 触发文件选择);分离任务进度已在 T3.3
+- **已有**: `role=listbox/option/aria-selected` 标注存在,但当前 `SeparateView.vue:1900-1982` 给每个普通按钮加了 `role="option"` 而**缺少 listbox 所需的单一 Tab 停靠点与方向键/Home/End 导航**,ARIA 角色与键盘行为不匹配
+- **补**: ①补齐 listbox 模式:使用 `useRovingTabindex` 实现方向键/Home/End 导航、单一 tabindex=0 停靠点;或②移除 listbox/option 角色改为普通列表按钮语义;选定方案后对齐实现与角色;4 个 dialog 已在 T3.1 处理;文件拖放区改可键盘操作(`tabindex` + Enter 触发文件选择);分离任务进度已在 T3.3
 - **验收**: 纯键盘能选模型/工作流、加文件、开始分离
 - **依赖**: 阶段 3
 
@@ -180,7 +180,12 @@
 - **验收**: 纯键盘改设置;每控件有可读 label
 - **依赖**: 阶段 2、3
 
-**阶段 4 验收**: 主界面四个标准视图纯键盘+读屏可用。
+### T4.5 WorkflowsView(工作流列表页)
+- **补**: `SideNav.vue:21` 将 `/workflows` 作为一级导航项;本任务对工作流列表/基础编辑页面做语义、键盘、焦点、状态播报全量审计:ARIA 结构、键盘可达性、焦点管理、关键操作结果经直播区播报
+- **验收**: 纯键盘能浏览工作流列表、新建/打开/删除工作流;操作结果被读屏播报
+- **依赖**: 阶段 3
+
+**阶段 4 验收**: 主界面五个标准视图(含 WorkflowsView)纯键盘+读屏可用。
 
 ---
 
@@ -236,7 +241,7 @@
 
 ### T6.2 连接 combobox 编辑
 - **文件**: 大纲树组件内
-- **做法**: 每个步骤的输入用 `combobox` 选源(上一步输出/工具输出),替代拖线;复用 `buildWorkflowConsumedValueSetForDraft`
+- **做法**: 每个步骤的输入用 `combobox` 选源(上一步输出/工具输出),替代拖线;候选项构建逻辑当前位于 `WorkflowNodeEditor.vue` 的 `inputOptions(index)`(注:`buildWorkflowConsumedValueSetForDraft` 只返回已消费输出集合,不能生成候选源);**需将 `inputOptions` 候选项构建/校验逻辑提取为共享函数**,供大纲树组件与 `WorkflowNodeEditor` 共同复用,避免两套连接规则漂移
 - **验收**: 纯键盘为步骤输入选源;保存后画布连接同步
 - **依赖**: T6.1
 
@@ -265,8 +270,8 @@
 
 ### T7.2 快捷键帮助对话框
 - **文件**: 新增 `src/components/ShortcutsHelpDialog.vue`;全局快捷键(如 `?`)打开
-- **做法**: 列出所有键盘快捷键(复用 `useEditorShortcuts` 定义);焦点陷阱
-- **验收**: `?` 打开;读屏读出快捷键列表;Esc 关
+- **做法**: 当前 `useEditorShortcuts.ts` 把按键写在 `switch` 中,无可供 UI 直接消费的元数据;**需先将快捷键定义提取为单一数据源**(如键 → 描述映射表),再由 `switch` 监听器和帮助对话框共同消费,避免两份快捷键清单漂移;对话框加焦点陷阱
+- **验收**: `?` 打开;读屏读出快捷键列表;Esc 关;快捷键定义仅维护一处
 - **依赖**: 阶段 1
 
 ### T7.3 三读屏走查

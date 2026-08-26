@@ -12,7 +12,7 @@
 
 Pymss Studio 是 Tauri 桌面应用(Vue 3 + Naive UI + Rust 编排 Python worker),核心功能是音源分离。代码库**已有部分可达性地基**:
 
-- Naive UI 组件自带 ARIA;手写 `role="dialog"`/`aria-modal` 出现在 SeparateView×4、`CustomModelImportDialog`、`DownloadDetailModal`、`WorkflowRevisionConflictModal`
+- Naive UI 组件自带 ARIA;手写 `role="dialog"`/`aria-modal` 共 **8 处**:SeparateView×4、ModelsView×1、`CustomModelImportDialog`、`DownloadDetailModal`、`WorkflowRevisionConflictModal`
 - `EditorTransportBar` 已有 `sr-only` 类、`aria-pressed`、`aria-label`
 - `SeparateView` 已有 `role="listbox"`/`role="option"`/`aria-selected`
 - `useEditorShortcuts.ts` 已有一套编辑器全局键盘快捷键(播放/停止/跳转 ±1s/±5s/静音/独奏/缩放/撤销重做/保存)
@@ -82,23 +82,24 @@ Tauri 用 WebView2(Chromium),MSAA/UIA 树自动暴露给读屏,**无需改 Rust 
 
 - **跳转链接**: `App.vue` 首个可聚焦元素加"跳到主内容";`<main id="main-content" tabindex="-1">`
 - **路由焦点 + 标题**: 路由切换时焦点移到 `<main>` 或视图标题;同步设置 `document.title`(TitleBar 显示了 `pageTitle` 但 `document.title` 未设,读屏靠标题播报导航)
-- **SideNav**: `<aside>` → `<nav aria-label="主导航">`;活动项加 `aria-current="page"`(现仅有 `.active` 样式类)
+- **SideNav**: `<aside>` → `<nav :aria-label="t('a11y.mainNav')">`;活动项加 `aria-current="page"`(现仅有 `.active` 样式类);导航名称和跳转链接文本均通过 i18n 键提供,不硬编码中文
 - **启动遮罩**: `StartupOnboarding` 打开时焦点进首按钮并陷阱;`boot-splash` 给 `aria-hidden`(瞬态,不应被读)
 - `document.documentElement.lang` 已在 i18n 设好 ✓
 
-## 4. 标准视图(分离/模型/结果/设置)— 主界面路径
+## 4. 标准视图(分离/模型/结果/设置/工作流列表)— 主界面路径
 
 查漏补缺(已有不错地基):
 
-- **SeparateView**: 已有 `role=listbox/option/aria-selected` ✓;4 个手写 `role="dialog"` 块过 `useFocusTrap`;分离任务进度接 `useLiveAnnouncer`(开始/完成/失败);文件拖放区改成可键盘操作(`tabindex` + Enter)
+- **SeparateView**: `role=listbox/option/aria-selected` 已有但需补完整 listbox 键盘行为(方向键/Home/End + 单一 tabstop,或改为普通列表按钮语义);4 个手写 `role="dialog"` 块过 `useFocusTrap`;分离任务进度接 `useLiveAnnouncer`(开始/完成/失败);文件拖放区改成可键盘操作(`tabindex` + Enter)
 - **ModelsView**: 已有 `aria-pressed/tabindex/aria-current` ✓;模型卡 Enter/Space 激活;下载进度接直播区
 - **SettingsView**: 已有 `aria-label` 侧栏 ✓;核对每个控件 label 关联;模型目录迁移进度直播
 - **ResultsView**: 结果列表补 `role`/表头/动作 `aria-label`
+- **WorkflowsView**: `SideNav.vue:21` 将 `/workflows` 作为一级导航项;对工作流列表页做全量审计:ARIA 结构、键盘可达性、焦点管理、新建/打开/删除操作结果经直播区播报
 
 ## 5. 编辑器:混音器 + 传输条 + 波形 — 主界面路径
 
 - **传输条**: 已到位 ✓
-- **轨道行**: `@mousedown` 选择 → `useRovingTabindex`(↑↓ 切换、Enter 选中、M/S 静音独奏);选中状态经直播区播报
+- **轨道行**: `@mousedown` 选择 → `useRovingTabindex`(↑↓ 切换、Enter 选中、**M 静音 / R 独奏**,与 `useEditorShortcuts.ts:75-81` 的实现一致);选中状态经直播区播报
 - **跳转**: 已有 ArrowLeft/Right ±1s/±5s ✓;轨道聚焦时跳转,直播区口述时间码(节流,可开关)
 - **淡入淡出**: 若靠波形拖拽,确保 Inspector 里有数字输入框且带 label(可键盘编辑)
 - **波形 `EditorWaveform`**: `<canvas>` 加 `role="img"` + 描述性 `aria-label`(名称/声道/时长/淡入淡出);轨道头加 `SrText` 摘要(名称/声道/时长/淡入淡出/静音态);聚焦时口述响度概况(从 `peaks` 算一句,如"约 2.3s 处最响,后半段较安静")
@@ -108,13 +109,13 @@ Tauri 用 WebView2(Chromium),MSAA/UIA 树自动暴露给读屏,**无需改 Rust 
 ## 6. 工作流节点编辑器 — 主界面路径(最深)
 
 1. **"图形大纲"替代视图**(主可访问路径): 工具栏加切换,画布换成 `role="tree"`/`role="treeitem"` 嵌套列表——步骤(含模型/输入/输出)→ 工具节点 → 保存目标 → 备注。按 WAI-ARIA 树模式箭头键导航
-2. **连接编辑**: 大纲树里每个步骤的输入用 `combobox` 选源(上一步输出/工具输出),替代拖线;复用现有 `buildWorkflowConsumedValueSetForDraft` 数据模型
+2. **连接编辑**: 大纲树里每个步骤的输入用 `combobox` 选源(上一步输出/工具输出),替代拖线;候选项逻辑当前位于 `WorkflowNodeEditor.vue` 的 `inputOptions(index)`(注:`buildWorkflowConsumedValueSetForDraft` 只统计已消费输出,不能生成候选源);**需提取并共享该候选项构建/校验逻辑**,供大纲树与画布共同消费,避免连接规则漂移
 3. **画布可驱动**(C 的额外深度): `useRovingTabindex` 遍历节点,Enter 开节点编辑器,Delete 删除(已有快捷键 ✓),选择/缩放状态经直播区播报
 4. 复用已有 copy/paste/undo/redo 快捷键 ✓
 
 ## 7. 对话框与遮罩审计
 
-盘点所有手写 `role="dialog"`(SeparateView×4、`CustomModelImportDialog`、`DownloadDetailModal`、`WorkflowRevisionConflictModal`):逐一核对**焦点陷阱 + 初始焦点 + Esc 关闭 + 焦点回归 + `aria-labelledby` 指向标题**。Naive UI 的 `n-dialog`/`n-modal` 自带陷阱,主要查手写那几个。
+盘点所有手写 `role="dialog"` 共 **8 处**(SeparateView×4、ModelsView×1、`CustomModelImportDialog`、`DownloadDetailModal`、`WorkflowRevisionConflictModal`):逐一核对**焦点陷阱 + 初始焦点 + Esc 关闭 + 焦点回归 + `aria-labelledby` 指向标题**。Naive UI 的 `n-dialog`/`n-modal` 自带陷阱,主要查手写那几个。
 
 ## 8. 直播区与进度
 
