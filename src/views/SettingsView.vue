@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-shell'
@@ -62,6 +62,7 @@ const { t, locale: currentLocale } = useI18n()
 const message = useMessage()
 const dialog = useDialog()
 const route = useRoute()
+const router = useRouter()
 const settings = useSettingsStore()
 const app = useAppStore()
 const updates = useUpdateStore()
@@ -1151,6 +1152,7 @@ onMounted(async () => {
                 :options="updateChannelOptions"
                 :disabled="!updateSupported || updates.isBusy"
                 size="small"
+                aria-label="Update channel"
                 @update:value="changeUpdateChannel"
               />
               <p class="update-panel__notes update-panel__notes--muted">{{ updateChannel === 'prerelease' ? t('settings.updateChannelPrereleaseHint') : t('settings.updateChannelStableHint') }}</p>
@@ -1222,6 +1224,16 @@ onMounted(async () => {
                   <n-icon class="about-link-item__open" :component="OpenOutline" size="16" />
                 </button>
               </div>
+            </article>
+
+            <article class="about-info-card about-info-card--accessibility">
+              <div class="section-title section-title--plain">
+                <span>{{ t('simple.pageTitle') }}</span>
+              </div>
+              <p class="appearance-hint">{{ t('simple.intro') }}</p>
+              <n-button secondary size="small" @click="router.push('/simple')">
+                {{ t('simple.pageTitle') }}
+              </n-button>
             </article>
           </div>
         </section>
@@ -1311,6 +1323,7 @@ onMounted(async () => {
                     :value="locale"
                     :options="languageOptions"
                     :consistent-menu-width="false"
+                    :aria-label="t('settings.language')"
                     @update:value="selectLocale"
                   />
                 </div>
@@ -1338,6 +1351,7 @@ onMounted(async () => {
                     :step="1"
                     :marks="scaleSliderMarks"
                     :tooltip="false"
+                    :aria-label="t('settings.scaleFactor')"
                   />
                   <span class="scale-value">{{ scaleFactorPercent }}</span>
                 </div>
@@ -1350,7 +1364,7 @@ onMounted(async () => {
                 <p class="setting-row__hint">{{ t('settings.animationsHint') }}</p>
               </div>
               <div class="setting-row__control">
-                <n-switch v-model:value="animationsEnabled" />
+                <n-switch v-model:value="animationsEnabled" :aria-label="t('settings.animations')" />
               </div>
             </div>
           </div>
@@ -1552,7 +1566,7 @@ onMounted(async () => {
 
             <div class="runtime-mirror-row">
               <label class="text-muted text-sm">{{ t('settings.runtimeMirrorLabel') }}</label>
-              <n-select v-model:value="runtimeMirror" size="small" class="runtime-mirror-row__select" :options="[
+              <n-select v-model:value="runtimeMirror" size="small" class="runtime-mirror-row__select" :aria-label="t('settings.runtimeMirrorLabel')" :options="[
                 { label: t('onboarding.runtimeMirrorAuto'), value: 'auto' },
                 { label: t('onboarding.runtimeMirrorUstc'), value: 'ustc' },
                 { label: t('onboarding.runtimeMirrorTsinghua'), value: 'tsinghua' },
@@ -1699,6 +1713,7 @@ onMounted(async () => {
                 <n-select
                   v-model:value="defaultDevice"
                   :options="deviceOptions"
+                  :aria-label="t('settings.defaultDevice')"
                 />
               </div>
             </section>
@@ -1708,6 +1723,7 @@ onMounted(async () => {
                 <label class="text-muted text-sm">{{ t('settings.downloadSource') }}</label>
                 <n-select
                   v-model:value="downloadSource"
+                  :aria-label="t('settings.downloadSource')"
                   :options="[
                     { label: 'ModelScope', value: 'modelscope' },
                     { label: 'Hugging Face', value: 'huggingface' },
@@ -1720,6 +1736,7 @@ onMounted(async () => {
                 <n-select
                   v-model:value="downloadMethod"
                   :options="downloadMethodOptions"
+                  :aria-label="t('settings.downloadMethod')"
                 />
                 <p class="text-muted text-sm setting-field__hint">{{ t('settings.downloadMethodHint') }}</p>
               </div>
@@ -1731,6 +1748,7 @@ onMounted(async () => {
                 <n-select
                   v-model:value="proxyMode"
                   :options="proxyModeOptions"
+                  :aria-label="t('settings.proxyMode')"
                   @update:value="resetProxyTest"
                 />
                 <p class="text-muted text-sm setting-field__hint">{{ t('settings.proxyModeHint') }}</p>
@@ -1743,6 +1761,7 @@ onMounted(async () => {
                     :placeholder="t('settings.proxyUrlPlaceholder')"
                     clearable
                     size="small"
+                    :aria-label="t('settings.proxyUrl')"
                     @update:value="resetProxyTest"
                   />
                 </div>
@@ -1752,6 +1771,7 @@ onMounted(async () => {
                     v-model:value="proxyBypass"
                     :placeholder="t('settings.proxyBypassPlaceholder')"
                     size="small"
+                    :aria-label="t('settings.proxyBypass')"
                   />
                 </div>
               </div>
@@ -1811,6 +1831,7 @@ onMounted(async () => {
                   :step="1"
                   clearable
                   style="width: 100%;"
+                  :aria-label="t('settings.maxConcurrentSeparations')"
                 />
                 <p class="text-muted text-sm setting-field__hint">
                   {{ t('settings.maxConcurrentSeparationsHint') }}
@@ -1833,7 +1854,7 @@ onMounted(async () => {
                       {{ t('settings.developerModeHint') }}
                     </p>
                   </div>
-                  <n-switch v-model:value="developerMode" />
+                  <n-switch v-model:value="developerMode" :aria-label="t('settings.developerModeTitle')" />
                 </div>
               </div>
             </section>

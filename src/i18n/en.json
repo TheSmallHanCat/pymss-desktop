@@ -3,6 +3,10 @@
     "name": "Pymss Studio",
     "bootPreparing": "Initializing workspace..."
   },
+  "a11y": {
+    "skipToContent": "Skip to main content",
+    "primaryNav": "Primary"
+  },
   "nav": {
     "separate": "Separate",
     "models": "Models",
@@ -12,6 +16,7 @@
     "settings": "Settings",
     "workflows": "Workflows",
     "workflow-node-editor": "Node Editor",
+    "simple": "Simple",
     "debug": "Debug"
   },
   "common": {
@@ -1259,5 +1264,46 @@
     "createNodePanelHint": "Pick a node type — the new node will be connected to this link automatically.",
     "collapseNode": "Collapse node",
     "expandNode": "Expand node"
+  },
+  "simple": {
+    "pageTitle": "Simple Mode",
+    "intro": "This is a streamlined separation page designed for screen reader users. Pick a model, add audio files, start separation, and preview results with native audio controls.",
+    "backToMain": "Back to main",
+    "modeTitle": "Operation mode",
+    "modeModel": "Model separation",
+    "modeWorkflow": "Workflow separation",
+    "modelTitle": "Choose a model",
+    "modelLabel": "Separation model",
+    "noModelsHint": "No models downloaded yet. Go to the Models page to download one first.",
+    "workflowTitle": "Choose a workflow",
+    "workflowLabel": "Workflow",
+    "noWorkflowsHint": "No workflows created yet.",
+    "filesTitle": "Audio files",
+    "addFiles": "Add audio files",
+    "removeFile": "Remove {name}",
+    "noFiles": "Please add audio files first",
+    "noFilesHint": "Click the button above to pick audio or video files.",
+    "filesAdded": "Added {count} file(s)",
+    "fileRemoved": "Removed {name}",
+    "startTitle": "Start separation",
+    "startSeparation": "Start separation",
+    "starting": "Starting…",
+    "started": "Started {count} separation task(s)",
+    "partialSuccess": "{succeeded} succeeded, {failed} failed",
+    "noModelSelected": "Please select a model first",
+    "noWorkflowSelected": "Please select a workflow first",
+    "progressTitle": "In progress",
+    "taskProgress": "Progress {percent}%, {stage}",
+    "taskDone": "Done",
+    "taskFailed": "Failed",
+    "taskCancelled": "Cancelled",
+    "taskDoneAnnounce": "{name} separation complete",
+    "taskFailedAnnounce": "{name} separation failed",
+    "resultsTitle": "Results",
+    "openOutputDir": "Open output folder",
+    "openOutput": "Open output folder for {name}",
+    "previewStem": "Preview {stem}",
+    "audioNotSupported": "Your browser does not support audio playback.",
+    "noOutputs": "This task has no output files yet."
   }
 }

@@ -80,3 +80,15 @@ GitHub releases may split files >2GB using `split` (workflow auto-handles). See 
 ## Testing
 
 No automated test suite currently. Verification is manual + CI smoke tests (env_info, list_models).
+
+## Accessibility maintenance
+
+The app has an a11y layer that must be preserved when touching UI. Key pieces:
+
+- `src/components/SrText.vue` — visually-hidden text for screen readers (labels icon-only buttons, adds context).
+- `src/composables/useLiveAnnouncer.ts` — singleton that writes to the polite/assertive `aria-live` regions mounted by `src/components/A11yProvider.vue` (which also mounts the skip-to-content link).
+- `src/composables/useFocusTrap.ts` — focus containment + Esc handling for custom `role="dialog"` overlays rendered outside `n-modal`.
+- `src/composables/useRovingTabindex.ts` — roving-tabindex arrow-key navigation for toolbars, tab lists, and track rows.
+- i18n `a11y.*` namespace — user-facing accessible strings (skip-link text, live announcements). Add new screen-reader strings here, not as hardcoded text in components.
+- `?` opens the keyboard shortcuts help (`src/components/ShortcutsHelpDialog.vue`, wired in `App.vue`). Keep the shortcut list in sync with `src/composables/useEditorShortcuts.ts`.
+

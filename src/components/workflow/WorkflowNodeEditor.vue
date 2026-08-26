@@ -49,6 +49,9 @@ import {
   utilitySelectionKey,
   zoomAroundPoint,
 } from '@/utils/workflowCanvas'
+import { useRovingTabindex } from '@/composables/useRovingTabindex'
+import { useLiveAnnouncer } from '@/composables/useLiveAnnouncer'
+import SrText from '@/components/SrText.vue'
 
 const definition = defineModel<Record<string, unknown>>('definition', { required: true })
 const props = defineProps<{
@@ -131,6 +134,7 @@ type SaveOutputItem = {
 
 const { t } = useI18n()
 const message = useMessage()
+const announcer = useLiveAnnouncer()
 
 const graphDefinition = ref<WorkflowGraphDefinition>(readWorkflowGraphDefinition(definition.value || {}))
 let lastSyncedDefinitionJson = JSON.stringify(serializeWorkflowGraphDefinition(graphDefinition.value))
@@ -437,6 +441,152 @@ const paletteItems = computed(() => {
   ]
   if (!keyword) return items
   return items.filter(item => `${item.title} ${item.desc}`.toLowerCase().includes(keyword))
+})
+
+// ── Outline tree view (Phase 6 a11y) ───────────────────────────────────────
+// A screen-reader-accessible flat list of the workflow graph nodes. Toggleable
+// from the canvas toolbar; when visible, the canvas is hidden (aria-hidden) so
+// SR users browse a simple tree instead of an SVG canvas.
+type OutlineViewMode = 'canvas' | 'outline'
+interface OutlineTreeNode {
+  key: string
+  kind: 'input' | 'step' | 'utility' | 'save'
+  name: string
+  typeLabel: string
+  hasChildren: boolean
+}
+const outlineViewMode = ref<OutlineViewMode>('canvas')
+const outlineContainerRef = ref<HTMLElement | null>(null)
+const outlineItemRefs = ref<HTMLElement[]>([])
+const collapsedOutlineKeys = ref<Set<string>>(new Set(['input', 'save']))
+const outlineTree = computed<OutlineTreeNode[]>(() => {
+  // Input always comes first; steps are never collapsed (no expandable
+  // children — stems aren't separate nodes here); utilities last; save at end.
+  const nodes: OutlineTreeNode[] = [{
+    key: 'input',
+    kind: 'input',
+    name: t('workflows.originalInput'),
+    typeLabel: 'Input',
+    hasChildren: steps.value.length > 0,
+  }]
+  steps.value.forEach((step, index) => {
+    nodes.push({
+      key: stepSelectionKey(step.id),
+      kind: 'step',
+      name: stepDisplayId(index),
+      typeLabel: 'Separation step',
+      hasChildren: step.stems.length > 0,
+    })
+  })
+  utilityNodes.value.forEach((node) => {
+    nodes.push({
+      key: utilitySelectionKey(node.id),
+      kind: 'utility',
+      name: utilityNodeDisplayLabel(node),
+      typeLabel: utilityNodeTitle(node.kind),
+      hasChildren: false,
+    })
+  })
+  nodes.push({
+    key: 'save',
+    kind: 'save',
+    name: t('workflows.saveNode'),
+    typeLabel: 'Save',
+    hasChildren: saveOutputs.value.length > 0,
+  })
+  return nodes
+})
+// Flat list of visible tree items (collapsed parents hide their children).
+const outlineVisibleNodes = computed<OutlineTreeNode[]>(() => {
+  const collapsed = collapsedOutlineKeys.value
+  return outlineTree.value.filter((node) => {
+    if (!node.hasChildren) return true
+    // A parent with children is always visible; collapsing only affects its
+    // children — but since this is a flat list (no nested treeitems), we keep
+    // all rows visible and use aria-expanded purely as a state indicator.
+    return true
+  })
+})
+const outlineRove = useRovingTabindex(outlineItemRefs, {
+  orientation: 'vertical',
+  onActivate: (index) => {
+    const node = outlineVisibleNodes.value[index]
+    if (node) selectGraphNode(node.key)
+  },
+})
+const outlineNodeByIndex = (index: number) => outlineVisibleNodes.value[index]
+function outlineIsCollapsed(key: string) {
+  return collapsedOutlineKeys.value.has(key)
+}
+function toggleOutlineNode(key: string) {
+  const next = new Set(collapsedOutlineKeys.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  collapsedOutlineKeys.value = next
+}
+function openOutlineNodeEditor(node: OutlineTreeNode) {
+  if (node.kind === 'input') {
+    selectGraphNode('input')
+    return
+  }
+  if (node.kind === 'step') {
+    selectGraphNode(node.key)
+    return
+  }
+  if (node.kind === 'utility') {
+    openUtilityConfig(node.key.slice('utility:'.length))
+    return
+  }
+  if (node.kind === 'save') {
+    openSaveConfig()
+  }
+}
+function handleOutlineKeydown(event: KeyboardEvent, index: number) {
+  const node = outlineNodeByIndex(index)
+  if (!node) {
+    outlineRove.onKeydown(event, index)
+    return
+  }
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    event.stopPropagation()
+    openOutlineNodeEditor(node)
+    announcer.announcePolite(`Opening ${node.name}`)
+    return
+  }
+  if (event.key === 'ArrowRight' && node.hasChildren && outlineIsCollapsed(node.key)) {
+    event.preventDefault()
+    event.stopPropagation()
+    toggleOutlineNode(node.key)
+    announcer.announcePolite(`${node.name} expanded`)
+    return
+  }
+  if (event.key === 'ArrowLeft' && node.hasChildren && !outlineIsCollapsed(node.key)) {
+    event.preventDefault()
+    event.stopPropagation()
+    toggleOutlineNode(node.key)
+    announcer.announcePolite(`${node.name} collapsed`)
+    return
+  }
+  outlineRove.onKeydown(event, index)
+}
+function setOutlineViewMode(mode: OutlineViewMode) {
+  outlineViewMode.value = mode
+  if (mode === 'outline') {
+    announcer.announcePolite(`Outline view. ${outlineVisibleNodes.value.length} items. Use Up and Down arrows to navigate.`)
+    void nextTick(() => {
+      const el = outlineItemRefs.value[outlineRove.activeIndex.value]
+      if (el) el.focus()
+    })
+  } else {
+    announcer.announcePolite('Canvas view')
+  }
+}
+// Keep the item-ref array sized to the visible node list (refs bind by index).
+watch(() => outlineVisibleNodes.value.length, () => {
+  if (outlineRove.activeIndex.value >= outlineVisibleNodes.value.length && outlineVisibleNodes.value.length > 0) {
+    outlineRove.activeIndex.value = outlineVisibleNodes.value.length - 1
+  }
 })
 
 function graphNodeById(id: string) {
@@ -3608,10 +3758,12 @@ function jumpMinimap(event: MouseEvent) {
   <div class="node-editor-frame">
     <div class="node-editor-shell">
       <section
+        v-show="outlineViewMode === 'canvas'"
         ref="canvasViewportRef"
         class="node-canvas-wrap"
         :class="{ 'node-canvas-wrap--space-panning': spacePanning }"
         :style="viewportStyle"
+        :aria-hidden="outlineViewMode === 'outline'"
         @wheel="handleCanvasWheel"
         @contextmenu="handleCanvasContextMenu"
         @pointerdown="beginCanvasPan"
@@ -3641,6 +3793,16 @@ function jumpMinimap(event: MouseEvent) {
           <n-button size="small" quaternary @click="autoLayoutGraph">
             {{ t('workflows.autoLayout') }}
           </n-button>
+          <button
+            type="button"
+            class="outline-toggle-btn"
+            :aria-pressed="outlineViewMode === 'outline'"
+            :title="outlineViewMode === 'outline' ? 'Switch to Canvas view' : 'Switch to Outline view (accessible tree)'"
+            @click="setOutlineViewMode(outlineViewMode === 'outline' ? 'canvas' : 'outline')"
+          >
+            <SrText>{{ outlineViewMode === 'outline' ? 'Canvas view' : 'Outline view' }}</SrText>
+            <span aria-hidden="true">{{ outlineViewMode === 'outline' ? '▦' : '☰' }}</span>
+          </button>
         </div>
 
         <div v-if="pendingConnection" class="connection-banner canvas-floating" :class="{ 'connection-banner--locked': pendingConnectionTargetLabel }">
@@ -4266,6 +4428,52 @@ function jumpMinimap(event: MouseEvent) {
           </svg>
         </div>
       </section>
+
+      <section
+        v-show="outlineViewMode === 'outline'"
+        ref="outlineContainerRef"
+        class="outline-tree-wrap"
+        :aria-hidden="outlineViewMode === 'canvas'"
+        aria-label="Workflow outline"
+      >
+        <div class="outline-tree-header">
+          <strong>Workflow outline</strong>
+          <span class="outline-tree-header__count">{{ outlineVisibleNodes.length }} items</span>
+        </div>
+        <ul role="tree" aria-label="Workflow nodes" class="outline-tree">
+          <li
+            v-for="(node, index) in outlineVisibleNodes"
+            :key="node.key"
+            :ref="(el) => { if (el) outlineItemRefs[index] = el as HTMLElement }"
+            role="treeitem"
+            :aria-label="`${node.typeLabel}: ${node.name}`"
+            :aria-expanded="node.hasChildren ? !outlineIsCollapsed(node.key) : undefined"
+            :aria-selected="isGraphNodeSelected(node.key)"
+            :tabindex="outlineRove.tabindexOf(index)"
+            class="outline-tree__item"
+            :class="{
+              'outline-tree__item--selected': isGraphNodeSelected(node.key),
+              [`outline-tree__item--${node.kind}`]: true,
+            }"
+            @keydown="handleOutlineKeydown($event, index)"
+            @click="outlineRove.activate(index)"
+          >
+            <span class="outline-tree__indent" aria-hidden="true" />
+            <span
+              v-if="node.hasChildren"
+              class="outline-tree__chevron"
+              :class="{ 'outline-tree__chevron--collapsed': outlineIsCollapsed(node.key) }"
+              aria-hidden="true"
+            >▾</span>
+            <span v-else class="outline-tree__chevron outline-tree__chevron--blank" aria-hidden="true" />
+            <span class="outline-tree__type">{{ node.typeLabel }}</span>
+            <span class="outline-tree__name">{{ node.name }}</span>
+          </li>
+        </ul>
+        <p class="outline-tree__hint">
+          Use Up and Down arrows to move between items. Enter opens the node. Left and Right collapse or expand a group.
+        </p>
+      </section>
     </div>
 
     <footer class="node-editor-footer">
@@ -4648,6 +4856,165 @@ function jumpMinimap(event: MouseEvent) {
 .node-canvas-wrap:active,
 .node-canvas-wrap--space-panning {
   cursor: grabbing;
+}
+
+/* ── Outline tree view (Phase 6 a11y) ─────────────────────────────────── */
+.outline-tree-wrap {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 18px 28px;
+  background-color: color-mix(in srgb, var(--surface-1) 92%, transparent);
+}
+
+.outline-tree-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--outline) 44%, transparent);
+}
+
+.outline-tree-header strong {
+  font-size: 14px;
+  color: var(--on-surface);
+}
+
+.outline-tree-header__count {
+  font-size: 12px;
+  color: var(--on-surface-muted);
+}
+
+.outline-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.outline-tree__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--on-surface);
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+}
+
+.outline-tree__item:focus-visible {
+  border-color: color-mix(in srgb, var(--primary) 64%, var(--outline));
+  background: color-mix(in srgb, var(--primary-soft) 18%, var(--surface-1));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 38%, transparent);
+}
+
+.outline-tree__item--selected {
+  background: color-mix(in srgb, var(--primary-soft) 26%, var(--surface-1));
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--outline));
+}
+
+.outline-tree__item--selected:focus-visible {
+  background: color-mix(in srgb, var(--primary-soft) 32%, var(--surface-1));
+}
+
+.outline-tree__chevron {
+  flex: 0 0 auto;
+  width: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  transition: transform 0.12s ease;
+}
+
+.outline-tree__chevron--collapsed {
+  transform: rotate(-90deg);
+}
+
+.outline-tree__chevron--blank {
+  visibility: hidden;
+}
+
+.outline-tree__type {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--on-surface-muted);
+  background: color-mix(in srgb, var(--outline) 22%, transparent);
+}
+
+.outline-tree__item--input .outline-tree__type {
+  color: color-mix(in srgb, var(--primary-strong) 80%, white);
+  background: color-mix(in srgb, var(--primary-soft) 40%, transparent);
+}
+
+.outline-tree__item--save .outline-tree__type {
+  color: color-mix(in srgb, #22c55e 72%, white 8%);
+  background: color-mix(in srgb, #22c55e 18%, transparent);
+}
+
+.outline-tree__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.outline-tree__hint {
+  margin: 14px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--on-surface-muted);
+}
+
+.outline-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--outline) 56%, transparent);
+  background: color-mix(in srgb, var(--surface-1) 90%, transparent);
+  color: var(--on-surface);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  outline: none;
+}
+
+.outline-toggle-btn:hover {
+  border-color: color-mix(in srgb, var(--primary) 48%, var(--outline));
+  background: color-mix(in srgb, var(--primary-soft) 18%, var(--surface-1));
+}
+
+.outline-toggle-btn:focus-visible {
+  border-color: color-mix(in srgb, var(--primary) 72%, var(--outline));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 38%, transparent);
+}
+
+.outline-toggle-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--primary) 64%, var(--outline));
+  background: color-mix(in srgb, var(--primary-soft) 30%, var(--surface-1));
+  color: var(--primary-strong);
+}
+
+.outline-toggle-btn span[aria-hidden="true"] {
+  font-size: 14px;
+  line-height: 1;
 }
 
 .node-canvas-grid {

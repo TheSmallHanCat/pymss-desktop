@@ -866,6 +866,7 @@ onMounted(() => {
               'model-card--busy': isModelBusy(model)
             }]"
             tabindex="0"
+            role="button"
             :aria-label="t('models.viewDetailAria', { name: model.name })"
             :aria-current="selectedModel === model.name ? 'true' : undefined"
             @click="selectModel(model)"
@@ -1030,7 +1031,7 @@ onMounted(() => {
     </div>
 
     <!-- Detail Modal -->
-    <n-modal :show="showDetail" @update:show="handleDetailDrawerUpdate" @after-leave="handleDetailModalAfterLeave">
+    <n-modal :show="showDetail" :close-on-esc="true" @update:show="handleDetailDrawerUpdate" @after-leave="handleDetailModalAfterLeave">
       <n-card
         class="model-detail-modal"
         :title="t('models.detail')"
@@ -1038,6 +1039,7 @@ onMounted(() => {
         closable
         role="dialog"
         aria-modal="true"
+        :aria-label="t('models.detail')"
         @close="handleDetailDrawerUpdate(false)"
       >
         <template v-if="selectedInfo">

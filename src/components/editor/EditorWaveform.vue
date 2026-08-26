@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { formatTime } from '@/utils/editorTime'
 
 const TILE_CSS_WIDTH = 1024
 const MAX_TILE_BUFFER_WIDTH = 4096
@@ -16,6 +17,8 @@ const props = defineProps<{
   fadeOut?: number
   color?: string
   progress?: number
+  /** Track name used to build the screen-reader text equivalent for the canvas. */
+  trackName?: string
 }>()
 
 const rootEl = ref<HTMLElement | null>(null)
@@ -25,6 +28,28 @@ const tileIndexes = computed(() => Array.from({ length: tileCount.value }, (_, i
 const resolvedChannels = computed(() => {
   const peakChannels = props.channelPeaks?.filter(channel => channel.length).length || 0
   return Math.max(Number(props.channels || 0), peakChannels)
+})
+
+/**
+ * Descriptive text equivalent for the waveform graphic. The canvas itself is
+ * non-textual, so screen readers need a label covering the track name, channel
+ * count, duration, and any fade envelopes.
+ */
+const waveformAriaLabel = computed(() => {
+  const name = props.trackName || 'audio track'
+  const channels = resolvedChannels.value
+  const channelText = channels > 0
+    ? `${channels} channel${channels === 1 ? '' : 's'}`
+    : 'unknown channel count'
+  const durationText = props.duration > 0 ? formatTime(props.duration) : 'unknown duration'
+  let label = `Waveform for track ${name}, ${channelText}, duration ${durationText}`
+  if (props.fadeIn && props.fadeIn > 0) {
+    label += `, fade in ${props.fadeIn.toFixed(1)} seconds`
+  }
+  if (props.fadeOut && props.fadeOut > 0) {
+    label += `, fade out ${props.fadeOut.toFixed(1)} seconds`
+  }
+  return label
 })
 
 function resolveColor(): string {
@@ -174,12 +199,19 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="rootEl" class="editor-waveform" :style="{ width: `${width}px`, height: `${height}px` }">
+  <div
+    ref="rootEl"
+    class="editor-waveform"
+    role="img"
+    :aria-label="waveformAriaLabel"
+    :style="{ width: `${width}px`, height: `${height}px` }"
+  >
     <canvas
       v-for="tileIndex in tileIndexes"
       :key="tileIndex"
       class="editor-waveform__tile"
       :data-tile-index="tileIndex"
+      aria-hidden="true"
     />
   </div>
 </template>

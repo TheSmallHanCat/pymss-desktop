@@ -242,3 +242,24 @@ Pymss Studio is licensed under the GNU Affero General Public License v3.0. See [
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for details on how to contribute to Pymss Studio.
+
+## Accessibility
+
+Pymss Studio ships with a screen-reader and keyboard accessibility layer that is
+available alongside the standard workspace:
+
+- **Simplified mode** — The `/simple` route (`#/simple`) renders a streamlined,
+  screen-reader-friendly view of the core separation workflow. It is the
+  recommended entry point for assistive-technology users who want a linear,
+  form-driven experience without the dense stem editor canvas.
+- **Keyboard shortcuts help** — Press <kbd>?</kbd> (Shift+/) anywhere outside a
+  text field to open the keyboard shortcuts reference dialog. The dialog lists
+  every editor and global shortcut, traps focus while open, and closes with
+  <kbd>Esc</kbd> or the Close button.
+- **Skip to content** — A "Skip to main content" link is the first focusable
+  element on every page. Tab into the app and activate it to jump straight to
+  the main region, bypassing the sidebar and title bar.
+- **Focus-visible indicators** — All interactive elements (links, buttons,
+  inputs, custom controls) show a visible keyboard focus ring via the global
+  `:focus-visible` style so keyboard users can always track where they are.
+

@@ -484,6 +484,7 @@ function formatDurationMs(value: number | undefined) {
         class="results-toolbar__search"
         clearable
         :placeholder="t('results.searchPlaceholder')"
+        :aria-label="t('results.searchPlaceholder')"
       >
         <template #prefix><n-icon :component="SearchOutline" /></template>
       </n-input>
@@ -493,6 +494,7 @@ function formatDurationMs(value: number | undefined) {
         class="results-toolbar__sort"
         size="small"
         :options="sortOptions"
+        aria-label="Sort results"
       >
         <template #arrow><n-icon :component="SwapVerticalOutline" /></template>
       </n-select>
@@ -532,12 +534,13 @@ function formatDurationMs(value: number | undefined) {
       <span>{{ t('results.noMatchHint') }}</span>
     </div>
 
-    <div v-else class="results-list">
+    <div v-else class="results-list" role="list" :aria-label="t('results.title')">
       <section
         v-for="item in pagedResults"
         :id="resultCardId(item)"
         :key="item.id"
         class="result-row"
+        role="listitem"
         :class="{ 'result-row--selectable': selecting, 'result-row--selected': selectedResultSet.has(item.id) }"
       >
         <n-checkbox
@@ -570,15 +573,15 @@ function formatDurationMs(value: number | undefined) {
         </button>
 
         <div v-if="!selecting" class="result-row__actions">
-          <n-button v-if="item.inputCount === 1" size="small" type="primary" @click.stop="openInEditor(item.primary)">
+          <n-button v-if="item.inputCount === 1" size="small" type="primary" :aria-label="t('results.openInEditor')" @click.stop="openInEditor(item.primary)">
             <template #icon><n-icon :component="ColorWandOutline" /></template>
             {{ t('results.openInEditor') }}
           </n-button>
-          <n-button size="small" type="primary" secondary @click.stop="openResultDir(item)">
+          <n-button size="small" type="primary" secondary :aria-label="t('results.openDirectory')" @click.stop="openResultDir(item)">
             <template #icon><n-icon :component="FolderOpenOutline" /></template>
             {{ t('results.openDirectory') }}
           </n-button>
-          <n-button size="small" quaternary type="error" @click.stop="handleRemoveResult(item)">
+          <n-button size="small" quaternary type="error" :aria-label="t('results.removeAction')" @click.stop="handleRemoveResult(item)">
             <template #icon><n-icon :component="TrashOutline" /></template>
             {{ t('results.removeAction') }}
           </n-button>
@@ -597,11 +600,11 @@ function formatDurationMs(value: number | undefined) {
                   <span>{{ result.outputs.length }} {{ t('results.stemUnit') }} · {{ formatDurationMs(taskDurationMs(result)) }}</span>
                 </div>
                 <div class="result-detail-card__actions">
-                  <n-button size="tiny" secondary @click.stop="openInEditor(result)">
+                  <n-button size="tiny" secondary :aria-label="t('results.openInEditor')" @click.stop="openInEditor(result)">
                     <template #icon><n-icon :component="ColorWandOutline" /></template>
                     {{ t('results.openInEditor') }}
                   </n-button>
-                  <n-button size="tiny" tertiary @click.stop="task.revealPath(result.outputs[0]?.path || result.output)">
+                  <n-button size="tiny" tertiary :aria-label="t('results.openDirectory')" @click.stop="task.revealPath(result.outputs[0]?.path || result.output)">
                     <template #icon><n-icon :component="FolderOpenOutline" /></template>
                     {{ t('results.openDirectory') }}
                   </n-button>

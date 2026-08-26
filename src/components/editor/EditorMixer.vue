@@ -5,6 +5,9 @@ import { EllipsisHorizontal } from '@vicons/ionicons5'
 import type { DropdownOption } from 'naive-ui'
 import type { EditorSource, EditorTrack } from '@/types/editor'
 import EditorWaveform from '@/components/editor/EditorWaveform.vue'
+import SrText from '@/components/SrText.vue'
+import { useRovingTabindex } from '@/composables/useRovingTabindex'
+import { useLiveAnnouncer } from '@/composables/useLiveAnnouncer'
 import { formatTime, formatTimecode } from '@/utils/editorTime'
 
 const props = defineProps<{
@@ -77,6 +80,108 @@ const menuX = ref(0)
 const menuY = ref(0)
 const contextTrack = ref<EditorTrack | null>(null)
 const mixerRootEl = ref<HTMLElement | null>(null)
+
+const announcer = useLiveAnnouncer()
+const trackRowEls = ref<HTMLElement[]>([])
+
+// Roving tabindex for vertical (Up/Down) keyboard navigation between track
+// rows. Exactly one row carries tabindex="0"; the rest are -1 and reachable
+// only via arrow keys while the mixer has focus. Enter/Space selects the
+// focused row (handled in handleTrackKeydown below).
+const rove = useRovingTabindex(trackRowEls, {
+  orientation: 'vertical',
+  onActivate: (index) => {
+    // Announce the newly-focused track so arrow-key navigation is perceivable
+    // to screen reader users (the row has no formal role to convey its name).
+    const track = props.tracks[index]
+    if (track) {
+      announcer.announcePolite(`Track ${track.name}`)
+    }
+  },
+})
+
+function setTrackRowRef(el: unknown, index: number) {
+  // track-row is a plain <div>, so the ref is the HTMLElement itself.
+  if (!el) return
+  trackRowEls.value[index] = el as HTMLElement
+}
+
+// Keep the roving "active" slot aligned with the selected track so the next
+// Tab into the mixer lands on (or near) the selected row. We set activeIndex
+// directly — without calling focus() — so mouse selection never steals focus.
+watch(
+  () => props.selectedTrackId,
+  (id) => {
+    if (id == null) return
+    const idx = props.tracks.findIndex((track) => track.id === id)
+    if (idx >= 0 && idx !== rove.activeIndex.value) {
+      rove.activeIndex.value = idx
+    }
+  },
+  { immediate: true },
+)
+
+// Trim stale element refs when the track list shrinks so the roving tabindex
+// count stays in sync with the rendered rows.
+watch(
+  () => props.tracks.length,
+  (len) => {
+    if (trackRowEls.value.length > len) {
+      trackRowEls.value.length = len
+    }
+  },
+)
+
+function trackRowAriaLabel(track: EditorTrack) {
+  const source = sourceFor(track)
+  const channels = trackChannels(track)
+  const duration = source?.duration || 0
+  const states: string[] = []
+  if (track.muted) states.push('muted')
+  if (track.solo) states.push('solo')
+  let label = `Track ${track.name}`
+  if (channels > 0) label += `, ${channels} channel${channels === 1 ? '' : 's'}`
+  if (duration > 0) label += `, duration ${formatTime(duration)}`
+  if (states.length) label += `, ${states.join(' and ')}`
+  label += '. Press Enter or Space to select, Up and Down arrows to move between tracks.'
+  return label
+}
+
+/** Visually-hidden track state summary exposed to screen readers in the header. */
+function trackStateSummary(track: EditorTrack) {
+  const volume = Math.round(track.volume * 100)
+  const states: string[] = []
+  if (track.muted) states.push('muted')
+  if (track.solo) states.push('soloed')
+  const stateText = states.length ? `, ${states.join(' and ')}` : ''
+  return `Track ${track.name}${stateText}, volume ${volume} percent`
+}
+
+function announceTrackSelection(track: EditorTrack) {
+  const states: string[] = []
+  if (track.muted) states.push('muted')
+  if (track.solo) states.push('solo')
+  const stateText = states.length ? `, ${states.join(' and ')}` : ''
+  announcer.announcePolite(`Selected track ${track.name}${stateText}`)
+}
+
+function handleTrackKeydown(event: KeyboardEvent, track: EditorTrack, index: number) {
+  // Only act when the row itself (not an inner button/input) is focused, so the
+  // M/S and overflow-menu buttons keep their native Enter/Space behavior and
+  // don't get hijacked by the row handler.
+  const fromRowItself = event.target === event.currentTarget
+  if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+    if (!fromRowItself) return
+    event.preventDefault()
+    emit('selectTrack', track.id)
+    announceTrackSelection(track)
+    return
+  }
+  if (fromRowItself) {
+    // Delegate Arrow/Home/End to the roving tabindex handler.
+    rove.onKeydown(event, index)
+  }
+}
 
 const trackMenuOptions = computed<DropdownOption[]>(() => {
   const track = contextTrack.value
@@ -303,16 +408,21 @@ defineExpose({
 
       <div v-if="tracks.length" class="tracks">
         <div
-          v-for="track in tracks"
+          v-for="(track, index) in tracks"
           :key="track.id"
+          :ref="(el) => setTrackRowRef(el, index)"
           class="track-row"
           :data-track-id="track.id"
           :class="rowClass(track)"
+          :tabindex="rove.tabindexOf(index)"
+          :aria-label="trackRowAriaLabel(track)"
           @mousedown="emit('selectTrack', track.id)"
           @contextmenu.stop.prevent="openTrackContextMenu($event, track)"
           @mouseenter="allowAssetDrop(track.id)"
+          @keydown="handleTrackKeydown($event, track, index)"
         >
           <div class="track-row__head">
+            <SrText>{{ trackStateSummary(track) }}</SrText>
             <div class="track-row__body">
               <div class="track-row__title">
                 <span class="track-dot" :style="{ background: track.color || '#7aa2ff' }" />
@@ -364,6 +474,7 @@ defineExpose({
               <div class="track-wave__clip" :class="{ 'track-wave__clip--offline': sourceMissing(track) }" :style="{ width: `${trackClipWidth(track)}px` }">
                 <EditorWaveform
                   v-if="sourceFor(track) && !sourceMissing(track)"
+                  :track-name="track.name"
                   :peaks="sourceFor(track)?.peaks || []"
                   :channel-peaks="sourceFor(track)?.channelPeaks || []"
                   :channels="trackChannels(track)"

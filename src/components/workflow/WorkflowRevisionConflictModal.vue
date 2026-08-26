@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 
-defineProps<{
+const props = defineProps<{
   show: boolean
   workflowName: string
 }>()
@@ -15,6 +17,16 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
+// Focus trap for the conflict dialog.
+const dialogCardRef = ref<HTMLElement | null>(null)
+const focusTrap = useFocusTrap(dialogCardRef, {
+  onEsc: () => emit('update:show', false),
+})
+watch(() => props.show, (visible) => {
+  if (visible) nextTick(() => focusTrap.trap())
+  else focusTrap.release()
+}, { immediate: true })
+
 function resolve(action: 'reload' | 'save-copy' | 'overwrite') {
   emit('update:show', false)
   if (action === 'reload') emit('reload')
@@ -26,11 +38,13 @@ function resolve(action: 'reload' | 'save-copy' | 'overwrite') {
 <template>
   <n-modal :show="show" :mask-closable="false" @update:show="emit('update:show', $event)">
     <n-card
+      ref="dialogCardRef"
       class="workflow-conflict-modal"
       :title="t('workflows.revisionConflictTitle')"
       :bordered="false"
       role="dialog"
       aria-modal="true"
+      :aria-label="t('workflows.revisionConflictTitle')"
     >
       <p>{{ t('workflows.revisionConflictHint', { name: workflowName }) }}</p>
       <template #footer>

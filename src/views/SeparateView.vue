@@ -1563,7 +1563,11 @@ async function retryCurrentTask() {
             <div
               class="dropzone"
               :class="{ 'dropzone--dragging': isDragging, 'dropzone--filled': inputFiles.length, 'dropzone--clickable': !inputFiles.length && !isRunModeLocked }"
+              role="button"
+              tabindex="0"
+              :aria-label="t('separate.chooseFiles')"
               @click="(!inputFiles.length && !isRunModeLocked) ? handlePickFiles() : undefined"
+              @keydown.enter="(!inputFiles.length && !isRunModeLocked) ? handlePickFiles() : undefined"
             >
               <div v-if="inputFiles.length" class="file-list">
                 <div
@@ -2026,7 +2030,7 @@ async function retryCurrentTask() {
       </main>
     </div>
 
-    <n-modal v-model:show="showEnsembleModal" :mask-closable="true">
+    <n-modal v-model:show="showEnsembleModal" :mask-closable="true" :close-on-esc="true">
       <n-card
         class="ensemble-modal"
         :title="t('separate.ensembleConfigureTitle')"
@@ -2034,6 +2038,7 @@ async function retryCurrentTask() {
         closable
         role="dialog"
         aria-modal="true"
+        :aria-label="t('separate.ensembleConfigureTitle')"
         @close="showEnsembleModal = false"
       >
         <div class="ensemble-modal__intro">
@@ -2079,6 +2084,7 @@ async function retryCurrentTask() {
         closable
         role="dialog"
         aria-modal="true"
+        :aria-label="t('separate.settingsDrawerTitle')"
         @close="showSettingsDrawer = false"
       >
         <div class="settings-drawer__content">
@@ -2216,6 +2222,7 @@ async function retryCurrentTask() {
         closable
         role="dialog"
         aria-modal="true"
+        :aria-label="t('separate.namingModalTitle')"
         @close="showNamingModal = false"
       >
         <div class="naming-modal__content">
@@ -2313,6 +2320,7 @@ async function retryCurrentTask() {
         size="small"
         role="dialog"
         aria-modal="true"
+        :aria-label="t('tasks.logs')"
       >
         <div v-if="currentTask?.logs.length" class="log-console">
           <div v-for="(line, index) in currentTask.logs" :key="`${index}-${line}`" class="log-line">

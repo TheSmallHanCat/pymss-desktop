@@ -3,6 +3,10 @@
     "name": "Pymss Studio",
     "bootPreparing": "正在初始化工作环境…"
   },
+  "a11y": {
+    "skipToContent": "跳到主内容",
+    "primaryNav": "主导航"
+  },
   "nav": {
     "separate": "分离",
     "models": "模型",
@@ -12,6 +16,7 @@
     "settings": "设置",
     "workflows": "工作流",
     "workflow-node-editor": "节点编辑器",
+    "simple": "简化操作",
     "debug": "调试"
   },
   "common": {
@@ -1259,5 +1264,46 @@
     "createNodePanelHint": "选择要创建的节点类型，新节点会自动与当前连线相连。",
     "collapseNode": "折叠节点",
     "expandNode": "展开节点"
+  },
+  "simple": {
+    "pageTitle": "简化操作",
+    "intro": "这是一个为读屏用户设计的精简分离页面。按步骤选择模型、添加音频文件、开始分离，即可用原生音频控件预览结果。",
+    "backToMain": "返回主界面",
+    "modeTitle": "操作模式",
+    "modeModel": "模型分离",
+    "modeWorkflow": "工作流分离",
+    "modelTitle": "选择模型",
+    "modelLabel": "分离模型",
+    "noModelsHint": "尚未下载任何模型，请先到模型页下载。",
+    "workflowTitle": "选择工作流",
+    "workflowLabel": "工作流",
+    "noWorkflowsHint": "尚未创建工作流。",
+    "filesTitle": "音频文件",
+    "addFiles": "添加音频文件",
+    "removeFile": "移除 {name}",
+    "noFiles": "请先添加音频文件",
+    "noFilesHint": "点击上方按钮选择音频或视频文件。",
+    "filesAdded": "已添加 {count} 个文件",
+    "fileRemoved": "已移除 {name}",
+    "startTitle": "开始分离",
+    "startSeparation": "开始分离",
+    "starting": "正在启动…",
+    "started": "已开始 {count} 个分离任务",
+    "partialSuccess": "{succeeded} 个成功，{failed} 个失败",
+    "noModelSelected": "请先选择一个模型",
+    "noWorkflowSelected": "请先选择一个工作流",
+    "progressTitle": "进行中",
+    "taskProgress": "进度 {percent}%，{stage}",
+    "taskDone": "已完成",
+    "taskFailed": "失败",
+    "taskCancelled": "已取消",
+    "taskDoneAnnounce": "{name} 分离完成",
+    "taskFailedAnnounce": "{name} 分离失败",
+    "resultsTitle": "结果",
+    "openOutputDir": "打开输出目录",
+    "openOutput": "打开 {name} 的输出目录",
+    "previewStem": "预览 {stem}",
+    "audioNotSupported": "您的浏览器不支持音频播放。",
+    "noOutputs": "此任务暂无输出文件。"
   }
 }
