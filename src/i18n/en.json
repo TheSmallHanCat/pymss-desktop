@@ -683,6 +683,8 @@
     "restoreDefaultScale": "Restore Default (100%)",
     "runtime": "Runtime Environment",
     "runtimeDesc": "Review runtime dependencies and available acceleration backends.",
+    "runtimeLoadFailed": "Runtime failed to load",
+    "runtimePageFileError": "The CUDA environment could not load because Windows virtual memory (page file) is too small (WINERROR 1455). Increase the system page file and restart the app.",
     "pathsHint": "Application data directory",
     "dataDir": "Data Directory",
     "defaults": "Default Parameters",

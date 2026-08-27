@@ -21,6 +21,7 @@ import {
   runtimeManifestStatus,
   runtimeBackendLabel as runtimeBackendName,
   runtimeSizeHint,
+  isKnownRuntimeBackend,
 } from '@/utils/runtime'
 import { useModelStore } from '@/stores/model'
 import { useTaskStore } from '@/stores/task'
@@ -160,10 +161,26 @@ watch(() => app.runtimeInstallLogs.length, () => {
 })
 const runtimeInstalling = computed(() => app.runtimeInstallStatus === 'installing')
 const runtimeCoreUpdating = computed(() => app.runtimeCoreUpdateStatus === 'updating')
-// Install / switch / delete all restart the worker, so only one may run at a time.
-const runtimeBusy = computed(() => runtimeInstalling.value || runtimeCoreUpdating.value || runtimeActivating.value !== null || runtimeDeleting.value !== null)
-const runtimeCurrentBackend = computed(() => app.runtimeInstalledBackend || app.runtimeInfo?.torchBackend || app.envInfo?.torchBackend || null)
-const runtimeCurrentLabel = computed(() => runtimeCurrentBackend.value ? runtimeBackendName(runtimeCurrentBackend.value) : t('settings.envNotChecked'))
+// Runtime detection and install/switch/delete all access the runtime state, so only one may run at a time.
+const runtimeBusy = computed(() => runtimeDetecting.value || runtimeInstalling.value || runtimeCoreUpdating.value || runtimeActivating.value !== null || runtimeDeleting.value !== null)
+const runtimeCurrentError = computed(() => {
+  const raw = String(app.runtimeInfo?.torchBackend || app.envInfo?.torchError || '')
+  if (!raw.toLowerCase().startsWith('error:') && !raw.toLowerCase().includes('winerror 1455')) return ''
+  if (raw.toLowerCase().includes('winerror 1455')) return t('settings.runtimePageFileError')
+  return raw.replace(/^error:\s*/i, '')
+})
+const runtimeCurrentBackend = computed<RuntimeBackend | null>(() => {
+  const detected = String(app.runtimeInfo?.torchBackend || app.envInfo?.torchBackend || '')
+  if (detected.toLowerCase().startsWith('error:')) return null
+  const recorded = String(app.runtimeInfo?.installedBackend || app.runtimeInfo?.installState?.backend || '')
+  if (isKnownRuntimeBackend(recorded)) return recorded
+  if (app.runtimeInstalledBackend && isKnownRuntimeBackend(app.runtimeInstalledBackend)) return app.runtimeInstalledBackend
+  return isKnownRuntimeBackend(detected) ? detected : null
+})
+const runtimeCurrentLabel = computed(() => {
+  if (runtimeCurrentError.value) return t('settings.runtimeLoadFailed')
+  return runtimeCurrentBackend.value ? runtimeBackendName(runtimeCurrentBackend.value) : t('settings.envNotChecked')
+})
 const installedRuntimes = computed(() => app.runtimeInfo?.installedEnvironments || [])
 const latestPymssVersion = computed(() => app.runtimeCoreVersions?.packages?.pymss?.latestVersion || null)
 const latestPymssCoreVersion = computed(() => app.runtimeCoreVersions?.packages?.['pymss-core']?.latestVersion || null)
@@ -1367,9 +1384,10 @@ onMounted(async () => {
               <div class="about-hero__copy">
                 <span class="about-eyebrow">{{ t('settings.runtime') }}</span>
                 <h2 class="about-hero__title">{{ runtimeCurrentLabel }}</h2>
-                <p class="runtime-hero__desc">{{ t('settings.runtimeDesc') }}</p>
+                <p v-if="runtimeCurrentError" class="runtime-hero__desc runtime-hero__desc--error">{{ runtimeCurrentError }}</p>
+                <p v-else class="runtime-hero__desc">{{ t('settings.runtimeDesc') }}</p>
               </div>
-              <n-button size="small" secondary :loading="runtimeDetecting" @click="detectRuntime" style="margin-left: auto; align-self: center;">
+              <n-button size="small" secondary :loading="runtimeDetecting" :disabled="runtimeBusy" @click="detectRuntime" style="margin-left: auto; align-self: center;">
                 {{ t('settings.runtimeDetect') }}
               </n-button>
             </div>
@@ -1527,14 +1545,16 @@ onMounted(async () => {
 
                 <div v-if="card.installing" class="runtime-env-card__progress">
                   <n-spin size="small" />
-                  <span class="runtime-env-card__progress-msg">{{ app.runtimeInstallMessage }}</span>
-                  <n-button size="tiny" tertiary @click="runtimeLogDialogVisible = true">
-                    <template #icon><n-icon :component="DocumentTextOutline" /></template>
-                    {{ t('settings.runtimeShowInstallLog') }}
-                  </n-button>
-                  <n-button size="tiny" tertiary @click="cancelRuntimeInstall">
-                    {{ t('common.cancel') }}
-                  </n-button>
+                  <span class="runtime-env-card__progress-msg" :title="app.runtimeInstallMessage">{{ app.runtimeInstallMessage }}</span>
+                  <div class="runtime-env-card__progress-actions">
+                    <n-button size="tiny" tertiary @click="runtimeLogDialogVisible = true">
+                      <template #icon><n-icon :component="DocumentTextOutline" /></template>
+                      {{ t('settings.runtimeShowInstallLog') }}
+                    </n-button>
+                    <n-button size="tiny" tertiary @click="cancelRuntimeInstall">
+                      {{ t('common.cancel') }}
+                    </n-button>
+                  </div>
                 </div>
                 <div v-if="card.state === 'active' && runtimeCoreUpdating" class="runtime-env-card__progress">
                   <n-spin size="small" />
@@ -1577,7 +1597,7 @@ onMounted(async () => {
                   <n-button v-if="app.runtimeInfo?.logPath" size="small" tertiary @click="revealPath(app.runtimeInfo.logPath)">
                     {{ t('settings.runtimeOpenInstallLog') }}
                   </n-button>
-                  <n-button size="small" secondary @click="retryRuntimeInstall">
+                  <n-button size="small" secondary :disabled="runtimeBusy" @click="retryRuntimeInstall">
                     {{ t('settings.runtimeRetryInstall') }}
                   </n-button>
                 </div>
@@ -2536,6 +2556,10 @@ onMounted(async () => {
   line-height: 1.6;
 }
 
+.runtime-hero__desc--error {
+  color: var(--danger, #dc2626);
+}
+
 .runtime-detail-grid {
   align-items: start;
 }
@@ -2582,6 +2606,7 @@ onMounted(async () => {
 
 .runtime-env-card {
   display: grid;
+  min-width: 0;
   gap: 8px;
   padding: 14px 16px;
   border-radius: 14px;
@@ -2621,10 +2646,11 @@ onMounted(async () => {
 }
 
 .runtime-env-card__progress {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
+  min-width: 0;
   margin-top: 2px;
   padding: 8px 10px;
   border-radius: 10px;
@@ -2634,11 +2660,23 @@ onMounted(async () => {
 }
 
 .runtime-env-card__progress-msg {
-  flex: 1 1 160px;
   min-width: 0;
   overflow: hidden;
+  max-width: 100%;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.runtime-env-card__progress-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.runtime-env-card__progress-actions :deep(.n-button) {
+  flex: 0 0 auto;
 }
 
 .runtime-disk-total {
@@ -3570,6 +3608,16 @@ onMounted(async () => {
   .scale-control {
     width: 100%;
     min-width: 0;
+  }
+
+  .runtime-env-card__progress {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .runtime-env-card__progress-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .path-item__head,

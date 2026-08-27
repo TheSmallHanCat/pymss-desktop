@@ -79,4 +79,4 @@ GitHub releases may split files >2GB using `split` (workflow auto-handles). See 
 
 ## Testing
 
-No automated test suite currently. Verification is manual + CI smoke tests (env_info, list_models).
+Automated tests are split by layer: `pnpm test` covers frontend logic and `pnpm test:python` covers Python Worker modules. Verification also includes manual checks and CI smoke tests (`env_info`, `list_models`).

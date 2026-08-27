@@ -2336,11 +2336,7 @@ fn resolve_reveal_path(app: &AppHandle, path: &str) -> AppResult<PathBuf> {
 pub async fn reveal_path(app: AppHandle, path: String) -> AppResult<()> {
     let resolved = resolve_reveal_path(&app, &path)?;
     let target = resolved.as_path();
-    let reveal_target = if target.is_file() {
-        target.parent().unwrap_or(target)
-    } else {
-        target
-    };
+    let reveal_target = reveal_target_path(target);
     #[cfg(target_os = "windows")]
     {
         Command::new("explorer").arg(reveal_target).spawn()?;
@@ -2354,6 +2350,19 @@ pub async fn reveal_path(app: AppHandle, path: String) -> AppResult<()> {
         Command::new("xdg-open").arg(reveal_target).spawn()?;
     }
     Ok(())
+}
+
+fn reveal_target_path(path: &Path) -> &Path {
+    if path.is_file() {
+        return path.parent().unwrap_or(path);
+    }
+    if path.is_dir() {
+        return path;
+    }
+    path.ancestors()
+        .skip(1)
+        .find(|ancestor| ancestor.is_dir())
+        .unwrap_or_else(|| path.parent().unwrap_or(path))
 }
 
 #[derive(Serialize)]
@@ -2500,5 +2509,28 @@ mod tests {
         assert!(!is_effectively_empty_dir(&root));
 
         fs::remove_dir_all(&root).expect("remove test dir");
+    }
+
+    #[test]
+    fn reveal_target_falls_back_to_existing_parent_for_missing_file() {
+        let root = temp_test_dir("reveal-missing-file");
+        let missing = root.join("runtime").join("install.log");
+        fs::create_dir_all(missing.parent().unwrap()).expect("create reveal parent");
+
+        assert_eq!(reveal_target_path(&missing), missing.parent().unwrap());
+
+        fs::remove_dir_all(&root).expect("remove reveal test dir");
+    }
+
+    #[test]
+    fn reveal_target_uses_the_file_parent_for_existing_file() {
+        let root = temp_test_dir("reveal-existing-file");
+        let file = root.join("install.log");
+        fs::create_dir_all(&root).expect("create reveal root");
+        fs::write(&file, b"log").expect("write reveal file");
+
+        assert_eq!(reveal_target_path(&file), root.as_path());
+
+        fs::remove_dir_all(&root).expect("remove reveal test dir");
     }
 }

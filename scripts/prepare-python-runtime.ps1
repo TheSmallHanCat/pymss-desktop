@@ -275,6 +275,7 @@ if ($Minimal) {
     }
     New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
     Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'ensurepip', '--upgrade')
+    Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', '--version')
     Write-Host "Prepared minimal Python runtime without inference dependencies"
     exit 0
 }

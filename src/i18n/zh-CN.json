@@ -683,6 +683,8 @@
     "restoreDefaultScale": "恢复默认（100%）",
     "runtime": "运行环境",
     "runtimeDesc": "查看当前运行依赖与可用加速能力。",
+    "runtimeLoadFailed": "运行环境加载失败",
+    "runtimePageFileError": "CUDA 环境无法加载：Windows 虚拟内存（页面文件）不足（WINERROR 1455）。请增大系统页面文件后重启应用。",
     "pathsHint": "程序数据目录",
     "dataDir": "数据目录",
     "defaults": "默认参数",

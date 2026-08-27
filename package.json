@@ -7,7 +7,10 @@
   "scripts": {
     "dev": "vite",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && vue-tsc --noEmit && vite build",
-    "test": "node --test tests/stemOrder.test.ts tests/workflowEditorState.test.ts tests/workflowSimple.test.mjs tests/workflowGraph.test.mjs tests/workflowValidation.test.mjs tests/workflowCanvas.test.ts tests/comfyMssWorkflow.test.mjs tests/runtimeUtils.test.ts tests/asyncUtils.test.ts tests/i18nKeys.test.ts tests/modelSearch.test.ts tests/modelSource.test.ts",
+    "test": "node --test \"tests/**/*.test.*\"",
+    "test:frontend": "pnpm test",
+    "test:python": "python -m unittest discover -s python -p \"test_*.py\"",
+    "test:all": "pnpm test:frontend && pnpm test:python",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:preview": "tauri dev --config src-tauri/tauri.preview.conf.json"

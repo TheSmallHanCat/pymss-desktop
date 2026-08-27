@@ -38,6 +38,7 @@ import { matchesModelQuery } from '@/utils/modelSearch'
 import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, workflowValidationErrorMessage, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
 import { createWorkflowGraphEdgeId, createWorkflowGraphNodeId, getWorkflowDefinitionDefaults } from '@/utils/workflowGraph'
 import { sortStemOutputsByOrder } from '@/utils/stemOrder'
+import { retainAvailableModelNames } from '@/utils/modelSource'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 
 const { t, locale } = useI18n()
@@ -80,7 +81,7 @@ const {
   modelListViewMode,
   modelListSortMode,
 } = storeToRefs(task)
-const { selectedModel, downloadedModels, models: modelEntries, isLoading, detailLoading, modelPreferences } = storeToRefs(model)
+const { selectedModel, downloadedModels, models: modelEntries, isLoading, modelsLoaded, detailLoading, modelPreferences } = storeToRefs(model)
 const { workflows, selectedWorkflow, selectedWorkflowId } = storeToRefs(workflow)
 
 const isDragging = ref(false)
@@ -1090,6 +1091,19 @@ watch(ensembleModels, (models) => {
     if (firstStem) ensembleStem.value = firstStem
   }
 }, { deep: true, immediate: true })
+
+watch(
+  [downloadedModels, modelsLoaded],
+  ([availableModels, loaded]) => {
+    if (!loaded) return
+    const validModels = retainAvailableModelNames(
+      ensembleModels.value,
+      availableModels.map(item => item.name),
+    )
+    if (validModels.length !== ensembleModels.value.length) ensembleModels.value = validModels
+  },
+  { deep: true, immediate: true },
+)
 
 watch(ensembleStemOptionsByModel, () => {
   const models = ensembleModels.value

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { matchesModelSource } from '../src/utils/modelSource.ts'
+import { matchesModelSource, retainAvailableModelNames } from '../src/utils/modelSource.ts'
 
 test('the all filter keeps every model', () => {
   assert.equal(matchesModelSource({ source: 'catalog' }, 'all'), true)
@@ -38,4 +38,18 @@ test('an unknown source value is treated as a catalog model', () => {
 test('a missing model never matches a narrowing filter', () => {
   assert.equal(matchesModelSource(null, 'user'), false)
   assert.equal(matchesModelSource(undefined, 'all'), true)
+})
+
+test('removes ensemble models that are no longer available', () => {
+  assert.deepEqual(
+    retainAvailableModelNames(['model-a', 'deleted-model', 'model-b'], ['model-b', 'model-a']),
+    ['model-a', 'model-b'],
+  )
+})
+
+test('keeps selection order when all ensemble models remain available', () => {
+  assert.deepEqual(
+    retainAvailableModelNames(['model-b', 'model-a'], new Set(['model-a', 'model-b'])),
+    ['model-b', 'model-a'],
+  )
 })

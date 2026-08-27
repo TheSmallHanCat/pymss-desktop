@@ -398,6 +398,7 @@ export const useModelStore = defineStore('model', () => {
   const selectedModel = ref('bs_roformer_voc_hyperacev2')
   const selectedInfo = ref<ModelEntry | null>(null)
   const isLoading = ref(false)
+  const modelsLoaded = ref(false)
   const detailLoading = ref(false)
   const error = ref<string | null>(null)
   const search = ref('')
@@ -736,6 +737,7 @@ export const useModelStore = defineStore('model', () => {
       categoriesCn.value = result.categoriesCn
       modelDir.value = result.modelDir
       debugStatus.value = result.debugStatus || null
+      modelsLoaded.value = true
       const nextSelected = models.value.find((model) => model.name === selectedModel.value) || null
       if (nextSelected) selectedInfo.value = nextSelected
       else if (selectedInfo.value?.name === selectedModel.value) selectedInfo.value = null
@@ -1472,6 +1474,7 @@ export const useModelStore = defineStore('model', () => {
     selectedModel,
     selectedInfo,
     isLoading,
+    modelsLoaded,
     detailLoading,
     error,
     search,

@@ -866,6 +866,24 @@ def cmd_activate_runtime(payload: dict[str, Any]) -> int:
         }
         _emit("runtime_activated", active)
         return 0
+    manifest = _manifest()
+    try:
+        probed = _probe_python_runtime(python_path, _backend_extra_names(manifest, backend))
+    except Exception as exc:
+        from worker_protocol import emit_error
+        return emit_error(
+            "RUNTIME_ACTIVATION_FAILED",
+            f"Runtime {backend} failed validation: {exc}",
+            recoverable=True,
+        )
+    if not _runtime_probe_is_ready(backend, probed, manifest):
+        from worker_protocol import emit_error
+        return emit_error(
+            "RUNTIME_ACTIVATION_FAILED",
+            f"Runtime {backend} failed validation: torchBackend={probed.get('torchBackend')}, "
+            f"acceleratorAvailable={probed.get('acceleratorAvailable')}",
+            recoverable=True,
+        )
     active = {
         **(state or {}),
         "backend": backend,
@@ -933,6 +951,56 @@ def _runtime_python_works(python_path: Path) -> bool:
         ).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+def _runtime_pip_works(python_path: Path) -> bool:
+    try:
+        return subprocess.run(
+            [str(python_path), "-m", "pip", "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _ensure_runtime_pip(
+    python_path: Path,
+    task_id: str,
+    append_log: Any,
+) -> None:
+    """Repair an interrupted venv before the first pip operation.
+
+    A killed install can leave Scripts/python.exe in place while ensurepip never ran. Treat that
+    directory as recoverable instead of reusing it until every later pip command fails.
+    """
+    if _runtime_pip_works(python_path):
+        return
+
+    message = "pip is unavailable; bootstrapping it with ensurepip"
+    append_log("bootstrap", message)
+    _emit("runtime_install_log", {"stage": "bootstrap", "message": message}, task_id)
+    result = subprocess.run(
+        [str(python_path), "-m", "ensurepip", "--upgrade", "--default-pip"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    for line in result.stdout.splitlines():
+        message = line.rstrip()
+        append_log("bootstrap", message)
+        _emit("runtime_install_log", {"stage": "bootstrap", "message": message}, task_id)
+    if result.returncode != 0:
+        raise RuntimeError(f"pip bootstrap failed with exit code {result.returncode}")
+
+    if not _runtime_pip_works(python_path):
+        raise RuntimeError("pip bootstrap completed but pip is still unavailable")
 
 
 def _repair_runtime_venv_config(env_dir: Path) -> None:
@@ -1044,21 +1112,39 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
             run_pip(args, stage, "https://pypi.org/simple")
 
     try:
-        _repair_runtime_venv_config(env_dir)
-        if not env_python.is_file():
-            _create_runtime_venv(env_dir)
-        elif not _runtime_python_works(env_python):
-            _emit("runtime_install_log", {"stage": "venv", "message": "existing environment interpreter is unusable; rebuilding"}, task_id)
-            import shutil
-            shutil.rmtree(env_dir, ignore_errors=True)
-            env_dir.mkdir(parents=True, exist_ok=True)
-            _create_runtime_venv(env_dir)
-        _make_posix_venv_relocatable(env_dir)
         install_log_path.write_text(
             f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] install backend={backend} mirror={mirror} manifest={manifest['manifestVersion']}\n",
             encoding="utf-8",
         )
+        rebuild_message = ""
+        _repair_runtime_venv_config(env_dir)
+        if not env_python.is_file():
+            _create_runtime_venv(env_dir)
+        elif not _runtime_python_works(env_python):
+            rebuild_message = "existing environment interpreter is unusable; rebuilding"
+            _emit("runtime_install_log", {"stage": "venv", "message": rebuild_message}, task_id)
+            import shutil
+            shutil.rmtree(env_dir, ignore_errors=True)
+            env_dir.mkdir(parents=True, exist_ok=True)
+            _create_runtime_venv(env_dir)
+        elif not _runtime_pip_works(env_python):
+            # A cancelled or older portable install can leave a runnable venv without pip. The
+            # venv's ensurepip module may have been pruned already, so recreate it from the
+            # bootstrap runtime instead of failing the first package install.
+            rebuild_message = "existing environment has no pip; rebuilding the virtual environment"
+            _emit("runtime_install_log", {
+                "stage": "bootstrap",
+                "message": rebuild_message,
+            }, task_id)
+            import shutil
+            shutil.rmtree(env_dir, ignore_errors=True)
+            env_dir.mkdir(parents=True, exist_ok=True)
+            _create_runtime_venv(env_dir)
+        if rebuild_message:
+            append_log("bootstrap", rebuild_message)
+        _make_posix_venv_relocatable(env_dir)
         _emit("runtime_install_started", {"backend": backend, "manifestVersion": manifest["manifestVersion"], "logPath": str(install_log_path)}, task_id)
+        _ensure_runtime_pip(env_python, task_id, append_log)
         torch = spec.get("torch", {})
         if torch.get("rocmRequirements"):
             run_pip(list(torch["rocmRequirements"]), "rocm-sdk", None)
@@ -1213,6 +1299,7 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
     pymss_core_requirement = f"pymss-core=={target_pymss_core_version}"
     command.extend([pymss_requirement, pymss_core_requirement])
     try:
+        _ensure_runtime_pip(python_path, task_id, append_log)
         _emit("runtime_core_update_stage", {"stage": "pymss", "command": f"pip install --upgrade {pymss_requirement} {pymss_core_requirement}"}, task_id)
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", env=os.environ.copy())
         assert process.stdout is not None

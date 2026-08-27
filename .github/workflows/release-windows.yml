@@ -120,6 +120,14 @@ jobs:
           $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR = (Resolve-Path "$stage/python-runtime/runtime-envs").Path
           $env:PYMSS_STUDIO_ACTIVE_RUNTIME_FILE = (Join-Path $env:PYMSS_STUDIO_RUNTIME_ENVS_DIR "active-runtime.json")
           if (!(Test-Path "$stage\python-runtime\runtime-envs\cuda\Scripts\python.exe")) { throw "Staged CUDA Python executable is missing" }
+          & "$stage\python-runtime\runtime-envs\cuda\Scripts\python.exe" -m pip --version
+          if ($LASTEXITCODE -ne 0) { throw "Staged CUDA pip is missing" }
+          $probeVenv = Join-Path $stage "python-runtime\runtime-envs\_pip-smoke"
+          & "$stage\python-runtime\python.exe" -m venv $probeVenv
+          if ($LASTEXITCODE -ne 0) { throw "Staged CUDA venv creation failed" }
+          & "$probeVenv\Scripts\python.exe" -m pip --version
+          if ($LASTEXITCODE -ne 0) { throw "Staged CUDA venv pip is missing" }
+          Remove-Item $probeVenv -Recurse -Force
           & "$stage\python-runtime\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" env_info
           if ($LASTEXITCODE -ne 0) { throw "Staged CUDA env_info failed with exit code $LASTEXITCODE" }
           & "$stage\python-runtime\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
@@ -438,8 +446,14 @@ jobs:
           Pymss Studio ${{ steps.meta.outputs.version }} Windows x64 Online
           This package installs the selected CPU, CUDA, or ROCm environment on first start.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
-           $env:PYTHONDONTWRITEBYTECODE = "1"
-           & "$stage\python-runtime\python.exe" "$stage\python\worker.py" runtime_info --payload "{}"
+          $env:PYTHONDONTWRITEBYTECODE = "1"
+          $probeVenv = Join-Path $stage "python-runtime\runtime-envs\_pip-smoke"
+          & "$stage\python-runtime\python.exe" -m venv $probeVenv
+          if ($LASTEXITCODE -ne 0) { throw "Online runtime venv creation failed" }
+          & "$probeVenv\Scripts\python.exe" -m pip --version
+          if ($LASTEXITCODE -ne 0) { throw "Online runtime venv pip is missing" }
+          Remove-Item $probeVenv -Recurse -Force
+          & "$stage\python-runtime\python.exe" "$stage\python\worker.py" runtime_info --payload "{}"
            if ($LASTEXITCODE -ne 0) { throw "Online runtime bootstrap check failed" }
            Get-ChildItem "$stage\python" -Recurse -Directory -Filter "__pycache__" |
              Remove-Item -Recurse -Force

@@ -19,3 +19,9 @@ export function matchesModelSource(model: SourceLikeModel | null | undefined, fi
   const imported = model?.source === 'user'
   return filter === 'user' ? imported : model?.source !== 'debug' && !imported
 }
+
+/** Keep only model names that still exist in the current model catalog. */
+export function retainAvailableModelNames(selectedNames: string[], availableNames: Iterable<string>) {
+  const available = new Set(availableNames)
+  return selectedNames.filter(name => available.has(name))
+}
