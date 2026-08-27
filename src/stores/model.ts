@@ -146,7 +146,7 @@ export type ModelDebugStatus = {
   debugCatalogPath?: string
 }
 
-type DownloadStatus = 'idle' | 'downloading' | 'done' | 'error' | 'cancelled' | 'paused' | 'interrupted'
+type DownloadStatus = 'idle' | 'preparing' | 'downloading' | 'done' | 'error' | 'cancelled' | 'paused' | 'interrupted'
 
 export type DownloadLogLevel = 'info' | 'warn' | 'error'
 
@@ -271,8 +271,8 @@ function normalizeDownloadTasks(input?: Record<string, DownloadTask>) {
     if (!task?.model) return
     next[name] = {
       ...task,
-      status: task.status === 'downloading' ? 'interrupted' : task.status,
-      message: task.status === 'downloading' ? '下载已中断' : task.message,
+      status: task.status === 'downloading' || task.status === 'preparing' ? 'interrupted' : task.status,
+      message: task.status === 'downloading' || task.status === 'preparing' ? '下载已中断' : task.message,
       updatedAt: Date.now(),
       logs: Array.isArray(task.logs) ? task.logs : [],
       seen: true,
@@ -832,6 +832,10 @@ export const useModelStore = defineStore('model', () => {
         logs: [],
         seen: true,
       }
+      if (downloadTasks.value[modelName] && downloadTasks.value[modelName]!.taskId !== taskId) return
+      if (previous.status === 'cancelled' || previous.status === 'paused') {
+        if (event.type !== 'task_cancelled') return
+      }
       const next: DownloadTask = { ...previous, taskId, updatedAt: Date.now(), logs: previous.logs || [] }
       if (event.type === 'download_started') {
         next.status = 'downloading'
@@ -1042,25 +1046,20 @@ export const useModelStore = defineStore('model', () => {
     }
   }
 
-  async function downloadModel(name: string, force = false) {
+  async function downloadModel(name: string, force = false): Promise<boolean> {
     const app = useAppStore()
     const settings = useSettingsStore()
-    if (app.runtimeInstallStatus === 'installing') {
-      await app.waitForRuntimeInstall()
-    }
-    await app.checkRuntimeInfo()
-    if (!app.runtimeInfo?.ready) {
-      throw new Error('请先完成并激活 Python 运行环境后再下载模型')
-    }
+    const existingTask = downloadTasks.value[name]
+    if (existingTask && ['preparing', 'downloading'].includes(existingTask.status)) return false
     const taskId = `download_${crypto.randomUUID()}`
-    downloadStates.value = { ...downloadStates.value, [name]: 'downloading' }
+    downloadStates.value = { ...downloadStates.value, [name]: 'preparing' }
     downloadErrors.value = { ...downloadErrors.value, [name]: '' }
     downloadTasks.value = {
       ...downloadTasks.value,
       [name]: {
         taskId,
         model: name,
-        status: 'downloading',
+        status: 'preparing',
         progress: 0,
         // Left empty on purpose: the store has no translator, and every display path already
         // derives a localised label from the status. A literal here leaked English into the UI.
@@ -1074,6 +1073,17 @@ export const useModelStore = defineStore('model', () => {
     }
     downloadTaskIndex.value = { ...downloadTaskIndex.value, [taskId]: name }
     try {
+      if (app.runtimeInstallStatus === 'installing') {
+        await app.waitForRuntimeInstall()
+      }
+      const pendingTask = downloadTasks.value[name]
+      if (!pendingTask || pendingTask.taskId !== taskId || pendingTask.status !== 'preparing') return false
+      await app.checkRuntimeInfo()
+      if (!app.runtimeInfo?.ready) {
+        throw new Error('请先完成并激活 Python 运行环境后再下载模型')
+      }
+      const currentTask = downloadTasks.value[name]
+      if (!currentTask || currentTask.taskId !== taskId || currentTask.status !== 'preparing') return false
       await invoke<{ taskId: string; started: boolean }>('start_model_download', {
         payload: {
           taskId,
@@ -1085,32 +1095,60 @@ export const useModelStore = defineStore('model', () => {
           force,
         },
       })
+      const startedTask = downloadTasks.value[name]
+      if (!startedTask || startedTask.taskId !== taskId) {
+        await invoke<boolean>('cancel_task', { taskId }).catch(() => false)
+        return false
+      }
+      if (startedTask.status === 'cancelled' || startedTask.status === 'paused') {
+        await invoke<boolean>('cancel_task', { taskId }).catch(() => false)
+        return false
+      }
+      if (startedTask.status === 'preparing') {
+        downloadStates.value = { ...downloadStates.value, [name]: 'downloading' }
+        downloadTasks.value = {
+          ...downloadTasks.value,
+          [name]: { ...startedTask, status: 'downloading', updatedAt: Date.now() },
+        }
+      }
     } catch (err) {
+      const currentTask = downloadTasks.value[name]
+      if (!currentTask || currentTask.taskId !== taskId || ['paused', 'cancelled'].includes(currentTask.status)) return false
+      // The command may have spawned the worker even if its IPC response was lost. A best-effort
+      // cancellation prevents that worker from continuing after the UI has reported a failure.
+      await invoke<boolean>('cancel_task', { taskId }).catch(() => false)
       const message = err instanceof Error ? err.message : String(err)
       downloadStates.value = { ...downloadStates.value, [name]: 'error' }
       downloadErrors.value = { ...downloadErrors.value, [name]: message }
-      const previous = downloadTasks.value[name]
-      if (previous) {
-        downloadTasks.value = {
-          ...downloadTasks.value,
-          [name]: {
-            ...previous,
-            status: 'error',
-            message,
-            errorMessage: message,
-            seen: false,
-            logs: appendLog(previous.logs || [], { ts: Date.now(), level: 'error', message }),
-            updatedAt: Date.now(),
-          },
-        }
+      downloadTasks.value = {
+        ...downloadTasks.value,
+        [name]: {
+          ...currentTask,
+          status: 'error',
+          message,
+          errorMessage: message,
+          seen: false,
+          logs: appendLog(currentTask.logs || [], { ts: Date.now(), level: 'error', message }),
+          updatedAt: Date.now(),
+        },
       }
       throw err
     }
+    return true
   }
 
   async function cancelDownload(name: string, pause = false) {
     const task = downloadTasks.value[name]
-    if (!task || task.status !== 'downloading') return false
+    if (!task || !['preparing', 'downloading'].includes(task.status)) return false
+    if (task.status === 'preparing') {
+      downloadTasks.value = {
+        ...downloadTasks.value,
+        [name]: { ...task, status: pause ? 'paused' : 'cancelled', message: pause ? 'Paused' : 'Cancelled', updatedAt: Date.now() },
+      }
+      downloadStates.value = { ...downloadStates.value, [name]: 'idle' }
+      await invoke<boolean>('cancel_task', { taskId: task.taskId }).catch(() => false)
+      return true
+    }
     const cancelled = await invoke<boolean>('cancel_task', { taskId: task.taskId })
     if (cancelled) {
       downloadTasks.value = {

@@ -81,6 +81,11 @@ const slots = useSlots()
   background: var(--primary);
 }
 
+.mc-dl-dot--preparing {
+  background: var(--primary);
+  animation: mc-dl-pulse 1.5s infinite;
+}
+
 .mc-dl-dot--error {
   background: var(--danger);
   animation: none;

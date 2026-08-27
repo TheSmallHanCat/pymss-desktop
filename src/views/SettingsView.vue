@@ -893,7 +893,7 @@ const dataDirEntries = computed(() => [
 ])
 const hasActiveModelDirUsage = computed(() => {
   const hasRunningWorkerTask = activeWorkerTasks.value.length > 0
-  const hasDownloadingModel = Object.values(downloadTasks.value).some((item) => item.status === 'downloading')
+  const hasDownloadingModel = Object.values(downloadTasks.value).some((item) => ['preparing', 'downloading'].includes(item.status))
   return hasRunningWorkerTask || hasDownloadingModel || isModelDirMigrating.value
 })
 const currentResolvedLanguageLabel = computed(() =>

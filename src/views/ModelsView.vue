@@ -306,6 +306,7 @@ function modelStatusType(model: ModelEntry) {
 function downloadStatusMessage(modelName: string) {
   const task = downloadTasks.value[modelName]
   if (!task) return ''
+  if (task.status === 'preparing') return t('models.downloadPreparing')
   if (task.status === 'interrupted') return t('models.downloadInterrupted')
   return task.message || task.status
 }
@@ -314,6 +315,8 @@ function cardDownloadMessage(modelName: string) {
   const task = downloadTasks.value[modelName]
   if (!task) return ''
   switch (task.status) {
+    case 'preparing':
+      return t('models.cardDownloadPreparing')
     case 'downloading':
       return task.totalFiles > 1
         ? t('models.cardDownloadingFiles', { completed: task.completedFiles, total: task.totalFiles })
@@ -489,8 +492,8 @@ function handleDetailModalAfterLeave() {
 async function downloadModel(model: ModelEntry, event?: MouseEvent) {
   event?.stopPropagation()
   try {
-    await modelStore.downloadModel(model.name)
-    message.success(t('models.downloadStarted'))
+    const started = await modelStore.downloadModel(model.name)
+    if (started) message.success(t('models.downloadStarted'))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -965,7 +968,7 @@ onMounted(() => {
                   {{ t('models.downloadDetail') }}
                 </n-button>
                 <n-button
-                  v-if="downloadTasks[model.name].status === 'downloading'"
+                  v-if="['preparing', 'downloading'].includes(downloadTasks[model.name].status)"
                   size="tiny"
                   quaternary
                   @click.stop="cancelDownloadModel(model, $event)"
@@ -973,7 +976,7 @@ onMounted(() => {
                   {{ t('common.cancel') }}
                 </n-button>
                 <n-button
-                  v-else
+                  v-else-if="downloadTasks[model.name].status !== 'preparing'"
                   size="tiny"
                   quaternary
                   type="primary"
@@ -999,6 +1002,7 @@ onMounted(() => {
               class="mc-download-button"
               secondary
               size="tiny"
+              :disabled="isModelBusy(model)"
               @click.stop="downloadModel(model, $event)"
             >
               <template #icon><n-icon :component="DownloadOutline" /></template>
@@ -1188,7 +1192,7 @@ onMounted(() => {
 
             <!-- 下载中：进度块 + 取消 -->
             <ModelProgressBlock
-              v-else-if="downloadTasks[selectedInfo.name]?.status === 'downloading'"
+              v-else-if="['preparing', 'downloading'].includes(downloadTasks[selectedInfo.name]?.status || '')"
               :status="downloadTasks[selectedInfo.name]!.status"
               :message="downloadStatusMessage(selectedInfo.name)"
               :progress="downloadTasks[selectedInfo.name]!.progress"
@@ -1215,6 +1219,7 @@ onMounted(() => {
                 <n-button
                   block
                   type="primary"
+                  :disabled="isModelBusy(selectedInfo)"
                   @click="downloadModel(selectedInfo!, $event)"
                 >
                   {{ downloadTasks[selectedInfo.name]?.status === 'interrupted' ? t('models.continueDownload') : t('common.resume') }}
@@ -1688,6 +1693,11 @@ onMounted(() => {
   color: var(--primary);
 }
 
+.mc-state--preparing {
+  color: var(--primary);
+}
+
+.mc-state--preparing .mc-state__dot,
 .mc-state--downloading .mc-state__dot {
   animation: mc-pulse 1.5s infinite;
 }

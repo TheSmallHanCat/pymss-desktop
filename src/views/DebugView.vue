@@ -471,7 +471,7 @@ function currentCatalogDownloadUrl(relpath: unknown) {
   const base = String(repositories.modelscope || '').replace(/\/$/, '')
   return base ? `${base}/resolve/master/${quotedPath}` : ''
 }
-const runningDownloadTasks = computed(() => Object.values(downloadTasks.value).filter((item) => item.status === 'downloading'))
+const runningDownloadTasks = computed(() => Object.values(downloadTasks.value).filter((item) => ['preparing', 'downloading'].includes(item.status)))
 const runtimeDevice = computed(() => settings.getRuntimeDeviceConfig(app.envInfo))
 const cudaDevices = computed(() => env.value?.cudaDevices || [])
 const runtimeRows = computed(() => [

@@ -35,7 +35,7 @@ const autoScroll = ref(true)
 const statusType = computed(() => {
   if (!props.task) return 'default'
   if (props.task.status === 'error') return 'error'
-  if (props.task.status === 'downloading') return 'info'
+  if (['preparing', 'downloading'].includes(props.task.status)) return 'info'
   if (['paused', 'cancelled', 'interrupted'].includes(props.task.status)) return 'warning'
   return 'success'
 })
@@ -43,6 +43,7 @@ const statusType = computed(() => {
 const statusLabel = computed(() => {
   if (!props.task) return ''
   const map: Record<string, string> = {
+    preparing: t('models.downloadPreparing'),
     downloading: t('models.downloadStatusDownloading'),
     done: t('models.downloaded'),
     error: t('models.downloadStatusError'),
@@ -86,7 +87,7 @@ const bytesText = computed(() => {
   return `${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}`
 })
 
-const canCancel = computed(() => props.task?.status === 'downloading')
+const canCancel = computed(() => ['preparing', 'downloading'].includes(props.task?.status || ''))
 const canResume = computed(() =>
   props.task && ['paused', 'cancelled', 'error', 'interrupted'].includes(props.task.status),
 )
