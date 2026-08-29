@@ -2,6 +2,12 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import i18n, { getCurrentLocale } from '@/i18n'
+import {
+  overwriteClipsInRange,
+  syncSingleClipFadeCompatibility,
+  timelineDuration,
+} from '@/utils/editorClips'
+import { registerWindowCloseGuard } from '@/utils/windowCloseGuards'
 import type { SeparationTask, StemOutput } from '@/stores/task'
 import type {
   EditorExportFormat,
@@ -10,6 +16,7 @@ import type {
   EditorSession,
   EditorSource,
   EditorSourceRole,
+  EditorClip,
   EditorTrack,
   EditorAssetTreeNode,
 } from '@/types/editor'
@@ -30,6 +37,7 @@ type HistorySnapshot = {
   masterVolume: number
   masterPan: number
   selectedTrackId: string | null
+  selectedClipId: string | null
 }
 
 type ScanAudioPathsResult = {
@@ -173,13 +181,14 @@ function displayStemName(stemKey: string, fallback: string) {
 }
 
 function trackColor(role: EditorSourceRole, stemKey?: string | null) {
+  if (role === 'recording') return '#e76f91'
   if (role === 'reference') return '#93a1b6'
   return COLOR_BY_STEM[String(stemKey || '').toLowerCase()] || '#7aa2ff'
 }
 
 function duplicatedTrackColor(source: EditorSource) {
   if (source.role === 'stem') return trackColor('stem', source.stemKey)
-  return trackColor('reference', source.stemKey)
+  return trackColor(source.role, source.stemKey)
 }
 
 function cloneTracks(tracks: EditorTrack[]) {
@@ -198,7 +207,7 @@ function normalizeSource(source: Partial<EditorSource>): EditorSource {
   const channelCount = Math.max(Number(source.channels || 0), channelPeaks.length)
   return {
     id: String(source.id || makeId('source')),
-    role: source.role === 'reference' ? 'reference' : 'stem',
+    role: source.role === 'reference' || source.role === 'recording' ? source.role : 'stem',
     stemKey: source.stemKey ? String(source.stemKey) : null,
     path: String(source.path || ''),
     name: String(source.name || fileName(String(source.path || '')) || 'Untitled'),
@@ -220,6 +229,7 @@ function normalizePathKey(value: string) {
 }
 
 function sourceDisplayGroup(source: EditorSource) {
+  if (source.role === 'recording') return '录音'
   if (source.originKind === 'task-result' || source.role === 'stem') return '分离结果'
   return '外部资产'
 }
@@ -257,9 +267,63 @@ async function loadPeaksFromCache(path?: string | null, sourcePath?: string | nu
   }
 }
 
-function normalizeTrack(track: Partial<EditorTrack>, source?: EditorSource): EditorTrack {
-  const role = track.role === 'reference' ? 'reference' : (source?.role || 'stem')
+function normalizeClip(clip: Partial<EditorClip>, source?: EditorSource): EditorClip {
+  const offset = clamp(Number(clip.offset || 0), 0, Math.max(0, Number(source?.duration || Infinity)))
+  const availableDuration = Math.max(0, Number(source?.duration || 0) - offset)
+  const requestedDuration = Math.max(0, Number(clip.duration ?? availableDuration))
+  const duration = availableDuration > 0 ? Math.min(requestedDuration, availableDuration) : requestedDuration
+  return {
+    id: String(clip.id || makeId('clip')),
+    assetId: String(clip.assetId || source?.id || ''),
+    start: Math.max(0, Number(clip.start || 0)),
+    offset,
+    duration,
+    volume: clamp(Number(clip.volume ?? 1), 0, 2),
+    fadeIn: clamp(Number(clip.fadeIn || 0), 0, duration),
+    fadeOut: clamp(Number(clip.fadeOut || 0), 0, duration),
+    muted: Boolean(clip.muted),
+    locked: Boolean(clip.locked),
+  }
+}
+
+function normalizeTrack(
+  track: Partial<EditorTrack>,
+  sources: Map<string, EditorSource>,
+  clipFadesCanonical: boolean,
+): EditorTrack {
+  const source = sources.get(String(track.sourceId || ''))
+  const role = track.role === 'reference' || track.role === 'recording'
+    ? track.role
+    : (source?.role || 'stem')
   const stemKey = source?.stemKey || null
+  const clips = Array.isArray(track.clips)
+    ? track.clips
+        .map((clip) => normalizeClip(clip, sources.get(String(clip.assetId || track.sourceId || ''))))
+        .filter((clip) => clip.assetId && clip.duration > 0)
+    : []
+  if (!clips.length && source && source.duration > 0) {
+    clips.push(normalizeClip({
+      id: `clip_${String(track.id || source.id)}`,
+      assetId: source.id,
+      duration: source.duration,
+      fadeIn: Number(track.fadeIn || 0),
+      fadeOut: Number(track.fadeOut || 0),
+    }, source))
+  }
+  let fadeIn = Math.max(0, Number(track.fadeIn || 0))
+  let fadeOut = Math.max(0, Number(track.fadeOut || 0))
+  if (clips.length === 1) {
+    const clip = clips[0]
+    if (clipFadesCanonical) {
+      fadeIn = clip.fadeIn
+      fadeOut = clip.fadeOut
+    } else {
+      clip.fadeIn = clamp(fadeIn, 0, clip.duration)
+      clip.fadeOut = clamp(fadeOut, 0, clip.duration)
+      fadeIn = clip.fadeIn
+      fadeOut = clip.fadeOut
+    }
+  }
   return {
     id: String(track.id || makeId('track')),
     sourceId: String(track.sourceId || source?.id || ''),
@@ -270,8 +334,12 @@ function normalizeTrack(track: Partial<EditorTrack>, source?: EditorSource): Edi
     pan: clamp(Number(track.pan ?? 0), -1, 1),
     muted: Boolean(track.muted),
     solo: Boolean(track.solo),
-    fadeIn: Math.max(0, Number(track.fadeIn || 0)),
-    fadeOut: Math.max(0, Number(track.fadeOut || 0)),
+    fadeIn,
+    fadeOut,
+    type: track.type === 'recording' || role === 'recording'
+      ? 'recording'
+      : (track.type === 'audio' ? 'audio' : role),
+    clips,
   }
 }
 
@@ -280,8 +348,9 @@ function normalizeSession(session: PersistedSession): EditorSession {
     ? session.sources.map(normalizeSource)
     : []
   const sourceMap = new Map(sources.map((source) => [source.id, source]))
+  const clipFadesCanonical = Number(session.version || 0) >= 3
   const tracks = Array.isArray(session.tracks)
-    ? session.tracks.map((track) => normalizeTrack(track, sourceMap.get(String(track.sourceId || ''))))
+    ? session.tracks.map((track) => normalizeTrack(track, sourceMap, clipFadesCanonical))
     : []
 
   return {
@@ -301,7 +370,8 @@ function normalizeSession(session: PersistedSession): EditorSession {
 function toPersistedSession(session: EditorSession) {
   return {
     ...session,
-    version: 2,
+    version: 3,
+    tracks: cloneTracks(session.tracks),
     sources: session.sources.map((source) => ({
       ...source,
       peaks: [],
@@ -346,6 +416,20 @@ function runLimited<T>(items: T[], limit: number, runner: (item: T) => Promise<v
 }
 
 function trackToExportTrack(track: EditorTrack, source?: EditorSource) {
+  const clips = track.clips?.length
+    ? track.clips.map((clip) => ({ ...clip }))
+    : [{
+        id: `clip_${track.id}`,
+        assetId: track.sourceId,
+        start: 0,
+        offset: 0,
+        duration: source?.duration || 0,
+        volume: 1,
+        fadeIn: track.fadeIn,
+        fadeOut: track.fadeOut,
+        muted: false,
+        locked: false,
+      }]
   return {
     id: track.id,
     sourceId: track.sourceId,
@@ -355,18 +439,7 @@ function trackToExportTrack(track: EditorTrack, source?: EditorSource) {
     pan: track.pan,
     muted: track.muted,
     solo: track.solo,
-    clips: [{
-      id: `clip_${track.id}`,
-      assetId: track.sourceId,
-      start: 0,
-      offset: 0,
-      duration: source?.duration || 0,
-      volume: 1,
-      fadeIn: track.fadeIn,
-      fadeOut: track.fadeOut,
-      muted: false,
-      locked: false,
-    }],
+    clips,
   }
 }
 
@@ -378,6 +451,7 @@ export const useEditorStore = defineStore('editor', () => {
   const lastExport = ref<ExportResult | null>(null)
   const lastError = ref<string | null>(null)
   const selectedTrackId = ref<string | null>(null)
+  const selectedClipId = ref<string | null>(null)
   const pixelsPerSecond = ref(96)
   const exportFormat = ref<EditorExportFormat>('wav')
   const projectSummaries = ref<EditorProjectSummary[]>([])
@@ -403,9 +477,19 @@ export const useEditorStore = defineStore('editor', () => {
     return session.value.tracks.find((track) => track.id === selectedTrackId.value) || null
   })
 
+  const selectedClip = computed(() => {
+    const track = selectedTrack.value
+    if (!track || !selectedClipId.value) return null
+    return track.clips?.find((clip) => clip.id === selectedClipId.value) || null
+  })
+
   const selectedSource = computed(() => {
     const track = selectedTrack.value
-    return track ? sourceMap.value.get(track.sourceId) || null : null
+    if (!track) return null
+    return sourceMap.value.get(selectedClip.value?.assetId || '')
+      || sourceMap.value.get(track.sourceId)
+      || sourceMap.value.get(track.clips?.[track.clips.length - 1]?.assetId || '')
+      || null
   })
 
   const stemTracks = computed(() => session.value?.tracks.filter((track) => track.role === 'stem') || [])
@@ -464,12 +548,7 @@ export const useEditorStore = defineStore('editor', () => {
   })
 
   const duration = computed(() => {
-    let max = 0
-    session.value?.tracks.forEach((track) => {
-      const source = sourceMap.value.get(track.sourceId)
-      max = Math.max(max, Number(source?.duration || 0))
-    })
-    return max
+    return session.value ? timelineDuration(session.value.tracks, sourceMap.value) : 0
   })
 
   function snapshot(): HistorySnapshot | null {
@@ -479,6 +558,7 @@ export const useEditorStore = defineStore('editor', () => {
       masterVolume: session.value.masterVolume,
       masterPan: session.value.masterPan,
       selectedTrackId: selectedTrackId.value,
+      selectedClipId: selectedClipId.value,
     }
   }
 
@@ -488,6 +568,7 @@ export const useEditorStore = defineStore('editor', () => {
     session.value.masterVolume = next.masterVolume
     session.value.masterPan = next.masterPan
     selectedTrackId.value = next.selectedTrackId
+    selectedClipId.value = next.selectedClipId
   }
 
   function pushHistory() {
@@ -534,25 +615,91 @@ export const useEditorStore = defineStore('editor', () => {
   }
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null
+  let saveDrainTask: Promise<EditorSession | null> | null = null
+  const pendingProjectSaves = new Map<string, PersistedSession>()
+  const suspendedProjectSaves = new Set<string>()
+
+  function queueSessionSave() {
+    if (!session.value) return null
+    const project = toPersistedSession(session.value)
+    if (suspendedProjectSaves.has(project.id)) return null
+    pendingProjectSaves.set(project.id, project)
+    return project.id
+  }
+
+  async function drainPendingSaves() {
+    if (saveDrainTask) return saveDrainTask
+    const task = (async () => {
+      saving.value = true
+      try {
+        while (pendingProjectSaves.size) {
+          const next = pendingProjectSaves.entries().next().value as [string, PersistedSession] | undefined
+          if (!next) break
+          const [projectId, project] = next
+          pendingProjectSaves.delete(projectId)
+          try {
+            const result = await invoke<PersistedSession>('save_editor_project', { project })
+            if (session.value?.id === projectId && result.updatedAt) {
+              session.value.updatedAt = Number(result.updatedAt)
+            }
+            lastError.value = null
+          } catch (error) {
+            // Keep a newer snapshot if edits arrived while this save was in flight.
+            if (!pendingProjectSaves.has(projectId)) pendingProjectSaves.set(projectId, project)
+            lastError.value = error instanceof Error ? error.message : String(error)
+            throw error
+          }
+        }
+        return session.value
+      } finally {
+        saving.value = false
+      }
+    })()
+    saveDrainTask = task
+    try {
+      return await task
+    } finally {
+      if (saveDrainTask === task) saveDrainTask = null
+    }
+  }
 
   function scheduleSave() {
+    if (!queueSessionSave()) return
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = setTimeout(() => {
       saveTimer = null
-      void saveProject()
+      void drainPendingSaves().catch(() => undefined)
     }, AUTO_SAVE_DELAY)
   }
 
   async function flushSave() {
+    queueSessionSave()
     if (saveTimer) {
       clearTimeout(saveTimer)
       saveTimer = null
     }
-    return saveProject()
+    return drainPendingSaves()
   }
+
+  // The store outlives the editor route. Keeping persistence here ensures a
+  // delayed autosave is still flushed when the user closes from another page.
+  registerWindowCloseGuard(async () => {
+    await flushSave()
+  }, -100)
 
   function selectTrack(trackId: string | null) {
     selectedTrackId.value = trackId
+    const track = session.value?.tracks.find((item) => item.id === trackId)
+    if (!track?.clips?.some((clip) => clip.id === selectedClipId.value)) {
+      selectedClipId.value = track?.clips?.[0]?.id || null
+    }
+  }
+
+  function selectClip(trackId: string, clipId: string) {
+    const track = session.value?.tracks.find((item) => item.id === trackId)
+    if (!track?.clips?.some((clip) => clip.id === clipId)) return
+    selectedTrackId.value = trackId
+    selectedClipId.value = clipId
   }
 
   async function requestProjectFromTask(task: SeparationTask) {
@@ -572,7 +719,7 @@ export const useEditorStore = defineStore('editor', () => {
     try {
       const result = await requestProjectFromTask(task)
       session.value = normalizeSession(result)
-      selectedTrackId.value = session.value.tracks[0]?.id || null
+      selectTrack(session.value.tracks[0]?.id || null)
       await hydratePeaksFromCache(session.value.id)
       const metadataChanged = await hydrateSourceMetadataState(session.value.id)
       clearHistory()
@@ -647,19 +794,34 @@ export const useEditorStore = defineStore('editor', () => {
   }
 
   async function deleteProject(projectId: string) {
-    const result = await invoke<boolean>('delete_editor_project', { projectId })
+    // Serialize deletion after queued writes so a delayed autosave cannot
+    // recreate the project after the backend removes it.
+    await drainPendingSaves()
+    suspendedProjectSaves.add(projectId)
+    pendingProjectSaves.delete(projectId)
+    let result: boolean
+    try {
+      result = await invoke<boolean>('delete_editor_project', { projectId })
+    } catch (error) {
+      suspendedProjectSaves.delete(projectId)
+      if (session.value?.id === projectId) scheduleSave()
+      throw error
+    }
     projectSummaries.value = projectSummaries.value.filter((item) => item.id !== projectId)
     if (session.value?.id === projectId) {
       session.value = null
       selectedTrackId.value = null
+      selectedClipId.value = null
       clearHistory()
     }
+    suspendedProjectSaves.delete(projectId)
     return result
   }
 
   function clearSession() {
     session.value = null
     selectedTrackId.value = null
+    selectedClipId.value = null
     clearHistory()
   }
 
@@ -671,7 +833,7 @@ export const useEditorStore = defineStore('editor', () => {
       session.value = normalizeSession(result)
       await hydratePeaksFromCache(session.value.id)
       const metadataChanged = await hydrateSourceMetadataState(session.value.id)
-      selectedTrackId.value = session.value.tracks[0]?.id || null
+      selectTrack(session.value.tracks[0]?.id || null)
       clearHistory()
       const currentProjectId = session.value.id
       if (metadataChanged) await saveProject()
@@ -686,17 +848,12 @@ export const useEditorStore = defineStore('editor', () => {
   }
 
   async function saveProject() {
-    if (!session.value) return null
-    saving.value = true
-    try {
-      const result = await invoke<PersistedSession>('save_editor_project', {
-        project: toPersistedSession(session.value),
-      })
-      if (session.value && result.updatedAt) session.value.updatedAt = Number(result.updatedAt)
-      return session.value
-    } finally {
-      saving.value = false
+    if (!queueSessionSave() && !pendingProjectSaves.size) return null
+    if (saveTimer) {
+      clearTimeout(saveTimer)
+      saveTimer = null
     }
+    return drainPendingSaves()
   }
 
   async function getMetadata(path: string) {
@@ -948,11 +1105,107 @@ export const useEditorStore = defineStore('editor', () => {
       solo: false,
       fadeIn: 0,
       fadeOut: 0,
+      type: 'reference',
+      clips: [normalizeClip({
+        id: makeId('clip'),
+        assetId: source.id,
+        duration: source.duration,
+      }, source)],
     }
     session.value.tracks.push(track)
-    selectedTrackId.value = track.id
+    selectTrack(track.id)
     scheduleSave()
     return track
+  }
+
+  function addRecordingTrack() {
+    if (!session.value) throw new Error('Editor session is not loaded')
+    pushHistory()
+    const index = session.value.tracks.filter((track) => track.role === 'recording').length + 1
+    const track: EditorTrack = {
+      id: makeId('track'),
+      sourceId: '',
+      role: 'recording',
+      type: 'recording',
+      name: String(i18n.global.t('editor.recordingTrackName', { index })),
+      color: trackColor('recording'),
+      volume: 1,
+      pan: 0,
+      muted: false,
+      solo: false,
+      fadeIn: 0,
+      fadeOut: 0,
+      clips: [],
+    }
+    session.value.tracks.push(track)
+    selectTrack(track.id)
+    scheduleSave()
+    return track
+  }
+
+  async function addRecordingClip(
+    trackId: string,
+    recording: AudioMetadata,
+    start: number,
+  ) {
+    if (!session.value) throw new Error('Editor session is not loaded')
+    pushHistory()
+    let track = session.value.tracks.find((item) => item.id === trackId)
+    if (!track) {
+      const index = session.value.tracks.filter((item) => item.role === 'recording').length + 1
+      track = {
+        id: makeId('track'),
+        sourceId: '',
+        role: 'recording',
+        type: 'recording',
+        name: String(i18n.global.t('editor.recordingTrackName', { index })),
+        color: trackColor('recording'),
+        volume: 1,
+        pan: 0,
+        muted: false,
+        solo: false,
+        fadeIn: 0,
+        fadeOut: 0,
+        clips: [],
+      }
+      session.value.tracks.push(track)
+    }
+    const source: EditorSource = {
+      id: makeId('source'),
+      role: 'recording',
+      stemKey: null,
+      path: recording.path,
+      name: recording.name || fileName(recording.path),
+      duration: Math.max(0, Number(recording.duration || 0)),
+      sampleRate: Math.max(0, Number(recording.sampleRate || 0)),
+      channels: Math.max(1, Number(recording.channels || 1)),
+      peaksPath: null,
+      peaks: [],
+      channelPeaks: [],
+      originKind: 'recording',
+      relativePath: `recordings/${recording.name || fileName(recording.path)}`,
+      missing: false,
+    }
+    session.value.sources.push(source)
+    track.role = 'recording'
+    track.type = 'recording'
+    track.sourceId = source.id
+    const clip = normalizeClip({
+      id: makeId('clip'),
+      assetId: source.id,
+      start: Math.max(0, Number(start || 0)),
+      duration: source.duration,
+    }, source)
+    const currentClips = track.clips || []
+    track.clips = [
+      ...overwriteClipsInRange(currentClips, clip.start, clip.duration, () => makeId('clip')),
+      clip,
+    ].sort((left, right) => left.start - right.start)
+    syncSingleClipFadeCompatibility(track)
+    selectClip(track.id, clip.id)
+    scheduleSave()
+    ensurePeaksInBackground(source.id)
+    return source
   }
 
   async function scanAssets(paths: string[]) {
@@ -978,7 +1231,10 @@ export const useEditorStore = defineStore('editor', () => {
 
   function sourcesInUse() {
     if (!session.value) return []
-    const sourceIds = new Set(session.value.tracks.map((track) => track.sourceId))
+    const sourceIds = new Set(session.value.tracks.flatMap((track) => [
+      track.sourceId,
+      ...(track.clips || []).map((clip) => clip.assetId),
+    ]).filter(Boolean))
     return session.value.sources.filter((source) => sourceIds.has(source.id))
   }
 
@@ -1070,15 +1326,44 @@ export const useEditorStore = defineStore('editor', () => {
     if (interactionDepth.value === 0) scheduleSave()
   }
 
-  function setTrackFades(trackId: string, patch: { fadeIn?: number; fadeOut?: number }) {
+  function setClipFades(
+    trackId: string,
+    clipId: string,
+    patch: { fadeIn?: number; fadeOut?: number },
+  ) {
     const track = session.value?.tracks.find((item) => item.id === trackId)
-    if (!track) return
-    const source = sourceMap.value.get(track.sourceId)
-    const maxDuration = Math.max(0, Number(source?.duration || 0))
+    const clip = track?.clips?.find((item) => item.id === clipId)
+    if (!track || !clip) return
+    const maxDuration = Math.max(0, Number(clip.duration || 0))
     pushHistory()
-    if (patch.fadeIn !== undefined) track.fadeIn = clamp(Number(patch.fadeIn || 0), 0, maxDuration)
-    if (patch.fadeOut !== undefined) track.fadeOut = clamp(Number(patch.fadeOut || 0), 0, maxDuration)
+    if (patch.fadeIn !== undefined) clip.fadeIn = clamp(Number(patch.fadeIn || 0), 0, maxDuration)
+    if (patch.fadeOut !== undefined) clip.fadeOut = clamp(Number(patch.fadeOut || 0), 0, maxDuration)
+    syncSingleClipFadeCompatibility(track)
     scheduleSave()
+  }
+
+  function setClipTiming(
+    trackId: string,
+    clipId: string,
+    patch: Partial<Pick<EditorClip, 'start' | 'offset' | 'duration'>>,
+  ) {
+    const track = session.value?.tracks.find((item) => item.id === trackId)
+    const clip = track?.clips?.find((item) => item.id === clipId)
+    if (!track || !clip) return
+    const source = sourceMap.value.get(clip.assetId)
+    const sourceDuration = Math.max(0, Number(source?.duration || 0))
+    const maxOffset = sourceDuration > 0 ? Math.max(0, sourceDuration - 0.01) : Number.MAX_SAFE_INTEGER
+    const nextOffset = clamp(Number(patch.offset ?? clip.offset), 0, maxOffset)
+    const availableDuration = sourceDuration > 0
+      ? Math.max(0.01, sourceDuration - nextOffset)
+      : Number.MAX_SAFE_INTEGER
+    clip.start = Math.max(0, Number(patch.start ?? clip.start))
+    clip.offset = nextOffset
+    clip.duration = clamp(Number(patch.duration ?? clip.duration), 0.01, availableDuration)
+    clip.fadeIn = clamp(clip.fadeIn, 0, clip.duration)
+    clip.fadeOut = clamp(clip.fadeOut, 0, clip.duration)
+    syncSingleClipFadeCompatibility(track)
+    if (interactionDepth.value === 0) scheduleSave()
   }
 
   function setMasterVolume(value: number) {
@@ -1100,9 +1385,32 @@ export const useEditorStore = defineStore('editor', () => {
     pushHistory()
     session.value.tracks = session.value.tracks.filter((item) => item.id !== trackId)
     if (selectedTrackId.value === trackId) {
-      selectedTrackId.value = session.value.tracks[0]?.id || null
+      selectTrack(session.value.tracks[0]?.id || null)
     }
     scheduleSave()
+  }
+
+  function removeClip(trackId: string, clipId: string) {
+    const track = session.value?.tracks.find((item) => item.id === trackId)
+    const clipIndex = track?.clips?.findIndex((item) => item.id === clipId) ?? -1
+    if (!track || clipIndex < 0) return false
+
+    pushHistory()
+    const removedClip = track.clips![clipIndex]
+    const nextClips = track.clips!.filter((item) => item.id !== clipId)
+    track.clips = nextClips
+    syncSingleClipFadeCompatibility(track)
+
+    if (track.sourceId === removedClip.assetId && !nextClips.some((item) => item.assetId === removedClip.assetId)) {
+      track.sourceId = nextClips[nextClips.length - 1]?.assetId || ''
+    }
+
+    if (selectedTrackId.value === trackId && selectedClipId.value === clipId) {
+      selectedClipId.value = nextClips[Math.min(clipIndex, nextClips.length - 1)]?.id || null
+    }
+
+    scheduleSave()
+    return true
   }
 
   function removeSource(sourceId: string) {
@@ -1112,15 +1420,25 @@ export const useEditorStore = defineStore('editor', () => {
     if (source.role === 'stem') return { removedSource: false, removedTracks: 0 }
 
     pushHistory()
-    const removedTrackIds = session.value.tracks
-      .filter((track) => track.sourceId === sourceId)
-      .map((track) => track.id)
-
-    session.value.tracks = session.value.tracks.filter((track) => track.sourceId !== sourceId)
+    const removedTrackIds: string[] = []
+    session.value.tracks = session.value.tracks.flatMap((track) => {
+      const nextClips = (track.clips || []).filter((clip) => clip.assetId !== sourceId)
+      const usedByTrack = track.sourceId === sourceId || nextClips.length !== (track.clips || []).length
+      if (!usedByTrack) return [track]
+      if (!nextClips.length) {
+        removedTrackIds.push(track.id)
+        return []
+      }
+      const nextTrack = { ...track, sourceId: nextClips[nextClips.length - 1].assetId, clips: nextClips }
+      syncSingleClipFadeCompatibility(nextTrack)
+      return [nextTrack]
+    })
     session.value.sources = session.value.sources.filter((item) => item.id !== sourceId)
 
     if (selectedTrackId.value && removedTrackIds.includes(selectedTrackId.value)) {
-      selectedTrackId.value = session.value.tracks[0]?.id || null
+      selectTrack(session.value.tracks[0]?.id || null)
+    } else if (selectedClipId.value && !selectedTrack.value?.clips?.some((clip) => clip.id === selectedClipId.value)) {
+      selectTrack(selectedTrackId.value)
     }
 
     scheduleSave()
@@ -1183,8 +1501,10 @@ export const useEditorStore = defineStore('editor', () => {
     lastError,
     projectSummaries,
     selectedTrackId,
+    selectedClipId,
     exportFormat,
     selectedTrack,
+    selectedClip,
     selectedSource,
     sourceMap,
     stemTracks,
@@ -1197,6 +1517,7 @@ export const useEditorStore = defineStore('editor', () => {
     canRedo,
     duration,
     selectTrack,
+    selectClip,
     undo,
     redo,
     beginInteraction,
@@ -1224,6 +1545,8 @@ export const useEditorStore = defineStore('editor', () => {
     ensureSourceByPath,
     addReferenceSourceByPath,
     addTrackFromSourceId,
+    addRecordingTrack,
+    addRecordingClip,
     scanAssets,
     relinkSource,
     relinkMissingSources,
@@ -1235,10 +1558,12 @@ export const useEditorStore = defineStore('editor', () => {
     toggleTrackFlag,
     setTrackVolume,
     setTrackPan,
-    setTrackFades,
+    setClipFades,
+    setClipTiming,
     setMasterVolume,
     setMasterPan,
     removeTrack,
+    removeClip,
     removeSource,
     exportMix,
     setZoom,

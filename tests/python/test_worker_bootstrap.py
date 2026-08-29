@@ -10,6 +10,11 @@ import urllib.error as urllib_error
 from pathlib import Path
 from unittest import mock
 
+if __package__:
+    from . import _bootstrap as _worker_test_bootstrap
+else:
+    import _bootstrap as _worker_test_bootstrap
+
 import worker_bootstrap
 
 COMMON_PACKAGES = ("av", "librosa", "numpy", "pymss", "pymss-core")

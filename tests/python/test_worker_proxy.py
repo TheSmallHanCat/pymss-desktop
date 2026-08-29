@@ -2,6 +2,11 @@ import os
 import unittest
 from unittest import mock
 
+if __package__:
+    from . import _bootstrap as _worker_test_bootstrap
+else:
+    import _bootstrap as _worker_test_bootstrap
+
 from worker_download import _test_url_for_source
 from worker_proxy import ProxyConfigError, aria2_proxy_args, configure_process_proxy, parse_proxy_config, redacted_proxy
 

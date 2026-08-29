@@ -61,7 +61,10 @@ export function useEditorAssets(options: UseEditorAssetsOptions) {
 
   function revealTrackSource(trackId: string) {
     const track = session.value?.tracks.find((item) => item.id === trackId)
-    const source = track ? editor.sourceMap.get(track.sourceId) : null
+    const source = track
+      ? editor.sourceMap.get(track.sourceId)
+        || editor.sourceMap.get(track.clips?.[track.clips.length - 1]?.assetId || '')
+      : null
     if (source) revealSource(source)
   }
 
@@ -76,7 +79,9 @@ export function useEditorAssets(options: UseEditorAssetsOptions) {
       return
     }
 
-    const linkedTrackCount = session.value?.tracks.filter((track) => track.sourceId === source.id).length || 0
+    const linkedTrackCount = session.value?.tracks.filter((track) => (
+      track.sourceId === source.id || track.clips?.some((clip) => clip.assetId === source.id)
+    )).length || 0
     const commitRemoval = () => {
       const result = editor.removeSource(source.id)
       if (!result.removedSource) return

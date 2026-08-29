@@ -9,7 +9,7 @@
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && vue-tsc --noEmit && vite build",
     "test": "node --test \"tests/**/*.test.*\"",
     "test:frontend": "pnpm test",
-    "test:python": "python -m unittest discover -s python -p \"test_*.py\"",
+    "test:python": "python -m unittest discover -s tests/python -t tests -p \"test_*.py\"",
     "test:all": "pnpm test:frontend && pnpm test:python",
     "preview": "vite preview",
     "tauri": "tauri",

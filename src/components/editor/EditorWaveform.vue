@@ -9,6 +9,7 @@ const props = defineProps<{
   channelPeaks?: number[][]
   channels?: number
   assetDuration: number
+  offset?: number
   duration: number
   width: number
   height: number
@@ -62,8 +63,9 @@ function drawTile(canvas: HTMLCanvasElement, tileIndex: number) {
   if (!primaryPeaks.length || props.assetDuration <= 0 || props.duration <= 0) return
 
   const total = primaryPeaks.length
-  const endRatio = Math.min(1, props.duration / props.assetDuration)
-  const startIdx = 0
+  const startRatio = Math.max(0, Math.min(1, Number(props.offset || 0) / props.assetDuration))
+  const endRatio = Math.max(startRatio, Math.min(1, (Number(props.offset || 0) + props.duration) / props.assetDuration))
+  const startIdx = Math.min(total - 1, Math.floor(startRatio * total))
   const endIdx = Math.min(total, Math.ceil(endRatio * total))
   const span = Math.max(1, endIdx - startIdx)
   const color = resolveColor()
@@ -161,7 +163,7 @@ function scheduleDraw() {
 }
 
 watch(
-  () => [props.peaks, props.channelPeaks, props.channels, props.assetDuration, props.duration, props.width, props.height, props.fadeIn, props.fadeOut, props.color, tileCount.value],
+  () => [props.peaks, props.channelPeaks, props.channels, props.assetDuration, props.offset, props.duration, props.width, props.height, props.fadeIn, props.fadeOut, props.color, tileCount.value],
   scheduleDraw,
   { deep: false },
 )

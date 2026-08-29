@@ -7,6 +7,11 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+if __package__:
+    from . import _bootstrap as _worker_test_bootstrap
+else:
+    import _bootstrap as _worker_test_bootstrap
+
 import worker_custom_models as ccm
 
 # mock.patch.dict needs the mapping object itself; the module reads os.environ directly.

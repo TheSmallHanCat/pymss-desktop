@@ -1,7 +1,7 @@
 {
   "$comment": [
     "Shared validation contract. Read by tests/workflowValidation.test.mjs and by",
-    "python/test_worker_graph_workflows.py so the editor and the runtime cannot disagree about",
+    "tests/python/test_worker_graph_workflows.py so the editor and the runtime cannot disagree about",
     "whether a workflow may run.",
     "",
     "`expect.ts` is the rule code getWorkflowValidationRuleCode() must report; `expect.python` is",

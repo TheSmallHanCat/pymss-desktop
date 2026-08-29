@@ -1,4 +1,4 @@
-export type EditorSourceRole = 'stem' | 'reference'
+export type EditorSourceRole = 'stem' | 'reference' | 'recording'
 
 export type EditorSource = {
   id: string
@@ -43,7 +43,7 @@ export type EditorTrack = {
   solo: boolean
   fadeIn: number
   fadeOut: number
-  type?: 'stem' | 'audio' | 'reference'
+  type?: 'stem' | 'audio' | 'reference' | 'recording'
   clips?: EditorClip[]
 }
 

@@ -19,6 +19,7 @@ import { useEditorLayout } from '@/composables/useEditorLayout'
 import { useEditorMixerView } from '@/composables/useEditorMixerView'
 import { useEditorPlayback } from '@/composables/useEditorPlayback'
 import { useEditorProjectBridge } from '@/composables/useEditorProjectBridge'
+import { useEditorRecording } from '@/composables/useEditorRecording'
 import { useEditorShortcuts } from '@/composables/useEditorShortcuts'
 
 const route = useRoute()
@@ -134,9 +135,47 @@ const {
   trackLevels,
   playbackError,
   stop: playbackStop,
+  requestPlay: playbackRequestPlay,
+  requestPause: playbackRequestPause,
   toggleTransport,
   seek: playbackSeek,
+  followPlayhead: playbackFollowPlayhead,
 } = playback
+const {
+  devices: recordingDevices,
+  selectedDeviceId: recordingDeviceId,
+  state: recordingState,
+  isRecording,
+  isBusy: recordingBusy,
+  inputLevel: recordingInputLevel,
+  elapsed: recordingElapsed,
+  startTime: recordingStartTime,
+  targetTrackId: recordingTargetTrackId,
+  error: recordingError,
+  refreshDevices: refreshRecordingDevices,
+  selectDevice: selectRecordingDevice,
+  toggleRecording,
+  cancelRecording,
+} = useEditorRecording({
+  editor,
+  currentTime: playbackCurrentTime,
+  requestPlayback: playbackRequestPlay,
+  pausePlayback: () => playbackRequestPause(false),
+  followPlayhead: playbackFollowPlayhead,
+})
+const recordingPreview = computed(() => {
+  if (!recordingTargetTrackId.value || recordingState.value === 'idle' || recordingState.value === 'preparing') {
+    return null
+  }
+  return {
+    trackId: recordingTargetTrackId.value,
+    start: recordingStartTime.value,
+    duration: Math.max(0.01, recordingElapsed.value),
+  }
+})
+const displayedTimelineDuration = computed(() => (
+  recordingPreview.value ? Math.max(editor.duration, playbackCurrentTime.value) : editor.duration
+))
 const relinkingMissingAssets = ref(false)
 const missingSources = computed(() => editor.missingSources())
 const missingAssetPreview = computed(() => missingSources.value.slice(0, 3).map((source) => source.name))
@@ -188,8 +227,39 @@ function scheduleInitialZoomFit(sessionId: string) {
 }
 
 async function togglePlayback() {
+  if (isRecording.value) return false
   const ok = await toggleTransport()
   if (!ok && playbackError.value) message.error(playbackError.value)
+}
+
+async function handleRecordingToggle() {
+  const wasRecording = isRecording.value
+  const ok = await toggleRecording()
+  if (!ok && recordingError.value) {
+    message.error(t('editor.recordingFailed', { detail: recordingError.value }))
+    return
+  }
+  if (wasRecording) message.success(t('editor.recordingSaved'))
+}
+
+async function handleRecordingCancel() {
+  await cancelRecording()
+  message.info(t('editor.recordingCancelled'))
+}
+
+async function handleRecordingDevicesRefresh() {
+  try {
+    await refreshRecordingDevices(true)
+  } catch (error) {
+    message.error(t('editor.recordingDeviceFailed', {
+      detail: error instanceof Error ? error.message : String(error),
+    }))
+  }
+}
+
+function handleAddRecordingTrack() {
+  const track = editor.addRecordingTrack()
+  message.success(t('editor.recordingTrackAdded', { name: track.name }))
 }
 
 function handleTrackMuteRequest(trackId: string) {
@@ -206,8 +276,28 @@ function toggleSelectedTrackFlag(flag: 'muted' | 'solo') {
 }
 
 function removeSelectedTrack() {
-  if (!editor.selectedTrackId) return
+  if (recordingBusy.value || !editor.selectedTrackId) return
   editor.removeTrack(editor.selectedTrackId)
+}
+
+function removeTrack(trackId: string) {
+  if (recordingBusy.value) return
+  editor.removeTrack(trackId)
+}
+
+function removeClip(payload: { trackId: string; clipId: string }) {
+  if (recordingBusy.value) return
+  editor.removeClip(payload.trackId, payload.clipId)
+}
+
+function undoEditor() {
+  if (recordingBusy.value) return
+  editor.undo()
+}
+
+function redoEditor() {
+  if (recordingBusy.value) return
+  editor.redo()
 }
 
 function openSelectedTrackInspector() {
@@ -227,7 +317,13 @@ function stopPlaybackAndReset() {
 }
 
 function resetPlayhead() {
+  if (isRecording.value) return
   playbackSeek(0)
+}
+
+function seekTimeline(time: number) {
+  if (isRecording.value) return
+  playbackSeek(time)
 }
 
 function seekBy(delta: number) {
@@ -250,8 +346,24 @@ function setMasterPan(value: number) {
   editor.setMasterPan(value)
 }
 
-function setTrackFades(trackId: string, patch: { fadeIn?: number; fadeOut?: number }) {
-  editor.setTrackFades(trackId, patch)
+function setClipFades(payload: {
+  trackId: string
+  clipId: string
+  patch: { fadeIn?: number; fadeOut?: number }
+}) {
+  editor.setClipFades(payload.trackId, payload.clipId, payload.patch)
+}
+
+function handleSelectClip(payload: { trackId: string; clipId: string }) {
+  editor.selectClip(payload.trackId, payload.clipId)
+}
+
+function handleClipTiming(payload: {
+  trackId: string
+  clipId: string
+  patch: { start?: number; offset?: number; duration?: number }
+}) {
+  editor.setClipTiming(payload.trackId, payload.clipId, payload.patch)
 }
 
 async function save() {
@@ -262,8 +374,8 @@ async function save() {
 useEditorShortcuts({
   togglePlay: togglePlayback,
   stop: stopPlayback,
-  undo: editor.undo,
-  redo: editor.redo,
+  undo: undoEditor,
+  redo: redoEditor,
   zoomIn,
   zoomOut,
   save,
@@ -303,7 +415,7 @@ watch(
         :session-name="sessionName"
         :track-count="session?.tracks.length || 0"
         :current-time="playbackCurrentTime"
-        :duration="editor.duration"
+        :duration="displayedTimelineDuration"
         :transport-visual-state="transportVisualState"
         :transport-pending-action="transportPendingAction"
         :transport-can-toggle="transportCanToggle"
@@ -318,6 +430,12 @@ watch(
         :missing-asset-count="missingSources.length"
         :missing-asset-preview="missingAssetPreview"
         :relinking-missing-assets="relinkingMissingAssets"
+        :recording-state="recordingState"
+        :recording-devices="recordingDevices"
+        :recording-device-id="recordingDeviceId"
+        :recording-input-level="recordingInputLevel"
+        :recording-elapsed="recordingElapsed"
+        :recording-error="recordingError"
         @reset="resetPlayhead"
         @stop="stopPlaybackAndReset"
         @toggle-transport="handleTransportToggleRequest"
@@ -328,11 +446,16 @@ watch(
         @update:master-pan="setMasterPan"
         @begin-master-pan="editor.beginInteraction"
         @commit-master-pan="editor.commitInteraction"
-        @undo="editor.undo"
-        @redo="editor.redo"
+        @undo="undoEditor"
+        @redo="redoEditor"
         @save="save"
         @export="openExportDialog"
         @relink-missing-assets="relinkMissingAssets"
+        @toggle-recording="handleRecordingToggle"
+        @cancel-recording="handleRecordingCancel"
+        @refresh-recording-devices="handleRecordingDevicesRefresh"
+        @add-recording-track="handleAddRecordingTrack"
+        @update:recording-device-id="selectRecordingDevice"
       />
 
       <div v-if="editor.loading" class="editor-state">{{ t('editor.loading') }}</div>
@@ -398,18 +521,26 @@ watch(
             :tracks="session.tracks"
             :source-map="editor.sourceMap"
             :selected-track-id="editor.selectedTrackId"
+            :selected-clip-id="editor.selectedClipId"
             :current-time="playbackCurrentTime"
-            :duration="editor.duration"
+            :duration="displayedTimelineDuration"
             :pixels-per-second="editor.pixelsPerSecond"
             :track-levels="trackLevels"
+            :editing-disabled="recordingBusy"
+            :recording-preview="recordingPreview"
             @scroll-ready="handleMixerScrollReady"
             @select-track="editor.selectTrack"
+            @select-clip="handleSelectClip"
+            @begin-clip-edit="editor.beginInteraction"
+            @update-clip-timing="handleClipTiming"
+            @commit-clip-edit="editor.commitInteraction"
             @toggle-mute="handleTrackMuteRequest"
             @toggle-solo="handleTrackSoloRequest"
             @context-mute="handleTrackMuteRequest"
             @context-solo="handleTrackSoloRequest"
-            @seek="playbackSeek"
-            @remove-track="editor.removeTrack"
+            @seek="seekTimeline"
+            @remove-track="removeTrack"
+            @remove-clip="removeClip"
             @reveal-track="revealTrackSource"
             @zoom-in="editor.zoomIn"
             @zoom-out="editor.zoomOut"
@@ -449,8 +580,9 @@ watch(
             <EditorInspectorPanel
               :session="session"
               :selected-track-id="editor.selectedTrackId"
+              :selected-clip-id="editor.selectedClipId"
               :selected-source="editor.selectedSource"
-              :duration="editor.duration"
+              :duration="displayedTimelineDuration"
               :last-export-path="editor.lastExport?.path || null"
               :compact="inspectorPanelWidth <= 248"
               @rename-track="editor.renameTrack"
@@ -460,7 +592,10 @@ watch(
               @commit-track-volume="editor.commitInteraction"
               @begin-track-pan="editor.beginInteraction"
               @commit-track-pan="editor.commitInteraction"
-              @set-track-fades="setTrackFades"
+              @set-clip-fades="setClipFades"
+              @set-clip-timing="handleClipTiming"
+              @begin-clip-timing="editor.beginInteraction"
+              @commit-clip-timing="editor.commitInteraction"
               @open-location="openExportDir"
               @relink-source="() => editor.selectedSource && relinkSource(editor.selectedSource)"
             />
@@ -479,7 +614,7 @@ watch(
     <EditorExportDialog
       :show="showExportDialog"
       :session-name="sessionName"
-      :duration="editor.duration"
+      :duration="displayedTimelineDuration"
       :track-count="session?.tracks.length || 0"
       :exporting="editor.exporting"
       :format="exportFormatDraft"

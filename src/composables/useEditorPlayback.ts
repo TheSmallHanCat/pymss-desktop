@@ -2,7 +2,8 @@ import { onBeforeUnmount, type Ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import i18n from '@/i18n'
-import type { EditorSource, EditorTrack } from '@/types/editor'
+import { clipIsActive, clipMediaTime, clipsForTrack } from '@/utils/editorClips'
+import type { EditorClip, EditorSource, EditorTrack } from '@/types/editor'
 import type { useEditorStore } from '@/stores/editor'
 import { useEditorPlaybackStore } from '@/stores/editorPlayback'
 
@@ -14,12 +15,14 @@ type PlaybackOptions = {
   trackHeaderWidth?: number
 }
 
-type ActiveTrackEntry = {
+type ActiveClipEntry = {
   track: EditorTrack
+  clip: EditorClip
   source: EditorSource
 }
 
 type ManagedAudio = {
+  clipId: string
   trackId: string
   sourceId: string
   audio: HTMLAudioElement
@@ -320,38 +323,64 @@ export function useEditorPlayback(options: PlaybackOptions) {
     return Math.max(0, Math.min(time, duration))
   }
 
-  function activeTracks() {
+  function activeClips() {
     const session = editor.session
     if (!session) return []
     const hasSolo = session.tracks.some((track) => track.solo)
-    return session.tracks
-      .filter((track) => !track.muted && (!hasSolo || track.solo))
-      .map((track) => {
-        const source = editor.sourceMap.get(track.sourceId)
-        return source && !source.missing ? { track, source } : null
-      })
-      .filter((entry): entry is ActiveTrackEntry => Boolean(entry))
+    const suppressedTrackIds = new Set(playback.suppressedTrackIds)
+    const entries: ActiveClipEntry[] = []
+    for (const track of session.tracks.filter((item) => (
+      !item.muted && !suppressedTrackIds.has(item.id) && (!hasSolo || item.solo)
+    ))) {
+      for (const clip of clipsForTrack(track, editor.sourceMap)) {
+        if (clip.muted || clip.duration <= 0) continue
+        const source = editor.sourceMap.get(clip.assetId)
+        if (source && !source.missing) entries.push({ track, clip, source })
+      }
+    }
+    return entries
   }
 
   function hasMissingSourcesInUse() {
     const session = editor.session
     if (!session) return false
     const hasSolo = session.tracks.some((track) => track.solo)
+    const suppressedTrackIds = new Set(playback.suppressedTrackIds)
     // Only block playback for tracks that would actually be audible.
-    // A muted (or solo-excluded) offline track must not prevent previewing the rest.
+    // A muted, suppressed, or solo-excluded offline clip must not prevent previewing the rest.
     return session.tracks
-      .filter((track) => !track.muted && (!hasSolo || track.solo))
-      .some((track) => Boolean(editor.sourceMap.get(track.sourceId)?.missing))
+      .filter((track) => !track.muted && !suppressedTrackIds.has(track.id) && (!hasSolo || track.solo))
+      .some((track) => clipsForTrack(track, editor.sourceMap).some((clip) => (
+        !clip.muted
+        && clip.duration > 0
+        && Boolean(editor.sourceMap.get(clip.assetId)?.missing)
+      )))
   }
 
   function trackSignature() {
-    return activeTracks()
-      .map(({ track, source }) => [track.id, source.id, source.channels, track.volume, track.pan, track.muted, track.solo, track.fadeIn, track.fadeOut].join(':'))
+    return activeClips()
+      .map(({ track, clip, source }) => [
+        track.id,
+        clip.id,
+        source.id,
+        source.channels,
+        track.volume,
+        track.pan,
+        track.muted,
+        track.solo,
+        clip.start,
+        clip.offset,
+        clip.duration,
+        clip.volume,
+        clip.fadeIn,
+        clip.fadeOut,
+        clip.muted,
+      ].join(':'))
       .join('|')
   }
 
-  function ensureAudioEntry(track: EditorTrack, source: EditorSource) {
-    const cached = audioEntries.get(track.id)
+  function ensureAudioEntry(track: EditorTrack, clip: EditorClip, source: EditorSource) {
+    const cached = audioEntries.get(clip.id)
     if (cached && cached.sourceId === source.id) {
       connectEntryAudioGraph(cached, source)
       return cached
@@ -359,7 +388,7 @@ export function useEditorPlayback(options: PlaybackOptions) {
 
     if (cached) {
       releaseEntry(cached)
-      audioEntries.delete(track.id)
+      audioEntries.delete(clip.id)
     }
 
     const primaryUrl = resolveAudioUrl(source.path)
@@ -370,6 +399,7 @@ export function useEditorPlayback(options: PlaybackOptions) {
     audio.crossOrigin = 'anonymous'
 
     const entry: ManagedAudio = {
+      clipId: clip.id,
       trackId: track.id,
       sourceId: source.id,
       audio,
@@ -387,7 +417,7 @@ export function useEditorPlayback(options: PlaybackOptions) {
     })
 
     entry.metadataPromise = createMetadataPromise(audio, entry)
-    audioEntries.set(track.id, entry)
+    audioEntries.set(clip.id, entry)
     connectEntryAudioGraph(entry, source)
     audio.load()
     return entry
@@ -405,20 +435,22 @@ export function useEditorPlayback(options: PlaybackOptions) {
     }
   }
 
-  function computeTrackVolume(track: EditorTrack, source: EditorSource, time: number) {
-    let gain = Math.max(0, track.volume)
-    const duration = Math.max(0, Number(source.duration || 0))
-    const fadeIn = Math.max(0, Number(track.fadeIn || 0))
-    const fadeOut = Math.max(0, Number(track.fadeOut || 0))
+  function computeClipVolume(track: EditorTrack, clip: EditorClip, time: number) {
+    if (!clipIsActive(clip, time) || clip.muted) return 0
+    let gain = Math.max(0, track.volume) * Math.max(0, clip.volume)
+    const relativeTime = Math.max(0, time - clip.start)
+    const duration = Math.max(0, Number(clip.duration || 0))
+    const fadeIn = Math.max(0, Number(clip.fadeIn || 0))
+    const fadeOut = Math.max(0, Number(clip.fadeOut || 0))
 
-    if (fadeIn > 0 && time < fadeIn) {
-      gain *= Math.max(0, Math.min(1, time / fadeIn))
+    if (fadeIn > 0 && relativeTime < fadeIn) {
+      gain *= Math.max(0, Math.min(1, relativeTime / fadeIn))
     }
 
     if (fadeOut > 0 && duration > 0) {
       const fadeOutStart = Math.max(0, duration - fadeOut)
-      if (time > fadeOutStart) {
-        gain *= Math.max(0, Math.min(1, (duration - time) / fadeOut))
+      if (relativeTime > fadeOutStart) {
+        gain *= Math.max(0, Math.min(1, (duration - relativeTime) / fadeOut))
       }
     }
 
@@ -426,31 +458,45 @@ export function useEditorPlayback(options: PlaybackOptions) {
   }
 
   function pauseInactiveAudios(activeIds: Set<string>) {
-    audioEntries.forEach((entry, trackId) => {
-      if (activeIds.has(trackId)) return
-      entry.audio.pause()
-      entry.audio.muted = true
-      entry.audio.volume = 0
-      if (entry.gainNode) entry.gainNode.gain.value = 0
+    const staleIds: string[] = []
+    audioEntries.forEach((entry, clipId) => {
+      if (activeIds.has(clipId)) return
+      releaseEntry(entry)
+      staleIds.push(clipId)
     })
+    staleIds.forEach((clipId) => audioEntries.delete(clipId))
   }
 
-  function applyTrackVolumes(time = currentTime.value) {
-    const entries = activeTracks()
-    const activeIds = new Set(entries.map(({ track }) => track.id))
+  function applyClipStates(time = currentTime.value, playNow = status.value === 'playing') {
+    const entries = activeClips()
+    const knownIds = new Set(entries.map(({ clip }) => clip.id))
+    const audibleTrackIds = new Set(entries.map(({ track }) => track.id))
 
-    for (const { track, source } of entries) {
-      const entry = ensureAudioEntry(track, source)
-      const volume = computeTrackVolume(track, source, time)
+    for (const { track, clip, source } of entries) {
+      const entry = ensureAudioEntry(track, clip, source)
+      const active = clipIsActive(clip, time)
+      const volume = computeClipVolume(track, clip, time)
       applyTrackAudioSettings(entry, track, volume)
+      if (!active) {
+        if (!entry.audio.paused) entry.audio.pause()
+        continue
+      }
+
+      const mediaTime = clipMediaTime(clip, time)
+      if (Math.abs(entry.audio.currentTime - mediaTime) > 0.16) setAudioTime(entry.audio, mediaTime)
+      if (playNow && entry.audio.paused) {
+        void entry.audio.play().catch(() => undefined)
+      } else if (!playNow && !entry.audio.paused) {
+        entry.audio.pause()
+      }
     }
 
-    pauseInactiveAudios(activeIds)
-    playback.clearTrackLevels([...activeIds])
+    pauseInactiveAudios(knownIds)
+    playback.clearTrackLevels([...audibleTrackIds])
   }
 
   async function preloadActiveTracks() {
-    const entries = activeTracks().map(({ track, source }) => ensureAudioEntry(track, source))
+    const entries = activeClips().map(({ track, clip, source }) => ensureAudioEntry(track, clip, source))
     await Promise.allSettled(entries.map((entry) => entry.metadataPromise))
   }
 
@@ -494,7 +540,9 @@ export function useEditorPlayback(options: PlaybackOptions) {
     if (!el) return
     const x = trackHeaderWidth + currentTime.value * editor.pixelsPerSecond
     const maxScrollLeft = Math.max(0, el.scrollWidth - el.clientWidth)
-    const clampedX = Math.max(trackHeaderWidth, Math.min(trackHeaderWidth + computeDuration() * editor.pixelsPerSecond, x))
+    // The timeline can grow while recording. Clamp to the rendered scroll
+    // content instead of the project duration captured before recording began.
+    const clampedX = Math.max(trackHeaderWidth, Math.min(el.scrollWidth, x))
 
     if (mode === 'seek') {
       const targetLeft = Math.max(0, Math.min(maxScrollLeft, clampedX - el.clientWidth * 0.5))
@@ -546,16 +594,13 @@ export function useEditorPlayback(options: PlaybackOptions) {
 
   function syncPauseAt(time: number) {
     pauseAllAudios()
-    audioEntries.forEach((entry) => setAudioTime(entry.audio, time))
+    for (const { track, clip, source } of activeClips()) {
+      const entry = ensureAudioEntry(track, clip, source)
+      setAudioTime(entry.audio, clipMediaTime(clip, time))
+    }
   }
 
   function sampleCurrentTime() {
-    const samples: number[] = []
-    for (const { track } of activeTracks()) {
-      const entry = audioEntries.get(track.id)
-      if (entry && !entry.audio.paused) samples.push(entry.audio.currentTime)
-    }
-    if (samples.length) return Math.max(...samples)
     if (status.value !== 'playing') return currentTime.value
     return Math.max(0, performance.now() / 1000 - playbackAnchorTime)
   }
@@ -568,11 +613,13 @@ export function useEditorPlayback(options: PlaybackOptions) {
     }
 
     const nextLevels: Record<string, [number, number]> = {}
-    for (const { track, source } of activeTracks()) {
-      const entry = ensureAudioEntry(track, source)
+    for (const { track, clip, source } of activeClips()) {
+      if (!clipIsActive(clip, currentTime.value)) continue
+      const entry = ensureAudioEntry(track, clip, source)
       const left = analyserLevel(entry.meterAnalyserLeft)
       const right = analyserLevel(entry.meterAnalyserRight)
-      nextLevels[track.id] = [left, right]
+      const current = nextLevels[track.id] || [0, 0]
+      nextLevels[track.id] = [Math.max(current[0], left), Math.max(current[1], right)]
     }
     playback.setTrackLevels(nextLevels)
 
@@ -608,12 +655,12 @@ export function useEditorPlayback(options: PlaybackOptions) {
     const nextTime = clampTime(time)
     playback.setCurrentTime(nextTime)
     playbackAnchorTime = performance.now() / 1000 - nextTime
-    applyTrackVolumes(nextTime)
+    applyClipStates(nextTime, false)
 
-    const entries = activeTracks()
-    for (const { track, source } of entries) {
-      const entry = ensureAudioEntry(track, source)
-      const applySeek = () => setAudioTime(entry.audio, nextTime)
+    const entries = activeClips()
+    for (const { track, clip, source } of entries) {
+      const entry = ensureAudioEntry(track, clip, source)
+      const applySeek = () => setAudioTime(entry.audio, clipMediaTime(clip, nextTime))
       if (entry.metadataReady) applySeek()
       else void entry.metadataPromise.then(() => {
         if (entry.sourceId !== source.id) return
@@ -623,7 +670,7 @@ export function useEditorPlayback(options: PlaybackOptions) {
   }
 
   async function syncActiveAudios(playNow: boolean, targetTime = currentTime.value, expectedRequestId = activeRequestId) {
-    const entries = activeTracks()
+    const entries = activeClips()
     if (!entries.length) {
       pauseAllAudios()
       return 0
@@ -634,41 +681,42 @@ export function useEditorPlayback(options: PlaybackOptions) {
       await ctx.resume().catch(() => undefined)
     }
 
-    const activeIds = new Set(entries.map(({ track }) => track.id))
+    const activeIds = new Set(entries.map(({ clip }) => clip.id))
     pauseInactiveAudios(activeIds)
 
-    const managed = entries.map(({ track, source }) => ({
+    const managed = entries.map(({ track, clip, source }) => ({
       track,
+      clip,
       source,
-      entry: ensureAudioEntry(track, source),
+      entry: ensureAudioEntry(track, clip, source),
     }))
 
     const nextTime = clampTime(targetTime)
     playback.setCurrentTime(nextTime)
     playbackAnchorTime = performance.now() / 1000 - nextTime
 
-    for (const { entry } of managed) {
-      setAudioTime(entry.audio, nextTime)
+    for (const { entry, clip } of managed) {
+      setAudioTime(entry.audio, clipMediaTime(clip, nextTime))
       if (!entry.metadataReady) {
         void entry.metadataPromise.then(() => {
           if (expectedRequestId !== activeRequestId) return
-          setAudioTime(entry.audio, nextTime)
+          setAudioTime(entry.audio, clipMediaTime(clip, nextTime))
         })
       }
     }
 
-    applyTrackVolumes(nextTime)
+    applyClipStates(nextTime, false)
 
     if (!playNow) return managed.length
 
-    const results = await Promise.allSettled(managed.map(({ entry }) => entry.audio.play()))
+    const activeManaged = managed.filter(({ clip }) => clipIsActive(clip, nextTime))
+    const results = await Promise.allSettled(activeManaged.map(({ entry }) => entry.audio.play()))
     if (expectedRequestId !== activeRequestId) return 0
-    const playableCount = results.filter((result) => result.status === 'fulfilled').length
-    if (playableCount <= 0) {
+    if (activeManaged.length && !results.some((result) => result.status === 'fulfilled')) {
       const firstError = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
       throw firstError?.reason || new Error(ERROR_NO_LOADED_AUDIO)
     }
-    return playableCount
+    return managed.length
   }
 
   async function requestPlay(offset = currentTime.value) {
@@ -688,7 +736,7 @@ export function useEditorPlayback(options: PlaybackOptions) {
       return false
     }
 
-    if (!activeTracks().length) {
+    if (!activeClips().length) {
       const id = playback.beginRequest('pause', 'paused')
       activeRequestId = id
       playback.fail(id, ERROR_NO_PLAYABLE_TRACKS)
@@ -748,7 +796,7 @@ export function useEditorPlayback(options: PlaybackOptions) {
 
     const time = clampTime(sampleCurrentTime())
     playback.setCurrentTime(time)
-    applyTrackVolumes(time)
+    applyClipStates(time, true)
     updateLevelMeter()
     followPlayhead()
 
@@ -807,7 +855,7 @@ export function useEditorPlayback(options: PlaybackOptions) {
 
   function applyMasterVolume() {
     applyMasterAudioSettings()
-    applyTrackVolumes(currentTime.value)
+    applyClipStates(currentTime.value, status.value === 'playing')
   }
 
   watch(() => editor.masterVolume, () => {
@@ -883,6 +931,7 @@ export function useEditorPlayback(options: PlaybackOptions) {
     toggleTransport,
     stop,
     seek,
+    followPlayhead,
     applyMasterVolume,
     preloadActiveTracks,
   }

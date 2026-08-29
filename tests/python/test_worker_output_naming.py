@@ -6,6 +6,11 @@ from pathlib import Path
 from threading import Lock
 from unittest import mock
 
+if __package__:
+    from . import _bootstrap as _worker_test_bootstrap
+else:
+    import _bootstrap as _worker_test_bootstrap
+
 import worker_infer
 from worker_infer import (
     _claim_output_path,

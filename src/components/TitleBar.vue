@@ -8,6 +8,7 @@ import { invoke } from '@tauri-apps/api/core'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useTaskStore } from '@/stores/task'
+import { runWindowCloseGuards } from '@/utils/windowCloseGuards'
 
 const route = useRoute()
 const { t } = useI18n()
@@ -57,6 +58,12 @@ async function toggleMaximize() {
 
 async function performWindowClose() {
   if (!appWindow) return false
+  try {
+    await runWindowCloseGuards()
+  } catch (error) {
+    console.warn('[title-bar] window close guard failed', error)
+    return false
+  }
   allowForcedClose.value = true
   try {
     await invoke('close_current_window')
@@ -191,9 +198,7 @@ onMounted(async () => {
   try { unlistenResize = await appWindow.onResized(refreshMaximized) } catch {}
   try {
     unlistenCloseRequested = await appWindow.onCloseRequested((event) => {
-      const shouldGuardClose = settings.isModelDirMigrating || (isMainWindow.value && runningTaskCount.value > 0)
       if (allowForcedClose.value) return
-      if (!shouldGuardClose) return
       event.preventDefault()
       if (settings.isModelDirMigrating) {
         message.warning(t('settings.modelDirMigrationCloseBlocked'))

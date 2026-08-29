@@ -11,9 +11,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+if __package__:
+    from . import _bootstrap as _worker_test_bootstrap
+else:
+    import _bootstrap as _worker_test_bootstrap
+
 import worker_graph_workflows as gw
 
-CORPUS_PATH = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "workflow-validation.json"
+CORPUS_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "workflow-validation.json"
 
 # Maps a runtime rejection message onto the shared rule vocabulary. Kept in the test rather than
 # in the engine so the production error text stays untouched; if a message is reworded, this

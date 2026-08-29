@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { EditorSession, EditorSource } from '@/types/editor'
+import type { EditorClip, EditorSession, EditorSource } from '@/types/editor'
 import { formatTime } from '@/utils/editorTime'
 
 const props = defineProps<{
   session: EditorSession
   selectedTrackId: string | null
+  selectedClipId: string | null
   selectedSource: EditorSource | null
   duration: number
   lastExportPath: string | null
@@ -21,7 +22,18 @@ const emit = defineEmits<{
   commitTrackVolume: []
   beginTrackPan: []
   commitTrackPan: []
-  setTrackFades: [trackId: string, patch: { fadeIn?: number; fadeOut?: number }]
+  setClipFades: [payload: {
+    trackId: string
+    clipId: string
+    patch: { fadeIn?: number; fadeOut?: number }
+  }]
+  setClipTiming: [payload: {
+    trackId: string
+    clipId: string
+    patch: Partial<Pick<EditorClip, 'start' | 'offset' | 'duration'>>
+  }]
+  beginClipTiming: []
+  commitClipTiming: []
   openLocation: []
   relinkSource: []
 }>()
@@ -29,6 +41,9 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const selectedTrack = computed(() => props.session.tracks.find((track) => track.id === props.selectedTrackId) || null)
+const selectedClip = computed(() => (
+  selectedTrack.value?.clips?.find((clip) => clip.id === props.selectedClipId) || null
+))
 const renameDraft = ref('')
 
 watch(
@@ -76,7 +91,30 @@ const sourceMeta = computed(() => [
   props.selectedSource ? `${props.selectedSource.sampleRate || 0}` : '',
 ].filter(Boolean).join(' · '))
 
-const fadeMax = computed(() => props.selectedSource?.duration || 0)
+const fadeMax = computed(() => selectedClip.value?.duration || props.selectedSource?.duration || 0)
+const usesTrackFadeLabel = computed(() => (selectedTrack.value?.clips?.length || 0) === 1)
+const fadeInValue = computed(() => selectedClip.value?.fadeIn || 0)
+const fadeOutValue = computed(() => selectedClip.value?.fadeOut || 0)
+const clipOffsetMax = computed(() => Math.max(0, Number(props.selectedSource?.duration || 0) - Number(selectedClip.value?.duration || 0)))
+const clipDurationMax = computed(() => Math.max(0.01, Number(props.selectedSource?.duration || 0) - Number(selectedClip.value?.offset || 0)))
+
+function updateClipTiming(patch: Partial<Pick<EditorClip, 'start' | 'offset' | 'duration'>>) {
+  if (!selectedTrack.value || !selectedClip.value) return
+  emit('setClipTiming', {
+    trackId: selectedTrack.value.id,
+    clipId: selectedClip.value.id,
+    patch,
+  })
+}
+
+function updateFades(patch: { fadeIn?: number; fadeOut?: number }) {
+  if (!selectedTrack.value || !selectedClip.value) return
+  emit('setClipFades', {
+    trackId: selectedTrack.value.id,
+    clipId: selectedClip.value.id,
+    patch,
+  })
+}
 </script>
 
 <template>
@@ -145,10 +183,59 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
         </div>
       </section>
 
-      <details v-if="selectedTrack" class="inspector-group inspector-group--secondary">
+      <section v-if="selectedTrack && selectedClip" class="inspector-group inspector-group--clip">
+        <div class="inspector-group__header">
+          <strong>{{ t('editor.inspectorSectionClip') }}</strong>
+          <span>{{ t('editor.inspectorClipTiming') }}</span>
+        </div>
+        <div class="inspector-group__body inspector-group__body--dense">
+          <div class="dual-fields">
+            <label class="panel-field panel-field--compact">
+              <span class="panel-field__label">{{ t('editor.clipStart') }}</span>
+              <n-input-number
+                :value="selectedClip.start"
+                :min="0"
+                :step="0.01"
+                size="small"
+                @focus="emit('beginClipTiming')"
+                @blur="emit('commitClipTiming')"
+                @update:value="(value: number | null) => updateClipTiming({ start: numberOrZero(value) })"
+              />
+            </label>
+            <label class="panel-field panel-field--compact">
+              <span class="panel-field__label">{{ t('editor.clipDuration') }}</span>
+              <n-input-number
+                :value="selectedClip.duration"
+                :min="0.01"
+                :max="clipDurationMax"
+                :step="0.01"
+                size="small"
+                @focus="emit('beginClipTiming')"
+                @blur="emit('commitClipTiming')"
+                @update:value="(value: number | null) => updateClipTiming({ duration: Math.max(0.01, numberOrZero(value)) })"
+              />
+            </label>
+          </div>
+          <label class="panel-field panel-field--compact">
+            <span class="panel-field__label">{{ t('editor.clipSourceOffset') }}</span>
+            <n-input-number
+              :value="selectedClip.offset"
+              :min="0"
+              :max="clipOffsetMax"
+              :step="0.01"
+              size="small"
+              @focus="emit('beginClipTiming')"
+              @blur="emit('commitClipTiming')"
+              @update:value="(value: number | null) => updateClipTiming({ offset: numberOrZero(value) })"
+            />
+          </label>
+        </div>
+      </section>
+
+      <details v-if="selectedTrack && selectedClip" class="inspector-group inspector-group--secondary">
         <summary class="inspector-group__header">
           <strong>{{ t('editor.inspectorSectionAdvanced') }}</strong>
-          <span>{{ t('editor.inspectorTrackTuning') }}</span>
+          <span>{{ t(usesTrackFadeLabel ? 'editor.inspectorTrackTuning' : 'editor.inspectorClipTuning') }}</span>
         </summary>
 
         <div class="inspector-group__body inspector-group__body--dense">
@@ -156,23 +243,23 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
             <label class="panel-field panel-field--compact">
               <span class="panel-field__label">{{ t('editor.fieldFadeIn') }}</span>
               <n-input-number
-                :value="selectedTrack.fadeIn"
+                :value="fadeInValue"
                 :min="0"
                 :max="fadeMax"
                 :step="0.1"
                 size="small"
-                @update:value="(value: number | null) => selectedTrack && emit('setTrackFades', selectedTrack.id, { fadeIn: numberOrZero(value) })"
+                @update:value="(value: number | null) => updateFades({ fadeIn: numberOrZero(value) })"
               />
             </label>
             <label class="panel-field panel-field--compact">
               <span class="panel-field__label">{{ t('editor.fieldFadeOut') }}</span>
               <n-input-number
-                :value="selectedTrack.fadeOut"
+                :value="fadeOutValue"
                 :min="0"
                 :max="fadeMax"
                 :step="0.1"
                 size="small"
-                @update:value="(value: number | null) => selectedTrack && emit('setTrackFades', selectedTrack.id, { fadeOut: numberOrZero(value) })"
+                @update:value="(value: number | null) => updateFades({ fadeOut: numberOrZero(value) })"
               />
             </label>
           </div>

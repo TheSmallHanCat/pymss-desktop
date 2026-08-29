@@ -8,6 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+if __package__:
+    from . import _bootstrap as _worker_test_bootstrap
+else:
+    import _bootstrap as _worker_test_bootstrap
+
 from worker_download import (
     _align_aria2_with_proxy,
     _make_pymss_progress_adapter,
