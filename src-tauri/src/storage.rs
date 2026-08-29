@@ -230,6 +230,7 @@ fn store_file_name(name: &str) -> AppResult<&'static str> {
         "task-history" => Ok("tasks.json"),
         "model-state" => Ok("model-cache.json"),
         "editor-ui" => Ok("editor-ui.json"),
+        "audio-tools" => Ok("audio-tools.json"),
         "workflow-state" => Ok("workflows.json"),
         "separate-state" => Ok("separate.json"),
         _ => Err(AppError::Worker(format!("unknown app store: {name}"))),
@@ -276,6 +277,11 @@ mod tests {
     #[test]
     fn separate_state_has_a_store_file() {
         assert_eq!(store_file_name("separate-state").unwrap(), "separate.json");
+    }
+
+    #[test]
+    fn audio_tools_has_a_store_file() {
+        assert_eq!(store_file_name("audio-tools").unwrap(), "audio-tools.json");
     }
 
     #[test]

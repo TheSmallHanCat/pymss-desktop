@@ -8,6 +8,7 @@ import {
   CubeOutline,
   GitNetworkOutline,
   FolderOpenOutline,
+  ConstructOutline,
   SettingsOutline,
   TerminalOutline,
 } from '@vicons/ionicons5'
@@ -20,6 +21,7 @@ const mainItems = computed(() => [
   { name: 'models', path: '/models', icon: CubeOutline, label: t('nav.models') },
   { name: 'workflows', path: '/workflows', icon: GitNetworkOutline, label: t('nav.workflows') },
   { name: 'results', path: '/results', icon: FolderOpenOutline, label: t('nav.results') },
+  { name: 'tools', path: '/tools', icon: ConstructOutline, label: t('nav.tools') },
 ])
 const bottomItems = computed(() => [
   ...(settings.developerMode ? [{ name: 'debug', path: '/debug', icon: TerminalOutline, label: t('nav.debug') }] : []),

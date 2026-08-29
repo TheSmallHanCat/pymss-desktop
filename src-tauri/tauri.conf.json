@@ -38,7 +38,11 @@
     "active": true,
     "targets": ["app", "dmg", "deb", "rpm"],
     "resources": [
-      "../python/*"
+      "../python/*.py",
+      "../python/*.json",
+      "../python/*.txt",
+      "../python/some/**/*.py",
+      "../python/some/**/*.yaml"
     ],
     "icon": [
       "icons/32x32.png",

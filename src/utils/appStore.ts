@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 
-export type AppStoreName = 'app-settings' | 'task-history' | 'model-state' | 'editor-ui' | 'workflow-state' | 'separate-state' | 'update-state'
+export type AppStoreName = 'app-settings' | 'task-history' | 'model-state' | 'editor-ui' | 'audio-tools' | 'workflow-state' | 'separate-state' | 'update-state'
 
 export const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 

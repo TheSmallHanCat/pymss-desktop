@@ -1,0 +1,24 @@
+audio_sample_rate: 44100
+fmax: 8000
+fmin: 40
+hop_size: 512
+midi_extractor_args:
+  attention_drop: 0.1
+  attention_heads: 8
+  attention_heads_dim: 64
+  conv_drop: 0.1
+  dim: 512
+  ffn_latent_drop: 0.1
+  ffn_out_drop: 0.1
+  kernel_size: 31
+  lay: 8
+  use_lay_skip: true
+midi_max: 128
+midi_min: 0
+midi_num_bins: 256
+midi_prob_deviation: 0.5
+model_cls: some.modules.model.Gmidi_conform.midi_conforms
+rest_threshold: 0.1
+task_cls: training.MIDIExtractionTask
+units_dim: 80
+win_size: 2048

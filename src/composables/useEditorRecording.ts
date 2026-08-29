@@ -91,6 +91,16 @@ export function useEditorRecording(options: RecordingOptions) {
     return String(i18n.global.t(key))
   }
 
+  function recordingFailureMessage(cause: unknown) {
+    const errorName = cause && typeof cause === 'object' && 'name' in cause
+      ? String((cause as { name?: unknown }).name || '')
+      : ''
+    if (['NotAllowedError', 'PermissionDeniedError', 'SecurityError'].includes(errorName)) {
+      return message('editor.recordingPermissionDenied')
+    }
+    return cause instanceof Error ? cause.message : String(cause)
+  }
+
   async function refreshDevices(requestPermission = false) {
     if (!navigator.mediaDevices?.enumerateDevices) {
       error.value = message('editor.recordingUnsupported')
@@ -106,6 +116,13 @@ export function useEditorRecording(options: RecordingOptions) {
         selectDevice('')
       }
       return available
+    } catch (cause) {
+      if (requestPermission) {
+        const detail = recordingFailureMessage(cause)
+        error.value = detail
+        throw new Error(detail)
+      }
+      throw cause
     } finally {
       permissionStream?.getTracks().forEach((track) => track.stop())
     }
@@ -312,7 +329,7 @@ export function useEditorRecording(options: RecordingOptions) {
       stopCaptureGraph()
       playback.setSuppressedTrackIds([])
       await cleanupPartial(projectId, allocatedRecordingId || recordingId)
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      error.value = recordingFailureMessage(cause)
       state.value = 'idle'
       recordingId = ''
       recordingProjectId = ''

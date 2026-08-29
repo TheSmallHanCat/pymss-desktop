@@ -1723,6 +1723,11 @@ pub async fn export_editor_mix(app: AppHandle, payload: Value) -> AppResult<Valu
 }
 
 #[tauri::command]
+pub async fn run_audio_tool(app: AppHandle, payload: Value) -> AppResult<Value> {
+    run_worker_with_payload(&app, "audio_tools", Some(payload))
+}
+
+#[tauri::command]
 pub async fn cancel_task(
     app: AppHandle,
     state: State<'_, AppState>,

@@ -10,6 +10,7 @@ const router = createRouter({
     { path: '/workflows', name: 'workflows', component: () => import('@/views/WorkflowsView.vue') },
     { path: '/workflow-node-editor', name: 'workflow-node-editor', component: () => import('@/views/WorkflowNodeEditorView.vue') },
     { path: '/results', name: 'results', component: () => import('@/views/ResultsView.vue') },
+    { path: '/tools', name: 'tools', component: () => import('@/views/ToolsView.vue') },
     { path: '/debug', name: 'debug', component: () => import('@/views/DebugView.vue') },
     { path: '/projects', redirect: { name: 'results' } },
     { path: '/editor', name: 'editor', component: () => import('@/views/EditorView.vue') },

@@ -112,6 +112,9 @@ def run_command(command: str, payload: dict) -> int:
     if command == "export_editor_mix":
         from worker_audio import cmd_export_editor_mix
         return cmd_export_editor_mix(payload)
+    if command == "audio_tools":
+        from worker_tools import cmd_audio_tools
+        return cmd_audio_tools(payload)
     if command == "infer":
         from worker_infer import cmd_infer
         return cmd_infer(payload)

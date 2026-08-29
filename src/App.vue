@@ -69,6 +69,7 @@ const routeWarmupLoaders = [
   () => import('@/views/WorkflowsView.vue'),
   () => import('@/views/WorkflowNodeEditorView.vue'),
   () => import('@/views/ResultsView.vue'),
+  () => import('@/views/ToolsView.vue'),
   () => import('@/views/SettingsView.vue'),
   () => import('@/views/DebugView.vue'),
 ]
