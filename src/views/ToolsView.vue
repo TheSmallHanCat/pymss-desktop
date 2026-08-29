@@ -28,9 +28,26 @@ type WorkerEvent = {
   }
 }
 
+type MergeSortBy = 'name' | 'modified' | 'regex'
+type SortDirection = 'asc' | 'desc'
+
+const MERGE_TOOL_ENABLED = false
+
+function isAudioToolVisible(tool: AudioToolKey) {
+  return tool !== 'merge' || MERGE_TOOL_ENABLED
+}
+
+type ScanAudioPathsResult = {
+  files: string[]
+  warnings: string[]
+}
+
 type StoredAudioToolsState = {
   activeTool?: AudioToolKey
   midiModelPath?: string
+  mergeSortBy?: MergeSortBy
+  mergeSortDirection?: SortDirection
+  mergeRegex?: string
 }
 
 const { t } = useI18n()
@@ -55,6 +72,9 @@ const oggBitRate = ref('320k')
 
 const mergeInputDir = ref('')
 const mergeOutputDir = ref('')
+const mergeSortBy = ref<MergeSortBy>('name')
+const mergeSortDirection = ref<SortDirection>('asc')
+const mergeRegex = ref('(\\d+)')
 
 const referencePath = ref('')
 const estimatedPath = ref('')
@@ -66,6 +86,8 @@ const midiBpm = ref(120)
 
 let unlistenWorker: UnlistenFn | undefined
 let stateRestored = false
+let persistTimer: ReturnType<typeof setTimeout> | undefined
+let persistQueue: Promise<void> = Promise.resolve()
 
 const formatOptions = computed(() => [
   { label: 'WAV', value: 'wav' },
@@ -82,6 +104,24 @@ const wavBitDepthOptions = ['PCM-16', 'PCM-24', 'PCM-32'].map(value => ({ label:
 const flacBitDepthOptions = ['16-bit', '32-bit'].map(value => ({ label: value, value }))
 const mp3BitRateOptions = ['192k', '256k', '320k'].map(value => ({ label: value, value }))
 const oggBitRateOptions = ['192k', '256k', '320k', '450k'].map(value => ({ label: value, value }))
+const mergeSortOptions = computed(() => [
+  { label: t('tools.mergeSortName'), value: 'name' },
+  { label: t('tools.mergeSortModified'), value: 'modified' },
+  { label: t('tools.mergeSortRegex'), value: 'regex' },
+])
+const sortDirectionOptions = computed(() => [
+  { label: t('tools.sortAscending'), value: 'asc' },
+  { label: t('tools.sortDescending'), value: 'desc' },
+])
+const mergeRegexError = computed(() => {
+  if (mergeSortBy.value !== 'regex') return ''
+  return mergeRegex.value.trim() ? '' : t('tools.mergeRegexRequired')
+})
+const mergeOrderHint = computed(() => {
+  if (mergeSortBy.value === 'modified') return t('tools.mergeModifiedHint')
+  if (mergeSortBy.value === 'regex') return t('tools.mergeRegexHint')
+  return t('tools.mergeNameHint')
+})
 const progressPercentage = computed(() => {
   if (!progress.value.total) return 0
   return Math.min(100, Math.round((progress.value.completed / progress.value.total) * 100))
@@ -108,21 +148,65 @@ watch(activeTool, () => {
   progress.value = { completed: 0, total: 0, current: '' }
 })
 
-watch([activeTool, midiModelPath], () => {
-  if (!stateRestored) return
-  void saveAppStore('audio-tools', {
+function persistAudioToolsState() {
+  const snapshot: StoredAudioToolsState = {
     activeTool: activeTool.value,
     midiModelPath: midiModelPath.value,
-  }).catch((error) => {
+    mergeSortBy: mergeSortBy.value,
+    mergeSortDirection: mergeSortDirection.value,
+    mergeRegex: mergeRegex.value,
+  }
+  const run = persistQueue.then(() => saveAppStore('audio-tools', snapshot))
+  persistQueue = run.catch((error) => {
     console.warn('[audio-tools] state save failed', error)
   })
-})
+  return run
+}
+
+function queueAudioToolsStatePersist() {
+  if (!stateRestored) return
+  if (persistTimer) clearTimeout(persistTimer)
+  persistTimer = setTimeout(() => {
+    persistTimer = undefined
+    void persistAudioToolsState()
+  }, 160)
+}
+
+watch([activeTool, midiModelPath, mergeSortBy, mergeSortDirection, mergeRegex], queueAudioToolsStatePersist)
+
+function addConvertInputs(paths: string[]) {
+  const current = new Set(convertInputs.value)
+  const additions = paths.filter(path => path && !current.has(path))
+  if (additions.length) convertInputs.value = [...convertInputs.value, ...additions]
+  return additions.length
+}
 
 async function pickAudioFiles() {
   const paths = await invoke<string[]>('pick_audio_files')
   if (!paths?.length) return
-  const current = new Set(convertInputs.value)
-  convertInputs.value = [...convertInputs.value, ...paths.filter(path => !current.has(path))]
+  addConvertInputs(paths)
+}
+
+async function pickConvertFolder() {
+  try {
+    const folder = await invoke<string | null>('pick_input_folder')
+    if (!folder) return
+    const scan = await invoke<ScanAudioPathsResult>('scan_audio_paths_with_options', {
+      paths: [folder],
+      recursive: true,
+      sortFiles: true,
+    })
+    const scannedFiles = scan.files || []
+    const added = addConvertInputs(scannedFiles)
+    if (added > 0) message.success(t('tools.folderScanned', { count: added }))
+    else if (scannedFiles.length > 0) message.info(t('tools.folderAlreadyAdded'))
+    else message.warning(t('tools.folderEmpty'))
+    if (scan.warnings?.length) {
+      message.warning(t('tools.folderScanWarnings', { count: scan.warnings.length }))
+    }
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  }
 }
 
 async function pickSingleAudio(target: 'reference' | 'estimated' | 'midi') {
@@ -202,10 +286,13 @@ function runConvert() {
 }
 
 function runMerge() {
-  if (!mergeInputDir.value || !mergeOutputDir.value) return
+  if (!mergeInputDir.value || !mergeOutputDir.value || mergeRegexError.value) return
   void executeTool('merge', {
     inputDir: mergeInputDir.value,
     outputDir: mergeOutputDir.value,
+    sortBy: mergeSortBy.value,
+    sortDirection: mergeSortDirection.value,
+    regexPattern: mergeSortBy.value === 'regex' ? mergeRegex.value : '',
   })
 }
 
@@ -231,11 +318,24 @@ onMounted(async () => {
   initializeOutputDirectories()
   try {
     const stored = await loadAppStore<StoredAudioToolsState>('audio-tools')
-    if (stored?.activeTool && ['convert', 'merge', 'sdr', 'midi'].includes(stored.activeTool)) {
+    if (
+      stored?.activeTool
+      && ['convert', 'merge', 'sdr', 'midi'].includes(stored.activeTool)
+      && isAudioToolVisible(stored.activeTool)
+    ) {
       activeTool.value = stored.activeTool
     }
     if (typeof stored?.midiModelPath === 'string') {
       midiModelPath.value = stored.midiModelPath
+    }
+    if (stored?.mergeSortBy && ['name', 'modified', 'regex'].includes(stored.mergeSortBy)) {
+      mergeSortBy.value = stored.mergeSortBy
+    }
+    if (stored?.mergeSortDirection && ['asc', 'desc'].includes(stored.mergeSortDirection)) {
+      mergeSortDirection.value = stored.mergeSortDirection
+    }
+    if (typeof stored?.mergeRegex === 'string') {
+      mergeRegex.value = stored.mergeRegex
     }
   } catch (error) {
     console.warn('[audio-tools] state restore failed', error)
@@ -258,6 +358,11 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unlistenWorker?.()
+  if (persistTimer) {
+    clearTimeout(persistTimer)
+    persistTimer = undefined
+    void persistAudioToolsState()
+  }
 })
 </script>
 
@@ -291,10 +396,16 @@ onUnmounted(() => {
                 <label>{{ t('tools.inputFiles') }}</label>
                 <span>{{ t('tools.selectedCount', { count: convertInputs.length }) }}</span>
               </div>
-              <button type="button" class="file-picker" :disabled="Boolean(busyTool)" @click="pickAudioFiles">
-                <n-icon :component="DocumentOutline" size="20" />
-                <span>{{ convertInputs.length ? t('tools.addFiles') : t('tools.chooseFiles') }}</span>
-              </button>
+              <div class="source-picker-grid">
+                <button type="button" class="file-picker" :disabled="Boolean(busyTool)" @click="pickAudioFiles">
+                  <n-icon :component="DocumentOutline" size="20" />
+                  <span>{{ convertInputs.length ? t('tools.addFiles') : t('tools.chooseFiles') }}</span>
+                </button>
+                <button type="button" class="file-picker" :disabled="Boolean(busyTool)" @click="pickConvertFolder">
+                  <n-icon :component="FolderOpenOutline" size="20" />
+                  <span>{{ t('tools.addInputFolder') }}</span>
+                </button>
+              </div>
               <div v-if="convertInputs.length" class="selected-files">
                 <div v-for="path in convertInputs" :key="path" class="selected-file">
                   <span :title="path">{{ fileName(path) }}</span>
@@ -365,13 +476,13 @@ onUnmounted(() => {
         </div>
       </n-tab-pane>
 
-      <n-tab-pane name="merge">
+      <n-tab-pane v-if="MERGE_TOOL_ENABLED" name="merge">
         <template #tab>
           <n-icon :component="RepeatOutline" />
           <span>{{ t('tools.mergeTitle') }}</span>
         </template>
         <div class="tool-layout">
-          <section class="tool-card tool-card--main">
+          <section class="tool-card tool-card--main tool-card--merge">
             <div class="tool-card__header">
               <div class="tool-icon"><n-icon :component="RepeatOutline" /></div>
               <div>
@@ -379,32 +490,61 @@ onUnmounted(() => {
                 <p>{{ t('tools.mergeDescription') }}</p>
               </div>
             </div>
-            <div class="form-section">
-              <label>{{ t('tools.inputDirectory') }}</label>
-              <div class="path-field">
-                <n-input :value="mergeInputDir" readonly :placeholder="t('tools.chooseInputDirectory')" />
-                <n-button secondary @click="pickFolder('merge-input')">
-                  <template #icon><n-icon :component="FolderOpenOutline" /></template>
-                  {{ t('common.browse') }}
-                </n-button>
+            <div class="form-grid form-grid--equal merge-path-grid">
+              <div class="form-section">
+                <label>{{ t('tools.inputDirectory') }}</label>
+                <div class="path-field">
+                  <n-input :value="mergeInputDir" readonly :placeholder="t('tools.chooseInputDirectory')" />
+                  <n-button secondary @click="pickFolder('merge-input')">
+                    <template #icon><n-icon :component="FolderOpenOutline" /></template>
+                    {{ t('common.browse') }}
+                  </n-button>
+                </div>
+              </div>
+              <div class="form-section">
+                <label>{{ t('tools.outputDirectory') }}</label>
+                <div class="path-field">
+                  <n-input :value="mergeOutputDir" readonly :placeholder="t('tools.chooseOutputDirectory')" />
+                  <n-button secondary @click="pickFolder('merge-output')">
+                    <template #icon><n-icon :component="FolderOpenOutline" /></template>
+                    {{ t('common.browse') }}
+                  </n-button>
+                </div>
               </div>
             </div>
-            <div class="form-section">
-              <label>{{ t('tools.outputDirectory') }}</label>
-              <div class="path-field">
-                <n-input :value="mergeOutputDir" readonly :placeholder="t('tools.chooseOutputDirectory')" />
-                <n-button secondary @click="pickFolder('merge-output')">
-                  <template #icon><n-icon :component="FolderOpenOutline" /></template>
-                  {{ t('common.browse') }}
-                </n-button>
+            <div class="merge-rules">
+              <div class="merge-rules__heading">
+                <strong>{{ t('tools.mergeRules') }}</strong>
+                <span>{{ t('tools.mergeRulesScope') }}</span>
               </div>
+              <div class="form-grid form-grid--equal">
+                <div class="form-section">
+                  <label>{{ t('tools.mergeSortBy') }}</label>
+                  <n-select v-model:value="mergeSortBy" :options="mergeSortOptions" />
+                </div>
+                <div class="form-section">
+                  <label>{{ t('tools.sortDirection') }}</label>
+                  <n-select v-model:value="mergeSortDirection" :options="sortDirectionOptions" />
+                </div>
+              </div>
+              <div v-if="mergeSortBy === 'regex'" class="form-section merge-regex-field">
+                <label>{{ t('tools.mergeRegex') }}</label>
+                <n-input
+                  v-model:value="mergeRegex"
+                  :placeholder="t('tools.mergeRegexPlaceholder')"
+                  :status="mergeRegexError ? 'error' : undefined"
+                />
+                <span class="field-hint" :class="{ 'field-hint--error': mergeRegexError }">
+                  {{ mergeRegexError || t('tools.mergeRegexHelp') }}
+                </span>
+              </div>
+              <p class="merge-order-summary">{{ mergeOrderHint }}</p>
             </div>
-            <n-alert type="info" :bordered="false">{{ t('tools.mergeOrderHint') }}</n-alert>
             <div class="tool-actions">
               <n-button
                 type="primary"
                 :loading="busyTool === 'merge'"
-                :disabled="Boolean(busyTool) || !mergeInputDir || !mergeOutputDir"
+                :disabled="Boolean(busyTool) || !mergeInputDir || !mergeOutputDir || Boolean(mergeRegexError)"
                 @click="runMerge"
               >
                 {{ t('tools.startMerge') }}
@@ -607,6 +747,14 @@ onUnmounted(() => {
   padding: 22px;
 }
 
+.tool-card--merge {
+  padding: 18px;
+}
+
+.tool-card--merge .tool-card__header {
+  margin-bottom: 18px;
+}
+
 .tool-card--side {
   padding: 18px;
   min-height: 220px;
@@ -697,6 +845,10 @@ onUnmounted(() => {
   grid-template-columns: repeat(4, minmax(120px, 1fr));
 }
 
+.form-grid--equal {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .path-field {
   display: flex;
   gap: 8px;
@@ -704,6 +856,12 @@ onUnmounted(() => {
 
 .path-field .n-input {
   min-width: 0;
+}
+
+.source-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .file-picker {
@@ -729,6 +887,58 @@ onUnmounted(() => {
 .file-picker:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.merge-rules {
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--outline) 78%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 34%, var(--surface-1));
+}
+
+.merge-rules__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 13px;
+}
+
+.merge-rules__heading strong {
+  font-size: 13px;
+}
+
+.merge-rules__heading span {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+}
+
+.merge-rules .form-section {
+  margin-bottom: 0;
+}
+
+.merge-path-grid {
+  margin-bottom: 14px;
+}
+
+.merge-path-grid .form-section {
+  margin-bottom: 0;
+}
+
+.merge-regex-field {
+  margin-top: 14px;
+}
+
+.merge-order-summary {
+  margin: 12px 0 0;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.field-hint--error {
+  color: var(--danger);
 }
 
 .selected-files {
@@ -803,7 +1013,9 @@ onUnmounted(() => {
 
 @media (max-width: 760px) {
   .form-grid,
-  .form-grid--four {
+  .form-grid--four,
+  .form-grid--equal,
+  .source-picker-grid {
     grid-template-columns: 1fr;
   }
 

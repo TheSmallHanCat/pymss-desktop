@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 import shutil
 import subprocess
 import tempfile
@@ -216,6 +217,66 @@ def _audio_files_in_folder(folder: Path) -> list[Path]:
     )
 
 
+_NATURAL_TOKEN_PATTERN = re.compile(r"(\d+)")
+
+
+def _natural_sort_key(value: str) -> tuple[tuple[int, int | str], ...]:
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in _NATURAL_TOKEN_PATTERN.split(value)
+    )
+
+
+def _order_audio_files(
+    inputs: list[Path],
+    sort_by: str,
+    direction: str,
+    regex_pattern: str = "",
+) -> list[Path]:
+    if sort_by not in {"name", "modified", "regex"}:
+        raise ValueError("Unsupported merge sort rule")
+    if direction not in {"asc", "desc"}:
+        raise ValueError("Unsupported merge sort direction")
+    descending = direction == "desc"
+
+    if sort_by == "name":
+        return sorted(inputs, key=lambda path: _natural_sort_key(path.name), reverse=descending)
+    if sort_by == "modified":
+        def modified_key(path: Path) -> tuple[int, tuple[tuple[int, int | str], ...]]:
+            try:
+                modified = path.stat().st_mtime_ns
+            except OSError:
+                modified = 0
+            return modified, _natural_sort_key(path.name)
+
+        return sorted(inputs, key=modified_key, reverse=descending)
+
+    pattern_value = regex_pattern.strip()
+    if not pattern_value:
+        raise ValueError("A regular expression is required for regex merge ordering")
+    try:
+        pattern = re.compile(pattern_value)
+    except re.error as error:
+        raise ValueError(f"Invalid merge regular expression: {error}") from error
+
+    matched: list[tuple[tuple[tuple[int, int | str], ...], Path]] = []
+    unmatched: list[Path] = []
+    for path in inputs:
+        match = pattern.search(path.name)
+        if match is None:
+            unmatched.append(path)
+            continue
+        groups = [group for group in match.groups() if group is not None]
+        extracted = groups[0] if groups else match.group(0)
+        matched.append((_natural_sort_key(extracted), path))
+    if not matched:
+        raise ValueError("The merge regular expression did not match any filenames")
+
+    matched.sort(key=lambda item: item[0], reverse=descending)
+    unmatched.sort(key=lambda path: _natural_sort_key(path.name))
+    return [path for _, path in matched] + unmatched
+
+
 def _ffmpeg_concat_path(path: Path) -> str:
     # FFmpeg's concat demuxer accepts forward slashes on every supported desktop platform.
     return str(path).replace("\\", "/").replace("'", "'\\''")
@@ -224,11 +285,15 @@ def _ffmpeg_concat_path(path: Path) -> str:
 def _merge_audio(payload: dict[str, Any]) -> dict[str, Any]:
     input_dir = _require_directory(payload.get("inputDir"), "Input directory")
     output_dir = _require_directory(payload.get("outputDir"), "Output directory", create=True)
+    sort_by = str(payload.get("sortBy") or "name").strip().lower()
+    sort_direction = str(payload.get("sortDirection") or "asc").strip().lower()
+    regex_pattern = str(payload.get("regexPattern") or "")
     inputs = _audio_files_in_folder(input_dir)
     if not inputs:
         raise ValueError("The input directory does not contain supported audio files")
     if len(inputs) > 2000:
         raise ValueError("A maximum of 2000 files can be merged at once")
+    inputs = _order_audio_files(inputs, sort_by, sort_direction, regex_pattern)
 
     output_name = f"merged_audio_{input_dir.name or 'output'}.wav"
     output_path = _available_path(output_dir / output_name)
@@ -275,6 +340,8 @@ def _merge_audio(payload: dict[str, Any]) -> dict[str, Any]:
         "outputPath": str(output_path),
         "merged": len(normalized),
         "skipped": skipped,
+        "sortBy": sort_by,
+        "sortDirection": sort_direction,
     }
 
 
