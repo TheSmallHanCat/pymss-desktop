@@ -1581,6 +1581,7 @@ onMounted(async () => {
                 { label: t('onboarding.runtimeMirrorPypi'), value: 'pypi' },
               ]" />
             </div>
+            <p class="runtime-mirror-hint">{{ t('settings.runtimeMirrorHint') }}</p>
 
             <n-alert v-if="app.runtimeInstallStatus === 'error'" type="error" :show-icon="true">
               <div class="runtime-install-error">
@@ -2693,6 +2694,13 @@ onMounted(async () => {
 
 .runtime-mirror-row__select {
   width: 220px;
+}
+
+.runtime-mirror-hint {
+  margin: -4px 0 0;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .runtime-env-card__head {

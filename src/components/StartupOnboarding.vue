@@ -463,6 +463,7 @@ onMounted(() => {
                   { label: t('onboarding.runtimeMirrorPypi'), value: 'pypi' },
                 ]"
               />
+              <span class="onboarding-runtime-mirror__hint">{{ t('onboarding.runtimeMirrorHint') }}</span>
             </div>
 
             <p class="onboarding-hint">
@@ -1168,6 +1169,14 @@ onMounted(() => {
 
 .onboarding-runtime-mirror {
   max-width: 260px;
+  display: grid;
+  gap: 6px;
+}
+
+.onboarding-runtime-mirror__hint {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .onboarding-runtime-locked {

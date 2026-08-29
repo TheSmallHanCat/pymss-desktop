@@ -2756,6 +2756,33 @@ watch(developerMode, (enabled) => {
   font-family: "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
   font-size: 12px;
   line-height: 1.5;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.46) transparent;
+}
+
+.debug-log-stream::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.debug-log-stream::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.debug-log-stream::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.44);
+  background-clip: padding-box;
+}
+
+.debug-log-stream::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.64);
+  background-clip: padding-box;
+}
+
+.debug-log-stream::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .debug-log-table__head,

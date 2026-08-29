@@ -52,8 +52,10 @@ const DARK_SURFACE: SurfacePalette = {
   surface1: '#18181b',
   surface2: '#27272a',
   surface3: '#3f3f46',
-  onSurface: '#fafafa',
-  onSurfaceMuted: '#a1a1aa',
+  // Use a softened neutral white instead of pure white. The lower contrast stays readable
+  // against the zinc surfaces while preventing long model lists from looking overexposed.
+  onSurface: '#dedee5',
+  onSurfaceMuted: '#92929c',
   outline: 'rgba(255, 255, 255, 0.10)',
   success: '#79a992',
   warning: '#c8a66d',

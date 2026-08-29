@@ -6,6 +6,7 @@ import {
   ArrowRedoOutline,
   ArrowUndoOutline,
   DownloadOutline,
+  EllipsisHorizontal,
   StopOutline,
   RefreshOutline,
   RepeatOutline,
@@ -69,6 +70,7 @@ const timecode = computed(() => `${formatTime(props.currentTime)} / ${formatTime
 const volumeIcon = computed(() => props.masterVolume <= 0.01 ? VolumeMuteOutline : VolumeMediumOutline)
 const masterVolumePercent = computed(() => `${Math.round(props.masterVolume * 100)}%`)
 const missingPreviewText = computed(() => (props.missingAssetPreview || []).filter(Boolean).join(' · '))
+const offlineDetailsOpen = ref(false)
 
 function formatTrackPan(value: number) {
   const pan = Number(value || 0)
@@ -163,28 +165,29 @@ function clearTransportPressed() {
           >
             <n-icon :component="StopOutline" />
           </button>
-          <button
-            class="transport-chip"
-            type="button"
-            :title="t('common.reset')"
-            :aria-label="t('common.reset')"
-            :disabled="disabled"
-            @click="emit('reset')"
-          >
-            <n-icon :component="RefreshOutline" />
-          </button>
-          <button
-            class="transport-chip"
-            type="button"
-            :class="{ 'transport-chip--active': loop }"
-            :title="t('common.loop')"
-            :aria-label="t('common.loop')"
-            :aria-pressed="loop"
-            :disabled="disabled"
-            @click="emit('update:loop', !loop)"
-          >
-            <n-icon :component="RepeatOutline" />
-          </button>
+          <n-popover trigger="click" placement="bottom-start">
+            <template #trigger>
+              <button
+                class="transport-chip"
+                type="button"
+                :title="t('editor.playbackOptions')"
+                :aria-label="t('editor.playbackOptions')"
+                :disabled="disabled"
+              >
+                <n-icon :component="EllipsisHorizontal" />
+              </button>
+            </template>
+            <div class="transport-menu">
+              <button type="button" :disabled="disabled" @click="emit('reset')">
+                <n-icon :component="RefreshOutline" />
+                {{ t('common.reset') }}
+              </button>
+              <button type="button" :class="{ 'transport-menu__item--active': loop }" :disabled="disabled" @click="emit('update:loop', !loop)">
+                <n-icon :component="RepeatOutline" />
+                {{ t('common.loop') }}
+              </button>
+            </div>
+          </n-popover>
         </div>
 
         <div class="transport-timecode">
@@ -193,44 +196,47 @@ function clearTransportPressed() {
       </div>
 
       <div class="editor-transport__actions">
-        <div class="master-strip">
-          <div class="master-strip__row">
-            <span class="master-strip__label">{{ t('editor.masterVolume') }}</span>
-            <div class="master-strip__control">
+        <n-popover trigger="click" placement="bottom-end" :show-arrow="false">
+          <template #trigger>
+            <button class="master-summary" type="button" :disabled="disabled">
               <n-icon :component="volumeIcon" />
-              <n-slider
-                :value="masterVolume"
-                :min="0"
-                :max="2"
-                :step="0.01"
-                :tooltip="false"
-                :disabled="disabled"
-                @update:value="(value: number) => emit('update:masterVolume', value)"
-                @dragstart="emit('beginMasterVolume')"
-                @dragend="emit('commitMasterVolume')"
-              />
-              <span class="master-strip__value">{{ masterVolumePercent }}</span>
+              <span>{{ t('editor.masterVolume') }}</span>
+              <strong>{{ masterVolumePercent }}</strong>
+            </button>
+          </template>
+          <div class="master-popover">
+            <div class="master-popover__head">
+              <strong>{{ t('editor.masterVolume') }}</strong>
+              <span>{{ masterVolumePercent }}</span>
             </div>
-          </div>
-          <div class="master-strip__row">
-            <span class="master-strip__label">{{ t('editor.balanceShort') }}</span>
-            <div class="master-strip__pan">
-              <span class="master-strip__spacer" aria-hidden="true" />
-              <n-slider
-                :value="masterPan"
-                :min="-1"
-                :max="1"
-                :step="0.01"
-                :tooltip="false"
-                :disabled="disabled"
-                @update:value="(value: number) => emit('update:masterPan', value)"
-                @dragstart="emit('beginMasterPan')"
-                @dragend="emit('commitMasterPan')"
-              />
-              <span class="master-strip__pan-value">{{ formatTrackPan(masterPan) }}</span>
+            <n-slider
+              :value="masterVolume"
+              :min="0"
+              :max="2"
+              :step="0.01"
+              :tooltip="false"
+              :disabled="disabled"
+              @update:value="(value: number) => emit('update:masterVolume', value)"
+              @dragstart="emit('beginMasterVolume')"
+              @dragend="emit('commitMasterVolume')"
+            />
+            <div class="master-popover__head">
+              <strong>{{ t('editor.balanceShort') }}</strong>
+              <span>{{ formatTrackPan(masterPan) }}</span>
             </div>
+            <n-slider
+              :value="masterPan"
+              :min="-1"
+              :max="1"
+              :step="0.01"
+              :tooltip="false"
+              :disabled="disabled"
+              @update:value="(value: number) => emit('update:masterPan', value)"
+              @dragstart="emit('beginMasterPan')"
+              @dragend="emit('commitMasterPan')"
+            />
           </div>
-        </div>
+        </n-popover>
         <div class="transport-actions__buttons">
           <n-button secondary size="small" :loading="saving" :disabled="disabled" @click="emit('save')">
             <template #icon><n-icon :component="SaveOutline" /></template>
@@ -245,10 +251,10 @@ function clearTransportPressed() {
 
       <div v-if="(missingAssetCount || 0) > 0" class="editor-offline-banner">
         <span class="editor-offline-banner__icon"><n-icon :component="AlertCircleOutline" /></span>
-        <div class="editor-offline-banner__body">
-          <strong>{{ t('editor.offlineBannerTitle', { count: missingAssetCount }) }}</strong>
-          <span>{{ missingPreviewText || t('editor.assetMissingHint') }}</span>
-        </div>
+        <strong>{{ t('editor.offlineBannerTitle', { count: missingAssetCount }) }}</strong>
+        <button type="button" class="editor-offline-banner__details" @click="offlineDetailsOpen = !offlineDetailsOpen">
+          {{ offlineDetailsOpen ? t('editor.offlineDetailsHide') : t('editor.offlineDetails') }}
+        </button>
         <n-button
           size="small"
           type="warning"
@@ -258,6 +264,9 @@ function clearTransportPressed() {
         >
           {{ t('editor.assetRelink') }}
         </n-button>
+        <span v-if="offlineDetailsOpen" class="editor-offline-banner__detail-text">
+          {{ missingPreviewText || t('editor.assetMissingHint') }}
+        </span>
       </div>
     </header>
   </div>
@@ -274,7 +283,7 @@ function clearTransportPressed() {
 
 .editor-transport {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) minmax(0, 1.1fr) minmax(300px, 1fr);
+  grid-template-columns: minmax(180px, 1fr) auto minmax(220px, 1fr);
   align-items: center;
   gap: 10px;
   min-height: 50px;
@@ -285,10 +294,10 @@ function clearTransportPressed() {
 
 .editor-offline-banner {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 10px;
-  padding: 8px 14px 10px;
+  gap: 8px;
+  padding: 6px 14px;
   border-top: 1px solid color-mix(in srgb, var(--warning) 26%, transparent);
   background: color-mix(in srgb, var(--warning) 8%, var(--surface));
 }
@@ -301,27 +310,33 @@ function clearTransportPressed() {
   color: color-mix(in srgb, var(--warning) 78%, var(--primary));
 }
 
-.editor-offline-banner__body {
+.editor-offline-banner > strong,
+.editor-offline-banner__detail-text {
   min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.editor-offline-banner__body strong,
-.editor-offline-banner__body span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.editor-offline-banner__body strong {
+.editor-offline-banner > strong {
   font-size: 12px;
   color: color-mix(in srgb, var(--warning) 84%, var(--on-surface));
 }
 
-.editor-offline-banner__body span {
+.editor-offline-banner__detail-text {
+  grid-column: 2 / -1;
   font-size: 11px;
   color: var(--on-surface-muted);
+}
+
+.editor-offline-banner__details {
+  padding: 2px 0;
+  border: 0;
+  color: color-mix(in srgb, var(--warning) 80%, var(--on-surface));
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
 }
 
 .editor-transport__brand,
@@ -484,22 +499,44 @@ function clearTransportPressed() {
 }
 
 .editor-transport__actions {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
   justify-self: end;
 }
 
-.master-strip {
-  min-width: 200px;
-  display: grid;
-  gap: 2px;
-  padding: 4px 8px;
+.master-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
   border: 1px solid color-mix(in srgb, var(--outline) 44%, transparent);
-  border-radius: 8px;
+  border-radius: 7px;
+  color: var(--on-surface-muted);
   background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+  cursor: pointer;
+}
+
+.master-summary:hover:not(:disabled) {
+  color: var(--on-surface);
+  border-color: color-mix(in srgb, var(--outline) 68%, transparent);
+}
+
+.master-summary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.master-summary span {
+  font-size: 10px;
+}
+
+.master-summary strong {
+  color: var(--on-surface);
+  font-size: 10px;
 }
 
 .transport-actions__buttons {
@@ -509,48 +546,58 @@ function clearTransportPressed() {
   justify-content: flex-end;
 }
 
-.master-strip__row {
+.master-popover {
+  width: 216px;
   display: grid;
-  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 8px;
+  padding: 2px;
+}
+
+.master-popover__head {
+  display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 2px;
 }
 
-.master-strip__label {
-  color: var(--on-surface-muted);
-  font-size: 9px;
-  white-space: nowrap;
-}
-
-.master-strip__control,
-.master-strip__pan {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) 40px;
-  align-items: center;
-  gap: 6px;
-}
-
-.master-strip__pan-value {
+.master-popover__head strong,
+.master-popover__head span {
   color: var(--on-surface-muted);
   font-size: 10px;
-  text-align: right;
 }
 
-.master-strip__spacer {
-  width: 14px;
-  height: 14px;
+.transport-menu {
+  min-width: 136px;
+  display: grid;
+  gap: 2px;
 }
 
-.master-strip__value {
-  color: var(--on-surface-muted);
-  font-size: 10px;
-  text-align: right;
+.transport-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--on-surface);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
 }
 
-.master-strip :deep(.n-slider) {
-  min-width: 0;
-  flex: 1;
+.transport-menu button:hover:not(:disabled),
+.transport-menu__item--active {
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.transport-menu button:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 @media (max-width: 1280px) {
@@ -565,12 +612,5 @@ function clearTransportPressed() {
     justify-content: flex-start;
   }
 
-  .editor-transport__actions {
-    flex-wrap: wrap;
-  }
-
-  .editor-offline-banner {
-    grid-template-columns: 20px minmax(0, 1fr);
-  }
 }
 </style>

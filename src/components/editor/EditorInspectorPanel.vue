@@ -145,11 +145,11 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
         </div>
       </section>
 
-      <section v-if="selectedTrack" class="inspector-group inspector-group--secondary">
-        <div class="inspector-group__header">
+      <details v-if="selectedTrack" class="inspector-group inspector-group--secondary">
+        <summary class="inspector-group__header">
           <strong>{{ t('editor.inspectorSectionAdvanced') }}</strong>
           <span>{{ t('editor.inspectorTrackTuning') }}</span>
-        </div>
+        </summary>
 
         <div class="inspector-group__body inspector-group__body--dense">
           <div class="dual-fields">
@@ -177,13 +177,21 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
             </label>
           </div>
         </div>
-      </section>
+      </details>
 
-      <section v-if="selectedTrack" class="inspector-group inspector-group--source">
-        <div class="inspector-group__header">
+      <div v-if="selectedTrack && selectedSource?.missing" class="source-missing-card">
+        <strong>{{ t('editor.assetMissing') }}</strong>
+        <span>{{ t('editor.assetMissingHint') }}</span>
+        <n-button size="small" type="warning" ghost @click="emit('relinkSource')">
+          {{ t('editor.assetRelink') }}
+        </n-button>
+      </div>
+
+      <details v-if="selectedTrack" class="inspector-group inspector-group--source" :open="Boolean(selectedSource?.missing)">
+        <summary class="inspector-group__header">
           <strong>{{ t('editor.inspectorSectionSource') }}</strong>
           <span>{{ t('editor.inspectorSourceContext') }}</span>
-        </div>
+        </summary>
 
         <div class="inspector-group__body inspector-group__body--dense">
           <label class="panel-field panel-field--compact">
@@ -191,21 +199,13 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
             <n-input :value="selectedSource?.path || '-'" size="small" readonly />
           </label>
 
-          <div v-if="selectedSource?.missing" class="source-missing-card">
-            <strong>{{ t('editor.assetMissing') }}</strong>
-            <span>{{ t('editor.assetMissingHint') }}</span>
-            <n-button size="small" type="warning" ghost @click="emit('relinkSource')">
-              {{ t('editor.assetRelink') }}
-            </n-button>
-          </div>
-
           <dl class="stats-grid" :class="{ 'stats-grid--compact': compact }">
             <div class="meta-cell"><dt>{{ t('editor.trackSourceDuration') }}</dt><dd>{{ formatTime(selectedSource?.duration || 0) }}</dd></div>
             <div class="meta-cell"><dt>{{ t('editor.trackSourceChannels') }}</dt><dd>{{ selectedSource?.channels || 0 }}</dd></div>
             <div class="meta-cell"><dt>{{ t('editor.trackSourceSampleRate') }}</dt><dd>{{ selectedSource?.sampleRate || 0 }}</dd></div>
           </dl>
         </div>
-      </section>
+      </details>
 
       <section v-else class="inspector-group inspector-group--project">
         <div class="inspector-group__header">
@@ -300,6 +300,14 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
   background: color-mix(in srgb, var(--surface) 94%, var(--surface-1));
 }
 
+details.inspector-group {
+  gap: 0;
+}
+
+details.inspector-group[open] {
+  gap: 8px;
+}
+
 .inspector-group:first-child {
   border-top: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
 }
@@ -316,6 +324,27 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+}
+
+summary.inspector-group__header {
+  min-height: 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+summary.inspector-group__header::-webkit-details-marker {
+  display: none;
+}
+
+summary.inspector-group__header::after {
+  content: '+';
+  color: var(--on-surface-muted);
+  font-size: 13px;
+  line-height: 1;
+}
+
+details.inspector-group[open] > summary.inspector-group__header::after {
+  content: '−';
 }
 
 .inspector-group__header span {
@@ -443,7 +472,7 @@ const fadeMax = computed(() => props.selectedSource?.duration || 0)
   display: grid;
   gap: 5px;
   padding: 9px 10px;
-  border-radius: 10px;
+  border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--warning) 26%, transparent);
   background: color-mix(in srgb, var(--warning) 8%, transparent);
 }

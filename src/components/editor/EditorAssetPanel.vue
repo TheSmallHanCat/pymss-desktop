@@ -3,7 +3,6 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   AlertCircleOutline,
-  LockClosedOutline,
   MusicalNoteOutline,
   SearchOutline,
 } from '@vicons/ionicons5'
@@ -199,9 +198,6 @@ function hasSectionContent(type: 'local' | 'external') {
           <span class="asset-row__body">
             <strong>{{ source.name }}</strong>
             <small>{{ formatAssetMeta(source) }}</small>
-          </span>
-          <span class="asset-row__menu-indicator asset-row__menu-indicator--lock">
-            <n-icon :component="LockClosedOutline" />
           </span>
         </div>
 

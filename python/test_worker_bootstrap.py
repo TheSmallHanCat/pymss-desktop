@@ -221,6 +221,24 @@ class RuntimePathSafetyTests(unittest.TestCase):
         }), encoding="utf-8")
         return python_path
 
+    def test_runtime_venv_path_removes_windows_drive_long_path_prefix(self):
+        path = Path(r"\\?\D:\workspace\runtime-envs\cuda")
+        self.assertEqual(
+            worker_bootstrap._normal_runtime_path(path),
+            r"D:\workspace\runtime-envs\cuda",
+        )
+
+    def test_runtime_venv_path_converts_windows_unc_long_path_prefix(self):
+        path = Path(r"\\?\UNC\server\share\runtime-envs\cuda")
+        self.assertEqual(
+            worker_bootstrap._normal_runtime_path(path),
+            r"\\server\share\runtime-envs\cuda",
+        )
+
+    def test_runtime_venv_path_keeps_an_ordinary_path(self):
+        path = Path("runtime-envs") / "cpu"
+        self.assertEqual(worker_bootstrap._normal_runtime_path(path), os.fspath(path))
+
     def test_active_state_is_read_only_from_the_runtime_directory(self):
         python_path = self._make_env("cuda")
         active = self.envs_dir / "active-runtime.json"

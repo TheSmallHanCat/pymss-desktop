@@ -3757,6 +3757,33 @@ async function retryCurrentTask() {
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, #94a3b8 46%, transparent) transparent;
+}
+
+.log-console::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.log-console::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.log-console::-webkit-scrollbar-thumb {
+  border: 2px solid #0b1020;
+  border-radius: 999px;
+  background: color-mix(in srgb, #94a3b8 44%, transparent);
+  background-clip: padding-box;
+}
+
+.log-console::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, #94a3b8 64%, transparent);
+  background-clip: padding-box;
+}
+
+.log-console::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .log-line {

@@ -935,10 +935,26 @@ def cmd_delete_runtime(payload: dict[str, Any]) -> int:
         )
 
 
+def _normal_runtime_path(path: Path) -> str:
+    """Return a normal Win32 path before handing a runtime directory to ``venv``.
+
+    Rust's ``canonicalize`` returns a ``\\\\?\\`` long-path prefix on Windows.  The prefix is
+    valid for ordinary file I/O, but Python 3.12's venv/ensurepip bootstrap intermittently fails
+    when its destination (and the child interpreter it launches) keeps that prefix, especially
+    for repository paths containing non-ASCII characters.
+    """
+    value = os.fspath(path)
+    if value.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + value[len("\\\\?\\UNC\\"):]
+    if value.startswith("\\\\?\\"):
+        return value[len("\\\\?\\"):]
+    return value
+
+
 def _create_runtime_venv(env_dir: Path) -> None:
     import venv
 
-    venv.EnvBuilder(with_pip=True, clear=True, symlinks=(os.name != "nt")).create(str(env_dir))
+    venv.EnvBuilder(with_pip=True, clear=True, symlinks=(os.name != "nt")).create(_normal_runtime_path(env_dir))
 
 
 def _runtime_python_works(python_path: Path) -> bool:

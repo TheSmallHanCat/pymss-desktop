@@ -3,7 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { FolderOpenOutline, MusicalNotesOutline } from '@vicons/ionicons5'
+import { FolderOpenOutline, MusicalNotesOutline, OptionsOutline } from '@vicons/ionicons5'
 import { useEditorStore } from '@/stores/editor'
 import { useTaskStore } from '@/stores/task'
 import { useSettingsStore } from '@/stores/settings'
@@ -32,6 +32,7 @@ const settings = useSettingsStore()
 
 const MIXER_HEAD_WIDTH = 180
 const ASSET_RAIL_WIDTH = 34
+const INSPECTOR_RAIL_WIDTH = 34
 const ASSET_PANEL_WIDTH = 218
 const RESIZER_WIDTH = 10
 const hasTauriApis = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -47,13 +48,17 @@ const {
   activeResize,
   assetPanelVisible,
   assetResizerVisible,
+  inspectorVisible,
+  inspectorPanelVisible,
   inspectorPanelWidth,
   shellStyle,
   startResize,
   toggleAssetPanel,
+  toggleInspectorPanel,
 } = useEditorLayout({
   shellEl,
   assetRailWidth: ASSET_RAIL_WIDTH,
+  inspectorRailWidth: INSPECTOR_RAIL_WIDTH,
   resizerWidth: RESIZER_WIDTH,
   minAssetWidth: 180,
   maxAssetWidth: 320,
@@ -203,6 +208,10 @@ function toggleSelectedTrackFlag(flag: 'muted' | 'solo') {
 function removeSelectedTrack() {
   if (!editor.selectedTrackId) return
   editor.removeTrack(editor.selectedTrackId)
+}
+
+function openSelectedTrackInspector() {
+  toggleInspectorPanel(true)
 }
 
 function handleTransportToggleRequest() {
@@ -407,32 +416,56 @@ watch(
             @zoom-fit="zoomFit"
             @zoom-at="zoomAt"
             @add-track-from-asset="addTrackFromAsset"
+            @show-inspector="openSelectedTrackInspector"
           />
         </div>
 
-        <div class="editor-shell__resizer editor-shell__resizer--right" @mousedown="startResize('inspector', $event)">
+        <div
+          class="editor-shell__resizer editor-shell__resizer--right"
+          :class="{ 'editor-shell__resizer--hidden': !inspectorPanelVisible }"
+          @mousedown="startResize('inspector', $event)"
+        >
           <span />
         </div>
 
-        <EditorInspectorPanel
+        <aside
+          v-if="inspectorVisible"
           class="editor-shell__inspector"
-          :session="session"
-          :selected-track-id="editor.selectedTrackId"
-          :selected-source="editor.selectedSource"
-          :duration="editor.duration"
-          :last-export-path="editor.lastExport?.path || null"
-          :compact="inspectorPanelWidth <= 248"
-          @rename-track="editor.renameTrack"
-          @set-track-volume="setTrackVolume"
-          @set-track-pan="setTrackPan"
-          @begin-track-volume="editor.beginInteraction"
-          @commit-track-volume="editor.commitInteraction"
-          @begin-track-pan="editor.beginInteraction"
-          @commit-track-pan="editor.commitInteraction"
-          @set-track-fades="setTrackFades"
-          @open-location="openExportDir"
-          @relink-source="() => editor.selectedSource && relinkSource(editor.selectedSource)"
-        />
+          :class="{ 'editor-shell__inspector--collapsed': !inspectorPanelVisible }"
+        >
+          <div class="editor-shell__inspector-rail">
+            <button
+              type="button"
+              class="editor-shell__inspector-toggle"
+              :aria-pressed="inspectorPanelVisible"
+              :aria-label="inspectorPanelVisible ? t('common.collapse') : t('editor.inspectorTitle')"
+              @click="toggleInspectorPanel()"
+            >
+              <n-icon :component="OptionsOutline" />
+              <em>{{ t('editor.inspectorTitle') }}</em>
+            </button>
+          </div>
+          <div class="editor-shell__inspector-panel">
+            <EditorInspectorPanel
+              :session="session"
+              :selected-track-id="editor.selectedTrackId"
+              :selected-source="editor.selectedSource"
+              :duration="editor.duration"
+              :last-export-path="editor.lastExport?.path || null"
+              :compact="inspectorPanelWidth <= 248"
+              @rename-track="editor.renameTrack"
+              @set-track-volume="setTrackVolume"
+              @set-track-pan="setTrackPan"
+              @begin-track-volume="editor.beginInteraction"
+              @commit-track-volume="editor.commitInteraction"
+              @begin-track-pan="editor.beginInteraction"
+              @commit-track-pan="editor.commitInteraction"
+              @set-track-fades="setTrackFades"
+              @open-location="openExportDir"
+              @relink-source="() => editor.selectedSource && relinkSource(editor.selectedSource)"
+            />
+          </div>
+        </aside>
       </template>
     </div>
     <div
@@ -474,6 +507,7 @@ watch(
   --asset-rail-width: 34px;
   --asset-panel-width: 218px;
   --asset-resizer-width: 10px;
+  --inspector-rail-width: 34px;
   --inspector-resizer-width: 10px;
   --inspector-width: 268px;
   position: relative;
@@ -484,14 +518,14 @@ watch(
     var(--asset-resizer-width)
     minmax(0, 1fr)
     var(--inspector-resizer-width)
-    var(--inspector-width);
+    calc(var(--inspector-rail-width) + var(--inspector-width));
   grid-template-rows: auto minmax(0, 1fr);
   background: var(--surface);
   color: var(--on-surface);
   overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
-  transition: grid-template-columns 220ms ease;
+  transition: grid-template-columns 180ms ease;
 }
 
 .editor-shell :deep(input),
@@ -541,7 +575,7 @@ watch(
   color: var(--on-surface-muted);
   background: transparent;
   cursor: pointer;
-  transition: color 180ms ease, background 180ms ease, transform 180ms ease;
+  transition: color 180ms ease, background 180ms ease;
 }
 
 .editor-shell__asset-toggle:hover {
@@ -556,7 +590,7 @@ watch(
   place-items: center;
   border-radius: 6px;
   background: color-mix(in srgb, var(--surface-2) 92%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--outline) 54%, transparent);
+  border: 1px solid color-mix(in srgb, var(--outline) 54%, transparent);
 }
 
 .editor-shell__asset-toggle-icon span {
@@ -605,15 +639,13 @@ watch(
 }
 
 .editor-shell__center {
-  /* Center occupies col3. The right resizer mirrors the left one as a real
-     layout column so dragging remains reliable and predictable. */
   grid-column: 3;
   grid-row: 2;
   min-width: 0;
   min-height: 0;
   display: grid;
   overflow: hidden;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 78%, var(--surface-2)), color-mix(in srgb, var(--surface-1) 66%, var(--surface-2)));
+  background: var(--surface-1);
 }
 
 .editor-shell__inspector {
@@ -621,9 +653,52 @@ watch(
   grid-row: 2;
   min-width: 0;
   min-height: 0;
-  border-left: 0;
+  display: grid;
+  grid-template-columns: var(--inspector-rail-width) minmax(0, var(--inspector-width));
+  border-left: 1px solid var(--outline);
   position: relative;
   z-index: 5;
+}
+
+.editor-shell__inspector--collapsed {
+  border-left-color: color-mix(in srgb, var(--outline) 48%, transparent);
+}
+
+.editor-shell__inspector-rail {
+  min-height: 0;
+  padding: 6px 4px;
+  border-right: 1px solid var(--outline);
+  background: color-mix(in srgb, var(--surface) 88%, var(--surface-1));
+}
+
+.editor-shell__inspector-toggle {
+  width: 100%;
+  display: grid;
+  place-items: center;
+  gap: 0;
+  padding: 6px 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--on-surface-muted);
+  background: transparent;
+  cursor: pointer;
+  transition: color 180ms ease, background 180ms ease;
+}
+
+.editor-shell__inspector-toggle:hover,
+.editor-shell__inspector-toggle[aria-pressed='true'] {
+  color: var(--on-surface);
+  background: var(--surface-2);
+}
+
+.editor-shell__inspector-toggle em {
+  display: none;
+}
+
+.editor-shell__inspector-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .editor-shell__resizer {
@@ -631,9 +706,7 @@ watch(
   grid-row: 2;
   width: 10px;
   cursor: col-resize;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.02)),
-    color-mix(in srgb, var(--surface-2) 86%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 86%, transparent);
   user-select: none;
   z-index: 6;
 }
@@ -642,7 +715,7 @@ watch(
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, rgba(255,123,84,0), rgba(255,123,84,0.08), rgba(255,123,84,0));
+  background: color-mix(in srgb, var(--primary-soft) 28%, transparent);
   opacity: 0;
   transition: opacity 140ms ease;
 }
@@ -669,12 +742,7 @@ watch(
 }
 
 .editor-shell__resizer--right:hover {
-  background: linear-gradient(
-    180deg,
-    transparent,
-    color-mix(in srgb, var(--surface-2) 42%, transparent),
-    transparent
-  );
+  background: color-mix(in srgb, var(--surface-2) 42%, transparent);
   border-left-color: color-mix(in srgb, var(--outline) 40%, transparent);
   border-right-color: color-mix(in srgb, var(--outline) 40%, transparent);
 }
@@ -683,7 +751,7 @@ watch(
 .editor-shell--resizing .editor-shell__resizer--right span {
   opacity: 1;
   height: 56px;
-  background: color-mix(in srgb, #ff7b54 52%, var(--on-surface-muted));
+  background: color-mix(in srgb, var(--primary) 52%, var(--on-surface-muted));
 }
 
 .editor-shell__resizer--left span {
@@ -694,12 +762,7 @@ watch(
 }
 
 .editor-shell__resizer--left:hover {
-  background: linear-gradient(
-    180deg,
-    transparent,
-    color-mix(in srgb, var(--surface-2) 42%, transparent),
-    transparent
-  );
+  background: color-mix(in srgb, var(--surface-2) 42%, transparent);
   border-left-color: color-mix(in srgb, var(--outline) 40%, transparent);
   border-right-color: color-mix(in srgb, var(--outline) 40%, transparent);
 }
@@ -708,7 +771,7 @@ watch(
 .editor-shell--resizing .editor-shell__resizer--left span {
   opacity: 1;
   height: 56px;
-  background: color-mix(in srgb, #ff7b54 52%, var(--on-surface-muted));
+  background: color-mix(in srgb, var(--primary) 52%, var(--on-surface-muted));
 }
 
 .editor-shell__resizer--hidden {
@@ -740,7 +803,7 @@ watch(
 .editor-shell__resizer:hover span,
 .editor-shell--resizing .editor-shell__resizer span {
   height: 72px;
-  background: color-mix(in srgb, #ff7b54 66%, var(--on-surface-muted));
+  background: color-mix(in srgb, var(--primary) 66%, var(--on-surface-muted));
 }
 
 .editor-state {
@@ -817,7 +880,6 @@ watch(
   color: var(--on-surface);
   font-size: 12px;
   line-height: 1.2;
-  box-shadow: 0 14px 28px rgba(12, 18, 28, 0.2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

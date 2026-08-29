@@ -24,6 +24,7 @@ const emit = defineEmits<{
   seek: [time: number]
   removeTrack: [trackId: string]
   revealTrack: [trackId: string]
+  showInspector: []
   contextMute: [trackId: string]
   contextSolo: [trackId: string]
   zoomAt: [payload: { direction?: 'in' | 'out'; anchorRatio: number; deltaY?: number }]
@@ -82,6 +83,10 @@ const trackMenuOptions = computed<DropdownOption[]>(() => {
   const track = contextTrack.value
   if (!track) return []
   return [
+    {
+      key: 'inspect',
+      label: t('editor.menuTrackParams'),
+    },
     {
       key: 'reveal',
       label: t('editor.menuRevealAsset'),
@@ -267,6 +272,7 @@ function handleTrackMenuSelect(key: string | number) {
   showTrackMenu.value = false
   if (!track) return
 
+  if (key === 'inspect') emit('showInspector')
   if (key === 'reveal') emit('revealTrack', track.id)
   if (key === 'remove') emit('removeTrack', track.id)
 }
@@ -453,14 +459,11 @@ defineExpose({
 .editor-mixer__scroll::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.08)) padding-box,
-    linear-gradient(180deg, rgba(130,146,174,0.86), rgba(92,108,136,0.92)) border-box;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+  background: color-mix(in srgb, var(--on-surface-muted) 48%, transparent) padding-box;
 }
 
 .editor-mixer__scroll::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, rgba(255,255,255,0.2), rgba(255,255,255,0.1)) padding-box,
-    linear-gradient(180deg, rgba(255,151,105,0.95), rgba(255,123,84,0.92)) border-box;
+  background: color-mix(in srgb, var(--primary) 64%, transparent) padding-box;
 }
 
 .editor-mixer__scroll::-webkit-scrollbar-corner {
@@ -555,9 +558,7 @@ defineExpose({
 }
 
 .track-row--offline {
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--warning) 8%, transparent), transparent 32%),
-    transparent;
+  background: color-mix(in srgb, var(--warning) 5%, transparent);
 }
 
 .track-row--dimmed .track-row__lane {
@@ -590,12 +591,11 @@ defineExpose({
   top: 0;
   bottom: 0;
   width: 2px;
-  background: #ff7b54;
+  background: var(--primary);
 }
 
 .track-row--offline .track-row__head {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--warning) 10%, var(--surface)), color-mix(in srgb, var(--warning) 5%, var(--surface-2)));
+  background: color-mix(in srgb, var(--warning) 7%, var(--surface));
 }
 
 .track-row--offline .track-row__head::after {
@@ -743,13 +743,11 @@ defineExpose({
   width: var(--lane-width);
   overflow: hidden;
   background: color-mix(in srgb, var(--surface) 76%, var(--surface-1));
-  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--outline) 44%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--outline) 44%, transparent);
 }
 
 .track-row--offline .track-row__lane {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--warning) 6%, transparent), color-mix(in srgb, var(--warning) 2%, transparent)),
-    color-mix(in srgb, var(--surface) 76%, var(--surface-1));
+  background: color-mix(in srgb, var(--warning) 4%, var(--surface));
 }
 
 .track-row--selected .track-row__lane {
@@ -810,16 +808,10 @@ defineExpose({
   bottom: 0;
   right: 0;
   width: 3px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--track-color, #7aa2ff) 58%, transparent),
-    color-mix(in srgb, var(--track-color, #7aa2ff) 38%, transparent)
-  );
-  box-shadow: -2px 0 6px color-mix(in srgb, var(--track-color, #7aa2ff) 22%, transparent);
+  background: color-mix(in srgb, var(--track-color, #7aa2ff) 44%, transparent);
   pointer-events: none;
 }
 
-/* Continuous ambience line that deepens toward the tail and merges into the end-cap. */
 .track-wave__clip::after {
   content: '';
   position: absolute;
@@ -828,11 +820,7 @@ defineExpose({
   top: 50%;
   height: 1px;
   transform: translateY(-50%);
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--track-color, #7aa2ff) 22%, transparent),
-    color-mix(in srgb, var(--track-color, #7aa2ff) 40%, transparent)
-  );
+  background: color-mix(in srgb, var(--track-color, #7aa2ff) 30%, transparent);
   opacity: 0.62;
   pointer-events: none;
 }
@@ -884,9 +872,9 @@ defineExpose({
 }
 
 .empty-state--drop-target {
-  outline: 1px dashed #ff7b54;
+  outline: 1px dashed var(--primary);
   outline-offset: -12px;
-  background: color-mix(in srgb, rgba(255,123,84,0.08) 72%, transparent);
+  background: color-mix(in srgb, var(--primary-soft) 44%, transparent);
 }
 
 .empty-state span {
@@ -901,11 +889,10 @@ defineExpose({
   width: fit-content;
   margin: 12px 24px 20px 200px;
   padding: 10px 14px;
-  border: 1px dashed #ff7b54;
+  border: 1px dashed color-mix(in srgb, var(--primary) 68%, transparent);
   border-radius: 999px;
   color: var(--primary-strong);
-  background: color-mix(in srgb, rgba(255,123,84,0.18) 68%, var(--surface-1));
-  box-shadow: var(--shadow-soft);
+  background: color-mix(in srgb, var(--primary-soft) 44%, var(--surface-1));
   font-size: 12px;
 }
 
@@ -916,8 +903,7 @@ defineExpose({
   left: 0;
   z-index: 2;
   width: 2px;
-  background: #ff7b54;
-  box-shadow: 0 0 10px rgba(255, 123, 84, 0.4);
+  background: var(--primary);
   pointer-events: none;
 }
 </style>
