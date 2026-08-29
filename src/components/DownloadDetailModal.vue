@@ -455,7 +455,7 @@ function handleClose() {
   /* Same console treatment as the separation log, so both read as machine output rather than
      as two different panels that happen to contain log lines. */
   background: #0b1020;
-  color: #dbeafe;
+  color: #c9d6ec;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;

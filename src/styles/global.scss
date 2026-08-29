@@ -15,24 +15,25 @@
 }
 
 /* ===== Theme Variables ===== */
+/* Mirrors DARK_SURFACE in utils/theme.ts — used before the runtime token injection kicks in. */
 :root {
-  --surface: #0e1117;
-  --surface-1: #171b23;
-  --surface-2: #202633;
-  --surface-3: #2a3140;
-  --on-surface: #f4f7fb;
-  --on-surface-muted: #9da8b8;
-  --outline: rgba(155, 170, 194, 0.14);
-  --primary: #6f9df7;
-  --primary-strong: #a9c2ff;
-  --primary-soft: rgba(111, 157, 247, 0.16);
-  --primary-softer: rgba(111, 157, 247, 0.08);
-  --primary-border: rgba(111, 157, 247, 0.30);
-  --primary-glow: rgba(111, 157, 247, 0.18);
-  --success: #62bf91;
-  --warning: #d9a84d;
-  --danger: #e16d7d;
-  --shadow-soft: 0 24px 80px rgba(0, 0, 0, 0.34);
+  --surface: #18181b;
+  --surface-1: #18181b;
+  --surface-2: #27272a;
+  --surface-3: #3f3f46;
+  --on-surface: #fafafa;
+  --on-surface-muted: #a1a1aa;
+  --outline: rgba(255, 255, 255, 0.10);
+  --primary: #7299d7;
+  --primary-strong: #b5caf0;
+  --primary-soft: rgba(114, 153, 215, 0.18);
+  --primary-softer: rgba(114, 153, 215, 0.085);
+  --primary-border: rgba(114, 153, 215, 0.36);
+  --primary-glow: rgba(114, 153, 215, 0.14);
+  --success: #79a992;
+  --warning: #c8a66d;
+  --danger: #c9828c;
+  --shadow-soft: 0 14px 36px rgba(0, 0, 0, 0.28);
 }
 
 /* ===== Reset & Base ===== */
@@ -84,6 +85,23 @@ a { color: inherit; text-decoration: none; }
     radial-gradient(circle at 82% 6%, color-mix(in srgb, var(--primary-soft) 18%, transparent), transparent 28%),
     linear-gradient(180deg, rgba(255,255,255,.024), transparent 36%),
     linear-gradient(115deg, color-mix(in srgb, var(--surface-2) 16%, transparent), transparent 42%);
+}
+
+/* Dark mode has no ambient accent wash: colour is reserved for direct interaction feedback. */
+.dark-theme .app-backdrop {
+  background: var(--surface);
+}
+
+/* Opaque chrome prevents the backdrop from making the title bar and navigation look like
+   unrelated blue strips. Light mode keeps its existing translucent, airy treatment. */
+.dark-theme .title-bar {
+  border-bottom-color: color-mix(in srgb, var(--outline) 78%, transparent);
+  background: var(--surface);
+}
+
+.dark-theme .side-nav {
+  border-right-color: color-mix(in srgb, var(--outline) 72%, transparent);
+  background: var(--surface);
 }
 
 .app-body {
@@ -173,7 +191,7 @@ a { color: inherit; text-decoration: none; }
 .title-brand:hover .app-brand-mark__image {
   filter:
     drop-shadow(0 1px 1px rgba(255,255,255,0.08))
-    drop-shadow(0 10px 20px rgba(98, 126, 255, 0.18));
+    drop-shadow(0 10px 20px color-mix(in srgb, var(--primary) 20%, transparent));
 }
 
 @keyframes title-brand-jelly {
@@ -442,10 +460,8 @@ a { color: inherit; text-decoration: none; }
 }
 
 .app-shell:not(.app-shell--editor) .n-card:hover {
-  transform: translateY(-1px);
-  box-shadow:
-    0 16px 34px color-mix(in srgb, var(--primary-glow) 32%, transparent),
-    var(--shadow-soft);
+  transform: none;
+  box-shadow: none;
 }
 
 .n-button {
@@ -463,6 +479,12 @@ a { color: inherit; text-decoration: none; }
 .n-input-number.n-input-number--focus {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-glow) 52%, transparent);
   border-radius: 11px;
+}
+
+.dark-theme .n-input.n-input--focus,
+.dark-theme .n-base-selection.n-base-selection--active,
+.dark-theme .n-input-number.n-input-number--focus {
+  box-shadow: none;
 }
 
 /* ===== Utility Helpers ===== */

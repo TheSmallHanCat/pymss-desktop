@@ -130,7 +130,7 @@ const styleVars = computed(() => ({
 :global(.dark-theme) .app-brand-mark__backdrop {
   background:
     linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.02) 36%, transparent 100%),
-    linear-gradient(180deg, #242a36, #1b202a);
+    linear-gradient(180deg, var(--surface-3), var(--surface-2));
   border-color: rgba(255,255,255,0.12);
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.08),
@@ -140,7 +140,7 @@ const styleVars = computed(() => ({
 :global(.dark-theme) .app-brand-mark__image {
   filter:
     drop-shadow(0 1px 1px rgba(255,255,255,0.08))
-    drop-shadow(0 10px 22px rgba(98, 126, 255, 0.18));
+    drop-shadow(0 10px 22px color-mix(in srgb, var(--primary) 20%, transparent));
 }
 
 :global(.dark-theme) .app-brand-mark[data-variant='hero'].app-brand-mark--shadow {
@@ -152,13 +152,13 @@ const styleVars = computed(() => ({
 :global(.dark-theme) .app-brand-mark[data-variant='compact'] .app-brand-mark__backdrop {
   background:
     linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.015) 36%, transparent 100%),
-    linear-gradient(180deg, #2a303c, #202530);
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-3) 84%, var(--surface-2)), var(--surface-2));
   border-color: rgba(255,255,255,0.10);
 }
 
 :global(.dark-theme) .app-brand-mark[data-variant='compact'] .app-brand-mark__image {
   filter:
     drop-shadow(0 1px 1px rgba(255,255,255,0.06))
-    drop-shadow(0 7px 14px rgba(98, 126, 255, 0.14));
+    drop-shadow(0 7px 14px color-mix(in srgb, var(--primary) 16%, transparent));
 }
 </style>

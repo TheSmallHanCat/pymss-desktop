@@ -9,7 +9,7 @@ import StartupOnboarding from '@/components/StartupOnboarding.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { useUpdateStore } from '@/stores/update'
-import { getResolvedThemeTokens, getThemeOverrides, resolvedIsDark } from '@/utils/theme'
+import { getResolvedThemeTokens, getThemeOverrides, themeIsDark } from '@/utils/theme'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-shell'
@@ -36,11 +36,14 @@ const runtimeCorePromptVisible = ref(false)
 const runtimeCorePromptShown = ref(false)
 let unlistenNodeEditorClosed: UnlistenFn | undefined
 
-const isDark = computed(() => resolvedIsDark(settings.themeMode))
+const isDark = computed(() => themeIsDark.value)
 const isStandaloneRoute = computed(() => route.path === '/editor' || route.path === '/workflow-node-editor')
 const isWorkflowNodeEditorRoute = computed(() => route.path === '/workflow-node-editor')
 const isMacOS = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)
-const resolvedTheme = computed(() => getResolvedThemeTokens(settings.themeMode, settings.themeAccent))
+const resolvedTheme = computed(() => {
+  void isDark.value
+  return getResolvedThemeTokens(settings.themeMode, settings.themeAccent)
+})
 const showStartupOnboarding = computed(() => bootReady.value && !isStandaloneRoute.value && settings.shouldShowStartupOnboarding)
 const deferredUpdatePrompt = computed(() => updates.updateIsPrerelease
   ? t('settings.updatePrereleaseDeferredPrompt', { version: updates.latestVersion })
@@ -186,7 +189,10 @@ watch([bootReady, runtimeCoreUpdateAvailable], () => {
   showRuntimeCorePrompt()
 }, { immediate: true })
 
-const themeOverrides = computed(() => getThemeOverrides(settings.themeMode, settings.themeAccent))
+const themeOverrides = computed(() => {
+  void isDark.value
+  return getThemeOverrides(settings.themeMode, settings.themeAccent)
+})
 </script>
 
 <template>

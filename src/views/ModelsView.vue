@@ -1795,9 +1795,6 @@ onMounted(() => {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 18%, transparent), transparent 72%),
     color-mix(in srgb, var(--surface-2) 48%, transparent);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.06),
-    0 8px 18px color-mix(in srgb, var(--primary-glow) 6%, transparent);
 }
 
 .model-card--unsupported {

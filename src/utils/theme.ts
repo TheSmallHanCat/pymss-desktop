@@ -1,3 +1,4 @@
+import { ref } from 'vue'
 import type { GlobalThemeOverrides } from 'naive-ui'
 
 export type ThemeMode = 'system' | 'dark' | 'light'
@@ -45,17 +46,19 @@ const RIPPLE_TRANSITION_DURATION = 700
 const RIPPLE_TRANSITION_EASING = 'cubic-bezier(0.2, 0, 0, 1)'
 
 const DARK_SURFACE: SurfacePalette = {
-  surface: '#0e1117',
-  surface1: '#171b23',
-  surface2: '#202633',
-  surface3: '#2a3140',
-  onSurface: '#f4f7fb',
-  onSurfaceMuted: '#9da8b8',
-  outline: 'rgba(155, 170, 194, 0.14)',
-  success: '#62bf91',
-  warning: '#d9a84d',
-  danger: '#e16d7d',
-  shadowSoft: '0 24px 80px rgba(0, 0, 0, 0.34)',
+  // Match the familiar desktop-app dark hierarchy: the canvas and cards share one neutral
+  // plane, while controls lift one level. It avoids the "stack of dark boxes" effect.
+  surface: '#18181b',
+  surface1: '#18181b',
+  surface2: '#27272a',
+  surface3: '#3f3f46',
+  onSurface: '#fafafa',
+  onSurfaceMuted: '#a1a1aa',
+  outline: 'rgba(255, 255, 255, 0.10)',
+  success: '#79a992',
+  warning: '#c8a66d',
+  danger: '#c9828c',
+  shadowSoft: '0 14px 36px rgba(0, 0, 0, 0.28)',
 }
 
 const LIGHT_SURFACE: SurfacePalette = {
@@ -75,15 +78,15 @@ const LIGHT_SURFACE: SurfacePalette = {
 const THEME_PALETTES: Record<ThemeAccent, { light: ThemePalette; dark: ThemePalette }> = {
   blue: {
     dark: {
-      primary: '#6f9df7',
-      primaryStrong: '#a9c2ff',
-      primarySoft: 'rgba(111, 157, 247, 0.16)',
-      primarySofter: 'rgba(111, 157, 247, 0.08)',
-      primaryBorder: 'rgba(111, 157, 247, 0.30)',
-      primaryGlow: 'rgba(111, 157, 247, 0.18)',
-      primaryHover: '#90b5ff',
-      primaryPressed: '#b1c8ff',
-      preview: ['#6f9df7', '#a9c2ff'],
+      primary: '#7299d7',
+      primaryStrong: '#b5caf0',
+      primarySoft: 'rgba(114, 153, 215, 0.18)',
+      primarySofter: 'rgba(114, 153, 215, 0.085)',
+      primaryBorder: 'rgba(114, 153, 215, 0.36)',
+      primaryGlow: 'rgba(114, 153, 215, 0.14)',
+      primaryHover: '#86abe3',
+      primaryPressed: '#5e81bd',
+      preview: ['#7299d7', '#b5caf0'],
     },
     light: {
       primary: '#3f70d4',
@@ -99,15 +102,15 @@ const THEME_PALETTES: Record<ThemeAccent, { light: ThemePalette; dark: ThemePale
   },
   pink: {
     dark: {
-      primary: '#f3a5c8',
-      primaryStrong: '#ffd0e4',
-      primarySoft: 'rgba(243, 165, 200, 0.22)',
-      primarySofter: 'rgba(243, 165, 200, 0.10)',
-      primaryBorder: 'rgba(243, 165, 200, 0.46)',
-      primaryGlow: 'rgba(243, 165, 200, 0.26)',
-      primaryHover: '#ffd0e4',
-      primaryPressed: '#ffd0e4',
-      preview: ['#f3a5c8', '#ffd0e4'],
+      primary: '#d084ad',
+      primaryStrong: '#edbdd2',
+      primarySoft: 'rgba(208, 132, 173, 0.18)',
+      primarySofter: 'rgba(208, 132, 173, 0.085)',
+      primaryBorder: 'rgba(208, 132, 173, 0.36)',
+      primaryGlow: 'rgba(208, 132, 173, 0.14)',
+      primaryHover: '#dd9cbd',
+      primaryPressed: '#b86f95',
+      preview: ['#d084ad', '#edbdd2'],
     },
     light: {
       primary: '#d56f9f',
@@ -123,15 +126,15 @@ const THEME_PALETTES: Record<ThemeAccent, { light: ThemePalette; dark: ThemePale
   },
   sky: {
     dark: {
-      primary: '#89c8ff',
-      primaryStrong: '#b7ddff',
-      primarySoft: 'rgba(137, 200, 255, 0.22)',
-      primarySofter: 'rgba(137, 200, 255, 0.10)',
-      primaryBorder: 'rgba(137, 200, 255, 0.42)',
-      primaryGlow: 'rgba(137, 200, 255, 0.24)',
-      primaryHover: '#b7ddff',
-      primaryPressed: '#b7ddff',
-      preview: ['#89c8ff', '#b7ddff'],
+      primary: '#70b4c8',
+      primaryStrong: '#b4d9e2',
+      primarySoft: 'rgba(112, 180, 200, 0.18)',
+      primarySofter: 'rgba(112, 180, 200, 0.085)',
+      primaryBorder: 'rgba(112, 180, 200, 0.36)',
+      primaryGlow: 'rgba(112, 180, 200, 0.14)',
+      primaryHover: '#89c4d4',
+      primaryPressed: '#5997aa',
+      preview: ['#70b4c8', '#b4d9e2'],
     },
     light: {
       primary: '#4d8fd8',
@@ -147,15 +150,15 @@ const THEME_PALETTES: Record<ThemeAccent, { light: ThemePalette; dark: ThemePale
   },
   teal: {
     dark: {
-      primary: '#67d2c1',
-      primaryStrong: '#9ce9dc',
-      primarySoft: 'rgba(103, 210, 193, 0.22)',
-      primarySofter: 'rgba(103, 210, 193, 0.10)',
-      primaryBorder: 'rgba(103, 210, 193, 0.42)',
-      primaryGlow: 'rgba(103, 210, 193, 0.24)',
-      primaryHover: '#9ce9dc',
-      primaryPressed: '#9ce9dc',
-      preview: ['#67d2c1', '#9ce9dc'],
+      primary: '#70b69d',
+      primaryStrong: '#b0d9c9',
+      primarySoft: 'rgba(112, 182, 157, 0.18)',
+      primarySofter: 'rgba(112, 182, 157, 0.085)',
+      primaryBorder: 'rgba(112, 182, 157, 0.36)',
+      primaryGlow: 'rgba(112, 182, 157, 0.14)',
+      primaryHover: '#89c7b0',
+      primaryPressed: '#579982',
+      preview: ['#70b69d', '#b0d9c9'],
     },
     light: {
       primary: '#238c7b',
@@ -177,6 +180,13 @@ export const THEME_ACCENTS: ThemeAccent[] = ['blue', 'pink', 'sky', 'teal']
 
 let currentMode: ThemeMode = DEFAULT_THEME_MODE
 let currentAccent: ThemeAccent = DEFAULT_THEME_ACCENT
+
+/**
+ * Reactive mirror of the applied dark state. matchMedia is not reactive, so computeds that
+ * derive Naive UI theme data read this instead — otherwise an OS scheme flip while following
+ * system mode would swap the CSS variables but leave component theming stale.
+ */
+export const themeIsDark = ref(resolvedIsDark(currentMode))
 
 function isThemeMode(value: string | null | undefined): value is ThemeMode {
   return value === 'system' || value === 'dark' || value === 'light'
@@ -252,8 +262,16 @@ export function getThemeOverrides(
   accent: ThemeAccent = currentAccent,
 ): GlobalThemeOverrides {
   const tokens = getResolvedThemeTokens(mode, accent)
+  // Naive UI's dark theme otherwise retains a pure-black base. Components that derive their
+  // surface from baseColor (checkboxes, tags, dialogs, etc.) then look detached from our navy
+  // shell. Use the same base as the app only in dark mode to preserve light-mode behaviour.
+  const darkBase = tokens.isDark ? {
+    baseColor: tokens.surface,
+    textColorBase: tokens.onSurface,
+  } : {}
   return {
     common: {
+      ...darkBase,
       bodyColor: tokens.surface,
       cardColor: tokens.surface1,
       modalColor: tokens.surface1,
@@ -355,6 +373,7 @@ export function getThemeOverrides(
 export function applyTheme(mode: ThemeMode, accent: ThemeAccent = currentAccent) {
   currentMode = normalizeThemeMode(mode)
   currentAccent = normalizeThemeAccent(accent)
+  themeIsDark.value = resolvedIsDark(currentMode)
   applyThemeClass(currentMode)
   applyThemeTokens(currentMode, currentAccent)
 }
