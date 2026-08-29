@@ -9,7 +9,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from worker_protocol import emit, emit_error
+from worker_protocol import emit, emit_error, isolate_protocol_stdout
 
 
 SUPPORTED_AUDIO_SUFFIXES = {
@@ -170,6 +170,7 @@ def _convert_audio(payload: dict[str, Any]) -> dict[str, Any]:
     for index, input_path in enumerate(inputs, start=1):
         emit("audio_tool_progress", {
             "operation": "convert",
+            "phase": "converting",
             "completed": index - 1,
             "total": len(inputs),
             "current": input_path.name,
@@ -304,6 +305,7 @@ def _merge_audio(payload: dict[str, Any]) -> dict[str, Any]:
         for index, input_path in enumerate(inputs, start=1):
             emit("audio_tool_progress", {
                 "operation": "merge",
+                "phase": "normalizing",
                 "completed": index - 1,
                 "total": len(inputs),
                 "current": input_path.name,
@@ -326,11 +328,25 @@ def _merge_audio(payload: dict[str, Any]) -> dict[str, Any]:
             "".join(f"file '{_ffmpeg_concat_path(path)}'\n" for path in normalized),
             encoding="utf-8",
         )
+        emit("audio_tool_progress", {
+            "operation": "merge",
+            "phase": "merging",
+            "completed": 0,
+            "total": 1,
+            "current": output_path.name,
+        })
         try:
             _run_ffmpeg([
                 "-f", "concat", "-safe", "0", "-i", str(concat_file),
                 "-c:a", "copy", "-y", str(output_path),
             ])
+            emit("audio_tool_progress", {
+                "operation": "merge",
+                "phase": "merging",
+                "completed": 1,
+                "total": 1,
+                "current": output_path.name,
+            })
         except subprocess.CalledProcessError as error:
             raise RuntimeError(_subprocess_detail(error)) from error
 
@@ -400,6 +416,7 @@ def _calculate_sdr(payload: dict[str, Any]) -> dict[str, Any]:
     estimated_path = _require_file(payload.get("estimatedPath"), "Estimated audio")
     emit("audio_tool_progress", {
         "operation": "sdr",
+        "phase": "loading_reference",
         "completed": 0,
         "total": 2,
         "current": reference_path.name,
@@ -407,11 +424,19 @@ def _calculate_sdr(payload: dict[str, Any]) -> dict[str, Any]:
     reference = _stereo_audio(reference_path)
     emit("audio_tool_progress", {
         "operation": "sdr",
+        "phase": "loading_estimated",
         "completed": 1,
         "total": 2,
         "current": estimated_path.name,
     })
     estimated = _stereo_audio(estimated_path)
+    emit("audio_tool_progress", {
+        "operation": "sdr",
+        "phase": "calculating",
+        "completed": 0,
+        "total": 1,
+        "current": "",
+    })
     sdr, average_sdr, si_sdr, average_si_sdr = _calculate_sdr_arrays(reference, estimated)
     return {
         "operation": "sdr",
@@ -427,27 +452,58 @@ def _calculate_sdr(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _vocal_to_midi(payload: dict[str, Any]) -> dict[str, Any]:
     input_path = _require_file(payload.get("inputPath"), "Input vocal audio")
-    model_path = _require_file(payload.get("modelPath"), "SOME model weights")
+    model_path = _require_file(payload.get("modelPath"), "GAME model weights")
     output_dir = _require_directory(payload.get("outputDir"), "Output directory", create=True)
-    bpm = float(payload.get("bpm") or 120)
+    raw_bpm = payload["bpm"] if "bpm" in payload else 120
+    try:
+        bpm = float(raw_bpm)
+    except (TypeError, ValueError) as error:
+        raise ValueError("BPM must be between 30 and 300") from error
     if not math.isfinite(bpm) or bpm < 30 or bpm > 300:
         raise ValueError("BPM must be between 30 and 300")
+    language = str(payload.get("language") or "").strip().lower() or None
 
     emit("audio_tool_progress", {
         "operation": "midi",
+        "phase": "preparing",
         "completed": 0,
-        "total": 1,
+        "total": 0,
         "current": input_path.name,
     })
-    from some.infer import infer  # type: ignore
+    def report_progress(phase: str, completed: int, total: int) -> None:
+        emit("audio_tool_progress", {
+            "operation": "midi",
+            "phase": phase,
+            "completed": completed,
+            "total": total,
+            "current": input_path.name,
+        })
 
-    config_path = Path(__file__).resolve().parent / "some" / "config.yaml"
-    output_path = Path(infer(model_path, config_path, input_path, output_dir, bpm)).resolve()
+    # The worker reserves stdout for JSON envelopes. Redirect incidental output
+    # from Torch and vendored model code to stderr so it cannot corrupt the protocol.
+    with isolate_protocol_stdout():
+        from game.infer import infer  # type: ignore
+
+        inference_result = infer(
+            model_path=model_path,
+            audio_path=input_path,
+            output_dir=output_dir,
+            tempo=bpm,
+            language=language,
+            progress_callback=report_progress,
+        )
+        output_path = inference_result.output_path.resolve()
     return {
         "operation": "midi",
         "outputDir": str(output_dir),
         "outputPath": str(output_path),
         "bpm": bpm,
+        "language": inference_result.language or "auto",
+        "noteCount": inference_result.note_count,
+        "inputDuration": inference_result.input_duration,
+        "firstNoteAt": inference_result.first_note_at,
+        "lastNoteAt": inference_result.last_note_at,
+        "warnings": list(inference_result.warnings),
     }
 
 

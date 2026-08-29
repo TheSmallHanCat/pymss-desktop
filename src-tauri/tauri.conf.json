@@ -41,8 +41,9 @@
       "../python/*.py",
       "../python/*.json",
       "../python/*.txt",
-      "../python/some/**/*.py",
-      "../python/some/**/*.yaml"
+      "../python/game/**/*.py",
+      "../python/game/**/*.txt",
+      "../python/game/LICENSE"
     ],
     "icon": [
       "icons/32x32.png",

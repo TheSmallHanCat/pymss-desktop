@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -13,7 +15,8 @@ else:
     import _bootstrap as _worker_test_bootstrap
 
 import worker_tools
-from some.utils.infer_utils import build_midi_file
+from game.infer import MidiInferenceResult
+from game.midi import Note, build_midi_file
 
 
 class WorkerToolsTests(unittest.TestCase):
@@ -118,13 +121,8 @@ class WorkerToolsTests(unittest.TestCase):
 
         self.assertEqual(candidate.name, "result_2.wav")
 
-    def test_some_midi_writer_outputs_standard_midi_file(self) -> None:
-        segment = {
-            "note_midi": np.array([60.0]),
-            "note_dur": np.array([0.5]),
-            "note_rest": np.array([False]),
-        }
-        midi = build_midi_file([0.0], [segment], tempo=120)
+    def test_game_midi_writer_outputs_standard_midi_file(self) -> None:
+        midi = build_midi_file([Note(onset=0.0, offset=0.5, pitch=60.0)], tempo=120)
         with tempfile.TemporaryDirectory() as temp_value:
             output = Path(temp_value) / "vocal.mid"
             midi.save(output)
@@ -133,6 +131,109 @@ class WorkerToolsTests(unittest.TestCase):
         self.assertTrue(content.startswith(b"MThd"))
         self.assertIn(b"MTrk", content)
         self.assertTrue(content.endswith(b"\x00\xff\x2f\x00"))
+
+    def test_game_midi_writer_preserves_note_time_in_ticks(self) -> None:
+        midi = build_midi_file([Note(onset=1.0, offset=1.5, pitch=60.0)], tempo=120)
+        self.assertIn(
+            b"\x00\xff\x51\x03\x07\xa1\x20"
+            b"\x87\x40\x90\x3c\x40"
+            b"\x83\x60\x80\x3c\x40",
+            midi.track,
+        )
+
+    def test_game_midi_writer_removes_temporary_file_after_save_failure(self) -> None:
+        midi = build_midi_file([Note(onset=0.0, offset=0.5, pitch=60.0)], tempo=120)
+        with tempfile.TemporaryDirectory() as temp_value:
+            root = Path(temp_value)
+            output = root / "vocal.mid"
+            with (
+                mock.patch("game.midi.os.replace", side_effect=OSError("replace failed")),
+                self.assertRaisesRegex(OSError, "replace failed"),
+            ):
+                midi.save(output)
+
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob("*.tmp")), [])
+
+    def test_vocal_to_midi_uses_game_torch_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_value:
+            root = Path(temp_value)
+            input_path = root / "vocal.wav"
+            model_path = root / "model.pt"
+            output_dir = root / "output"
+            output_path = output_dir / "vocal.mid"
+            input_path.touch()
+            model_path.touch()
+            output_dir.mkdir()
+            output_path.write_bytes(b"MThd")
+
+            def fake_infer(**kwargs: object) -> MidiInferenceResult:
+                print("third-party diagnostic")
+                progress_callback = kwargs["progress_callback"]
+                assert callable(progress_callback)
+                progress_callback("transcribing", 1, 2)
+                return MidiInferenceResult(
+                    output_path=output_path,
+                    note_count=12,
+                    input_duration=8.0,
+                    first_note_at=0.5,
+                    last_note_at=7.5,
+                    warnings=(),
+                    language="zh",
+                )
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with (
+                mock.patch("game.infer.infer", side_effect=fake_infer) as game_infer,
+                mock.patch.object(worker_tools, "emit") as worker_emit,
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                result = worker_tools._vocal_to_midi({
+                    "inputPath": str(input_path),
+                    "modelPath": str(model_path),
+                    "outputDir": str(output_dir),
+                    "bpm": 128,
+                    "language": "zh",
+                })
+
+        game_infer.assert_called_once()
+        call = game_infer.call_args.kwargs
+        self.assertEqual(call["model_path"], model_path.resolve())
+        self.assertEqual(call["audio_path"], input_path.resolve())
+        self.assertEqual(call["tempo"], 128)
+        self.assertEqual(call["language"], "zh")
+        self.assertTrue(callable(call["progress_callback"]))
+        self.assertEqual(result["outputPath"], str(output_path.resolve()))
+        self.assertEqual(result["noteCount"], 12)
+        self.assertEqual(result["language"], "zh")
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("third-party diagnostic", stderr.getvalue())
+        worker_emit.assert_any_call("audio_tool_progress", {
+            "operation": "midi",
+            "phase": "transcribing",
+            "completed": 1,
+            "total": 2,
+            "current": input_path.name,
+        })
+
+    def test_vocal_to_midi_rejects_empty_bpm(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_value:
+            root = Path(temp_value)
+            input_path = root / "vocal.wav"
+            model_path = root / "model.pt"
+            output_dir = root / "output"
+            input_path.touch()
+            model_path.touch()
+
+            with self.assertRaisesRegex(ValueError, "BPM must be between 30 and 300"):
+                worker_tools._vocal_to_midi({
+                    "inputPath": str(input_path),
+                    "modelPath": str(model_path),
+                    "outputDir": str(output_dir),
+                    "bpm": None,
+                })
 
 
 if __name__ == "__main__":

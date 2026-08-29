@@ -5,9 +5,10 @@ import importlib.util
 import os
 import re
 import sys
+from contextlib import contextmanager, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, TextIO
 
 WORKER_VERSION = "0.1.0"
 TERMINAL_LOG_PREFIX = "__PYMSS_STUDIO_TERMINAL_LOG__"
@@ -26,6 +27,21 @@ try:
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
+
+_PROTOCOL_STDOUT: TextIO | None = None
+
+
+@contextmanager
+def isolate_protocol_stdout() -> Iterator[None]:
+    """Keep protocol events on stdout while routing incidental prints to stderr."""
+    global _PROTOCOL_STDOUT
+    previous_stdout = _PROTOCOL_STDOUT
+    _PROTOCOL_STDOUT = previous_stdout or sys.stdout
+    try:
+        with redirect_stdout(sys.stderr):
+            yield
+    finally:
+        _PROTOCOL_STDOUT = previous_stdout
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
@@ -86,7 +102,7 @@ def emit(event_type: str, payload: dict[str, Any] | None = None, *, request_id: 
         "taskId": task_id,
         "timestamp": now_iso(),
         "payload": payload,
-    }, ensure_ascii=False), flush=True)
+    }, ensure_ascii=False), file=_PROTOCOL_STDOUT or sys.stdout, flush=True)
 
 
 def emit_error(

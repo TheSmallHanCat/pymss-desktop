@@ -32,6 +32,16 @@ struct ActiveRuntimeRecord {
 }
 
 fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
+    // Development builds must execute the workspace worker directly. Tauri's copied
+    // resource directory is not refreshed while the dev process is running and can
+    // otherwise leave Python modules out of sync with the frontend and Rust code.
+    if storage::is_development_executable() {
+        let path = dev_worker_path();
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
     if let Ok(resource) = app.path().resource_dir() {
         let candidates = [
             resource.join("python").join("worker.py"),
@@ -56,10 +66,6 @@ fn worker_path(app: &AppHandle) -> AppResult<PathBuf> {
     }
 
     if storage::is_development_executable() {
-        let path = dev_worker_path();
-        if path.exists() {
-            return Ok(path);
-        }
         // Fallback: try cwd (for backward compatibility)
         let cwd = std::env::current_dir()?;
         Ok(cwd.join("python").join("worker.py"))
