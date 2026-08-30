@@ -28,7 +28,17 @@ const DYNAMIC_KEY_PREFIXES = ['settings.themeAccent', 'nav.']
  *
  * Anything not listed here and not referenced is dead and should be deleted.
  */
-const DORMANT_KEYS = ['projects.blankProject', 'projects.createBlank', 'projects.createSuccess']
+const DORMANT_KEYS = [
+  'projects.blankProject', 'projects.createBlank', 'projects.createSuccess',
+  // The merge worker remains registered for saved/internal calls, but its product entry point
+  // is intentionally hidden until the merge workflow is enabled again.
+  'tools.mergeTitle', 'tools.mergeDescription', 'tools.inputDirectory', 'tools.chooseInputDirectory',
+  'tools.mergeRules', 'tools.mergeRulesScope', 'tools.mergeSortBy', 'tools.mergeSortName',
+  'tools.mergeSortModified', 'tools.mergeSortRegex', 'tools.sortDirection', 'tools.sortAscending',
+  'tools.sortDescending', 'tools.mergeRegex', 'tools.mergeRegexPlaceholder', 'tools.mergeRegexHelp',
+  'tools.mergeRegexRequired', 'tools.mergeNameHint', 'tools.mergeModifiedHint', 'tools.mergeRegexHint',
+  'tools.startMerge', 'tools.mergeHint',
+]
 
 function collectSourceFiles(dir: string): string[] {
   const files: string[] = []

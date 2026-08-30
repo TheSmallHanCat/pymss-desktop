@@ -21,7 +21,13 @@ import {
   GridOutline,
   ListOutline,
 } from '@vicons/ionicons5'
-import { useModelStore, type ModelDefaultInferenceParams, type ModelEntry } from '@/stores/model'
+import {
+  useModelStore,
+  type ModelDefaultInferenceParams,
+  type ModelEntry,
+  type ModelStorageDeleteTarget,
+  type ToolModelStorageItem,
+} from '@/stores/model'
 import { useSettingsStore } from '@/stores/settings'
 import { useTaskStore } from '@/stores/task'
 import { useAppStore } from '@/stores/app'
@@ -198,12 +204,46 @@ const pagedModels = computed(() => {
   return sortedModels.value.slice(start, start + pageSize.value)
 })
 
-const storageModels = computed(() => {
+type StorageListItem = ModelStorageDeleteTarget & {
+  selectionKey: string
+  downloaded: boolean
+  sizeBytes: number
+  expectedSizeBytes: number
+  fileCount: number
+  role?: ToolModelStorageItem['role']
+}
+
+const allStorageModels = computed<StorageListItem[]>(() => {
+  const catalogModels: StorageListItem[] = (modelStorageSummary.value?.models || []).map(item => ({
+    kind: 'catalog',
+    id: item.name,
+    name: item.name,
+    selectionKey: `catalog:${item.name}`,
+    downloaded: item.downloaded,
+    sizeBytes: item.sizeBytes,
+    expectedSizeBytes: item.expectedSizeBytes,
+    fileCount: item.files.filter(file => file.exists).length,
+  }))
+  const toolModels: StorageListItem[] = (modelStorageSummary.value?.toolModels || []).map(item => ({
+    kind: 'tool',
+    id: item.id,
+    name: item.name,
+    tool: item.tool,
+    role: item.role,
+    selectionKey: `tool:${item.tool}:${item.id}`,
+    downloaded: true,
+    sizeBytes: item.sizeBytes,
+    expectedSizeBytes: item.sizeBytes,
+    fileCount: item.fileCount,
+  }))
+  return [...catalogModels, ...toolModels]
+})
+
+const storageModels = computed<StorageListItem[]>(() => {
   const q = storageSearch.value.trim().toLowerCase()
-  const list = modelStorageSummary.value?.models || []
-  return [...list]
+  return [...allStorageModels.value]
     .filter((item) => (!storageDownloadedOnly.value || item.downloaded)
-      && (!q || item.name.toLowerCase().includes(q)))
+      && (!q || item.name.toLowerCase().includes(q) || item.tool?.includes(q)))
     .sort((a, b) => {
       if (storageSort.value === 'size-desc') return b.sizeBytes - a.sizeBytes
       if (storageSort.value === 'size-asc') return a.sizeBytes - b.sizeBytes
@@ -212,14 +252,17 @@ const storageModels = computed(() => {
     })
 })
 
-const allStorageModelsByName = computed(() => new Map((modelStorageSummary.value?.models || []).map((item) => [item.name, item])))
+const allStorageModelsByKey = computed(() => new Map(allStorageModels.value.map(item => [item.selectionKey, item])))
 
 const selectedStorageBytes = computed(() => selectedStorageModels.value
-  .map((name) => allStorageModelsByName.value.get(name))
+  .map(key => allStorageModelsByKey.value.get(key))
   .filter((item): item is NonNullable<typeof item> => Boolean(item))
   .reduce((sum, item) => sum + item.sizeBytes, 0))
 
-const hasDeletingSelectedStorageModels = computed(() => selectedStorageModels.value.some((name) => isDeletingModel(name)))
+const hasDeletingSelectedStorageModels = computed(() => selectedStorageModels.value.some((key) => {
+  const item = allStorageModelsByKey.value.get(key)
+  return item?.kind === 'catalog' && isDeletingModel(item.id)
+}))
 
 const batchDeleteProgress = computed(() => {
   if (!batchDeleteState.value.totalModels) return 0
@@ -448,6 +491,13 @@ function saveInferenceDefaults() {
   message.success(t('models.inferenceDefaultsSaved'))
 }
 
+function storageModelTypeLabel(item: StorageListItem) {
+  if (item.kind === 'catalog') return item.downloaded ? t('models.downloaded') : t('models.notDownloaded')
+  if (item.role === 'vad') return t('models.storageAsrVadModel')
+  if (item.role === 'punctuation') return t('models.storageAsrPunctuationModel')
+  return t('models.storageAsrRecognitionModel')
+}
+
 function resetInferenceDefaults() {
   if (!selectedInfo.value) return
   if (hasInferenceOverride(selectedInfo.value)) {
@@ -652,19 +702,27 @@ function openModelDir() {
 }
 
 function confirmBatchDelete() {
-  const names = selectedStorageModels.value.filter((name) => !isDeletingModel(name))
-  if (!names.length) return
+  const targets = selectedStorageModels.value
+    .map(key => allStorageModelsByKey.value.get(key))
+    .filter((item): item is StorageListItem => Boolean(item))
+    .filter(item => item.kind === 'tool' || !isDeletingModel(item.id))
+    .map(({ kind, id, name, tool }) => ({ kind, id, name, tool }))
+  if (!targets.length) return
   dialog.warning({
     title: t('models.storageBatchDeleteConfirmTitle'),
     content: t('models.storageBatchDeleteConfirmContent', {
-      count: names.length,
+      count: targets.length,
       size: formatBytes(selectedStorageBytes.value),
     }),
     positiveText: t('models.storageBatchDelete'),
     negativeText: t('common.cancel'),
     onPositiveClick: () => {
-      modelStore.deleteModels(names).then(() => {
-        selectedStorageModels.value = selectedStorageModels.value.filter((name) => isDeletingModel(name))
+      modelStore.deleteStorageModels(targets).then(() => {
+        const failed = new Set(modelStore.batchDeleteState.failedModels)
+        selectedStorageModels.value = selectedStorageModels.value.filter((key) => {
+          const item = allStorageModelsByKey.value.get(key)
+          return Boolean(item && failed.has(item.name))
+        })
         if (modelStore.batchDeleteState.failedModels.length) {
           message.warning(t('models.batchDeleteWithFailures', { count: modelStore.batchDeleteState.failedModels.length }))
         } else {
@@ -1372,20 +1430,20 @@ onMounted(() => {
           <div class="storage-list">
             <label
               v-for="item in storageModels"
-              :key="item.name"
+              :key="item.selectionKey"
               class="storage-row"
             >
               <n-checkbox
-                :checked="selectedStorageModels.includes(item.name)"
-                :disabled="item.sizeBytes <= 0 || isDeletingModel(item.name) || batchDeleteState.active || residualCleanupState.active"
-                @update:checked="(checked: boolean) => setStorageSelected(item.name, checked)"
+                :checked="selectedStorageModels.includes(item.selectionKey)"
+                :disabled="item.sizeBytes <= 0 || (item.kind === 'catalog' && isDeletingModel(item.id)) || batchDeleteState.active || residualCleanupState.active"
+                @update:checked="(checked: boolean) => setStorageSelected(item.selectionKey, checked)"
               />
               <div class="storage-row__main">
                 <strong>{{ item.name }}</strong>
-                <span>{{ item.files.filter((file) => file.exists).length }} files</span>
+                <span>{{ t('models.storageFileCount', { count: item.fileCount }) }}</span>
               </div>
-              <n-tag size="small" :bordered="false" :type="item.downloaded ? 'success' : 'default'">
-                {{ item.downloaded ? t('models.downloaded') : t('models.notDownloaded') }}
+              <n-tag size="small" :bordered="false" :type="item.kind === 'tool' ? 'info' : item.downloaded ? 'success' : 'default'">
+                {{ storageModelTypeLabel(item) }}
               </n-tag>
               <strong class="storage-row__size">{{ formatBytes(item.sizeBytes || item.expectedSizeBytes) }}</strong>
             </label>

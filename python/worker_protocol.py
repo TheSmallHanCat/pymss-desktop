@@ -110,6 +110,7 @@ def emit_error(
     message: str,
     detail: str | None = None,
     *,
+    request_id: str | None = None,
     task_id: str | None = None,
     recoverable: bool = False,
     extra: dict[str, Any] | None = None,
@@ -122,7 +123,7 @@ def emit_error(
     }
     if extra:
         payload.update(extra)
-    emit("error", payload, task_id=task_id)
+    emit("error", payload, request_id=request_id, task_id=task_id)
     return 1
 
 

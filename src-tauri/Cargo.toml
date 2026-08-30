@@ -28,3 +28,11 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
+# Keep line-level debugging for application code while avoiding oversized MSVC
+# program databases generated from the complete Tauri dependency graph.
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = 0

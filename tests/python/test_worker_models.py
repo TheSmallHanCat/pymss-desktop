@@ -153,6 +153,245 @@ class UserModelPathTests(unittest.TestCase):
         self.assertFalse(worker_models.is_user_model_entry(CATALOG_ENTRY))
 
 
+class ModelStorageSummaryTests(unittest.TestCase):
+    def test_tool_model_cache_is_counted_but_not_reported_as_residual(self):
+        with tempfile.TemporaryDirectory() as temp_value:
+            root = Path(temp_value)
+            catalog_model = root / CATALOG_ENTRY.relpath
+            catalog_config = root / CATALOG_ENTRY.config_relpath
+            asr_model = (
+                root / "_tool_models" / "asr" / "models"
+                / "iic--speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+                / "snapshots" / "master" / "model.pt"
+            )
+            catalog_model.parent.mkdir(parents=True)
+            asr_model.parent.mkdir(parents=True)
+            catalog_model.write_bytes(b"m" * 7)
+            catalog_config.write_bytes(b"c" * 5)
+            asr_model.write_bytes(b"a" * 2048)
+            asr_config = asr_model.parent / "config.yaml"
+            asr_configuration = asr_model.parent / "configuration.json"
+            asr_config.write_bytes(b"config")
+            asr_configuration.write_text(json.dumps({
+                "file_path_metas": {"init_param": "model.pt", "config": "config.yaml"},
+            }), encoding="utf-8")
+            asr_bytes = asr_model.stat().st_size + asr_config.stat().st_size + asr_configuration.stat().st_size
+            residual = root / "partial-download.tmp"
+            residual.write_bytes(b"r" * 13)
+
+            registry = mock.Mock()
+            registry.model_root.return_value = root
+            registry.list_models.return_value = [CATALOG_ENTRY]
+            registry.model_path_for.side_effect = lambda entry, _: root / entry.relpath
+            registry.config_path_for.side_effect = lambda entry, _: root / entry.config_relpath
+            registry.auxiliary_paths_for.return_value = []
+            with mock.patch.dict("sys.modules", {
+                "pymss": mock.Mock(),
+                "pymss.model_registry": registry,
+            }):
+                summary = worker_models._storage_summary_payload(str(root))
+
+        self.assertEqual(summary["toolModelsBytes"], asr_bytes)
+        self.assertEqual(summary["totalBytes"], 12 + asr_bytes)
+        self.assertEqual(summary["downloadedCount"], 2)
+        self.assertEqual(len(summary["toolModels"]), 1)
+        self.assertEqual(
+            summary["toolModels"][0]["name"],
+            "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+        )
+        self.assertEqual(summary["toolModels"][0]["role"], "recognition")
+        self.assertEqual(summary["toolModels"][0]["fileCount"], 3)
+        self.assertEqual(summary["residualBytes"], 13)
+        self.assertEqual([Path(item["path"]).name for item in summary["residualFiles"]], [residual.name])
+
+    def test_incomplete_tool_model_is_hidden_and_reported_as_residual(self):
+        with tempfile.TemporaryDirectory() as temp_value:
+            root = Path(temp_value)
+            partial_model = (
+                root / "_tool_models" / "asr" / "models"
+                / "iic--punc_ct-transformer_cn-en-common-vocab471067-large"
+                / "snapshots" / "master"
+            )
+            partial_model.mkdir(parents=True)
+            (partial_model / "config.yaml").write_bytes(b"config")
+            (partial_model / "model.pt.incomplete").write_bytes(b"partial-weight")
+
+            registry = mock.Mock()
+            registry.model_root.return_value = root
+            registry.list_models.return_value = []
+            with mock.patch.dict("sys.modules", {
+                "pymss": mock.Mock(),
+                "pymss.model_registry": registry,
+            }):
+                summary = worker_models._storage_summary_payload(str(root))
+
+        self.assertEqual(summary["downloadedCount"], 0)
+        self.assertEqual(summary["toolModels"], [])
+        self.assertEqual(summary["toolModelsBytes"], 0)
+        self.assertEqual(summary["totalBytes"], 0)
+        self.assertEqual(summary["residualBytes"], len(b"config") + len(b"partial-weight"))
+        self.assertEqual(
+            {Path(item["path"]).name for item in summary["residualFiles"]},
+            {"config.yaml", "model.pt.incomplete"},
+        )
+
+    def test_residual_cleanup_removes_empty_incomplete_tool_model_directories(self):
+        with tempfile.TemporaryDirectory() as temp_value:
+            root = Path(temp_value)
+            models_root = root / "_tool_models" / "asr" / "models"
+            cache_root = models_root / "iic--incomplete-model"
+            snapshot = cache_root / "snapshots" / "master"
+            snapshot.mkdir(parents=True)
+            (snapshot / "config.yaml").write_bytes(b"config")
+            (snapshot / "model.pt.incomplete").write_bytes(b"partial")
+
+            registry = mock.Mock()
+            registry.model_root.return_value = root
+            registry.list_models.return_value = []
+            output = io.StringIO()
+            with mock.patch.dict("sys.modules", {
+                "pymss": mock.Mock(),
+                "pymss.model_registry": registry,
+            }), redirect_stdout(output):
+                code = worker_models.cmd_cleanup_model_residual_files({"modelDir": str(root)})
+
+            event = json.loads(output.getvalue().strip())
+            self.assertEqual(code, 0)
+            self.assertEqual(event["type"], "model_residual_cleaned")
+            self.assertFalse(cache_root.exists())
+            self.assertTrue(models_root.is_dir())
+            self.assertEqual(event["payload"]["modelStorageSummary"]["residualFiles"], [])
+
+    def test_tool_model_without_a_weight_is_not_counted_as_downloaded(self):
+        with tempfile.TemporaryDirectory() as temp_value:
+            root = Path(temp_value)
+            metadata_only = (
+                root / "_tool_models" / "asr" / "models"
+                / "iic--metadata-only" / "snapshots" / "master" / "config.yaml"
+            )
+            metadata_only.parent.mkdir(parents=True)
+            metadata_only.write_bytes(b"config")
+
+            registry = mock.Mock()
+            registry.model_root.return_value = root
+            registry.list_models.return_value = []
+            with mock.patch.dict("sys.modules", {
+                "pymss": mock.Mock(),
+                "pymss.model_registry": registry,
+            }):
+                summary = worker_models._storage_summary_payload(str(root))
+
+        self.assertEqual(summary["toolModels"], [])
+        self.assertEqual(summary["downloadedCount"], 0)
+        self.assertEqual(summary["residualBytes"], len(b"config"))
+
+    def test_tool_model_with_missing_declared_file_is_reported_as_residual(self):
+        with tempfile.TemporaryDirectory() as temp_value:
+            root = Path(temp_value)
+            snapshot = (
+                root / "_tool_models" / "asr" / "models"
+                / "iic--missing-tokenizer" / "snapshots" / "master"
+            )
+            snapshot.mkdir(parents=True)
+            (snapshot / "model.pt").write_bytes(b"weight" * 512)
+            (snapshot / "config.yaml").write_bytes(b"config")
+            (snapshot / "configuration.json").write_text(json.dumps({
+                "file_path_metas": {
+                    "init_param": "model.pt",
+                    "config": "config.yaml",
+                    "tokenizer_conf": {"token_list": "tokens.json"},
+                },
+            }), encoding="utf-8")
+
+            registry = mock.Mock()
+            registry.model_root.return_value = root
+            registry.list_models.return_value = []
+            with mock.patch.dict("sys.modules", {
+                "pymss": mock.Mock(),
+                "pymss.model_registry": registry,
+            }):
+                summary = worker_models._storage_summary_payload(str(root))
+
+        self.assertEqual(summary["toolModels"], [])
+        self.assertEqual(summary["downloadedCount"], 0)
+        self.assertGreater(summary["residualBytes"], 0)
+
+    def test_delete_tool_model_removes_only_the_selected_managed_directory(self):
+        with tempfile.TemporaryDirectory() as temp_value:
+            root = Path(temp_value)
+            models_root = root / "_tool_models" / "asr" / "models"
+            selected = models_root / "iic--speech_paraformer"
+            retained = models_root / "iic--speech_fsmn_vad"
+            selected.mkdir(parents=True)
+            retained.mkdir(parents=True)
+            (selected / "model.pt").write_bytes(b"selected")
+            (retained / "model.pt").write_bytes(b"retained" * 256)
+            (retained / "config.yaml").write_bytes(b"config")
+            (retained / "configuration.json").write_text(json.dumps({
+                "file_path_metas": {"init_param": "model.pt", "config": "config.yaml"},
+            }), encoding="utf-8")
+
+            registry = mock.Mock()
+            registry.model_root.return_value = root
+            registry.list_models.return_value = []
+            output = io.StringIO()
+            with mock.patch.dict("sys.modules", {
+                "pymss": mock.Mock(),
+                "pymss.model_registry": registry,
+            }), redirect_stdout(output):
+                code = worker_models.cmd_delete_tool_model({
+                    "modelDir": str(root),
+                    "tool": "asr",
+                    "id": selected.name,
+                })
+
+            event = json.loads(output.getvalue().strip())
+            self.assertEqual(code, 0)
+            self.assertEqual(event["type"], "tool_model_deleted")
+            self.assertFalse(selected.exists())
+            self.assertTrue(retained.is_dir())
+            self.assertEqual(
+                [item["id"] for item in event["payload"]["modelStorageSummary"]["toolModels"]],
+                [retained.name],
+            )
+
+    def test_delete_tool_model_rejects_paths_outside_the_managed_cache(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = worker_models.cmd_delete_tool_model({
+                "modelDir": "models",
+                "tool": "asr",
+                "id": "../outside",
+            })
+
+        event = json.loads(output.getvalue().strip())
+        self.assertEqual(code, 1)
+        self.assertEqual(event["type"], "error")
+        self.assertEqual(event["payload"]["code"], "TOOL_MODEL_DELETE_FAILED")
+
+    def test_delete_tool_model_can_ignore_an_already_missing_recovery_target(self):
+        with tempfile.TemporaryDirectory() as temp_value:
+            root = Path(temp_value)
+            registry = mock.Mock()
+            registry.model_root.return_value = root
+            registry.list_models.return_value = []
+            output = io.StringIO()
+            with mock.patch.dict("sys.modules", {
+                "pymss": mock.Mock(),
+                "pymss.model_registry": registry,
+            }), redirect_stdout(output):
+                code = worker_models.cmd_delete_tool_model({
+                    "modelDir": str(root),
+                    "tool": "asr",
+                    "id": "iic--missing-model",
+                    "missingOk": True,
+                })
+
+        event = json.loads(output.getvalue().strip())
+        self.assertEqual(code, 0)
+        self.assertEqual(event["type"], "tool_model_deleted")
+
+
 class UserModelSerializationTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())

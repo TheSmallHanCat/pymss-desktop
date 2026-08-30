@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 import sys
 import traceback
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from audio_tools.asr_cache import is_complete_asr_model_cache
 
 import yaml
 
@@ -1057,6 +1060,88 @@ def _scan_root_file_sizes(root: Path) -> dict[str, tuple[Path, int]]:
     return scanned
 
 
+def _is_tool_model_file(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root / "_tool_models")
+        return True
+    except ValueError:
+        return False
+
+
+def _prune_empty_tool_model_cache_dirs(root: Path) -> None:
+    """Remove empty managed tool-cache children while retaining each cache root."""
+
+    tool_models_root = root / "_tool_models"
+    if not tool_models_root.is_dir():
+        return
+    try:
+        cache_roots = list(tool_models_root.glob("*/models"))
+    except OSError:
+        return
+    for models_root in cache_roots:
+        if not models_root.is_dir():
+            continue
+        for dirpath, _, _ in os.walk(models_root, topdown=False):
+            directory = Path(dirpath)
+            if directory == models_root:
+                continue
+            try:
+                directory.rmdir()
+            except OSError:
+                # Non-empty and concurrently used directories must remain untouched.
+                continue
+
+
+def _modelscope_model_name(cache_name: str) -> str:
+    owner, separator, model = cache_name.partition("--")
+    return f"{owner}/{model}" if separator and owner and model else cache_name
+
+
+def _asr_model_role(name: str) -> str:
+    lowered = name.lower()
+    if "vad" in lowered:
+        return "vad"
+    if "punc" in lowered:
+        return "punctuation"
+    return "recognition"
+
+
+def _tool_model_storage_items(
+    root: Path,
+    scanned_files: dict[str, tuple[Path, int]],
+) -> list[dict[str, Any]]:
+    models_root = root / "_tool_models" / "asr" / "models"
+    grouped: dict[str, dict[str, Any]] = {}
+    for file_path, size in scanned_files.values():
+        try:
+            relative = file_path.relative_to(models_root)
+        except ValueError:
+            continue
+        if len(relative.parts) < 2:
+            continue
+        cache_name = relative.parts[0]
+        item = grouped.setdefault(cache_name, {"sizeBytes": 0, "fileCount": 0})
+        item["sizeBytes"] += size
+        item["fileCount"] += 1
+
+    items = []
+    for cache_name, usage in grouped.items():
+        path = models_root / cache_name
+        if not is_complete_asr_model_cache(path):
+            continue
+        name = _modelscope_model_name(cache_name)
+        items.append({
+            "id": cache_name,
+            "name": name,
+            "tool": "asr",
+            "role": _asr_model_role(name),
+            "path": str(path),
+            "sizeBytes": usage["sizeBytes"],
+            "fileCount": usage["fileCount"],
+        })
+    return sorted(items, key=lambda item: item["name"].casefold())
+
+
 def _required_model_paths(entry: Any, model_dir: str | None) -> list[Path]:
     from pymss.model_registry import auxiliary_paths_for, config_path_for, model_path_for  # type: ignore
 
@@ -1073,9 +1158,12 @@ def _storage_summary_payload(model_dir: str | None = None) -> dict[str, Any]:
 
     root = model_root(model_dir)
     scanned_files = _scan_root_file_sizes(root)
+    tool_models = _tool_model_storage_items(root, scanned_files)
+    complete_tool_model_roots = [Path(item["path"]).absolute() for item in tool_models]
     known_file_keys: set[str] = set()
     models: list[dict[str, Any]] = []
     total_bytes = 0
+    tool_models_bytes = 0
     downloaded_count = 0
 
     for entry in list_models(supported=None):
@@ -1117,6 +1205,17 @@ def _storage_summary_payload(model_dir: str | None = None) -> dict[str, Any]:
     for normalized_key, (file_path, size) in scanned_files.items():
         if normalized_key in known_file_keys:
             continue
+        # Tool-specific model caches share the configured model root so directory migration
+        # and storage placement remain consistent. Complete caches are managed by their owning
+        # tool; incomplete caches remain residual files so space cleanup can remove them.
+        if _is_tool_model_file(file_path, root):
+            absolute_path = file_path.absolute()
+            if any(
+                absolute_path == model_root or model_root in absolute_path.parents
+                for model_root in complete_tool_model_roots
+            ):
+                tool_models_bytes += size
+                continue
         residual_files.append({"path": str(file_path), "sizeBytes": size})
         residual_bytes += size
 
@@ -1124,9 +1223,11 @@ def _storage_summary_payload(model_dir: str | None = None) -> dict[str, Any]:
     models.sort(key=lambda item: item["sizeBytes"], reverse=True)
     return {
         "modelDir": str(root),
-        "totalBytes": total_bytes,
-        "downloadedCount": downloaded_count,
+        "totalBytes": total_bytes + tool_models_bytes,
+        "toolModelsBytes": tool_models_bytes,
+        "downloadedCount": downloaded_count + len(tool_models),
         "models": models,
+        "toolModels": tool_models,
         "residualFiles": residual_files,
         "residualBytes": residual_bytes,
     }
@@ -1139,6 +1240,40 @@ def cmd_model_storage_summary(payload: dict[str, Any]) -> int:
         return 0
     except Exception as exc:
         return emit_error("MODEL_STORAGE_SUMMARY_FAILED", str(exc), traceback.format_exc())
+
+
+def cmd_delete_tool_model(payload: dict[str, Any]) -> int:
+    model_dir = payload.get("modelDir") or None
+    tool = str(payload.get("tool") or "").strip().lower()
+    model_id = str(payload.get("id") or "").strip()
+    missing_ok = bool(payload.get("missingOk"))
+    try:
+        if tool != "asr":
+            raise ValueError("Unsupported tool model type")
+        if not model_id or model_id in {".", ".."} or "/" in model_id or "\\" in model_id:
+            raise ValueError("Invalid tool model identifier")
+
+        from pymss.model_registry import model_root  # type: ignore
+
+        root = model_root(model_dir)
+        models_root = (root / "_tool_models" / "asr" / "models").resolve()
+        target = (models_root / model_id).resolve()
+        if target.parent != models_root:
+            raise ValueError("Tool model path escapes the managed cache")
+        if not target.is_dir() and not missing_ok:
+            raise FileNotFoundError("Tool model is not installed")
+
+        if target.is_dir():
+            shutil.rmtree(target)
+        summary = _storage_summary_payload(model_dir)
+        emit("tool_model_deleted", {
+            "id": model_id,
+            "tool": tool,
+            "modelStorageSummary": summary,
+        })
+        return 0
+    except Exception as exc:
+        return emit_error("TOOL_MODEL_DELETE_FAILED", str(exc), traceback.format_exc())
 
 
 def cmd_cleanup_model_residual_files(payload: dict[str, Any]) -> int:
@@ -1158,6 +1293,7 @@ def cmd_cleanup_model_residual_files(payload: dict[str, Any]) -> int:
                     deleted.append(str(path))
                 except Exception as exc:
                     errors.append(f"{path}: {exc}")
+            _prune_empty_tool_model_cache_dirs(Path(summary["modelDir"]))
             emit("model_residual_cleaned", {
                 "deleted": deleted,
                 "errors": errors,
@@ -1184,6 +1320,7 @@ def cmd_cleanup_model_residual_files(payload: dict[str, Any]) -> int:
             except Exception as exc:
                 detail = f"{path}: {exc}"
                 errors.append(detail)
+                _prune_empty_tool_model_cache_dirs(Path(summary["modelDir"]))
                 emit("model_residual_cleanup_failed", {
                     "deleted": deleted,
                     "errors": errors,
@@ -1202,6 +1339,7 @@ def cmd_cleanup_model_residual_files(payload: dict[str, Any]) -> int:
                 "progress": int((index / total_files) * 100) if total_files > 0 else 100,
                 "message": "Cleaning residual files",
             }, task_id=task_id)
+        _prune_empty_tool_model_cache_dirs(Path(summary["modelDir"]))
         next_summary = _storage_summary_payload(model_dir)
         emit("model_residual_cleanup_done", {
             "deleted": deleted,

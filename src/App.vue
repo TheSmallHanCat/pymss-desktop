@@ -210,7 +210,9 @@ const themeOverrides = computed(() => {
               <router-view v-slot="{ Component, route }">
                 <component v-if="isWorkflowNodeEditorRoute" :is="Component" :key="route.fullPath" />
                 <transition v-else name="page" mode="out-in">
-                  <component :is="Component" :key="route.path" />
+                  <keep-alive include="ToolsView">
+                    <component :is="Component" :key="route.path" />
+                  </keep-alive>
                 </transition>
               </router-view>
             </main>

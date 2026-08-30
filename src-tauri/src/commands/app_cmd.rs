@@ -349,6 +349,11 @@ pub async fn get_model_storage_summary(app: AppHandle, payload: Value) -> AppRes
 }
 
 #[tauri::command]
+pub async fn delete_tool_model(app: AppHandle, payload: Value) -> AppResult<Value> {
+    run_worker_with_payload(&app, "delete_tool_model", Some(payload))
+}
+
+#[tauri::command]
 pub async fn cleanup_model_residual_files(app: AppHandle, payload: Value) -> AppResult<Value> {
     run_worker_with_payload(&app, "cleanup_model_residual_files", Some(payload))
 }
@@ -511,6 +516,57 @@ pub async fn runtime_env_sizes(app: AppHandle) -> AppResult<Value> {
 #[tauri::command]
 pub async fn runtime_core_versions(app: AppHandle) -> AppResult<Value> {
     run_worker_with_payload(&app, "runtime_core_versions", None)
+}
+
+#[tauri::command]
+pub async fn optional_runtime_package_status(
+    app: AppHandle,
+    package: String,
+) -> AppResult<Value> {
+    run_worker_with_payload(
+        &app,
+        "optional_package_status",
+        Some(serde_json::json!({ "package": package })),
+    )
+}
+
+#[tauri::command]
+pub async fn manage_optional_runtime_package(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> AppResult<Value> {
+    let package = payload
+        .get("package")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::Worker("missing optional runtime package".into()))?;
+    let task_prefix = format!("optional_package_{package}_");
+    if let Ok(tasks) = state.tasks.lock() {
+        if tasks.keys().any(|id| id.starts_with(&task_prefix)) {
+            return Err(AppError::Worker(format!(
+                "optional package operation is already running: {package}"
+            )));
+        }
+    }
+    let task_id = payload
+        .get("taskId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{task_prefix}{}", chrono_like_timestamp()));
+    let mut payload = payload;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("taskId".to_string(), Value::String(task_id.clone()));
+    }
+    spawn_worker_background(
+        app,
+        state,
+        "manage_optional_package",
+        task_id.clone(),
+        payload,
+    )?;
+    Ok(serde_json::json!({ "taskId": task_id, "started": true }))
 }
 
 #[tauri::command]

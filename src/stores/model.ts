@@ -189,11 +189,30 @@ export type ModelStorageItem = {
   files: ModelStorageFile[]
 }
 
+export type ToolModelStorageItem = {
+  id: string
+  name: string
+  tool: 'asr'
+  role: 'recognition' | 'vad' | 'punctuation'
+  path: string
+  sizeBytes: number
+  fileCount: number
+}
+
+export type ModelStorageDeleteTarget = {
+  kind: 'catalog' | 'tool'
+  id: string
+  name: string
+  tool?: ToolModelStorageItem['tool']
+}
+
 export type ModelStorageSummary = {
   modelDir: string
   totalBytes: number
+  toolModelsBytes?: number
   downloadedCount: number
   models: ModelStorageItem[]
+  toolModels: ToolModelStorageItem[]
   residualFiles: ModelStorageFile[]
   residualBytes: number
 }
@@ -1284,32 +1303,51 @@ export const useModelStore = defineStore('model', () => {
     })
   }
 
-  async function deleteModels(names: string[]) {
+  async function deleteToolModel(target: ModelStorageDeleteTarget) {
+    const settings = useSettingsStore()
+    const result = await invoke<{ modelStorageSummary?: ModelStorageSummary }>('delete_tool_model', {
+      payload: {
+        id: target.id,
+        tool: target.tool,
+        modelDir: settings.modelDir || null,
+      },
+    })
+    if (result.modelStorageSummary) {
+      modelStorageSummary.value = result.modelStorageSummary
+      modelStorageSummaryLoadedAt.value = Date.now()
+    }
+  }
+
+  async function deleteStorageModels(targets: ModelStorageDeleteTarget[]) {
     batchDeleteState.value = {
       active: true,
-      totalModels: names.length,
+      totalModels: targets.length,
       completedModels: 0,
       currentModel: '',
       failedModels: [],
     }
-    for (const name of names) {
+    for (const target of targets) {
       batchDeleteState.value = {
         ...batchDeleteState.value,
-        currentModel: name,
+        currentModel: target.name,
       }
       try {
-        await deleteModel(name, 'batch')
-        const taskId = deleteTasks.value[name]?.taskId
-        if (!taskId) throw new Error('Delete task was not created')
-        const task = await waitForDeleteTask(name, taskId)
-        finalizeDeletedModel(name, task.resultModelInfo ?? null)
-        clearDeleteTask(name)
+        if (target.kind === 'tool') {
+          await deleteToolModel(target)
+        } else {
+          await deleteModel(target.id, 'batch')
+          const taskId = deleteTasks.value[target.id]?.taskId
+          if (!taskId) throw new Error('Delete task was not created')
+          const task = await waitForDeleteTask(target.id, taskId)
+          finalizeDeletedModel(target.id, task.resultModelInfo ?? null)
+          clearDeleteTask(target.id)
+        }
       } catch {
         batchDeleteState.value = {
           ...batchDeleteState.value,
-          failedModels: [...batchDeleteState.value.failedModels, name],
+          failedModels: [...batchDeleteState.value.failedModels, target.name],
         }
-        clearDeleteTask(name)
+        if (target.kind === 'catalog') clearDeleteTask(target.id)
       } finally {
         batchDeleteState.value = {
           ...batchDeleteState.value,
@@ -1323,6 +1361,10 @@ export const useModelStore = defineStore('model', () => {
       currentModel: '',
     }
     await loadModelStorageSummary({ force: true })
+  }
+
+  async function deleteModels(names: string[]) {
+    return deleteStorageModels(names.map((name) => ({ kind: 'catalog', id: name, name })))
   }
 
   async function loadModelStorageSummary(options?: { force?: boolean }) {
@@ -1555,6 +1597,7 @@ export const useModelStore = defineStore('model', () => {
     downloadModel,
     cancelDownload,
     deleteModels,
+    deleteStorageModels,
     loadModelStorageSummary,
     cleanupModelResidualFiles,
     clearDeleteTask,

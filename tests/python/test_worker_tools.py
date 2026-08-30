@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -14,18 +15,47 @@ if __package__:
 else:
     import _bootstrap as _worker_test_bootstrap
 
-import worker_tools
+from audio_tools import common as tool_common
+from audio_tools import convert as tool_convert
+from audio_tools import merge as tool_merge
+from audio_tools import midi as tool_midi
+from audio_tools import sdr as tool_sdr
 from game.infer import MidiInferenceResult
 from game.midi import Note, build_midi_file
+import worker_tools
 
 
 class WorkerToolsTests(unittest.TestCase):
+    def test_audio_tool_recoverable_error_preserves_recovery_payload(self) -> None:
+        def fail(_: object) -> object:
+            raise tool_common.AudioToolError(
+                "ASR_MODEL_INCOMPLETE",
+                "model cache incomplete",
+                recoverable=True,
+                extra={"recovery": {"action": "redownload_asr_models", "modelIds": ["model-id"]}},
+            )
+
+        output = io.StringIO()
+        with (
+            mock.patch.object(worker_tools, "get_audio_tool_handler", return_value=fail),
+            redirect_stdout(output),
+        ):
+            code = worker_tools.cmd_audio_tools({"operation": "asr", "requestId": "asr-request-1"})
+
+        event = json.loads(output.getvalue())
+        self.assertEqual(code, 1)
+        self.assertEqual(event["requestId"], "asr-request-1")
+        self.assertEqual(event["payload"]["code"], "ASR_MODEL_INCOMPLETE")
+        self.assertTrue(event["payload"]["recoverable"])
+        self.assertEqual(event["payload"]["operation"], "asr")
+        self.assertEqual(event["payload"]["recovery"]["modelIds"], ["model-id"])
+
     def test_mp3_and_ogg_bitrate_capabilities_are_distinct(self) -> None:
-        self.assertNotIn("450k", worker_tools.MP3_BIT_RATES)
-        self.assertIn("450k", worker_tools.OGG_BIT_RATES)
+        self.assertNotIn("450k", tool_convert.MP3_BIT_RATES)
+        self.assertIn("450k", tool_convert.OGG_BIT_RATES)
 
     def test_conversion_command_uses_argument_list_and_requested_codec(self) -> None:
-        command = worker_tools._build_conversion_command(
+        command = tool_convert._build_conversion_command(
             Path("input with spaces.wav"),
             Path("output with spaces.wav"),
             "wav",
@@ -48,29 +78,29 @@ class WorkerToolsTests(unittest.TestCase):
             (folder / "a.FLAC").write_bytes(b"")
             (folder / "notes.txt").write_text("ignore", encoding="utf-8")
 
-            result = worker_tools._audio_files_in_folder(folder)
+            result = tool_merge._audio_files_in_folder(folder)
 
         self.assertEqual([path.name for path in result], ["a.FLAC", "B.wav"])
 
     def test_merge_name_order_uses_natural_numbers(self) -> None:
         inputs = [Path("part10.wav"), Path("part2.wav"), Path("part1.wav")]
 
-        ordered = worker_tools._order_audio_files(inputs, "name", "asc")
+        ordered = tool_merge._order_audio_files(inputs, "name", "asc")
 
         self.assertEqual([path.name for path in ordered], ["part1.wav", "part2.wav", "part10.wav"])
 
     def test_merge_regex_order_uses_first_capture_and_keeps_unmatched_last(self) -> None:
         inputs = [Path("intro.wav"), Path("take-10.wav"), Path("take-2.wav")]
 
-        ordered = worker_tools._order_audio_files(inputs, "regex", "asc", r"take-(?P<order>\d+)")
-        descending = worker_tools._order_audio_files(inputs, "regex", "desc", r"take-(\d+)")
+        ordered = tool_merge._order_audio_files(inputs, "regex", "asc", r"take-(?P<order>\d+)")
+        descending = tool_merge._order_audio_files(inputs, "regex", "desc", r"take-(\d+)")
 
         self.assertEqual([path.name for path in ordered], ["take-2.wav", "take-10.wav", "intro.wav"])
         self.assertEqual([path.name for path in descending], ["take-10.wav", "take-2.wav", "intro.wav"])
 
     def test_merge_regex_order_rejects_invalid_pattern(self) -> None:
         with self.assertRaisesRegex(ValueError, "Invalid merge regular expression"):
-            worker_tools._order_audio_files([Path("part1.wav")], "regex", "asc", "(")
+            tool_merge._order_audio_files([Path("part1.wav")], "regex", "asc", "(")
 
     def test_merge_operation_applies_requested_regex_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_value:
@@ -82,10 +112,10 @@ class WorkerToolsTests(unittest.TestCase):
                 (input_dir / name).write_bytes(b"")
 
             with (
-                mock.patch.object(worker_tools, "_run_ffmpeg") as run_ffmpeg,
-                mock.patch.object(worker_tools, "emit"),
+                mock.patch.object(tool_merge, "_run_ffmpeg") as run_ffmpeg,
+                mock.patch.object(tool_merge, "emit"),
             ):
-                result = worker_tools._merge_audio({
+                result = tool_merge._merge_audio({
                     "inputDir": str(input_dir),
                     "outputDir": str(output_dir),
                     "sortBy": "regex",
@@ -102,7 +132,7 @@ class WorkerToolsTests(unittest.TestCase):
         reference = np.array([[1.0, -1.0, 0.5], [0.5, -0.5, 1.0]])
         estimated = reference * 0.9
 
-        sdr, average_sdr, si_sdr, average_si_sdr = worker_tools._calculate_sdr_arrays(
+        sdr, average_sdr, si_sdr, average_si_sdr = tool_sdr._calculate_sdr_arrays(
             reference,
             estimated,
         )
@@ -117,7 +147,7 @@ class WorkerToolsTests(unittest.TestCase):
             output = Path(temp_value) / "result.wav"
             output.write_bytes(b"existing")
 
-            candidate = worker_tools._available_path(output)
+            candidate = tool_common._available_path(output)
 
         self.assertEqual(candidate.name, "result_2.wav")
 
@@ -186,11 +216,11 @@ class WorkerToolsTests(unittest.TestCase):
             stderr = io.StringIO()
             with (
                 mock.patch("game.infer.infer", side_effect=fake_infer) as game_infer,
-                mock.patch.object(worker_tools, "emit") as worker_emit,
+                mock.patch.object(tool_midi, "emit") as worker_emit,
                 redirect_stdout(stdout),
                 redirect_stderr(stderr),
             ):
-                result = worker_tools._vocal_to_midi({
+                result = tool_midi._vocal_to_midi({
                     "inputPath": str(input_path),
                     "modelPath": str(model_path),
                     "outputDir": str(output_dir),
@@ -228,7 +258,7 @@ class WorkerToolsTests(unittest.TestCase):
             model_path.touch()
 
             with self.assertRaisesRegex(ValueError, "BPM must be between 30 and 300"):
-                worker_tools._vocal_to_midi({
+                tool_midi._vocal_to_midi({
                     "inputPath": str(input_path),
                     "modelPath": str(model_path),
                     "outputDir": str(output_dir),

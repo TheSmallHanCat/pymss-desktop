@@ -30,6 +30,13 @@ def run_command(command: str, payload: dict) -> int:
         configure_process_proxy(load_proxy_config())
         from worker_bootstrap import cmd_update_runtime_core
         return cmd_update_runtime_core(payload)
+    if command == "optional_package_status":
+        from worker_optional_packages import cmd_optional_package_status
+        return cmd_optional_package_status(payload)
+    if command == "manage_optional_package":
+        configure_process_proxy(load_proxy_config())
+        from worker_optional_packages import cmd_manage_optional_package
+        return cmd_manage_optional_package(payload)
     if command == "activate_runtime":
         from worker_bootstrap import cmd_activate_runtime
         return cmd_activate_runtime(payload)
@@ -94,6 +101,9 @@ def run_command(command: str, payload: dict) -> int:
     if command == "model_storage_summary":
         from worker_models import cmd_model_storage_summary
         return cmd_model_storage_summary(payload)
+    if command == "delete_tool_model":
+        from worker_models import cmd_delete_tool_model
+        return cmd_delete_tool_model(payload)
     if command == "cleanup_model_residual_files":
         from worker_models import cmd_cleanup_model_residual_files
         return cmd_cleanup_model_residual_files(payload)
@@ -113,6 +123,9 @@ def run_command(command: str, payload: dict) -> int:
         from worker_audio import cmd_export_editor_mix
         return cmd_export_editor_mix(payload)
     if command == "audio_tools":
+        if str(payload.get("operation") or "").strip().lower() == "asr":
+            from worker_optional_packages import activate_optional_packages
+            activate_optional_packages()
         from worker_tools import cmd_audio_tools
         return cmd_audio_tools(payload)
     if command == "infer":

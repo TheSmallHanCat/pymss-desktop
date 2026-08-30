@@ -13,7 +13,7 @@ import type {
   AudioToolPhase,
   AudioToolProgress,
   AudioToolResult,
-} from '@/types/audioTools'
+} from '@/features/audio-tools/types'
 
 const props = defineProps<{
   busy: boolean
@@ -39,13 +39,14 @@ const failures = computed(() => [...(props.result?.failed || []), ...(props.resu
 const resultWarnings = computed(() => (props.result?.warnings || []).map((warning) => {
   if (warning === 'no_notes_detected') return t('tools.midiWarningNoNotes')
   if (warning === 'stereo_downmix_fallback') return t('tools.midiWarningStereoFallback')
+  if (warning === 'timestamps_unavailable') return t('tools.asrWarningNoTimestamps')
   return warning
 }))
 const completedCount = computed(() => {
   if (!props.result) return 0
-  return props.result.operation === 'convert'
-    ? props.result.succeeded || outputs.value.length
-    : props.result.merged || 1
+  if (props.result.operation === 'convert') return props.result.succeeded ?? outputs.value.length
+  if (props.result.operation === 'merge') return props.result.merged ?? outputs.value.length
+  return props.result.succeeded ?? outputs.value.length
 })
 const determinate = computed(() => props.busy && props.progress.total > 0)
 const phaseLabels = computed<Record<AudioToolPhase, string>>(() => ({
@@ -61,6 +62,12 @@ const phaseLabels = computed<Record<AudioToolPhase, string>>(() => ({
   loading_audio: t('tools.phaseLoadingAudio'),
   transcribing: t('tools.phaseTranscribing'),
   writing_output: t('tools.phaseWritingOutput'),
+  probing: t('tools.phaseProbing'),
+  analyzing_silence: t('tools.phaseAnalyzingSilence'),
+  writing_segments: t('tools.phaseWritingSegments'),
+  loading_asr_model: t('tools.phaseLoadingAsrModel'),
+  recognizing_speech: t('tools.phaseRecognizingSpeech'),
+  writing_transcript: t('tools.phaseWritingTranscript'),
   completed: t('tools.phaseCompleted'),
   failed: t('tools.phaseFailed'),
 }))
@@ -190,7 +197,7 @@ function showLogProgress(entry: AudioToolLogEntry) {
       <div v-else class="status-complete">
         <n-icon :component="resultWarnings.length ? AlertCircleOutline : CheckmarkCircleOutline" />
         <div>
-          <strong v-if="result.operation === 'sdr'">{{ t('tools.analysisCompleted') }}</strong>
+          <strong v-if="result.operation === 'sdr' || result.operation === 'inspect'">{{ t('tools.analysisCompleted') }}</strong>
           <strong v-else-if="resultWarnings.length">{{ t('tools.completedWithWarnings') }}</strong>
           <strong v-else>{{ t('tools.outputCount', { count: completedCount }) }}</strong>
           <span>{{ t('tools.completedIn', { time: formatElapsed(elapsedMs) }) }}</span>
@@ -198,7 +205,9 @@ function showLogProgress(entry: AudioToolLogEntry) {
       </div>
     </section>
 
-    <section v-if="result?.operation === 'sdr' && !error" class="metric-grid">
+    <slot v-if="$slots.result && result && !error" name="result" :result="result" />
+
+    <section v-else-if="result?.operation === 'sdr' && !error" class="metric-grid">
       <div class="metric-item">
         <span>SDR</span>
         <strong>{{ result.averageSdr ?? '—' }} dB</strong>

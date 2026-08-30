@@ -12,7 +12,7 @@ import torch.nn.functional as torch_functional
 
 from game.config import load_model_bundle
 from game.inference.me_infer import SegmentationEstimationInferenceModel
-from game.inference.slicer2 import Slicer
+from audio_tools.slicer_core import Slicer
 from game.midi import Note, build_midi_file
 
 

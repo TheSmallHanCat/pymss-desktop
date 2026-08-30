@@ -737,6 +737,9 @@ fn is_background_terminal_event(command: &str, event_type: &str) -> bool {
             event_type,
             "error" | "runtime_core_update_finished" | "task_cancelled"
         ),
+        "manage_optional_package" => {
+            matches!(event_type, "error" | "optional_package_status" | "task_cancelled")
+        }
         "import_custom_model" => matches!(
             event_type,
             "error" | "custom_model_import_finished" | "task_cancelled"

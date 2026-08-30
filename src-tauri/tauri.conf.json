@@ -41,6 +41,8 @@
       "../python/*.py",
       "../python/*.json",
       "../python/*.txt",
+      "../python/audio_tools/**/*.py",
+      "../python/audio_tools/LICENSE.audio-slicer",
       "../python/game/**/*.py",
       "../python/game/**/*.txt",
       "../python/game/LICENSE"
