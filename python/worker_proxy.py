@@ -84,12 +84,10 @@ def parse_proxy_config(value: Any) -> ProxyConfig:
             raise ProxyConfigError("INVALID_PROXY_PORT", "Proxy port is invalid") from exc
         if port is None or not 1 <= port <= 65535:
             raise ProxyConfigError("INVALID_PROXY_PORT", "Proxy port must be between 1 and 65535")
-        if parts.scheme.startswith("socks"):
-            try:
-                import socks  # type: ignore
-            except ImportError as exc:
-                raise ProxyConfigError("SOCKS_SUPPORT_UNAVAILABLE", "PySocks is required for SOCKS5 proxies") from exc
-            del socks
+        # No eager PySocks check here: model downloads go through pymss 2.1.1+, which
+        # carries PySocks via pymss[proxy] and raises a clear ProxyError at download time
+        # if the executing environment is missing it. The worker's own SOCKS routing
+        # (configure_process_proxy) also degrades silently on purpose.
     return ProxyConfig(mode=mode, url=url, bypass=bypass)  # type: ignore[arg-type]
 
 
@@ -103,6 +101,31 @@ def load_proxy_config() -> ProxyConfig:
     return parse_proxy_config({"mode": mode, "url": url, "bypass": bypass})
 
 
+def effective_proxy_url(config: ProxyConfig | None = None) -> str:
+    """Resolve the studio proxy setting into a pymss ``proxy=`` argument.
+
+    pymss 2.1.1+ accepts an explicit proxy URL (http/https/socks5/socks5h) and
+    handles both downloaders itself, so the worker no longer patches aria2c
+    arguments or the socket layer. Returns "" to force a direct connection
+    (mode "none") — passing None would let pymss fall back to the environment,
+    which "none" deliberately cleared.
+    """
+    config = config or load_proxy_config()
+    if config.mode == "none":
+        return ""
+    if config.mode == "custom":
+        return config.url
+    # "system": mirror what urllib would discover, restricted to schemes pymss
+    # understands. A SOCKS system proxy is reported as-is; pymss needs PySocks
+    # for it (pymss[proxy], part of the app-managed runtime manifest).
+    discovered = urllib.request.getproxies()
+    proxy_url = discovered.get("https") or discovered.get("http") or ""
+    scheme = urlsplit(proxy_url).scheme.lower() if proxy_url else ""
+    if proxy_url and scheme not in {"http", "https", "socks5", "socks5h"}:
+        return ""
+    return proxy_url
+
+
 def _set_bypass_env(config: ProxyConfig) -> None:
     value = ",".join(config.bypass)
     os.environ["NO_PROXY"] = value
@@ -110,7 +133,13 @@ def _set_bypass_env(config: ProxyConfig) -> None:
 
 
 def configure_process_proxy(config: ProxyConfig) -> None:
-    """Configure urllib and third-party libraries once for this worker process."""
+    """Configure urllib and third-party libraries once for this worker process.
+
+    This covers the worker's own urllib calls (test_connection, endpoint
+    probes). Model downloads go through pymss, which receives the resolved
+    proxy URL explicitly (see effective_proxy_url) and no longer relies on
+    process-global state set here.
+    """
     if config.mode == "none":
         os.environ["NO_PROXY"] = "*"
         os.environ["no_proxy"] = "*"
@@ -121,19 +150,20 @@ def configure_process_proxy(config: ProxyConfig) -> None:
     if config.mode == "system":
         return
     _set_bypass_env(config)
-    os.environ["HTTP_PROXY"] = config.url
-    os.environ["HTTPS_PROXY"] = config.url
-    os.environ["http_proxy"] = config.url
-    os.environ["https_proxy"] = config.url
     if config.scheme in {"http", "https"}:
+        os.environ["HTTP_PROXY"] = config.url
+        os.environ["HTTPS_PROXY"] = config.url
+        os.environ["http_proxy"] = config.url
+        os.environ["https_proxy"] = config.url
         urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({
             "http": config.url,
             "https": config.url,
         })))
         return
     if config.scheme in {"socks5", "socks5h"}:
-        # urllib rejects a socks5:// value outright ("unknown url type"), so the variables that
-        # carry it have to go before the socket layer can quietly do the work instead.
+        # urllib rejects a socks5:// value outright ("unknown url type"), so the
+        # variables that carry it have to go before the socket layer can do the
+        # work instead.
         for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             os.environ.pop(name, None)
         urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
@@ -286,34 +316,6 @@ class _RequestsResponse:
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         self._response.close()
         self._session.close()
-
-
-def aria2_proxy_args(config: ProxyConfig) -> list[str]:
-    if config.mode == "none":
-        return ["--all-proxy="]
-    if config.mode == "system":
-        return []
-    parts = urlsplit(config.url)
-    args: list[str] = []
-    if parts.scheme in {"http", "https"}:
-        netloc = parts.hostname or ""
-        if parts.port:
-            netloc = f"{netloc}:{parts.port}"
-        args.append(f"--all-proxy={urlunsplit((parts.scheme, netloc, '', '', ''))}")
-        if parts.username:
-            args.append(f"--all-proxy-user={parts.username}")
-        if parts.password:
-            args.append(f"--all-proxy-pass={parts.password}")
-    else:
-        args.append(f"--socks5-proxy={parts.hostname}:{parts.port}")
-        args.append(f"--socks5-remote-name-resolve={'true' if config.remote_dns else 'false'}")
-        if parts.username:
-            args.append(f"--socks5-proxy-user={parts.username}")
-        if parts.password:
-            args.append(f"--socks5-proxy-pass={parts.password}")
-    if config.bypass:
-        args.append(f"--no-proxy={','.join(config.bypass)}")
-    return args
 
 
 def redacted_proxy(config: ProxyConfig) -> str:

@@ -563,7 +563,7 @@ def _prepare_separator(
             raise ModelNotFoundError(str(resolve_exc)) from resolve_exc
         from pymss import model_download as pymss_model_download  # type: ignore
         from pymss.model_download import download_model  # type: ignore
-        from worker_download import _aria2_args_for_current_proxy, download_studio_model, files_for_studio_model, prepare_pymss_download
+        from worker_download import download_studio_model, effective_proxy_url, files_for_studio_model, prepare_pymss_download
         emit("task_stage", {"stage": "downloading_model", "message": "Downloading model files"}, task_id=task_id)
         try:
             prepare_pymss_download(pymss_model_download, task_id, download_model, download_method)
@@ -574,7 +574,7 @@ def _prepare_separator(
                 files,
                 source=source,
                 endpoint=endpoint,
-                aria2_args=_aria2_args_for_current_proxy(),
+                proxy=effective_proxy_url(),
                 task_id=task_id,
             )
             resolved = _resolve_studio_model(model_name, model_dir, require_supported=True, require_exists=True)

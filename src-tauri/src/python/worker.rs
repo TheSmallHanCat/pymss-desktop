@@ -120,6 +120,20 @@ fn embedded_python_path(app: &AppHandle) -> AppResult<Option<PathBuf>> {
 
 fn bootstrap_python_path(app: &AppHandle) -> AppResult<String> {
     if let Ok(value) = std::env::var("PYMSS_STUDIO_PYTHON") {
+        let path = PathBuf::from(&value);
+        if path.is_relative() {
+            if let Ok(cwd) = std::env::current_dir() {
+                let abs = cwd.join(&path);
+                if abs.exists() {
+                    return Ok(abs.to_string_lossy().to_string());
+                }
+            }
+            let dev_root = dev_workspace_root();
+            let abs_dev = dev_root.join(&path);
+            if abs_dev.exists() {
+                return Ok(abs_dev.to_string_lossy().to_string());
+            }
+        }
         return Ok(value);
     }
     if let Some(embedded) = embedded_python_path(app)? {

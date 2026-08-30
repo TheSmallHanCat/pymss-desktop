@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
-import { normalizeWorkflowDefinition } from '@/utils/workflowGraph'
 
 export type WorkflowEntry = {
   id: string
@@ -44,11 +43,11 @@ function createId(prefix = 'workflow') {
 }
 
 function normalizeDefinition(value: unknown): Record<string, unknown> {
-  return normalizeWorkflowDefinition(
-    value && typeof value === 'object' && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : {},
-  )
+  // Workflows are now stored as native comfy-mss JSON (node editor) or pymss
+  // YAML dict (simple creator) — both are already canonical. No v2 migration.
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
 }
 
 function normalizeWorkflow(input: Partial<WorkflowEntry>): WorkflowEntry | null {
