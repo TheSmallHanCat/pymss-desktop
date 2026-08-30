@@ -14,7 +14,6 @@ else:
     import _bootstrap as _worker_test_bootstrap
 
 from worker_download import (
-    _align_aria2_with_proxy,
     _make_pymss_progress_adapter,
     _pymss_reports_progress,
     _watch_download_progress,
@@ -22,71 +21,41 @@ from worker_download import (
     files_for_studio_model,
     prepare_pymss_download,
 )
-from worker_proxy import parse_proxy_config
+from worker_proxy import effective_proxy_url, parse_proxy_config
 
 
-class Aria2ProxyAlignmentTest(unittest.TestCase):
-    """aria2 runs as a child process, so it sees none of the proxy setup done in-process."""
+class EffectiveProxyUrlTest(unittest.TestCase):
+    """The studio proxy setting resolves to the pymss ``proxy=`` argument."""
 
-    def _align(self, proxy, *, aria2="C:/bin/aria2c.exe", system_proxies=None, env=None):
-        module = SimpleNamespace(ARIA2C_PATH=aria2)
-        with mock.patch("worker_download.load_proxy_config", return_value=proxy), \
-             mock.patch("worker_download.urllib.request.getproxies", return_value=system_proxies or {}), \
-             mock.patch.dict(os.environ, env or {}, clear=True), \
-             mock.patch("worker_download.emit"):
-            _align_aria2_with_proxy(module, "task")
-            # patch.dict restores os.environ on exit, so snapshot it while still inside.
-            return module, dict(os.environ)
-
-    def test_socks_proxy_takes_aria2_out_of_the_picture(self):
-        # The current worker alignment only logs the SOCKS route. New pymss receives explicit
-        # --socks5-* arguments; old pymss is disabled by prepare_pymss_download instead.
-        proxy = parse_proxy_config({"mode": "custom", "url": "socks5://127.0.0.1:1080", "bypass": ""})
-        module, _env = self._align(proxy)
-
-        self.assertEqual(module.ARIA2C_PATH, "C:/bin/aria2c.exe")
-
-    def test_system_http_proxy_is_handed_to_aria2(self):
-        # urllib finds this in the OS settings; aria2 only ever reads the environment.
-        proxy = parse_proxy_config({"mode": "system", "url": "", "bypass": ""})
-        module, env = self._align(proxy, system_proxies={"http": "http://127.0.0.1:7890"})
-
-        self.assertEqual(module.ARIA2C_PATH, "C:/bin/aria2c.exe")
-        # Windows folds environment variable names to upper case, POSIX does not, and aria2
-        # accepts either -- so assert on the name without caring which case survived.
-        exported = {name.lower(): value for name, value in env.items()}
-        self.assertEqual(exported.get("http_proxy"), "http://127.0.0.1:7890")
-        self.assertEqual(exported.get("https_proxy"), "http://127.0.0.1:7890")
-
-    def test_system_socks_proxy_falls_back_to_urllib(self):
-        proxy = parse_proxy_config({"mode": "system", "url": "", "bypass": ""})
-        module, _env = self._align(proxy, system_proxies={"http": "socks5://127.0.0.1:1080"})
-
-        self.assertIsNone(module.ARIA2C_PATH)
-
-    def test_no_system_proxy_leaves_the_fast_downloader_alone(self):
-        # The common case: nothing configured, so aria2 stays available.
-        proxy = parse_proxy_config({"mode": "system", "url": "", "bypass": ""})
-        module, env = self._align(proxy, system_proxies={})
-
-        self.assertEqual(module.ARIA2C_PATH, "C:/bin/aria2c.exe")
-        self.assertEqual(env, {})
-
-    def test_custom_http_proxy_is_exported_for_aria2(self):
+    def test_custom_http_proxy_passes_through(self):
         proxy = parse_proxy_config({"mode": "custom", "url": "http://127.0.0.1:8080", "bypass": ""})
-        module, env = self._align(proxy)
+        self.assertEqual(effective_proxy_url(proxy), "http://127.0.0.1:8080")
 
-        self.assertEqual(module.ARIA2C_PATH, "C:/bin/aria2c.exe")
-        exported = {name.lower(): value for name, value in env.items()}
-        self.assertEqual(exported.get("http_proxy"), "http://127.0.0.1:8080")
-        self.assertEqual(exported.get("https_proxy"), "http://127.0.0.1:8080")
-
-    def test_does_nothing_when_aria2_is_not_installed(self):
+    def test_custom_socks_proxy_passes_through(self):
+        # pymss 2.1.1+ handles SOCKS itself (PySocks via pymss[proxy]); the worker no
+        # longer decides downloader routing for it.
         proxy = parse_proxy_config({"mode": "custom", "url": "socks5://127.0.0.1:1080", "bypass": ""})
-        module, env = self._align(proxy, aria2=None)
+        self.assertEqual(effective_proxy_url(proxy), "socks5://127.0.0.1:1080")
 
-        self.assertIsNone(module.ARIA2C_PATH)
-        self.assertEqual(env, {})
+    def test_none_mode_forces_direct_connection(self):
+        # "" tells pymss to skip even the environment lookup; None would not.
+        proxy = parse_proxy_config({"mode": "none", "url": "", "bypass": ""})
+        self.assertEqual(effective_proxy_url(proxy), "")
+
+    def test_system_mode_mirrors_urllib_discovery(self):
+        proxy = parse_proxy_config({"mode": "system", "url": "", "bypass": ""})
+        with mock.patch("worker_proxy.urllib.request.getproxies", return_value={"https": "http://127.0.0.1:7890"}):
+            self.assertEqual(effective_proxy_url(proxy), "http://127.0.0.1:7890")
+
+    def test_system_mode_without_discovered_proxy_is_direct(self):
+        proxy = parse_proxy_config({"mode": "system", "url": "", "bypass": ""})
+        with mock.patch("worker_proxy.urllib.request.getproxies", return_value={}):
+            self.assertEqual(effective_proxy_url(proxy), "")
+
+    def test_system_mode_rejects_schemes_pymss_cannot_use(self):
+        proxy = parse_proxy_config({"mode": "system", "url": "", "bypass": ""})
+        with mock.patch("worker_proxy.urllib.request.getproxies", return_value={"http": "ftp://127.0.0.1:21"}):
+            self.assertEqual(effective_proxy_url(proxy), "")
 
 
 class PymssCapabilityTest(unittest.TestCase):
@@ -114,10 +83,7 @@ class PymssCapabilityTest(unittest.TestCase):
             pass
 
         module = SimpleNamespace(ARIA2C_PATH="C:/bin/aria2c.exe")
-        proxy = parse_proxy_config({"mode": "system", "url": "", "bypass": ""})
-        with mock.patch("worker_download.load_proxy_config", return_value=proxy), \
-             mock.patch("worker_download.urllib.request.getproxies", return_value={}), \
-             mock.patch("worker_download.emit"):
+        with mock.patch("worker_download.emit"):
             prepare_pymss_download(module, "task", old_style)
 
         self.assertIsNone(module.ARIA2C_PATH)
@@ -127,10 +93,7 @@ class PymssCapabilityTest(unittest.TestCase):
             pass
 
         module = SimpleNamespace(ARIA2C_PATH="C:/bin/aria2c.exe")
-        proxy = parse_proxy_config({"mode": "system", "url": "", "bypass": ""})
-        with mock.patch("worker_download.load_proxy_config", return_value=proxy), \
-             mock.patch("worker_download.urllib.request.getproxies", return_value={}), \
-             mock.patch("worker_download.emit"):
+        with mock.patch("worker_download.emit"):
             prepare_pymss_download(module, "task", new_style)
 
         self.assertEqual(module.ARIA2C_PATH, "C:/bin/aria2c.exe")
@@ -140,10 +103,7 @@ class PymssCapabilityTest(unittest.TestCase):
             pass
 
         module = SimpleNamespace(ARIA2C_PATH="C:/bin/aria2c.exe")
-        proxy = parse_proxy_config({"mode": "system", "url": "", "bypass": ""})
-        with mock.patch("worker_download.load_proxy_config", return_value=proxy), \
-             mock.patch("worker_download.urllib.request.getproxies", return_value={}), \
-             mock.patch("worker_download.emit"):
+        with mock.patch("worker_download.emit"):
             prepare_pymss_download(module, "task", new_style, "urllib")
 
         self.assertIsNone(module.ARIA2C_PATH)
@@ -189,7 +149,7 @@ class Aria2FallbackTest(unittest.TestCase):
             _download_file=download_file,
             _already_valid=lambda *_args: False,
             _expected_size_and_hash=lambda *_args: (1, "sha256"),
-            fetch_modelscope_file_index=lambda timeout=30: {},
+            fetch_modelscope_file_index=lambda timeout=30, proxy=None: {},
         )
         root = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(root, True))

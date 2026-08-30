@@ -6,7 +6,7 @@ import { useMessage, type InputInst } from 'naive-ui'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { storeToRefs } from 'pinia'
-import WorkflowNodeEditor from '@/components/workflow/WorkflowNodeEditor.vue'
+import WorkflowNodeEditor from '@/components/workflow/WorkflowNodeEditorLite.vue'
 import WorkflowRevisionConflictModal from '@/components/workflow/WorkflowRevisionConflictModal.vue'
 import { useModelStore } from '@/stores/model'
 import {
@@ -14,17 +14,6 @@ import {
   WorkflowRevisionConflictError,
   type WorkflowEntry,
 } from '@/stores/workflow'
-import {
-  buildWorkflowDefinition,
-  getWorkflowValidationSummary,
-  hydrateWorkflowDefinition,
-  workflowValidationErrorMessage,
-  type WorkflowValidationSummary,
-} from '@/utils/workflowDefinition'
-import {
-  readWorkflowGraphDefinition,
-  serializeWorkflowGraphDefinition,
-} from '@/utils/workflowGraph'
 
 const { t, locale } = useI18n()
 const route = useRoute()
@@ -40,7 +29,6 @@ const name = ref('')
 const description = ref('')
 const defaultDevice = ref('auto')
 const defaultFormat = ref('wav')
-const defaultNormalize = ref(false)
 const definition = ref<Record<string, unknown>>({})
 const loaded = ref(false)
 const editingName = ref(false)
@@ -77,51 +65,42 @@ const modelOptions = computed(() => [...downloadedModels.value]
     label: item.name,
     value: item.name,
   })))
-const hydratedDraft = computed(() => hydrateWorkflowDefinition(definition.value))
-const generatedDefinition = computed(() => buildWorkflowDefinition({
-  defaultDevice: defaultDevice.value,
-  defaultFormat: defaultFormat.value,
-  defaultNormalize: defaultNormalize.value,
-  steps: hydratedDraft.value.steps,
-  utilityNodes: hydratedDraft.value.utilityNodes,
-  saveTargets: hydratedDraft.value.saveTargets,
-  ui: hydratedDraft.value.ui,
-}))
-const validationSummary = computed(() => getWorkflowValidationSummary(generatedDefinition.value))
-
-function workflowValidationError(summary: WorkflowValidationSummary) {
-  return workflowValidationErrorMessage(summary, t)
-}
 
 const formError = computed(() => {
   if (!name.value.trim()) return t('workflows.nameRequired')
-  if (!hydratedDraft.value.steps.length) return t('workflows.stepsRequired')
-  const validationError = workflowValidationError(validationSummary.value)
-  if (validationError) return validationError
-  const downloaded = new Set(downloadedModels.value.map(item => item.name))
-  for (const [index, step] of hydratedDraft.value.steps.entries()) {
-    const label = t('workflows.stepTitle', { index: index + 1 })
-    if (!step.model.trim()) return t('workflows.stepModelRequired', { id: label })
-    if (!downloaded.has(step.model.trim())) return t('workflows.stepModelNotDownloaded', { id: label })
-    if (!step.input.trim()) return t('workflows.stepInputRequired', { id: label })
-    if (!step.stems.length) return t('workflows.stepStemsRequired', { id: label })
-  }
-  if (validationSummary.value.noSaveOutputs) return t('workflows.workflowNoSaveOutputs')
+  const nodes = Array.isArray(definition.value.nodes) ? definition.value.nodes as any[] : []
+  if (!nodes.length) return t('workflows.stepsRequired')
+  // Minimal validation: deep validation (cycles/dangling/unknown nodes) is
+  // delegated to the pymss DAG engine at run time. We only block save on the
+  // obvious structural issues and missing required nodes.
+  const hasOutput = nodes.some(n => String(n.type || '').toLowerCase().includes('save'))
+  if (!hasOutput) return t('workflows.workflowNoSaveOutputs')
   return ''
+})
+
+/** Advisory (non-blocking): separate nodes referencing models that are not in
+ * the downloaded list. Saving a graph must never be blocked by model state —
+ * the model may be downloaded later, or the graph shared to another machine.
+ * comfy-mss serializes model widgets as ``[category] filename`` — strip the
+ * annotation prefix before matching (mirrors pymss' runtime behaviour). */
+const missingModelNodes = computed(() => {
+  const nodes = Array.isArray(definition.value.nodes) ? definition.value.nodes as any[] : []
+  const downloaded = new Set(downloadedModels.value.map(item => item.name))
+  const missing: string[] = []
+  for (const n of nodes) {
+    if (String(n.type).endsWith('separate')) {
+      const raw = String((n as any).widgets_values?.[0] || '').trim()
+      const model = raw.replace(/^\[[^\]]*\]\s*/, '').trim()
+      if (model && !downloaded.has(model)) missing.push(String(n.id))
+    }
+  }
+  return missing
 })
 const canSave = computed(() => !formError.value)
 
-function createFreshDefinition() {
-  const fresh = hydrateWorkflowDefinition({})
-  return buildWorkflowDefinition({
-    defaultDevice: defaultDevice.value,
-    defaultFormat: defaultFormat.value,
-    defaultNormalize: defaultNormalize.value,
-    steps: fresh.steps,
-    utilityNodes: fresh.utilityNodes,
-    saveTargets: fresh.saveTargets,
-    ui: fresh.ui,
-  })
+function createFreshDefinition(): Record<string, unknown> {
+  // An empty comfy-mss graph; the editor seeds a starter workflow on mount.
+  return { last_node_id: 0, last_link_id: 0, nodes: [], links: [], version: 1 }
 }
 
 function loadWorkflow(item?: WorkflowEntry | null) {
@@ -131,7 +110,6 @@ function loadWorkflow(item?: WorkflowEntry | null) {
     description.value = ''
     defaultDevice.value = 'auto'
     defaultFormat.value = 'wav'
-    defaultNormalize.value = false
     definition.value = createFreshDefinition()
     loadedUpdatedAt.value = undefined
     return
@@ -139,12 +117,15 @@ function loadWorkflow(item?: WorkflowEntry | null) {
   editingId.value = item.id
   name.value = item.name
   description.value = item.description
-  definition.value = item.definition
+  definition.value = item.definition && typeof item.definition === 'object' && Object.keys(item.definition).length
+    ? item.definition
+    : createFreshDefinition()
   loadedUpdatedAt.value = item.updatedAt
-  const draft = hydrateWorkflowDefinition(item.definition)
-  defaultDevice.value = draft.defaultDevice
-  defaultFormat.value = draft.defaultFormat
-  defaultNormalize.value = draft.defaultNormalize
+  // Read defaults back from the graph's extra.appDefaults if present.
+  const extra = (definition.value.extra as Record<string, unknown> | undefined) || {}
+  const appDefaults = (extra.appDefaults as Record<string, unknown> | undefined) || {}
+  defaultDevice.value = String(appDefaults.device || 'auto')
+  defaultFormat.value = String(appDefaults.output_format || 'wav')
   workflow.selectWorkflow(item.id)
 }
 
@@ -178,23 +159,40 @@ async function persistDefinition(
 
 async function save(currentDefinition?: Record<string, unknown>) {
   if (!canSave.value) return
-  const definitionSource = currentDefinition && typeof currentDefinition === 'object'
+  const base = currentDefinition && typeof currentDefinition === 'object'
     ? currentDefinition
-    : generatedDefinition.value
-  const graphDefinition = readWorkflowGraphDefinition(definitionSource)
-  const definitionToSave = serializeWorkflowGraphDefinition({
-    ...graphDefinition,
-    defaults: {
-      ...graphDefinition.defaults,
-      device: defaultDevice.value || 'auto',
-      output_format: defaultFormat.value || 'wav',
-      inference_params: {
-        ...(graphDefinition.defaults.inference_params || {}),
-        normalize: Boolean(defaultNormalize.value),
-      },
-    },
-  })
+    : definition.value
+  const definitionToSave = injectDefaults(base, defaultDevice.value, defaultFormat.value)
+  definition.value = definitionToSave
   await persistDefinition(definitionToSave)
+}
+
+/** Write device/output_format into every separate/save node's widgets and
+ * stash them on extra.appDefaults so the editor UI stays in sync on reload. */
+function injectDefaults(def: Record<string, unknown>, device: string, format: string): Record<string, unknown> {
+  const clone = JSON.parse(JSON.stringify(def)) as Record<string, unknown>
+  const nodes = Array.isArray(clone.nodes) ? clone.nodes as any[] : []
+  for (const n of nodes) {
+    const type = String(n.type || '')
+    const wv = Array.isArray(n.widgets_values) ? n.widgets_values : []
+    if (type.endsWith('separate')) {
+      // widget order: [model_name, device, download_missing, source, device_ids, debug]
+      // (custom_mss_separate has model_type at idx 1, device at 2)
+      const devIdx = type === 'custom_mss_separate' ? 2 : 1
+      while (wv.length <= devIdx) wv.push(null)
+      wv[devIdx] = device || 'auto'
+      n.widgets_values = wv
+    } else if (type === 'pymss_save_audio') {
+      // widget order: [output_format, output_folder, sample_rate, ...]
+      while (wv.length <= 0) wv.push(null)
+      if (format) wv[0] = format.toLowerCase()
+      n.widgets_values = wv
+    }
+  }
+  const extra = ((clone.extra as Record<string, unknown>) || {})
+  extra.appDefaults = { ...(extra.appDefaults as object || {}), device: device || 'auto', output_format: format || 'wav' }
+  clone.extra = extra
+  return clone
 }
 
 async function reloadRevisionConflict() {
@@ -322,9 +320,9 @@ onBeforeUnmount(() => {
   unlistenCloseRequested?.()
 })
 
-watch([defaultDevice, defaultFormat, defaultNormalize], () => {
+watch([defaultDevice, defaultFormat], () => {
   if (!loaded.value) return
-  definition.value = generatedDefinition.value
+  definition.value = injectDefaults(definition.value, defaultDevice.value, defaultFormat.value)
 })
 </script>
 
@@ -392,6 +390,7 @@ watch([defaultDevice, defaultFormat, defaultNormalize], () => {
       :models="models"
       :form-error="formError"
       :can-save="canSave"
+      :advisory="missingModelNodes.length ? t('workflows.stepModelNotDownloaded', { id: missingModelNodes.join(', ') }) : ''"
       @save="save"
       @close="closeEditor"
     />

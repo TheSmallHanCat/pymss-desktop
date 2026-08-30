@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -35,7 +36,6 @@ BUNDLED_RUNTIME_ENVS_DIR = Path(os.environ["PYMSS_STUDIO_BUNDLED_RUNTIME_ENVS_DI
 # probe script below — share this table so they can never disagree.
 PACKAGE_IMPORT_NAMES = {
     "pyyaml": "yaml",
-    "pysocks": "socks",
     "pymss-core": "pymss_core",
     "typing-extensions": "typing_extensions",
 }

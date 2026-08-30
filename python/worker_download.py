@@ -5,11 +5,8 @@ import os
 import threading
 import time
 import traceback
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from worker_models import (
     auxiliary_paths_for,
@@ -24,8 +21,7 @@ from worker_models import (
 from worker_protocol import emit, emit_error
 from worker_proxy import (
     ProxyConfigError,
-    aria2_proxy_args,
-    load_proxy_config,
+    effective_proxy_url,
     parse_proxy_config,
     proxy_urlopen,
     redacted_proxy,
@@ -45,70 +41,8 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _align_aria2_with_proxy(pymss_download: Any, task_id: str | None) -> None:
-    """Make the aria2 downloader obey the same proxy as the rest of the worker.
-
-    aria2 is a separate process that reads only the ``*_proxy`` environment variables. It has no
-    SOCKS support, and it does not consult the OS proxy settings that urllib discovers on
-    Windows and macOS. Left alone it connects directly — which behind a mandatory proxy is a
-    failure, and behind an optional one is worse: traffic the user believed was tunnelled goes
-    out in the clear. Where aria2 cannot be made to comply, urllib takes over instead.
-
-    Args:
-        pymss_download (Any): The imported ``pymss.model_download`` module.
-        task_id (str | None): Task id used for progress logs.
-
-    Returns:
-        None: This callable completes for its side effects."""
-    if not pymss_download.ARIA2C_PATH:
-        _emit_download_log(task_id, "info", "aria2c is unavailable; downloading via urllib")
-        return
-
-    config = load_proxy_config()
-    if config.scheme in {"socks5", "socks5h"}:
-        # New pymss versions receive explicit --socks5-* arguments below. The capability fallback
-        # for older pymss versions is handled by prepare_pymss_download, after its signature is known.
-        _emit_download_log(task_id, "info", "SOCKS proxy configured; preparing aria2c SOCKS options")
-        return
-    if config.mode == "custom":
-        # The app's proxy opener is configured in this worker process. Do not let aria2c bypass it:
-        # its child-process environment handling differs across platforms and versions.
-        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-            os.environ[name] = config.url
-        _set_aria2_bypass_environment(config)
-        _emit_download_log(task_id, "info", "Custom HTTP proxy configured; downloading via aria2c")
-        return
-    if config.mode != "system":
-        # "custom" already exported the variables aria2 reads, and "none" deliberately cleared them.
-        return
-
-    discovered = urllib.request.getproxies()
-    proxy_url = discovered.get("https") or discovered.get("http")
-    if not proxy_url:
-        return
-    parts = urlsplit(proxy_url)
-    if parts.scheme not in {"http", "https"}:
-        pymss_download.ARIA2C_PATH = None
-        _emit_download_log(task_id, "info", "System proxy is not HTTP; downloading via urllib, which aria2c cannot do")
-        return
-    for name in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.setdefault(name, proxy_url)
-    # Credentials in a proxy URL must not reach the log.
-    _emit_download_log(task_id, "info", f"Using the system proxy for aria2c: {parts.hostname}:{parts.port or ''}")
-
-
-def _set_aria2_bypass_environment(config: Any) -> None:
-    value = ",".join(config.bypass)
-    os.environ["NO_PROXY"] = value
-    os.environ["no_proxy"] = value
-
-
-def _aria2_args_for_current_proxy() -> tuple[str, ...]:
-    return tuple(aria2_proxy_args(load_proxy_config()))
-
-
 def _normalize_download_method(value: Any) -> str:
-    return "urllib" if str(value or "").strip().lower() == "urllib" else "aria2c"
+    return "urllib" if str(value or '').strip().lower() == "urllib" else "aria2c"
 
 
 def _should_fallback_from_aria2_error(exc: Exception) -> bool:
@@ -169,17 +103,22 @@ def download_studio_model(
     force: bool = False,
     timeout: int = 30,
     progress_callback: Any = None,
-    aria2_args: tuple[str, ...] = (),
+    proxy: str | None = None,
     task_id: str | None = None,
 ) -> dict[str, Any]:
+    """Download studio-resolved files through pymss's downloader.
+
+    pymss 2.1.1+ takes a resolved ``proxy`` URL and routes both its aria2c and
+    urllib downloaders through it (SOCKS forces the urllib path inside pymss),
+    so the worker passes the studio proxy setting straight through instead of
+    patching aria2c command lines or the socket layer.
+    """
     remote_url = pymss_download.remote_url
     download_file = pymss_download._download_file
     already_valid = pymss_download._already_valid
     expected_size_and_hash = pymss_download._expected_size_and_hash
     fetch_index = pymss_download.fetch_modelscope_file_index
-    normalize_args = getattr(pymss_download, "_normalize_aria2_args", lambda args: tuple(args))
-    normalized_aria2_args = tuple(normalize_args(aria2_args))
-    index = fetch_index(timeout=timeout) if verify and endpoint is None else None
+    index = fetch_index(timeout=timeout, proxy=proxy) if verify and endpoint is None else None
     downloaded: list[str] = []
     skipped: list[str] = []
 
@@ -188,12 +127,12 @@ def download_studio_model(
         if not force and already_valid(dest, expected_size, expected_sha256):
             skipped.append(str(dest))
             continue
-        download_kwargs = {"timeout": timeout}
+        download_kwargs: dict[str, Any] = {"timeout": timeout}
         download_file_params = inspect.signature(download_file).parameters
         if "progress_callback" in download_file_params:
             download_kwargs["progress_callback"] = progress_callback
-        if "aria2_args" in download_file_params:
-            download_kwargs["aria2_args"] = normalized_aria2_args
+        if "proxy" in download_file_params:
+            download_kwargs["proxy"] = proxy
         url = remote_url(relpath, source=source, endpoint=endpoint)
         try:
             _download_file_with_aria2_env(pymss_download, download_file, url, dest, expected_size, expected_sha256, download_kwargs)
@@ -230,23 +169,15 @@ def prepare_pymss_download(
     """Prepare pymss's downloader for this worker process.
 
     This is shared by the model-library download command and the automatic download path used
-    before separation. Both invoke pymss directly, so both need the same child-process proxy and
-    stdout-protocol guards.
+    before separation. Proxy routing lives in pymss itself (2.1.1+: an explicit ``proxy=``
+    argument on the download calls), so what remains here is the downloader selection and the
+    stdout-protocol guard for aria2c progress reporting.
     """
     if _normalize_download_method(download_method) == "urllib":
         pymss_download.ARIA2C_PATH = None
         _emit_download_log(task_id, "info", "Downloading via urllib by user setting")
         return
 
-    _align_aria2_with_proxy(pymss_download, task_id)
-    config = load_proxy_config()
-    supports_variadic_args = bool(download_model) and any(
-        parameter.kind is inspect.Parameter.VAR_POSITIONAL
-        for parameter in inspect.signature(download_model).parameters.values()
-    )
-    if config.scheme in {"socks5", "socks5h"} and not supports_variadic_args:
-        pymss_download.ARIA2C_PATH = None
-        _emit_download_log(task_id, "info", "Installed pymss cannot pass SOCKS options to aria2c; downloading via urllib")
     legacy_aria2 = (
         download_model is not None
         and not _pymss_reports_progress(download_model)
@@ -436,7 +367,7 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
         # percentage. Its absence is not fatal — progress then falls back to counting files.
         index = None
         try:
-            index = fetch_modelscope_file_index(timeout=timeout) if endpoint is None else None
+            index = fetch_modelscope_file_index(timeout=timeout, proxy=effective_proxy_url()) if endpoint is None else None
         except Exception as exc:
             _emit_download_log(task_id, "warning", f"File index unavailable, progress will be approximate: {exc}")
 
@@ -534,7 +465,7 @@ def cmd_download_model(payload: dict[str, Any]) -> int:
             force=force,
             timeout=timeout,
             progress_callback=download_kwargs.get("progress_callback"),
-            aria2_args=_aria2_args_for_current_proxy(),
+            proxy=effective_proxy_url(),
             task_id=task_id,
         )
     except KeyError as exc:

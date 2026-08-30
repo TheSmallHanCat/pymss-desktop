@@ -75,3 +75,4 @@ src-tauri/tauri.bundle.resources.json
 *.msi
 *.exe
 !src-tauri/icons/*.ico
+.uv-cache/

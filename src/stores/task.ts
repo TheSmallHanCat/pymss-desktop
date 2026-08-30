@@ -7,9 +7,6 @@ import { useSettingsStore } from '@/stores/settings'
 import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
 import { useAppStore } from '@/stores/app'
 import type { WorkflowEntry } from '@/stores/workflow'
-import { getWorkflowBatchInputConfigs, getWorkflowValidationSummary, stripWorkflowUi, workflowValidationErrorMessage, type WorkflowValidationSummary } from '@/utils/workflowDefinition'
-import { getWorkflowDefinitionDefaults, readWorkflowGraphDefinition, serializeWorkflowGraphDefinition } from '@/utils/workflowGraph'
-
 export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
 
 export type OutputLayout = 'folders' | 'flat'
@@ -31,6 +28,8 @@ export type SeparationRunConfig = {
   workflowId?: string
   workflowName?: string
   workflowDefinition?: Record<string, unknown>
+  /** runtime input slot name -> file path (comfy graphs with named load nodes) */
+  workflowInputs?: Record<string, string>
   modelType?: string | null
   outputLayout: OutputLayout
   outputNaming?: OutputNamingConfig
@@ -522,6 +521,13 @@ export const useTaskStore = defineStore('task', () => {
   const focusedResultTaskId = ref<string | null>(null)
   const focusedTaskId = ref<string | null>(null)
   const inputFiles = ref<string[]>([])
+  /** Per-workflow runtime input slot picks: workflowId -> {slotName: filePath} */
+  const workflowSlotFiles = ref<Record<string, Record<string, string>>>({})
+
+  function setWorkflowSlotFile(workflowId: string, slotName: string, filePath: string) {
+    const current = workflowSlotFiles.value[workflowId] || {}
+    workflowSlotFiles.value = { ...workflowSlotFiles.value, [workflowId]: { ...current, [slotName]: filePath } }
+  }
   const separateRunMode = ref<'model' | 'workflow'>('model')
   const ensembleEnabled = ref(false)
   const ensembleModels = ref<string[]>([])
@@ -951,55 +957,45 @@ export const useTaskStore = defineStore('task', () => {
     const definition = workflow.definition && typeof workflow.definition === 'object'
       ? workflow.definition
       : {}
-    const normalizedDefinition = readWorkflowGraphDefinition(definition)
-    const defaults = normalizedDefinition.defaults as unknown as Record<string, unknown>
-    const inferenceDefaults = defaults.inference_params && typeof defaults.inference_params === 'object'
-      ? defaults.inference_params as Record<string, unknown>
-      : {}
-    const hasWorkflowStandardize = Object.prototype.hasOwnProperty.call(inferenceDefaults, 'standardize')
-    const hasWorkflowNormalize = Object.prototype.hasOwnProperty.call(inferenceDefaults, 'normalize')
-    const workflowStandardize = hasWorkflowStandardize
-      ? Boolean(inferenceDefaults.standardize)
-      : hasWorkflowNormalize
-        ? Boolean(inferenceDefaults.normalize)
-        : standardize.value
-    const workflowNormalize = hasWorkflowStandardize
-      ? (hasWorkflowNormalize ? Boolean(inferenceDefaults.normalize) : false)
-      : hasWorkflowNormalize
-        ? false
-        : normalize.value
-    return {
-      ...stripWorkflowUi(withWorkflowModelParams(normalizedDefinition as unknown as Record<string, unknown>)),
-      defaults: {
-        ...defaults,
-        output_format: outputFormat,
-        inference_params: {
-          ...inferenceDefaults,
-          standardize: workflowStandardize,
-          normalize: workflowNormalize,
-        },
-      },
+    // definition is already native comfy-mss JSON. We only inject the runtime
+    // output_format into save nodes and ensure extra.appDefaults is set so the
+    // editor UI can read it back. Deep graph validation is delegated to pymss.
+    const clone = JSON.parse(JSON.stringify(definition)) as Record<string, unknown>
+    const nodes = Array.isArray(clone.nodes) ? clone.nodes as any[] : []
+    for (const n of nodes) {
+      if (String(n.type || '') === 'pymss_save_audio') {
+        const wv = Array.isArray(n.widgets_values) ? n.widgets_values : []
+        while (wv.length <= 0) wv.push(null)
+        if (outputFormat) wv[0] = outputFormat.toLowerCase()
+        n.widgets_values = wv
+      }
     }
+    const extra = ((clone.extra as Record<string, unknown>) || {})
+    extra.appDefaults = { ...((extra.appDefaults as object) || {}), output_format: outputFormat }
+    clone.extra = extra
+    return clone
   }
   function buildWorkflowRunConfig(workflow: WorkflowEntry, outputLayout: OutputLayout = 'folders', outputNaming?: OutputNamingConfig): SeparationRunConfig {
     const settings = useSettingsStore()
     const app = useAppStore()
     const runtimeDevice = settings.getRuntimeDeviceConfig(app.envInfo)
-    const defaults = getWorkflowDefinitionDefaults(workflow.definition) as unknown as Record<string, unknown>
-    const workflowDevice = typeof defaults.device === 'string' && defaults.device.trim()
-      ? defaults.device.trim()
+    const appDefaults = (((workflow.definition || {}).extra as Record<string, unknown> | undefined)?.appDefaults as Record<string, unknown> | undefined) || {}
+    const workflowInputs = workflowSlotFiles.value[workflow.id] || {}
+    const workflowDevice = typeof appDefaults.device === 'string' && appDefaults.device.trim()
+      ? appDefaults.device.trim()
       : runtimeDevice.device
-    const workflowFormat = typeof defaults.output_format === 'string' && defaults.output_format.trim()
-      ? defaults.output_format.trim()
+    const workflowFormat = typeof appDefaults.output_format === 'string' && appDefaults.output_format.trim()
+      ? appDefaults.output_format.trim()
       : typeof settings.defaultFormat === 'string' && settings.defaultFormat.trim()
         ? settings.defaultFormat.trim()
         : 'wav'
-    const workflowModelDir = typeof defaults.model_dir === 'string' && defaults.model_dir.trim()
-      ? defaults.model_dir.trim()
+    const workflowModelDir = typeof appDefaults.model_dir === 'string' && appDefaults.model_dir.trim()
+      ? appDefaults.model_dir.trim()
       : settings.modelDir || null
     return {
       runMode: 'workflow',
       modelDir: workflowModelDir,
+      workflowInputs,
       downloadSource: settings.downloadSource,
       downloadMethod: settings.downloadMethod,
       workflowId: workflow.id,
@@ -1093,14 +1089,15 @@ export const useTaskStore = defineStore('task', () => {
     setTaskStatus(task.id, 'preparing', 'Preparing task')
     try {
       if (config.runMode === 'workflow') {
-        const validationError = workflowValidationError(getWorkflowValidationSummary(config.workflowDefinition || {}))
+        const validationError = minimalComfyValidationError(config.workflowDefinition || {})
         if (validationError) throw new Error(validationError)
         await invoke<{ taskId: string; started: boolean }>('start_workflow_inference', {
           payload: {
             taskId: task.id,
             workflowName: config.workflowName || task.model,
             workflow: config.workflowDefinition || {},
-            input: task.input,
+            input: task.input || null,
+            inputs: config.workflowInputs || null,
             output: config.outputLayout === 'folders' ? (task.jobOutput || task.output) : task.output,
             modelDir: config.modelDir ?? (settings.modelDir || null),
             source: config.downloadSource || settings.downloadSource,
@@ -1812,42 +1809,6 @@ export const useTaskStore = defineStore('task', () => {
     return params
   }
 
-  function withWorkflowModelParams(definition: Record<string, unknown>) {
-    const modelStore = useModelStore()
-    const graphDefinition = readWorkflowGraphDefinition(definition)
-    return serializeWorkflowGraphDefinition({
-      ...graphDefinition,
-      graph: {
-        ...graphDefinition.graph,
-        nodes: graphDefinition.graph.nodes.map((node) => {
-          if (node.type !== 'separate') return node
-          const data = node.data || {}
-          const existingParams = data.inferenceParams && typeof data.inferenceParams === 'object'
-            ? data.inferenceParams as Record<string, unknown>
-            : {}
-          if (Object.keys(existingParams).length) return node
-          const modelName = String(data.model || '').trim()
-          if (!modelName) return node
-          const entry = modelStore.models.find(item => item.name === modelName) || null
-          const modelType = typeof data.modelKind === 'string' && data.modelKind.trim()
-            ? data.modelKind
-            : entry?.modelType || null
-          const inferenceParams = modelInferenceParamsFromState(modelName, modelType)
-          if (!Object.keys(inferenceParams).length) return node
-          return {
-            ...node,
-            data: {
-              ...data,
-              inferenceParams,
-            },
-          }
-        }),
-      },
-    })
-  }
-
-
-
   function submitOne(input: string, model: string, inferenceParams: Record<string, unknown>, modelType?: string | null, jobId?: string, jobOutput?: string, outputLayout: OutputLayout = 'folders', outputNaming?: OutputNamingConfig) {
     return createQueuedTask(input, model, inferenceParams, modelType, jobId, jobOutput, outputLayout, outputNaming)
   }
@@ -1893,39 +1854,65 @@ export const useTaskStore = defineStore('task', () => {
     return { succeeded: targets.length, failed: 0, total: targets.length, jobId, tasks: createdTasks }
   }
 
-  function workflowValidationError(summary: WorkflowValidationSummary) {
-    return workflowValidationErrorMessage(summary, i18n.global.t)
+  function minimalComfyValidationError(definition: Record<string, unknown>): string {
+    const nodes = Array.isArray(definition.nodes) ? definition.nodes as any[] : []
+    if (!nodes.length) return i18n.global.t('workflows.stepsRequired')
+    const hasOutput = nodes.some(n => String(n.type || '').toLowerCase().includes('save'))
+    if (!hasOutput) return i18n.global.t('workflows.workflowNoSaveOutputs')
+    // Deeper validation (cycles / dangling inputs / unknown node types) is
+    // handled by pymss.graph.load_comfy_file at run time.
+    return ''
   }
 
   async function startWorkflowInference(workflow: WorkflowEntry, options: { outputDir?: string; outputLayout?: OutputLayout; outputNaming?: OutputNamingConfig } = {}) {
     if (!workflow?.id) {
       throw new Error('Workflow is required')
     }
-    const validationSummary = getWorkflowValidationSummary(workflow.definition)
-    const validationError = workflowValidationError(validationSummary)
+    const validationError = minimalComfyValidationError(workflow.definition)
     if (validationError) throw new Error(validationError)
-    const workflowBatchConfigs = getWorkflowBatchInputConfigs(workflow.definition)
-    if (workflowBatchConfigs.length > 1) {
-      throw new Error('当前暂不支持一个工作流同时使用多个批量输入节点')
-    }
-    let targets = [...inputFiles.value]
-    if (workflowBatchConfigs.length === 1) {
-      const batchConfig = workflowBatchConfigs[0]
-      const result = await invoke<ScanMediaPathsResult>('scan_audio_paths_with_options', {
-        paths: [batchConfig.folder],
-        recursive: batchConfig.recursive,
-        sortFiles: batchConfig.sortFiles,
-      })
-      targets = result.files || []
-      if (!targets.length) {
-        throw new Error(`批量输入目录中未找到可处理的音频文件：${batchConfig.folder}`)
+    const settings = useSettingsStore()
+    // Runtime input slots (pymss >= 2.1.2 strict contract): comfy graphs
+    // declare named slots on load nodes; this run fills each slot with one
+    // file. Graphs without slots keep the legacy one-task-per-file behavior.
+    const { analyzeWorkflowInputs } = await import('../utils/workflowInputs')
+    const analysis = analyzeWorkflowInputs(workflow.definition)
+    const slotFiles = workflowSlotFiles.value[workflow.id] || {}
+    if (analysis.slots.length) {
+      const missing = analysis.slots.filter(slot => !(slotFiles[slot.name] || '').trim()).map(slot => slot.name)
+      if (missing.length) {
+        throw new Error(i18n.global.t('separate.workflowMissingSlotFiles', { names: missing.join(', ') }))
       }
+      const jobId = createRunId('job')
+      const outputLayout = normalizeOutputLayout(options.outputLayout)
+      const jobOutput = normalizeOutputPath(options.outputDir || settings.outputDir)
+      const createdTasks = [createQueuedWorkflowTask(
+        slotFiles[analysis.slots[0].name] || '',
+        workflow,
+        jobId,
+        jobOutput,
+        outputLayout,
+        options.outputNaming,
+      )]
+      scheduleQueue()
+      return { succeeded: 1, failed: 0, total: 1, jobId, tasks: createdTasks }
     }
+    if (analysis.selfContained && !inputFiles.value.length && !analysis.unresolved.length) {
+      // self-contained graph: runs with no runtime input at all
+      const jobId = createRunId('job')
+      const outputLayout = normalizeOutputLayout(options.outputLayout)
+      const jobOutput = normalizeOutputPath(options.outputDir || settings.outputDir)
+      const createdTasks = [createQueuedWorkflowTask('', workflow, jobId, jobOutput, outputLayout, options.outputNaming)]
+      scheduleQueue()
+      return { succeeded: 1, failed: 0, total: 1, jobId, tasks: createdTasks }
+    }
+    // Batch input is now handled inside the comfy workflow itself via
+    // pymss_load_audio_batch, so the frontend always runs a single task per
+    // input file (or one task for a batch workflow).
+    let targets = [...inputFiles.value]
     if (!targets.length) {
       throw new Error(i18n.global.t('separate.startHintNoInput'))
     }
     const jobId = createRunId('job')
-    const settings = useSettingsStore()
     const batchMode = targets.length > 1
     const outputLayout = normalizeOutputLayout(options.outputLayout)
     const jobOutput = normalizeOutputPath(options.outputDir || settings.outputDir)
@@ -1945,7 +1932,6 @@ export const useTaskStore = defineStore('task', () => {
     }
     return { succeeded: targets.length, failed: 0, total: targets.length, jobId, tasks: createdTasks }
   }
-
   async function retryTask(taskId: string) {
     const existing = tasks.value.find((t) => t.id === taskId)
     if (!existing) return
@@ -1958,6 +1944,9 @@ export const useTaskStore = defineStore('task', () => {
         createdAt: existing.createdAt,
         updatedAt: existing.updatedAt,
       }, undefined, undefined, existing.runConfig.outputLayout, existing.runConfig.outputNaming)
+      if (task.runConfig && existing.runConfig.workflowInputs) {
+        task.runConfig.workflowInputs = { ...existing.runConfig.workflowInputs }
+      }
       scheduleQueue()
       return task
     }
@@ -1989,6 +1978,8 @@ export const useTaskStore = defineStore('task', () => {
     focusedResultTaskId,
     focusedTaskId,
     inputFiles,
+    workflowSlotFiles,
+    setWorkflowSlotFile,
     inputPath,
     separateRunMode,
     ensembleEnabled,
