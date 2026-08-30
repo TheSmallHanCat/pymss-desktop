@@ -508,6 +508,134 @@ class DebugCatalogPayloadValidationTests(unittest.TestCase):
             worker_models._validate_catalog_payload(self._payload(relpath=""))
 
 
+class DebugCatalogOverlayTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.debug_catalog = self.root / "model-catalog.json"
+        self.base = {
+            "schema_version": 1,
+            "source_repository": {"ref": "v2"},
+            "models": [{
+                "name": "model.ckpt",
+                "aliases": [],
+                "model_type": "bs_roformer",
+                "architecture": "bs_roformer",
+                "supported": True,
+                "unsupported_reason": "",
+                "relpath": "vocal/model.ckpt",
+                "config_relpath": "vocal/model.yaml",
+                "auxiliary_relpaths": [],
+                "size_bytes": 1024,
+                "primary_category": "vocal",
+                "primary_category_cn": "人声",
+                "secondary_category": "vocals_instrumental",
+                "secondary_category_cn": "人声/伴奏",
+                "target_stem": "vocals",
+            }],
+        }
+
+    def test_legacy_snapshot_ignores_implicit_optional_defaults(self):
+        legacy = worker_models._canonical_catalog_data(self.base)
+        self.debug_catalog.write_text(json.dumps(legacy), encoding="utf-8")
+
+        with mock.patch.object(worker_models, "_debug_catalog_path", return_value=self.debug_catalog):
+            status = worker_models._debug_catalog_status(self.base)
+
+        self.assertEqual(status["changedCount"], 0)
+        self.assertEqual(status["addedCount"], 0)
+        self.assertEqual(status["removedCount"], 0)
+
+    def test_overlay_contains_only_explicit_model_changes(self):
+        desired = worker_models._canonical_catalog_data(self.base)
+        desired["models"][0]["primary_category_cn"] = "新分类"
+
+        overlay = worker_models._build_debug_catalog_overlay(desired, self.base)
+
+        self.assertEqual(overlay["models"], [])
+        self.assertEqual(overlay["removed"], [])
+        self.assertEqual(
+            overlay["overrides"],
+            {"model.ckpt": {"primary_category_cn": "新分类"}},
+        )
+
+    def test_overlay_inherits_unchanged_fields_from_updated_core(self):
+        desired = worker_models._canonical_catalog_data(self.base)
+        desired["models"][0]["primary_category_cn"] = "新分类"
+        overlay = worker_models._build_debug_catalog_overlay(desired, self.base)
+        updated_base = json.loads(json.dumps(self.base))
+        updated_base["models"][0]["architecture"] = "bs_roformer_v2"
+
+        effective = worker_models._apply_debug_catalog(updated_base, overlay)
+
+        self.assertEqual(effective["models"][0]["architecture"], "bs_roformer_v2")
+        self.assertEqual(effective["models"][0]["primary_category_cn"], "新分类")
+
+    def test_explicit_removed_list_is_preserved_and_applied(self):
+        desired = worker_models._canonical_catalog_data(self.base)
+        desired["removed"] = ["model.ckpt"]
+
+        overlay = worker_models._build_debug_catalog_overlay(desired, self.base)
+        effective = worker_models._apply_debug_catalog(self.base, overlay)
+
+        self.assertEqual(overlay["removed"], ["model.ckpt"])
+        self.assertEqual(effective["models"], [])
+
+    def test_debug_added_model_merges_with_a_new_same_named_core_model(self):
+        previous_base = {"schema_version": 1, "models": []}
+        desired = {
+            "schema_version": 1,
+            "models": [{"name": "model.ckpt", "relpath": "debug/model.ckpt"}],
+        }
+        overlay = worker_models._build_debug_catalog_overlay(desired, previous_base)
+        updated_base = json.loads(json.dumps(self.base))
+        updated_base["models"][0]["new_core_field"] = "preserved"
+
+        effective = worker_models._apply_debug_catalog(updated_base, overlay)
+
+        self.assertEqual(len(effective["models"]), 1)
+        self.assertEqual(effective["models"][0]["name"], "model.ckpt")
+        self.assertEqual(effective["models"][0]["relpath"], "debug/model.ckpt")
+        self.assertEqual(effective["models"][0]["new_core_field"], "preserved")
+
+    def test_overlay_preserves_an_explicit_model_order(self):
+        base = json.loads(json.dumps(self.base))
+        base["models"].append({"name": "second.ckpt", "relpath": "vocal/second.ckpt"})
+        desired = worker_models._canonical_catalog_data(base)
+        desired["models"].insert(0, {"name": "new.ckpt", "relpath": "debug/new.ckpt"})
+
+        overlay = worker_models._build_debug_catalog_overlay(desired, base)
+        effective = worker_models._apply_debug_catalog(base, overlay)
+
+        expected_order = ["new.ckpt", "model.ckpt", "second.ckpt"]
+        self.assertEqual(overlay["model_order"], expected_order)
+        self.assertEqual([item["name"] for item in effective["models"]], expected_order)
+
+    def test_save_command_persists_overlay_instead_of_full_snapshot(self):
+        desired = worker_models._canonical_catalog_data(self.base)
+        desired["models"][0]["primary_category_cn"] = "新分类"
+        stdout = io.StringIO()
+
+        with mock.patch.object(worker_models, "_base_catalog_data", return_value=self.base), \
+             mock.patch.object(worker_models, "_model_catalog_path", return_value=self.root / "base.json"), \
+             mock.patch.object(worker_models, "_debug_catalog_path", return_value=self.debug_catalog), \
+             redirect_stdout(stdout):
+            code = worker_models.cmd_debug_catalog_save({"catalog": desired})
+
+        saved = json.loads(self.debug_catalog.read_text(encoding="utf-8"))
+        self.assertEqual(code, 0)
+        self.assertEqual(saved["storage_format"], "overlay-v1")
+        self.assertEqual(saved["models"], [])
+        self.assertEqual(
+            saved["overrides"],
+            {"model.ckpt": {"primary_category_cn": "新分类"}},
+        )
+
+    def tearDown(self):
+        worker_models.load_model_catalog.cache_clear()
+        worker_models._model_index.cache_clear()
+
+
 class ListMergesImportedModelsTests(unittest.TestCase):
     """Imported models must appear alongside catalog ones, or importing a model would leave it
     invisible everywhere except inference."""

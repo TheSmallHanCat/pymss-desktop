@@ -149,6 +149,193 @@ def _entry_to_catalog_dict(entry: ModelEntry) -> dict[str, Any]:
     }
 
 
+_DEBUG_CATALOG_STORAGE_FORMAT = "overlay-v1"
+_DEBUG_CATALOG_RUNTIME_FIELDS = {"debug_source"}
+_DEBUG_CATALOG_CONTROL_FIELDS = {
+    "models",
+    "removed",
+    "storage_format",
+    "overrides",
+    "catalog",
+    "catalog_removed",
+    "model_order",
+}
+
+
+def _canonical_catalog_model(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize known fields while preserving fields added by newer pymss releases."""
+    source = {key: value for key, value in item.items() if key not in _DEBUG_CATALOG_RUNTIME_FIELDS}
+    return {**source, **_entry_to_catalog_dict(ModelEntry.from_dict(source))}
+
+
+def _canonical_catalog_data(data: dict[str, Any]) -> dict[str, Any]:
+    models = data.get("models", [])
+    return {
+        **data,
+        "models": [
+            _canonical_catalog_model(item)
+            for item in models
+            if isinstance(item, dict) and item.get("name")
+        ],
+    }
+
+
+def _catalog_models_by_name(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(item["name"]): item
+        for item in data.get("models", [])
+        if isinstance(item, dict) and item.get("name")
+    }
+
+
+def _apply_debug_catalog(base_data: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    base = _canonical_catalog_data(base_data)
+    if override.get("storage_format") != _DEBUG_CATALOG_STORAGE_FORMAT:
+        legacy_models = override.get("models", [])
+        models = [
+            _canonical_catalog_model(item)
+            for item in legacy_models
+            if isinstance(item, dict) and item.get("name")
+        ]
+        removed = {str(name) for name in override.get("removed", []) if str(name).strip()}
+        return {
+            **base,
+            **{key: value for key, value in override.items() if key not in {"models", "removed"}},
+            "models": [item for item in models if str(item["name"]) not in removed],
+        }
+
+    result = dict(base)
+    for key in override.get("catalog_removed", []):
+        if isinstance(key, str) and key not in _DEBUG_CATALOG_CONTROL_FIELDS:
+            result.pop(key, None)
+    catalog_changes = override.get("catalog", {})
+    if isinstance(catalog_changes, dict):
+        result.update({
+            key: value
+            for key, value in catalog_changes.items()
+            if key not in _DEBUG_CATALOG_CONTROL_FIELDS
+        })
+
+    changes = override.get("overrides", {})
+    changes = changes if isinstance(changes, dict) else {}
+    removed = {str(name) for name in override.get("removed", []) if str(name).strip()}
+    added_by_name = {
+        str(item["name"]): item
+        for item in override.get("models", [])
+        if isinstance(item, dict) and item.get("name")
+    }
+    models: list[dict[str, Any]] = []
+    for item in base["models"]:
+        name = str(item["name"])
+        if name in removed:
+            continue
+        patch = changes.get(name, {})
+        added_item = added_by_name.pop(name, {})
+        merged = {
+            **item,
+            **(added_item if isinstance(added_item, dict) else {}),
+            **(patch if isinstance(patch, dict) else {}),
+            "name": name,
+        }
+        models.append(_canonical_catalog_model(merged))
+    for name, item in added_by_name.items():
+        if name not in removed:
+            models.append(_canonical_catalog_model(item))
+    requested_order = override.get("model_order", [])
+    if isinstance(requested_order, list):
+        models_by_name = {str(item["name"]): item for item in models}
+        ordered_models = [
+            models_by_name.pop(str(name))
+            for name in requested_order
+            if str(name) in models_by_name
+        ]
+        models = [*ordered_models, *models_by_name.values()]
+    result["models"] = models
+    return result
+
+
+def _build_debug_catalog_overlay(
+    desired_data: dict[str, Any],
+    base_data: dict[str, Any],
+) -> dict[str, Any]:
+    desired = _canonical_catalog_data(desired_data)
+    base = _canonical_catalog_data(base_data)
+    desired_by_name = _catalog_models_by_name(desired)
+    base_by_name = _catalog_models_by_name(base)
+    explicitly_removed = {
+        str(name).strip()
+        for name in desired.get("removed", [])
+        if str(name).strip()
+    }
+
+    overrides: dict[str, dict[str, Any]] = {}
+    for name, desired_item in desired_by_name.items():
+        if name in explicitly_removed:
+            continue
+        base_item = base_by_name.get(name)
+        if base_item is None:
+            continue
+        changes = {
+            key: value
+            for key, value in desired_item.items()
+            if key != "name"
+            and (key not in base_item or _json_stable(value) != _json_stable(base_item[key]))
+        }
+        if changes:
+            overrides[name] = changes
+
+    added = [
+        item
+        for name, item in desired_by_name.items()
+        if name not in base_by_name and name not in explicitly_removed
+    ]
+    removed = sorted(
+        {name for name in base_by_name if name not in desired_by_name}
+        | {name for name in explicitly_removed if name in base_by_name}
+    )
+    desired_order = [
+        str(item["name"])
+        for item in desired["models"]
+        if str(item["name"]) not in explicitly_removed
+    ]
+    natural_order = [name for name in base_by_name if name not in removed]
+    natural_order.extend(str(item["name"]) for item in added)
+    desired_metadata = {
+        key: value for key, value in desired.items() if key not in _DEBUG_CATALOG_CONTROL_FIELDS
+    }
+    base_metadata = {
+        key: value for key, value in base.items() if key not in _DEBUG_CATALOG_CONTROL_FIELDS
+    }
+    catalog_changes = {
+        key: value
+        for key, value in desired_metadata.items()
+        if key not in base_metadata or _json_stable(value) != _json_stable(base_metadata[key])
+    }
+    catalog_removed = [key for key in base_metadata if key not in desired_metadata]
+
+    overlay: dict[str, Any] = {
+        "schema_version": 1,
+        "storage_format": _DEBUG_CATALOG_STORAGE_FORMAT,
+        "models": added,
+        "overrides": overrides,
+        "removed": removed,
+    }
+    if catalog_changes:
+        overlay["catalog"] = catalog_changes
+    if catalog_removed:
+        overlay["catalog_removed"] = catalog_removed
+    if desired_order != natural_order:
+        overlay["model_order"] = desired_order
+    return overlay
+
+
+def _debug_catalog_has_changes(overlay: dict[str, Any]) -> bool:
+    return any(
+        bool(overlay.get(key))
+        for key in ("models", "overrides", "removed", "catalog", "catalog_removed", "model_order")
+    )
+
+
 def _base_catalog_data() -> dict[str, Any]:
     with _model_catalog_path().open(encoding="utf-8") as handle:
         return json.load(handle)
@@ -180,29 +367,29 @@ def _inactive_debug_status() -> dict[str, Any]:
 
 def _debug_catalog_status(base_data: dict[str, Any] | None = None) -> dict[str, Any]:
     base_data = base_data or _base_catalog_data()
-    base_by_name = {
-        str(item.get("name") or ""): item
-        for item in base_data.get("models", [])
-        if isinstance(item, dict) and item.get("name")
-    }
     path = _debug_catalog_path()
-    override = _debug_catalog_raw() if path.is_file() else {"models": list(base_by_name.values())}
-    override_models = [item for item in override.get("models", []) if isinstance(item, dict) and item.get("name")]
-    override_names = {str(item["name"]) for item in override_models}
-    removed = sorted(
-        set(str(item) for item in override.get("removed", []) if str(item).strip())
-        | {name for name in base_by_name if name not in override_names}
+    if not path.is_file():
+        return _inactive_debug_status()
+    override = _debug_catalog_raw()
+    base_by_name = _catalog_models_by_name(_canonical_catalog_data(base_data))
+    effective = _apply_debug_catalog(base_data, override)
+    effective_by_name = _catalog_models_by_name(effective)
+    base_order = list(base_by_name)
+    effective_order = [str(item["name"]) for item in effective["models"]]
+    removed = sorted(name for name in base_by_name if name not in effective_by_name)
+    changed = sorted(
+        name
+        for name, item in effective_by_name.items()
+        if name in base_by_name and _json_stable(item) != _json_stable(base_by_name[name])
     )
-    changed = [
-        str(item["name"])
-        for item in override_models
-        if str(item["name"]) in base_by_name and _json_stable(item) != _json_stable(base_by_name[str(item["name"])])
-    ]
-    added = [str(item["name"]) for item in override_models if str(item["name"]) not in base_by_name]
-    active = bool(changed or added or removed)
+    added = sorted(name for name in effective_by_name if name not in base_by_name)
+    base_metadata = {key: value for key, value in base_data.items() if key != "models"}
+    effective_metadata = {key: value for key, value in effective.items() if key != "models"}
+    metadata_changed = _json_stable(base_metadata) != _json_stable(effective_metadata)
+    active = bool(changed or added or removed or metadata_changed or base_order != effective_order)
     return {
         "active": active,
-        "catalogActive": bool(changed or added or removed),
+        "catalogActive": active,
         "changedCount": len(changed),
         "addedCount": len(added),
         "removedCount": len(removed),
@@ -232,30 +419,22 @@ def _load_yaml_config(config_path: Path) -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def load_model_catalog() -> dict[str, Any]:
-    with _model_catalog_path().open(encoding="utf-8") as handle:
-        data = json.load(handle)
-    base_models = data.get("models", [])
-    base_by_name = {str(item.get("name") or ""): item for item in base_models if item.get("name")}
-
+    data = _base_catalog_data()
     override_path = _debug_catalog_path()
     if override_path.is_file():
-        with override_path.open(encoding="utf-8") as handle:
-            override = json.load(handle)
-        models: list[ModelEntry] = []
-        removed = {str(name) for name in override.get("removed", []) if str(name).strip()}
-        for item in override.get("models", []) if isinstance(override.get("models"), list) else []:
-            if not isinstance(item, dict) or not item.get("name"):
-                continue
-            name = str(item["name"])
+        effective = _apply_debug_catalog(data, _debug_catalog_raw())
+        status = _debug_catalog_status(data)
+        debug_models = set(status["changedModels"]) | set(status["addedModels"])
+        models = []
+        for item in effective["models"]:
             next_item = dict(item)
-            if name not in base_by_name or _json_stable(item) != _json_stable(base_by_name[name]):
+            if str(item["name"]) in debug_models:
                 next_item["debug_source"] = "debug"
-            if name not in removed:
-                models.append(ModelEntry.from_dict(next_item))
-        return {**data, **override, "models": models, "debug_status": _debug_catalog_status(data)}
+            models.append(ModelEntry.from_dict(next_item))
+        return {**effective, "models": models, "debug_status": status}
 
-    models = [ModelEntry.from_dict(item) for item in base_models]
-    return {**data, "models": models, "debug_status": _debug_catalog_status(data)}
+    models = [ModelEntry.from_dict(item) for item in data.get("models", [])]
+    return {**data, "models": models, "debug_status": _inactive_debug_status()}
 
 
 @lru_cache(maxsize=1)
@@ -713,16 +892,18 @@ def cmd_debug_catalog_info(payload: dict[str, Any] | None = None) -> int:
     try:
         base_data = _base_catalog_data()
         override = _debug_catalog_raw()
+        effective = (
+            _apply_debug_catalog(base_data, override)
+            if _debug_catalog_path().is_file()
+            else _canonical_catalog_data(base_data)
+        )
         emit("debug_catalog_info", {
             "baseCatalogPath": str(_model_catalog_path()),
             "debugCatalogPath": str(_debug_catalog_path()),
             "debugDir": str(_debug_dir()),
-            "baseCatalog": base_data,
+            "baseCatalog": _canonical_catalog_data(base_data),
             "debugCatalog": override,
-            "effectiveCatalog": {
-                **base_data,
-                "models": [_entry_to_catalog_dict(entry) for entry in load_model_catalog()["models"]],
-            },
+            "effectiveCatalog": effective,
             "status": _debug_catalog_status(base_data),
         })
         return 0
@@ -734,11 +915,15 @@ def cmd_debug_catalog_save(payload: dict[str, Any]) -> int:
     try:
         data = payload.get("catalog", payload)
         normalized = _validate_catalog_payload(data)
+        overlay = _build_debug_catalog_overlay(normalized, _base_catalog_data())
         path = _debug_catalog_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8", newline="\n") as handle:
-            json.dump(normalized, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
+        if _debug_catalog_has_changes(overlay):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8", newline="\n") as handle:
+                json.dump(overlay, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+        elif path.is_file():
+            path.unlink()
         load_model_catalog.cache_clear()
         _model_index.cache_clear()
         return cmd_debug_catalog_info({})
