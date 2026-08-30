@@ -8,6 +8,7 @@ import {
   timelineDuration,
 } from '@/utils/editorClips'
 import { registerWindowCloseGuard } from '@/utils/windowCloseGuards'
+import { isTauriRuntime } from '@/utils/appStore'
 import type { SeparationTask, StemOutput } from '@/stores/task'
 import type {
   EditorExportFormat,
@@ -57,6 +58,19 @@ type LinkedEditorAsset = {
 type ImportEditorAssetsResult = {
   files: LinkedEditorAsset[]
   warnings: string[]
+}
+
+type EditorProjectCleanupResult = {
+  deletedProjectIds: string[]
+  missingProjectIds: string[]
+  blockedProjectIds: string[]
+  failedProjectIds: string[]
+}
+
+export type OrphanedEditorProject = {
+  projectId: string
+  sourceTaskId: string
+  name: string
 }
 
 type RelinkEditorSourcesResult = {
@@ -818,6 +832,99 @@ export const useEditorStore = defineStore('editor', () => {
     return result
   }
 
+  async function deleteProjectsForTasks(taskIds: string[]) {
+    const uniqueTaskIds = [...new Set(taskIds.map(id => id.trim()).filter(Boolean))]
+    const projectIds = uniqueTaskIds.map(projectIdForTaskId)
+    const emptyResult = (): EditorProjectCleanupResult => ({
+      deletedProjectIds: [],
+      missingProjectIds: [],
+      blockedProjectIds: [],
+      failedProjectIds: [],
+    })
+    if (!projectIds.length) return emptyResult()
+    if (!isTauriRuntime()) {
+      return { ...emptyResult(), missingProjectIds: projectIds }
+    }
+
+    await drainPendingSaves()
+    projectIds.forEach((projectId) => {
+      suspendedProjectSaves.add(projectId)
+      pendingProjectSaves.delete(projectId)
+    })
+    try {
+      const result = await invoke<EditorProjectCleanupResult>('delete_editor_projects_for_tasks', {
+        taskIds: uniqueTaskIds,
+      })
+      const removedProjectIds = new Set([
+        ...(result.deletedProjectIds || []),
+        ...(result.missingProjectIds || []),
+      ])
+      projectSummaries.value = projectSummaries.value.filter(item => !removedProjectIds.has(item.id))
+      if (session.value && removedProjectIds.has(session.value.id)) clearSession()
+      return {
+        deletedProjectIds: result.deletedProjectIds || [],
+        missingProjectIds: result.missingProjectIds || [],
+        blockedProjectIds: result.blockedProjectIds || [],
+        failedProjectIds: result.failedProjectIds || [],
+      }
+    } finally {
+      projectIds.forEach(projectId => suspendedProjectSaves.delete(projectId))
+    }
+  }
+
+  async function listOpenProjectsForTasks(taskIds: string[]) {
+    const uniqueTaskIds = [...new Set(taskIds.map(id => id.trim()).filter(Boolean))]
+    if (!uniqueTaskIds.length || !isTauriRuntime()) return []
+    const backendOpenProjectIds = await invoke<string[]>('list_open_editor_projects_for_tasks', {
+      taskIds: uniqueTaskIds,
+    })
+    return [...new Set(backendOpenProjectIds || [])]
+  }
+
+  async function listOrphanedProjects(activeTaskIds: string[]) {
+    if (!isTauriRuntime()) return [] as OrphanedEditorProject[]
+    return invoke<OrphanedEditorProject[]>('list_orphaned_editor_projects', {
+      activeTaskIds: [...new Set(activeTaskIds.map(id => id.trim()).filter(Boolean))],
+    })
+  }
+
+  async function deleteOrphanedProjects(activeTaskIds: string[]) {
+    const emptyResult = (): EditorProjectCleanupResult => ({
+      deletedProjectIds: [],
+      missingProjectIds: [],
+      blockedProjectIds: [],
+      failedProjectIds: [],
+    })
+    if (!isTauriRuntime()) return emptyResult()
+    const orphanedProjects = await listOrphanedProjects(activeTaskIds)
+    const projectIds = orphanedProjects.map(project => project.projectId)
+    if (!projectIds.length) return emptyResult()
+    await drainPendingSaves()
+    projectIds.forEach((projectId) => {
+      suspendedProjectSaves.add(projectId)
+      pendingProjectSaves.delete(projectId)
+    })
+    try {
+      const result = await invoke<EditorProjectCleanupResult>('delete_orphaned_editor_projects', {
+        activeTaskIds: [...new Set(activeTaskIds.map(id => id.trim()).filter(Boolean))],
+      })
+      const removedProjectIds = new Set([
+        ...(result.deletedProjectIds || []),
+        ...(result.missingProjectIds || []),
+      ])
+      projectSummaries.value = projectSummaries.value.filter(item => !removedProjectIds.has(item.id))
+      if (session.value && removedProjectIds.has(session.value.id)) clearSession()
+      return {
+        deletedProjectIds: result.deletedProjectIds || [],
+        missingProjectIds: result.missingProjectIds || [],
+        blockedProjectIds: result.blockedProjectIds || [],
+        failedProjectIds: result.failedProjectIds || [],
+      }
+    } finally {
+      projectIds.forEach(projectId => suspendedProjectSaves.delete(projectId))
+    }
+  }
+
   function clearSession() {
     session.value = null
     selectedTrackId.value = null
@@ -1531,6 +1638,10 @@ export const useEditorStore = defineStore('editor', () => {
     refreshProjects,
     createBlankProject,
     deleteProject,
+    deleteProjectsForTasks,
+    listOpenProjectsForTasks,
+    listOrphanedProjects,
+    deleteOrphanedProjects,
     clearSession,
     openProjectWindow,
     projectExists,

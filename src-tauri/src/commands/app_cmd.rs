@@ -920,6 +920,21 @@ fn editor_project_dir(app: &AppHandle, project_id: &str) -> AppResult<PathBuf> {
     Ok(editor_projects_root(app)?.join(safe_file_name(project_id)))
 }
 
+fn editor_project_id_for_task_id(task_id: &str) -> String {
+    format!("edit_{}", safe_file_name(task_id))
+}
+
+fn editor_project_ids_for_task_ids(task_ids: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    task_ids
+        .iter()
+        .map(|task_id| task_id.trim())
+        .filter(|task_id| !task_id.is_empty())
+        .map(editor_project_id_for_task_id)
+        .filter(|project_id| seen.insert(project_id.clone()))
+        .collect()
+}
+
 fn editor_project_path(app: &AppHandle, project_id: &str) -> AppResult<PathBuf> {
     Ok(editor_project_dir(app, project_id)?.join("project.json"))
 }
@@ -982,6 +997,109 @@ pub struct EditorRecordingResult {
     duration: f64,
     sample_rate: u32,
     channels: u16,
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorProjectCleanupResult {
+    deleted_project_ids: Vec<String>,
+    missing_project_ids: Vec<String>,
+    blocked_project_ids: Vec<String>,
+    failed_project_ids: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrphanedEditorProject {
+    project_id: String,
+    source_task_id: String,
+    name: String,
+}
+
+fn remove_editor_project_dirs(root: &Path, project_ids: &[String]) -> EditorProjectCleanupResult {
+    let mut result = EditorProjectCleanupResult::default();
+    for project_id in project_ids {
+        let project_dir = root.join(safe_file_name(project_id));
+        if !project_dir.exists() {
+            result.missing_project_ids.push(project_id.clone());
+            continue;
+        }
+        match std::fs::remove_dir_all(project_dir) {
+            Ok(()) => result.deleted_project_ids.push(project_id.clone()),
+            Err(_) => result.failed_project_ids.push(project_id.clone()),
+        }
+    }
+    result
+}
+
+fn open_editor_project_ids(app: &AppHandle, project_ids: &[String]) -> Vec<String> {
+    project_ids
+        .iter()
+        .filter(|project_id| {
+            let label = format!("editor-{}", safe_file_name(project_id));
+            app.get_webview_window(&label).is_some()
+        })
+        .cloned()
+        .collect()
+}
+
+fn orphaned_editor_projects(
+    root: &Path,
+    active_task_ids: &[String],
+) -> AppResult<Vec<OrphanedEditorProject>> {
+    let active_task_ids: std::collections::HashSet<&str> = active_task_ids
+        .iter()
+        .map(|task_id| task_id.trim())
+        .filter(|task_id| !task_id.is_empty())
+        .collect();
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut projects = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let project_id = entry.file_name().to_string_lossy().to_string();
+        let project_path = entry.path().join("project.json");
+        let Ok(content) = std::fs::read_to_string(project_path) else {
+            continue;
+        };
+        let Ok(project) = serde_json::from_str::<Value>(&content) else {
+            continue;
+        };
+        let Some(source_task_id) = project
+            .get("sourceTaskId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|source_task_id| !source_task_id.is_empty())
+        else {
+            continue;
+        };
+        if active_task_ids.contains(source_task_id) {
+            continue;
+        }
+        let name = project
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&project_id)
+            .to_string();
+        projects.push(OrphanedEditorProject {
+            project_id,
+            source_task_id: source_task_id.to_string(),
+            name,
+        });
+    }
+    projects.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.project_id.cmp(&right.project_id))
+    });
+    Ok(projects)
 }
 
 #[derive(Serialize)]
@@ -1353,7 +1471,7 @@ pub async fn create_editor_project_from_task(app: AppHandle, payload: Value) -> 
             .then_with(|| a.0.cmp(&b.0))
     });
 
-    let project_id = format!("edit_{}", safe_file_name(task_id));
+    let project_id = editor_project_id_for_task_id(task_id);
     let timestamp = now_millis();
     let output_root = if output_dir.trim().is_empty() {
         None
@@ -1519,6 +1637,62 @@ pub async fn delete_editor_project(app: AppHandle, project_id: String) -> AppRes
 
     std::fs::remove_dir_all(project_dir)?;
     Ok(true)
+}
+
+#[tauri::command]
+pub async fn delete_editor_projects_for_tasks(
+    app: AppHandle,
+    task_ids: Vec<String>,
+) -> AppResult<EditorProjectCleanupResult> {
+    let project_ids = editor_project_ids_for_task_ids(&task_ids);
+    let blocked_project_ids = open_editor_project_ids(&app, &project_ids);
+    if !blocked_project_ids.is_empty() {
+        return Ok(EditorProjectCleanupResult {
+            blocked_project_ids,
+            ..EditorProjectCleanupResult::default()
+        });
+    }
+
+    let root = editor_projects_root(&app)?;
+    Ok(remove_editor_project_dirs(&root, &project_ids))
+}
+
+#[tauri::command]
+pub async fn list_open_editor_projects_for_tasks(
+    app: AppHandle,
+    task_ids: Vec<String>,
+) -> AppResult<Vec<String>> {
+    let project_ids = editor_project_ids_for_task_ids(&task_ids);
+    Ok(open_editor_project_ids(&app, &project_ids))
+}
+
+#[tauri::command]
+pub async fn list_orphaned_editor_projects(
+    app: AppHandle,
+    active_task_ids: Vec<String>,
+) -> AppResult<Vec<OrphanedEditorProject>> {
+    let root = editor_projects_root(&app)?;
+    orphaned_editor_projects(&root, &active_task_ids)
+}
+
+#[tauri::command]
+pub async fn delete_orphaned_editor_projects(
+    app: AppHandle,
+    active_task_ids: Vec<String>,
+) -> AppResult<EditorProjectCleanupResult> {
+    let root = editor_projects_root(&app)?;
+    let project_ids: Vec<String> = orphaned_editor_projects(&root, &active_task_ids)?
+        .into_iter()
+        .map(|project| project.project_id)
+        .collect();
+    let blocked_project_ids = open_editor_project_ids(&app, &project_ids);
+    if !blocked_project_ids.is_empty() {
+        return Ok(EditorProjectCleanupResult {
+            blocked_project_ids,
+            ..EditorProjectCleanupResult::default()
+        });
+    }
+    Ok(remove_editor_project_dirs(&root, &project_ids))
 }
 
 #[tauri::command]
@@ -2813,5 +2987,76 @@ mod tests {
         assert!(validate_recording_id("../recording_1720000000000").is_err());
         assert!(validate_recording_id("recording_foo/bar").is_err());
         assert!(validate_recording_id("other_1720000000000").is_err());
+    }
+
+    #[test]
+    fn editor_project_ids_for_tasks_are_safe_and_deduplicated() {
+        let task_ids = vec![
+            " task/one ".to_string(),
+            "task/one".to_string(),
+            "".to_string(),
+            "task-two".to_string(),
+        ];
+
+        assert_eq!(
+            editor_project_ids_for_task_ids(&task_ids),
+            vec!["edit_task_one".to_string(), "edit_task-two".to_string()]
+        );
+    }
+
+    #[test]
+    fn editor_project_cleanup_removes_existing_dirs_and_reports_missing_ones() {
+        let root = temp_test_dir("editor-project-cleanup");
+        let existing_id = "edit_existing".to_string();
+        let missing_id = "edit_missing".to_string();
+        let recordings = root.join(&existing_id).join("recordings");
+        fs::create_dir_all(&recordings).expect("create editor project directory");
+        fs::write(recordings.join("take.wav"), b"audio").expect("write editor recording");
+
+        let result = remove_editor_project_dirs(
+            &root,
+            &[existing_id.clone(), missing_id.clone()],
+        );
+
+        assert_eq!(result.deleted_project_ids, vec![existing_id.clone()]);
+        assert_eq!(result.missing_project_ids, vec![missing_id]);
+        assert!(result.blocked_project_ids.is_empty());
+        assert!(result.failed_project_ids.is_empty());
+        assert!(!root.join(existing_id).exists());
+        fs::remove_dir_all(&root).expect("remove editor cleanup test root");
+    }
+
+    #[test]
+    fn orphaned_editor_projects_only_returns_unlinked_task_projects() {
+        let root = temp_test_dir("orphaned-editor-projects");
+        let active_dir = root.join("edit_active");
+        let orphan_dir = root.join("edit_orphan");
+        let blank_dir = root.join("edit_blank_1");
+        fs::create_dir_all(&active_dir).expect("create active editor project");
+        fs::create_dir_all(&orphan_dir).expect("create orphaned editor project");
+        fs::create_dir_all(&blank_dir).expect("create blank editor project");
+        fs::write(
+            active_dir.join("project.json"),
+            r#"{"id":"edit_active","name":"Active","sourceTaskId":"task-active"}"#,
+        )
+        .expect("write active editor project");
+        fs::write(
+            orphan_dir.join("project.json"),
+            r#"{"id":"edit_orphan","name":"Orphan","sourceTaskId":"task-orphan"}"#,
+        )
+        .expect("write orphaned editor project");
+        fs::write(
+            blank_dir.join("project.json"),
+            r#"{"id":"edit_blank_1","name":"Blank"}"#,
+        )
+        .expect("write blank editor project");
+
+        let projects = orphaned_editor_projects(&root, &["task-active".to_string()])
+            .expect("list orphaned editor projects");
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].project_id, "edit_orphan");
+        assert_eq!(projects[0].source_task_id, "task-orphan");
+        fs::remove_dir_all(&root).expect("remove orphaned project test root");
     }
 }

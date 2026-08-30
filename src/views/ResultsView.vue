@@ -13,7 +13,7 @@ import {
   TrashOutline,
 } from '@vicons/ionicons5'
 import { useTaskStore, type SeparationJob, type SeparationTask } from '@/stores/task'
-import { useEditorStore } from '@/stores/editor'
+import { useEditorStore, type OrphanedEditorProject } from '@/stores/editor'
 import { usePagedSelection } from '@/composables/usePagedSelection'
 import { NCheckbox, useDialog, useMessage } from 'naive-ui'
 
@@ -29,6 +29,9 @@ const dialog = useDialog()
 const search = ref('')
 const sortBy = ref<ResultSort>('time_desc')
 const expandedIds = ref<string[]>([])
+const orphanedEditorProjects = ref<OrphanedEditorProject[]>([])
+const orphanedProjectsLoading = ref(false)
+const orphanedProjectsCleaning = ref(false)
 
 const sortOptions = [
   { label: t('results.sortTimeDesc'), value: 'time_desc' },
@@ -137,6 +140,97 @@ function groupTaskIdTitle(group: ResultGroup) {
   return groupTaskIds(group).join('\n')
 }
 
+async function cleanupLinkedEditorProjects(items: SeparationTask[]) {
+  try {
+    const result = await editor.deleteProjectsForTasks(items.map(item => item.id))
+    if (result.blockedProjectIds.length) {
+      message.warning(t('results.removeEditorProjectsOpen', { count: result.blockedProjectIds.length }))
+      return false
+    }
+    if (result.failedProjectIds.length) {
+      message.error(t('results.removeEditorProjectsFailed', { count: result.failedProjectIds.length }))
+      return false
+    }
+    return true
+  } catch {
+    message.error(t('results.removeEditorProjectsFailed', { count: items.length }))
+    return false
+  }
+}
+
+async function ensureLinkedEditorProjectsClosed(items: SeparationTask[]) {
+  try {
+    const openProjectIds = await editor.listOpenProjectsForTasks(items.map(item => item.id))
+    if (!openProjectIds.length) return true
+    message.warning(t('results.removeEditorProjectsOpen', { count: openProjectIds.length }))
+  } catch {
+    message.error(t('results.removeEditorProjectsFailed', { count: items.length }))
+  }
+  return false
+}
+
+async function refreshOrphanedEditorProjects(force = false) {
+  if (orphanedProjectsLoading.value || (!force && orphanedProjectsCleaning.value)) return
+  if (!task.initialized) {
+    orphanedEditorProjects.value = []
+    return
+  }
+  orphanedProjectsLoading.value = true
+  try {
+    orphanedEditorProjects.value = await editor.listOrphanedProjects(task.resultTasks.map(item => item.id))
+  } catch {
+    orphanedEditorProjects.value = []
+  } finally {
+    orphanedProjectsLoading.value = false
+  }
+}
+
+function handleCleanupOrphanedEditorProjects() {
+  const count = orphanedEditorProjects.value.length
+  if (!count || orphanedProjectsCleaning.value) return
+  const previewProjects = orphanedEditorProjects.value.slice(0, 6)
+  dialog.warning({
+    title: t('results.cleanupEditorProjectsTitle'),
+    content: () => h('div', { style: 'display:grid;gap:10px;' }, [
+      h('span', t('results.cleanupEditorProjectsContent', { count })),
+      h('ul', { style: 'margin:0;padding-left:20px;color:var(--on-surface-muted);' }, previewProjects.map(project => (
+        h('li', { key: project.projectId }, project.name)
+      ))),
+      count > previewProjects.length
+        ? h('span', { style: 'color:var(--on-surface-muted);font-size:12px;' }, t('results.cleanupEditorProjectsMore', {
+            count: count - previewProjects.length,
+          }))
+        : null,
+    ]),
+    positiveText: t('results.cleanupEditorProjectsAction'),
+    negativeText: t('common.cancel'),
+    positiveButtonProps: { type: 'error' },
+    onPositiveClick: async () => {
+      orphanedProjectsCleaning.value = true
+      try {
+        const result = await editor.deleteOrphanedProjects(task.resultTasks.map(item => item.id))
+        if (result.blockedProjectIds.length) {
+          message.warning(t('results.removeEditorProjectsOpen', { count: result.blockedProjectIds.length }))
+          return false
+        }
+        if (result.failedProjectIds.length) {
+          await refreshOrphanedEditorProjects(true)
+          message.error(t('results.removeEditorProjectsFailed', { count: result.failedProjectIds.length }))
+          return false
+        }
+        const removedCount = result.deletedProjectIds.length
+        await refreshOrphanedEditorProjects(true)
+        message.success(t('results.cleanupEditorProjectsSuccess', { count: removedCount }))
+      } catch {
+        message.error(t('results.cleanupEditorProjectsFailed'))
+        return false
+      } finally {
+        orphanedProjectsCleaning.value = false
+      }
+    },
+  })
+}
+
 function trashTargetsForItems(items: SeparationTask[]) {
   const seen = new Set<string>()
   return items.flatMap((item) => trashTargets(item)).filter((path) => {
@@ -189,6 +283,7 @@ function handleRemoveResult(group: ResultGroup) {
     title: t('results.removeTitle'),
     content: () => h('div', { style: 'display:grid;gap:12px;' }, [
       h('span', t('results.removeContent')),
+      h('span', { class: 'result-remove__editor-hint' }, t('results.removeEditorProjectHint')),
       h(NCheckbox, {
         checked: deleteFiles.value,
         'onUpdate:checked': (value: boolean) => { deleteFiles.value = value },
@@ -198,15 +293,21 @@ function handleRemoveResult(group: ResultGroup) {
     negativeText: t('common.cancel'),
     positiveButtonProps: { type: 'error' },
     onPositiveClick: async () => {
-      if (!deleteFiles.value) {
+      const finishRemove = async () => {
+        if (!await cleanupLinkedEditorProjects(group.items)) return false
         task.removeResults(ids)
+        return true
+      }
+      if (!deleteFiles.value) {
+        if (!await finishRemove()) return
         message.success(t('results.removeSuccess'))
         return
       }
+      if (!await ensureLinkedEditorProjectsClosed(group.items)) return false
 
       const targets = trashTargetsForItems(group.items)
       if (!targets.length) {
-        task.removeResults(ids)
+        if (!await finishRemove()) return
         message.warning(t('results.removeNoFilesSingle'))
         return
       }
@@ -214,7 +315,7 @@ function handleRemoveResult(group: ResultGroup) {
       try {
         const result = await task.trashResultPaths(targets, trashEmptyDirsForItems(group.items))
         if (!result.failed.length) {
-          task.removeResults(ids)
+          if (!await finishRemove()) return
           message.success(t('results.removeFilesSuccessSingle'))
           return
         }
@@ -224,7 +325,7 @@ function handleRemoveResult(group: ResultGroup) {
           message.warning(t('results.removeFilesKeptSingle'))
           return
         }
-        task.removeResults(ids)
+        if (!await finishRemove()) return
         if (result.failed.length === targets.length) {
           message.warning(t('results.removeFilesAllFailedListOnly'))
         } else {
@@ -236,7 +337,7 @@ function handleRemoveResult(group: ResultGroup) {
           message.error(error instanceof Error ? error.message : t('results.removeFilesFailed'))
           return
         }
-        task.removeResults(ids)
+        if (!await finishRemove()) return
         message.warning(t('results.removeFilesAllFailedListOnly'))
       }
     },
@@ -254,6 +355,7 @@ function handleRemoveSelected() {
     title: t('results.removeSelectedTitle'),
     content: () => h('div', { style: 'display:grid;gap:12px;' }, [
       h('span', t('results.removeSelectedContent', { count: ids.length })),
+      h('span', { class: 'result-remove__editor-hint' }, t('results.removeEditorProjectHint')),
       h(NCheckbox, {
         checked: deleteFiles.value,
         'onUpdate:checked': (value: boolean) => { deleteFiles.value = value },
@@ -263,23 +365,26 @@ function handleRemoveSelected() {
     negativeText: t('common.cancel'),
     positiveButtonProps: { type: 'error' },
     onPositiveClick: async () => {
-      const finishRemove = (silent = false) => {
+      const finishRemove = async (silent = false) => {
+        if (!await cleanupLinkedEditorProjects(items)) return false
         const removed = task.removeResults(taskIds)
         if (!silent && removed > 0) {
           message.success(t('results.removeSelectedSuccess', { count: ids.length }))
         }
         selectedResultIds.value = []
         selecting.value = false
+        return true
       }
 
       if (!deleteFiles.value) {
-        finishRemove()
+        await finishRemove()
         return
       }
+      if (!await ensureLinkedEditorProjectsClosed(items)) return false
 
       const targets = trashTargetsForItems(items)
       if (!targets.length) {
-        finishRemove(true)
+        if (!await finishRemove(true)) return
         message.warning(t('results.removeNoFilesMultiple'))
         return
       }
@@ -287,7 +392,7 @@ function handleRemoveSelected() {
       try {
         const result = await task.trashResultPaths(targets, trashEmptyDirsForItems(items))
         if (!result.failed.length) {
-          finishRemove(true)
+          if (!await finishRemove(true)) return
           message.success(t('results.removeFilesSuccessMultiple'))
           return
         }
@@ -297,7 +402,7 @@ function handleRemoveSelected() {
           message.warning(t('results.removeFilesKeptMultiple'))
           return
         }
-        finishRemove(true)
+        if (!await finishRemove(true)) return
         if (result.failed.length === targets.length) {
           message.warning(t('results.removeFilesAllFailedListOnly'))
         } else {
@@ -309,7 +414,7 @@ function handleRemoveSelected() {
           message.error(error instanceof Error ? error.message : t('results.removeFilesFailed'))
           return
         }
-        finishRemove(true)
+        if (!await finishRemove(true)) return
         message.warning(t('results.removeFilesAllFailedListOnly'))
       }
     },
@@ -325,6 +430,7 @@ function handleClearResults() {
     title: t('results.clearTitle'),
     content: () => h('div', { style: 'display:grid;gap:12px;' }, [
       h('span', t('results.clearContent', { count: groups.length })),
+      h('span', { class: 'result-remove__editor-hint' }, t('results.removeEditorProjectHint')),
       h(NCheckbox, {
         checked: deleteFiles.value,
         'onUpdate:checked': (value: boolean) => { deleteFiles.value = value },
@@ -335,23 +441,26 @@ function handleClearResults() {
     positiveButtonProps: { type: 'error' },
     onPositiveClick: async () => {
       const itemIds = items.map((item) => item.id)
-      const finishClear = (silent = false) => {
+      const finishClear = async (silent = false) => {
+        if (!await cleanupLinkedEditorProjects(items)) return false
         const removed = task.clearResults(itemIds)
         if (!silent && removed > 0) {
           message.success(t('results.clearSuccess', { count: groups.length }))
         }
         selectedResultIds.value = []
         selecting.value = false
+        return true
       }
 
       if (!deleteFiles.value) {
-        finishClear()
+        await finishClear()
         return
       }
+      if (!await ensureLinkedEditorProjectsClosed(items)) return false
 
       const targets = trashTargetsForItems(items)
       if (!targets.length) {
-        finishClear(true)
+        if (!await finishClear(true)) return
         message.warning(t('results.removeNoFilesMultiple'))
         return
       }
@@ -359,7 +468,7 @@ function handleClearResults() {
       try {
         const result = await task.trashResultPaths(targets, trashEmptyDirsForItems(items))
         if (!result.failed.length) {
-          finishClear(true)
+          if (!await finishClear(true)) return
           message.success(t('results.removeFilesSuccessMultiple'))
           return
         }
@@ -369,7 +478,7 @@ function handleClearResults() {
           message.warning(t('results.removeFilesKeptMultiple'))
           return
         }
-        finishClear(true)
+        if (!await finishClear(true)) return
         if (result.failed.length === targets.length) {
           message.warning(t('results.removeFilesAllFailedListOnly'))
         } else {
@@ -381,7 +490,7 @@ function handleClearResults() {
           message.error(error instanceof Error ? error.message : t('results.removeFilesFailed'))
           return
         }
-        finishClear(true)
+        if (!await finishClear(true)) return
         message.warning(t('results.removeFilesAllFailedListOnly'))
       }
     },
@@ -433,6 +542,7 @@ watch(() => task.focusedResultTaskId, (value) => {
 })
 
 onMounted(() => {
+  void refreshOrphanedEditorProjects()
   if (task.focusedResultTaskId) {
     scrollToFocusedResult(task.focusedResultTaskId)
     task.focusResultTask(null)
@@ -463,6 +573,17 @@ function formatDurationMs(value: number | undefined) {
         <p>{{ t('results.subtitle') }}</p>
       </div>
       <div class="results-page__header-actions">
+        <n-button
+          v-if="orphanedEditorProjects.length"
+          secondary
+          type="warning"
+          :loading="orphanedProjectsCleaning"
+          @click="handleCleanupOrphanedEditorProjects"
+        >
+          <template #icon><n-icon :component="TrashOutline" /></template>
+          {{ t('results.cleanupEditorProjectsAction') }}
+          <span class="results-page__cleanup-count">{{ orphanedEditorProjects.length }}</span>
+        </n-button>
         <n-button v-if="task.resultTasks.length" secondary @click="toggleSelecting">
           {{ selecting ? t('results.batchExit') : t('results.batchSelect') }}
         </n-button>
@@ -644,7 +765,25 @@ function formatDurationMs(value: number | undefined) {
 .results-page__header-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.result-remove__editor-hint {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.results-page__cleanup-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
 }
 
 .results-toolbar {
@@ -956,6 +1095,16 @@ function formatDurationMs(value: number | undefined) {
 }
 
 @media (max-width: 640px) {
+  .results-page__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .results-page__header-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
   .result-row__main {
     grid-template-columns: 36px minmax(0, 1fr) 28px;
   }
