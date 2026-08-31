@@ -81,8 +81,10 @@ jobs:
           if (-not $ffmpegBin) { throw "ffmpeg bin directory not found" }
           Copy-Item (Join-Path $ffmpegBin.FullName "ffmpeg.exe") "$bin/ffmpeg.exe" -Force
           Copy-Item (Join-Path $ffmpegBin.FullName "ffprobe.exe") "$bin/ffprobe.exe" -Force
-          & "$bin/ffprobe.exe" -version | Select-Object -First 1
-          if ($LASTEXITCODE -ne 0) { throw "ffprobe.exe verification failed" }
+          $ffprobeOutput = & "$bin/ffprobe.exe" -version
+          $ffprobeExitCode = $LASTEXITCODE
+          $ffprobeOutput | Select-Object -First 1
+          if ($ffprobeExitCode -ne 0) { throw "ffprobe.exe verification failed with exit code $ffprobeExitCode" }
 
           $aria2Zip = "release/aria2-1.37.0-win-64bit-build1.zip"
           $aria2Extract = "release/aria2"
@@ -270,8 +272,10 @@ jobs:
           if (-not $ffmpegBin) { throw "ffmpeg bin directory not found" }
           Copy-Item (Join-Path $ffmpegBin.FullName "ffmpeg.exe") "$bin/ffmpeg.exe" -Force
           Copy-Item (Join-Path $ffmpegBin.FullName "ffprobe.exe") "$bin/ffprobe.exe" -Force
-          & "$bin/ffprobe.exe" -version | Select-Object -First 1
-          if ($LASTEXITCODE -ne 0) { throw "ffprobe.exe verification failed" }
+          $ffprobeOutput = & "$bin/ffprobe.exe" -version
+          $ffprobeExitCode = $LASTEXITCODE
+          $ffprobeOutput | Select-Object -First 1
+          if ($ffprobeExitCode -ne 0) { throw "ffprobe.exe verification failed with exit code $ffprobeExitCode" }
 
           $aria2Zip = "release/aria2-1.37.0-win-64bit-build1.zip"
           $aria2Extract = "release/aria2"
@@ -437,8 +441,10 @@ jobs:
           $ffprobe = Get-ChildItem "release/ffmpeg" -Recurse -File -Filter "ffprobe.exe" | Select-Object -First 1
           if (-not $ffprobe) { throw "ffprobe.exe not found" }
           Copy-Item $ffprobe.FullName "$bin/ffprobe.exe" -Force
-          & "$bin/ffprobe.exe" -version | Select-Object -First 1
-          if ($LASTEXITCODE -ne 0) { throw "ffprobe.exe verification failed" }
+          $ffprobeOutput = & "$bin/ffprobe.exe" -version
+          $ffprobeExitCode = $LASTEXITCODE
+          $ffprobeOutput | Select-Object -First 1
+          if ($ffprobeExitCode -ne 0) { throw "ffprobe.exe verification failed with exit code $ffprobeExitCode" }
           Invoke-WebRequest -Uri "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" -OutFile "release/aria2.zip"
           Expand-Archive -Path "release/aria2.zip" -DestinationPath "release/aria2" -Force
           $aria2 = Get-ChildItem "release/aria2" -Recurse -File -Filter "aria2c.exe" | Select-Object -First 1
@@ -591,8 +597,10 @@ jobs:
           $ffprobe = Get-ChildItem "release/ffmpeg" -Recurse -File -Filter "ffprobe.exe" | Select-Object -First 1
           if (-not $ffprobe) { throw "ffprobe.exe not found" }
           Copy-Item $ffprobe.FullName "$bin/ffprobe.exe" -Force
-          & "$bin/ffprobe.exe" -version | Select-Object -First 1
-          if ($LASTEXITCODE -ne 0) { throw "ffprobe.exe verification failed" }
+          $ffprobeOutput = & "$bin/ffprobe.exe" -version
+          $ffprobeExitCode = $LASTEXITCODE
+          $ffprobeOutput | Select-Object -First 1
+          if ($ffprobeExitCode -ne 0) { throw "ffprobe.exe verification failed with exit code $ffprobeExitCode" }
           Invoke-WebRequest -Uri "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" -OutFile "release/aria2.zip"
           Expand-Archive -Path "release/aria2.zip" -DestinationPath "release/aria2" -Force
           $aria2 = Get-ChildItem "release/aria2" -Recurse -File -Filter "aria2c.exe" | Select-Object -First 1
