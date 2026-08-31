@@ -1,12 +1,22 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { loadAppStore, saveAppStore } from '@/utils/appStore'
+import {
+  detectWorkflowFormat,
+  normalizeGraphWorkflowDefinition,
+  normalizeSimpleWorkflowDefinition,
+  WORKFLOW_FORMAT_VERSION,
+  type WorkflowFormat,
+} from '@/workflows/formats'
 
 export type WorkflowEntry = {
   id: string
   name: string
   description: string
   definition: Record<string, unknown>
+  format: WorkflowFormat
+  formatVersion: number
+  convertedFrom?: string
   createdAt: number
   updatedAt: number
 }
@@ -29,6 +39,9 @@ export type SaveWorkflowInput = {
   name: string
   description?: string
   definition: Record<string, unknown>
+  format?: WorkflowFormat
+  formatVersion?: number
+  convertedFrom?: string
   expectedUpdatedAt?: number
   force?: boolean
 }
@@ -44,10 +57,14 @@ function createId(prefix = 'workflow') {
 
 function normalizeDefinition(value: unknown): Record<string, unknown> {
   // Workflows are now stored as native comfy-mss JSON (node editor) or pymss
-  // YAML dict (simple creator) — both are already canonical. No v2 migration.
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
+  // YAML dict (simple creator). Keep format compatibility migrations at this
+  // storage boundary so every consumer sees the current schema.
+  const definition = value && typeof value === 'object' && !Array.isArray(value)
+    ? JSON.parse(JSON.stringify(value)) as Record<string, unknown>
     : {}
+  return detectWorkflowFormat(definition) === 'simple'
+    ? normalizeSimpleWorkflowDefinition(definition)
+    : normalizeGraphWorkflowDefinition(definition)
 }
 
 function normalizeWorkflow(input: Partial<WorkflowEntry>): WorkflowEntry | null {
@@ -55,11 +72,18 @@ function normalizeWorkflow(input: Partial<WorkflowEntry>): WorkflowEntry | null 
   const id = String(input.id || '').trim() || createId()
   if (!name) return null
   const now = Date.now()
+  const definition = normalizeDefinition(input.definition)
+  const detectedFormat = detectWorkflowFormat(definition)
   return {
     id,
     name,
     description: String(input.description || '').trim(),
-    definition: normalizeDefinition(input.definition),
+    definition,
+    format: detectedFormat === 'unknown' ? (input.format || 'unknown') : detectedFormat,
+    formatVersion: Number.isFinite(Number(input.formatVersion))
+      ? Number(input.formatVersion)
+      : WORKFLOW_FORMAT_VERSION,
+    ...(input.convertedFrom ? { convertedFrom: String(input.convertedFrom) } : {}),
     createdAt: Number.isFinite(Number(input.createdAt)) ? Number(input.createdAt) : now,
     updatedAt: Number.isFinite(Number(input.updatedAt)) ? Number(input.updatedAt) : now,
   }
@@ -126,11 +150,22 @@ export const useWorkflowStore = defineStore('workflow', () => {
       throw new WorkflowRevisionConflictError(existing.id, input.expectedUpdatedAt, existing.updatedAt)
     }
     const now = Math.max(Date.now(), (existing?.updatedAt || 0) + 1)
+    const definition = normalizeDefinition(input.definition)
+    const detectedFormat = detectWorkflowFormat(definition)
     const entry: WorkflowEntry = {
       id: existing?.id || input.id || createId(),
       name: input.name.trim(),
       description: String(input.description || '').trim(),
-      definition: normalizeDefinition(input.definition),
+      definition,
+      format: detectedFormat === 'unknown'
+        ? (input.format || existing?.format || 'unknown')
+        : detectedFormat,
+      formatVersion: Number.isFinite(Number(input.formatVersion))
+        ? Number(input.formatVersion)
+        : existing?.formatVersion || WORKFLOW_FORMAT_VERSION,
+      ...(input.convertedFrom || existing?.convertedFrom
+        ? { convertedFrom: input.convertedFrom || existing?.convertedFrom }
+        : {}),
       createdAt: existing?.createdAt || now,
       updatedAt: now,
     }
@@ -158,6 +193,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
       name: `${source.name} Copy`,
       description: source.description,
       definition: JSON.parse(JSON.stringify(source.definition)) as Record<string, unknown>,
+      format: source.format,
+      formatVersion: source.formatVersion,
+      convertedFrom: source.convertedFrom,
     })
   }
 

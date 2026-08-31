@@ -30,6 +30,11 @@ import {
 } from '@vicons/ionicons5'
 import { useTaskStore, type ModelListSortMode, type OutputLayout, type SeparationTask, type StemOutput } from '@/stores/task'
 import { useWorkflowStore, type WorkflowEntry } from '@/stores/workflow'
+import { WORKFLOW_FORMAT_VERSION } from '@/workflows/formats'
+import {
+  getWorkflowDefinitionIssue,
+  resolveWorkflowRuntimeDefaults,
+} from '@/workflows/runtimeDefinition'
 import { useSettingsStore } from '@/stores/settings'
 import { analyzeWorkflowInputs } from '@/utils/workflowInputs'
 import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
@@ -84,9 +89,8 @@ const { selectedModel, downloadedModels, models: modelEntries, isLoading, models
 const { workflows, selectedWorkflow, selectedWorkflowId } = storeToRefs(workflow)
 const workflowSlotFiles = toRef(task, 'workflowSlotFiles')
 
-// Runtime input slots of the selected comfy workflow (pymss >= 2.1.2):
-// each named load node becomes a file slot in the UI instead of the shared
-// input-file list.
+// Explicit runtime slots of the selected graph replace the shared input list.
+// This covers current input_name widgets and legacy audio-widget slot keys.
 const workflowInputAnalysis = computed(() => analyzeWorkflowInputs(selectedWorkflow.value?.definition))
 const workflowInputSlots = computed(() => (runMode.value === 'workflow' ? workflowInputAnalysis.value.slots : []))
 const workflowUnresolvedLoads = computed(() => (runMode.value === 'workflow' ? workflowInputAnalysis.value.unresolved : []))
@@ -345,9 +349,6 @@ const outputNamingSummary = computed(() => outputNamingConfig.value.enabled
   ? outputNamingConfig.value.template
   : t('separate.namingDefaultSummary'))
 const usesIndexToken = computed(() => outputNamingTemplate.value.includes('%index%'))
-// Workflow validation is now minimal on the frontend (nodes present, has a
-// save node). Deep validation runs in pymss.graph at execution time.
-const selectedWorkflowValidation = computed(() => null)
 function pickWorkflowSlotFile(slotName: string) {
   if (!selectedWorkflow.value) return
   void invoke<string[]>('pick_audio_files')
@@ -357,21 +358,19 @@ function pickWorkflowSlotFile(slotName: string) {
     })
     .catch(() => {})
 }
-const workflowUsesBatchInput = computed(() => false)
-const workflowBatchInputInvalid = computed(() => false)
-const workflowBatchInputMissingFolder = computed(() => false)
-const workflowUtilityInputInvalid = computed(() => false)
-function workflowValidationError(_summary: unknown) {
+function workflowValidationError() {
   if (!selectedWorkflow.value) return ''
-  const nodes = Array.isArray(selectedWorkflow.value.definition.nodes) ? selectedWorkflow.value.definition.nodes as any[] : []
-  if (!nodes.length) return t('workflows.stepsRequired')
-  if (!nodes.some(n => String(n.type || '').toLowerCase().includes('save'))) return t('workflows.workflowNoSaveOutputs')
+  const issue = getWorkflowDefinitionIssue(selectedWorkflow.value.definition)
+  if (issue === 'steps-required') return t('workflows.stepsRequired')
+  if (issue === 'no-save-outputs') return t('workflows.workflowNoSaveOutputs')
+  if (issue === 'invalid-definition') return t('workflows.workflowFormatInvalid')
+  if (issue === 'invalid-format') return t('workflows.workflowFormatInvalid')
   return ''
 }
-const workflowStructureInvalid = computed(() => runMode.value === 'workflow' && Boolean(workflowValidationError(null)))
+const workflowStructureInvalid = computed(() => runMode.value === 'workflow' && Boolean(workflowValidationError()))
 const startStatusText = computed(() => {
   if (runMode.value === 'workflow' && !selectedWorkflow.value) return t('separate.startHintNoWorkflow')
-  const validationError = workflowValidationError(selectedWorkflowValidation.value)
+  const validationError = workflowValidationError()
   if (validationError) return validationError
   if (outputDirectoryError.value) return outputDirectoryError.value
   if (workflowUnresolvedLoads.value.length) return t('separate.workflowUnresolvedLoad', { count: workflowUnresolvedLoads.value.length })
@@ -381,7 +380,6 @@ const startStatusText = computed(() => {
       : t('separate.workflowSlotsReady', { count: workflowInputSlots.value.length })
   }
   if (workflowSelfContainedOnly.value) return t('separate.workflowSelfContained')
-  if (workflowUsesBatchInput.value) return t('separate.startHintWorkflowBatchFolder')
   if (!inputFiles.value.length) return t('separate.outputDirectorySummary')
   if (runMode.value === 'model' && ensembleEnabled.value && !ensembleReady.value) return t('separate.ensembleNotReady')
   if (runMode.value === 'model' && !ensembleEnabled.value && !modelDownloaded.value) return t('separate.startHintModelMissing')
@@ -443,9 +441,11 @@ const outputPreview = computed(() => {
 })
 const effectiveFormat = computed(() => {
   if (runMode.value === 'workflow' && selectedWorkflow.value) {
-    const extra = (selectedWorkflow.value.definition.extra as Record<string, unknown> | undefined) || {}
-    const appDefaults = (extra.appDefaults as Record<string, unknown> | undefined) || {}
-    return String(appDefaults.output_format || settings.defaultFormat || 'wav').trim().toLowerCase() || 'wav'
+    return resolveWorkflowRuntimeDefaults(selectedWorkflow.value.definition, {
+      device: 'auto',
+      outputFormat: settings.defaultFormat || 'wav',
+      modelDir: settings.modelDir || null,
+    }).outputFormat
   }
   return String(settings.defaultFormat || 'wav').trim().toLowerCase() || 'wav'
 })
@@ -465,6 +465,7 @@ const outputSummaryPath = computed(() => runMode.value === 'workflow' ? normaliz
 const canStart = computed(() => (
   !workflowStructureInvalid.value
   && !outputDirectoryError.value
+  && !workflowUnresolvedLoads.value.length
   && (runMode.value === 'workflow'
     ? Boolean(selectedWorkflow.value)
       && (workflowInputSlots.value.length
@@ -1386,6 +1387,8 @@ function buildEnsembleWorkflow(): WorkflowEntry {
     id: 'temporary-ensemble',
     name: t('separate.ensembleWorkflowName'),
     description: t('separate.ensembleWorkflowDescription'),
+    format: 'graph',
+    formatVersion: WORKFLOW_FORMAT_VERSION,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     definition: {
@@ -1412,20 +1415,16 @@ async function start() {
     message.warning(t('separate.startHintNoWorkflow'))
     return
   }
-  if (workflowBatchInputInvalid.value) {
-    message.warning(t('separate.startHintWorkflowBatchMultiple'))
+  if (workflowUnresolvedLoads.value.length) {
+    message.warning(t('separate.workflowUnresolvedLoad', { count: workflowUnresolvedLoads.value.length }))
     return
   }
-  if (workflowBatchInputMissingFolder.value) {
-    message.warning(t('workflows.batchInputFolderRequired'))
-    return
-  }
-  const validationError = workflowValidationError(selectedWorkflowValidation.value)
+  const validationError = workflowValidationError()
   if (validationError) {
     message.warning(validationError)
     return
   }
-  if (!workflowUsesBatchInput.value && !inputFiles.value.length
+  if (!inputFiles.value.length
     && !workflowInputSlots.value.length && !workflowSelfContainedOnly.value) {
     message.warning(t('separate.startHintNoInput'))
     return

@@ -72,7 +72,7 @@ for (const match of source.matchAll(/\$?t\(\s*['"]([a-zA-Z][\w]*(?:\.[\w]+)+)['"
 }
 
 // Any quoted occurrence of a key counts as a use: several keys reach t() through lookup
-// tables (`{ custom_model_type: 'workflows.simpleReasonCustomModel' }`) rather than a direct
+// tables (`{ advanced_parameters: 'workflows.simpleReasonAdvancedParameters' }`) rather than a direct
 // call. Requiring the quotes is what keeps property access like `editor.undo` from matching.
 const quoted = new Set<string>()
 for (const match of source.matchAll(/['"`]([a-zA-Z][\w]*(?:\.[\w]+)+)['"`]/g)) {

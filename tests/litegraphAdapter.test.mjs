@@ -114,6 +114,37 @@ test('litegraph serialize -> adapter -> pymss load_comfy_file (round-trip)', { s
   assert.ok(result.includes('mss_separate') && result.includes('pymss_save_audio'))
 })
 
+test('adapter preserves editor metadata required by workflow round-trips', () => {
+  const source = {
+    last_node_id: 0,
+    last_link_id: 0,
+    nodes: [],
+    links: [],
+    groups: [{
+      id: 1,
+      title: 'Stage 1',
+      bounding: [0, 0, 320, 180],
+      color: '#888888',
+      flags: {},
+    }],
+    config: { alignToGrid: true },
+    extra: {
+      appDefaults: { device: 'cuda', output_format: 'flac' },
+      pymssStudio: { convertedFromFormat: 'simple', sourceWorkflowId: 'workflow-1' },
+    },
+  }
+  const graph = new LGraph()
+  graph.configure(source)
+  const converted = litegraphToComfy(graph.serialize())
+
+  assert.equal(converted.groups?.length, 1)
+  assert.equal(converted.groups?.[0]?.title, 'Stage 1')
+  assert.deepEqual(converted.groups?.[0]?.bounding, [0, 0, 320, 180])
+  assert.deepEqual(converted.config, source.config)
+  assert.deepEqual(converted.extra?.appDefaults, source.extra.appDefaults)
+  assert.deepEqual(converted.extra?.pymssStudio, source.extra.pymssStudio)
+})
+
 test('fixture files (real comfy-mss JSON) still parse through pymss', { skip: !hasPymssGraph }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'lg-fix-'))
   for (const name of ['example_mss_separate', 'example_ensemble', 'example_vr_separate', 'example_custom_mss_separate', 'example_batch_separate']) {

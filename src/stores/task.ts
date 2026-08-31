@@ -7,6 +7,12 @@ import { useSettingsStore } from '@/stores/settings'
 import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
 import { useAppStore } from '@/stores/app'
 import type { WorkflowEntry } from '@/stores/workflow'
+import { detectWorkflowFormat, WORKFLOW_FORMAT_VERSION } from '@/workflows/formats'
+import {
+  getWorkflowDefinitionIssue,
+  prepareWorkflowDefinitionForRun,
+  resolveWorkflowRuntimeDefaults,
+} from '@/workflows/runtimeDefinition'
 export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
 
 export type OutputLayout = 'folders' | 'flat'
@@ -953,59 +959,33 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  function buildWorkflowDefinitionForRun(workflow: WorkflowEntry, outputFormat: string): Record<string, unknown> {
-    const definition = workflow.definition && typeof workflow.definition === 'object'
-      ? workflow.definition
-      : {}
-    // definition is already native comfy-mss JSON. We only inject the runtime
-    // output_format into save nodes and ensure extra.appDefaults is set so the
-    // editor UI can read it back. Deep graph validation is delegated to pymss.
-    const clone = JSON.parse(JSON.stringify(definition)) as Record<string, unknown>
-    const nodes = Array.isArray(clone.nodes) ? clone.nodes as any[] : []
-    for (const n of nodes) {
-      if (String(n.type || '') === 'pymss_save_audio') {
-        const wv = Array.isArray(n.widgets_values) ? n.widgets_values : []
-        while (wv.length <= 0) wv.push(null)
-        if (outputFormat) wv[0] = outputFormat.toLowerCase()
-        n.widgets_values = wv
-      }
-    }
-    const extra = ((clone.extra as Record<string, unknown>) || {})
-    extra.appDefaults = { ...((extra.appDefaults as object) || {}), output_format: outputFormat }
-    clone.extra = extra
-    return clone
-  }
   function buildWorkflowRunConfig(workflow: WorkflowEntry, outputLayout: OutputLayout = 'folders', outputNaming?: OutputNamingConfig): SeparationRunConfig {
     const settings = useSettingsStore()
     const app = useAppStore()
     const runtimeDevice = settings.getRuntimeDeviceConfig(app.envInfo)
-    const appDefaults = (((workflow.definition || {}).extra as Record<string, unknown> | undefined)?.appDefaults as Record<string, unknown> | undefined) || {}
     const workflowInputs = workflowSlotFiles.value[workflow.id] || {}
-    const workflowDevice = typeof appDefaults.device === 'string' && appDefaults.device.trim()
-      ? appDefaults.device.trim()
-      : runtimeDevice.device
-    const workflowFormat = typeof appDefaults.output_format === 'string' && appDefaults.output_format.trim()
-      ? appDefaults.output_format.trim()
-      : typeof settings.defaultFormat === 'string' && settings.defaultFormat.trim()
-        ? settings.defaultFormat.trim()
-        : 'wav'
-    const workflowModelDir = typeof appDefaults.model_dir === 'string' && appDefaults.model_dir.trim()
-      ? appDefaults.model_dir.trim()
-      : settings.modelDir || null
+    const defaults = resolveWorkflowRuntimeDefaults(workflow.definition, {
+      device: runtimeDevice.device,
+      outputFormat: settings.defaultFormat || 'wav',
+      modelDir: settings.modelDir || null,
+    })
     return {
       runMode: 'workflow',
-      modelDir: workflowModelDir,
+      modelDir: defaults.modelDir,
       workflowInputs,
       downloadSource: settings.downloadSource,
       downloadMethod: settings.downloadMethod,
       workflowId: workflow.id,
       workflowName: workflow.name,
-      workflowDefinition: buildWorkflowDefinitionForRun(workflow, workflowFormat),
+      workflowDefinition: prepareWorkflowDefinitionForRun(
+        workflow.definition,
+        { device: defaults.device, outputFormat: defaults.outputFormat },
+      ),
       outputLayout,
       outputNaming: normalizeOutputNaming(outputNaming),
-      device: workflowDevice,
-      deviceIds: workflowDevice === runtimeDevice.device ? runtimeDevice.deviceIds : [],
-      outputFormat: workflowFormat,
+      device: defaults.device,
+      deviceIds: defaults.device === runtimeDevice.device ? runtimeDevice.deviceIds : [],
+      outputFormat: defaults.outputFormat,
       selectedStems: [],
       useTta: useTta.value,
       debug: settings.developerMode,
@@ -1089,7 +1069,7 @@ export const useTaskStore = defineStore('task', () => {
     setTaskStatus(task.id, 'preparing', 'Preparing task')
     try {
       if (config.runMode === 'workflow') {
-        const validationError = minimalComfyValidationError(config.workflowDefinition || {})
+        const validationError = workflowDefinitionValidationError(config.workflowDefinition || {})
         if (validationError) throw new Error(validationError)
         await invoke<{ taskId: string; started: boolean }>('start_workflow_inference', {
           payload: {
@@ -1854,13 +1834,12 @@ export const useTaskStore = defineStore('task', () => {
     return { succeeded: targets.length, failed: 0, total: targets.length, jobId, tasks: createdTasks }
   }
 
-  function minimalComfyValidationError(definition: Record<string, unknown>): string {
-    const nodes = Array.isArray(definition.nodes) ? definition.nodes as any[] : []
-    if (!nodes.length) return i18n.global.t('workflows.stepsRequired')
-    const hasOutput = nodes.some(n => String(n.type || '').toLowerCase().includes('save'))
-    if (!hasOutput) return i18n.global.t('workflows.workflowNoSaveOutputs')
-    // Deeper validation (cycles / dangling inputs / unknown node types) is
-    // handled by pymss.graph.load_comfy_file at run time.
+  function workflowDefinitionValidationError(definition: Record<string, unknown>): string {
+    const issue = getWorkflowDefinitionIssue(definition)
+    if (issue === 'steps-required') return i18n.global.t('workflows.stepsRequired')
+    if (issue === 'no-save-outputs') return i18n.global.t('workflows.workflowNoSaveOutputs')
+    if (issue === 'invalid-definition') return i18n.global.t('workflows.workflowFormatInvalid')
+    if (issue === 'invalid-format') return i18n.global.t('workflows.workflowFormatInvalid')
     return ''
   }
 
@@ -1868,14 +1847,17 @@ export const useTaskStore = defineStore('task', () => {
     if (!workflow?.id) {
       throw new Error('Workflow is required')
     }
-    const validationError = minimalComfyValidationError(workflow.definition)
+    const validationError = workflowDefinitionValidationError(workflow.definition)
     if (validationError) throw new Error(validationError)
     const settings = useSettingsStore()
-    // Runtime input slots (pymss >= 2.1.2 strict contract): comfy graphs
-    // declare named slots on load nodes; this run fills each slot with one
-    // file. Graphs without slots keep the legacy one-task-per-file behavior.
+    // Graph inputs are explicit: named input_name widgets and legacy audio
+    // widget keys become slots; embedded paths/folders are self-contained.
+    // Simple YAML workflows continue to use the shared input-file list.
     const { analyzeWorkflowInputs } = await import('../utils/workflowInputs')
     const analysis = analyzeWorkflowInputs(workflow.definition)
+    if (analysis.unresolved.length) {
+      throw new Error(i18n.global.t('separate.workflowUnresolvedLoad', { count: analysis.unresolved.length }))
+    }
     const slotFiles = workflowSlotFiles.value[workflow.id] || {}
     if (analysis.slots.length) {
       const missing = analysis.slots.filter(slot => !(slotFiles[slot.name] || '').trim()).map(slot => slot.name)
@@ -1896,8 +1878,9 @@ export const useTaskStore = defineStore('task', () => {
       scheduleQueue()
       return { succeeded: 1, failed: 0, total: 1, jobId, tasks: createdTasks }
     }
-    if (analysis.selfContained && !inputFiles.value.length && !analysis.unresolved.length) {
-      // self-contained graph: runs with no runtime input at all
+    if (analysis.selfContained) {
+      // Embedded files and batch folders are the graph's own input source.
+      // Ignore any stale files left in the shared picker and run the graph once.
       const jobId = createRunId('job')
       const outputLayout = normalizeOutputLayout(options.outputLayout)
       const jobOutput = normalizeOutputPath(options.outputDir || settings.outputDir)
@@ -1941,6 +1924,8 @@ export const useTaskStore = defineStore('task', () => {
         name: existing.runConfig.workflowName,
         description: '',
         definition: existing.runConfig.workflowDefinition,
+        format: detectWorkflowFormat(existing.runConfig.workflowDefinition),
+        formatVersion: WORKFLOW_FORMAT_VERSION,
         createdAt: existing.createdAt,
         updatedAt: existing.updatedAt,
       }, undefined, undefined, existing.runConfig.outputLayout, existing.runConfig.outputNaming)

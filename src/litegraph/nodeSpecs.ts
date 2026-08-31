@@ -61,6 +61,19 @@ export interface NodeSpec {
 }
 
 export const NODE_SPECS: Record<string, NodeSpec> = {
+  /**
+   * Runtime input used by YAML-compiled workflows. Unlike the interactive
+   * load nodes below, it receives the current task's input_path from the
+   * worker, so a converted simple workflow keeps the normal batch semantics.
+   */
+  input_audio: {
+    type: 'input_audio',
+    title: 'Input Audio',
+    category: 'pymss/audio',
+    inputs: [],
+    outputs: [{ name: 'audio', type: PORT.AUDIO }],
+    widgets: [],
+  },
   pymss_load_audio: {
     type: 'pymss_load_audio',
     title: 'Load Audio',
@@ -183,8 +196,6 @@ export const NODE_SPECS: Record<string, NodeSpec> = {
       { name: 'model_name', type: 'combo', default: '', options: [] },
       { name: 'model_type', type: 'combo', default: 'mel_band_roformer', options: ['mel_band_roformer', 'bs_roformer', 'bs_roformer_hyperace', 'mdx23c', 'htdemucs', 'apollo', 'bandit', 'bandit_v2', 'scnet'] },
       { name: 'device', type: 'combo', default: 'auto', options: ['auto', 'cpu', 'cuda', 'mps'] },
-      { name: 'download_missing', type: 'toggle', default: false },
-      { name: 'source', type: 'combo', default: 'modelscope', options: ['modelscope', 'huggingface'] },
       { name: 'device_ids', type: 'text', default: '0' },
       { name: 'debug', type: 'toggle', default: false },
     ],

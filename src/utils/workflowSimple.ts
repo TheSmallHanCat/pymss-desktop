@@ -1,3 +1,11 @@
+import {
+  detectWorkflowFormat,
+  hasInvalidSimpleStructure,
+  isWorkflowSaveNodeType,
+  isWorkflowSeparationNodeType,
+} from '@/workflows/formats'
+import { analyzeWorkflowInputs } from '@/utils/workflowInputs'
+
 /**
  * Simple creator <-> pymss YAML workflow adapter.
  *
@@ -19,28 +27,25 @@ export type SimpleWorkflowSavePayload = {
   expectedUpdatedAt?: number
 }
 
-/** Legacy: simple-mode incompatibility reasons. Now always empty since simple
- * workflows are stored as pymss YAML (the source format). Kept for callers. */
 export type SimpleWorkflowReasonCode =
-  | 'utility_nodes'
-  | 'unsupported_nodes'
-  | 'custom_model_type'
-  | 'comfy_metadata'
-  | 'invalid_graph'
-  | 'custom_save_behavior'
+  | 'graph_workflow'
+  | 'advanced_parameters'
+  | 'invalid_definition'
 
 export type PymssYamlStep = {
   id: string
   model: string
   input: string
   stems: string[]
-  save: Record<string, string>
+  save: Record<string, unknown>
   inference_params?: Record<string, unknown>
   model_type?: string
   model_path?: string
   config_path?: string
+  model_dir?: string
   device?: string
   output_format?: string
+  use_tta?: boolean
 }
 
 export type PymssYamlWorkflow = {
@@ -88,25 +93,17 @@ export function analyzeComfyOverview(definition: unknown): ComfyOverview | null 
   const nodes = definition.nodes as any[]
   const stripPrefix = (raw: string) => raw.replace(/^\[[^\]]*\]\s*/, '').trim()
   const models: string[] = []
-  const inputSlots: string[] = []
   let separateCount = 0
   let outputCount = 0
   for (const node of nodes) {
     const type = String(node?.type || '')
-    if (type.endsWith('separate')) {
+    if (isWorkflowSeparationNodeType(type)) {
       separateCount += 1
       const raw = String(node.widgets_values?.[0] || '').trim()
       const model = stripPrefix(raw)
       if (model && !models.includes(model)) models.push(model)
     }
-    if (type.toLowerCase().includes('save')) outputCount += 1
-    if (type === 'pymss_load_audio' || type === 'LoadAudio') {
-      const slot = String(node.widgets_values?.[1] || '').trim()
-      if (slot) inputSlots.push(slot)
-    } else if (type === 'pymss_load_audio_batch') {
-      const slot = String(node.widgets_values?.[3] || '').trim()
-      if (slot) inputSlots.push(slot)
-    }
+    if (isWorkflowSaveNodeType(type)) outputCount += 1
   }
   return {
     nodeCount: nodes.length,
@@ -114,7 +111,7 @@ export function analyzeComfyOverview(definition: unknown): ComfyOverview | null 
     separateCount,
     outputCount,
     models,
-    inputSlots,
+    inputSlots: analyzeWorkflowInputs(definition).slots.map(slot => slot.name),
   }
 }
 
@@ -131,7 +128,9 @@ export function hydrateSimpleWorkflow(definition: unknown): SimpleDraft {
       id: String(raw.id || `step${index + 1}`),
       model: String(raw.model || ''),
       input: String(raw.input || 'input'),
-      stems: Array.isArray(raw.stems) ? raw.stems.map(s => String(s)) : [],
+      stems: raw.stems == null
+        ? []
+        : (Array.isArray(raw.stems) ? raw.stems : [raw.stems]).map(s => String(s)),
       save: isRecord(raw.save) ? Object.fromEntries(Object.entries(raw.save).map(([k, v]) => [k, String(v)])) : {},
     }))
   return {
@@ -199,19 +198,50 @@ type ModelEntryLike = {
   targetStem?: string
 }
 
-/** Whether the simple creator can edit this definition: only pymss YAML
- * workflows (a steps list). Comfy graphs (nodes list) are free-form and use
- * the advanced editor + read-only overview. */
+const SIMPLE_DEFINITION_FIELDS = new Set(['version', 'defaults', 'steps'])
+const SIMPLE_DEFAULT_FIELDS = new Set(['device', 'output_format', 'inference_params'])
+const SIMPLE_INFERENCE_FIELDS = new Set(['normalize'])
+const SIMPLE_STEP_FIELDS = new Set(['id', 'model', 'input', 'stems', 'save'])
+
+function hasUnsupportedFields(value: Record<string, unknown>, allowed: Set<string>): boolean {
+  return Object.keys(value).some(key => !allowed.has(key))
+}
+
+function usesAdvancedSimpleParameters(definition: Record<string, unknown>): boolean {
+  if (hasUnsupportedFields(definition, SIMPLE_DEFINITION_FIELDS)) return true
+  const defaults = isRecord(definition.defaults) ? definition.defaults : {}
+  if (hasUnsupportedFields(defaults, SIMPLE_DEFAULT_FIELDS)) return true
+
+  const inference = isRecord(defaults.inference_params) ? defaults.inference_params : {}
+  if (hasUnsupportedFields(inference, SIMPLE_INFERENCE_FIELDS)) return true
+
+  return (definition.steps as unknown[]).some((value) => {
+    if (!isRecord(value) || hasUnsupportedFields(value, SIMPLE_STEP_FIELDS)) return true
+    if (!isRecord(value.save)) return value.save != null
+    return Object.values(value.save).some(target => typeof target !== 'string')
+  })
+}
+
+/**
+ * The simple creator deliberately edits only the compact subset represented by
+ * {@link SimpleDraft}. Definitions with per-step overrides or custom model
+ * paths must be promoted instead of being re-saved through a lossy form.
+ */
 export function analyzeSimpleWorkflow(definition: unknown): { editable: boolean; reasonCodes: SimpleWorkflowReasonCode[] } {
-  if (isRecord(definition) && Array.isArray(definition.nodes)) {
-    return { editable: false, reasonCodes: ['comfy_metadata'] }
+  const format = detectWorkflowFormat(definition)
+  if (format === 'graph') return { editable: false, reasonCodes: ['graph_workflow'] }
+  if (format !== 'simple' || !isRecord(definition)) {
+    return { editable: false, reasonCodes: ['invalid_definition'] }
+  }
+  if (hasInvalidSimpleStructure(definition)) {
+    return { editable: false, reasonCodes: ['invalid_definition'] }
+  }
+  if (usesAdvancedSimpleParameters(definition)) {
+    return { editable: false, reasonCodes: ['advanced_parameters'] }
   }
   return { editable: true, reasonCodes: [] }
 }
 
 export function resolveWorkflowOpenMode(definition: unknown): 'simple' | 'advanced' {
-  // Comfy graphs (nodes list) open as read-only overview + advanced editor;
-  // only pymss YAML workflows (steps list) open the simple creator.
-  if (isRecord(definition) && Array.isArray(definition.nodes)) return 'advanced'
-  return 'simple'
+  return analyzeSimpleWorkflow(definition).editable ? 'simple' : 'advanced'
 }

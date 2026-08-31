@@ -27,7 +27,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   save: [payload: SimpleWorkflowSavePayload]
-  'open-advanced': [payload: SimpleWorkflowSavePayload, persistDraft: boolean]
+  'open-advanced': [payload: SimpleWorkflowSavePayload]
   run: [payload: SimpleWorkflowSavePayload]
   duplicate: [payload: SimpleWorkflowSavePayload]
   export: [payload: SimpleWorkflowSavePayload]
@@ -43,7 +43,6 @@ const defaultFormat = ref('wav')
 const defaultNormalize = ref(false)
 const steps = ref<SimpleStepDraft[]>([])
 const expectedUpdatedAt = ref<number | undefined>()
-const sourceDefinition = ref<Record<string, unknown> | undefined>()
 
 const deviceOptions = [
   { label: 'Auto', value: 'auto' },
@@ -78,7 +77,6 @@ function loadWorkflow(item?: WorkflowEntry | null) {
   defaultNormalize.value = draft.defaultNormalize
   steps.value = clone(draft.steps.length ? draft.steps : [createStepDraft(0)])
   expectedUpdatedAt.value = item?.updatedAt
-  sourceDefinition.value = item ? clone(item.definition) : undefined
   reconcileConfiguredStems()
 }
 
@@ -92,18 +90,6 @@ watch(modelStemSignature, () => reconcileConfiguredStems())
 function configuredStems(modelName: string) {
   const item = props.models.find(modelItem => modelItem.name === modelName)
   return configuredStemsFor(item)
-}
-
-function filenamePart(value: string) {
-  return String(value || '')
-    .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_')
-    .replace(/\s+/g, ' ')
-    .replace(/\s*_\s*/g, '_')
-    .replace(/^[ ._]+|[ ._]+$/g, '') || 'output'
-}
-
-function modelFileStem(modelName: string) {
-  return filenamePart(modelName.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') || modelName || 'model')
 }
 
 function reconcileConfiguredStems() {
@@ -154,21 +140,11 @@ function savedStems(step: SimpleStepDraft) {
   return step.stems.filter(stem => Boolean(step.save?.[stem]?.trim()))
 }
 
-function defaultSaveFileName(step: SimpleStepDraft, stem: string) {
-  return `%filename%_${filenamePart(stem)}_${modelFileStem(step.model)}.${defaultFormat.value || 'wav'}`
-}
-
-function saveFileNameValue(step: SimpleStepDraft, stem: string) {
-  const value = step.save?.[stem]?.trim() || ''
-  return value && value !== stem ? value : defaultSaveFileName(step, stem)
-}
-
-function updateSaveFileName(step: SimpleStepDraft, stem: string, value: string | null) {
+function updateSaveDirectory(step: SimpleStepDraft, stem: string, value: string | null) {
   if (!savedStems(step).includes(stem)) return
-  const filename = value?.trim() || defaultSaveFileName(step, stem)
   step.save = {
     ...step.save,
-    [stem]: filename === defaultSaveFileName(step, stem) ? stem : filename,
+    [stem]: value?.trim() || stem,
   }
 }
 
@@ -235,8 +211,8 @@ function payload(): SimpleWorkflowSavePayload {
       </div>
       <div class="simple-creator__actions">
         <n-button secondary @click="emit('cancel')">{{ t('common.cancel') }}</n-button>
-        <n-button secondary :disabled="saving" @click="emit('open-advanced', payload(), !formError)">
-          {{ t('workflows.openAdvancedEditor') }}
+        <n-button secondary :disabled="!canSubmit" @click="emit('open-advanced', payload())">
+          {{ t('workflows.convertToAdvancedCopy') }}
         </n-button>
         <n-button type="primary" :loading="saving" :disabled="!canSubmit" @click="emit('save', payload())">
           {{ t('common.save') }}
@@ -315,14 +291,14 @@ function payload(): SimpleWorkflowSavePayload {
             />
           </label>
           <div v-if="savedStems(step).length" class="simple-step__filenames">
-            <span>{{ t('workflows.saveFilename') }}</span>
+            <span>{{ t('workflows.saveDirectory') }}</span>
             <label v-for="stem in savedStems(step)" :key="`${step.id}:${stem}`">
               <span>{{ stem }}</span>
               <n-input
-                :value="saveFileNameValue(step, stem)"
+                :value="step.save[stem]"
                 size="small"
-                :placeholder="defaultSaveFileName(step, stem)"
-                @update:value="(value: string) => updateSaveFileName(step, stem, value)"
+                :placeholder="stem"
+                @update:value="(value: string) => updateSaveDirectory(step, stem, value)"
               />
             </label>
           </div>
@@ -344,7 +320,7 @@ function payload(): SimpleWorkflowSavePayload {
       </n-button>
       <n-button secondary :disabled="!canSubmit" @click="emit('export', payload())">
         <template #icon><n-icon :component="DownloadOutline" /></template>
-        {{ t('workflows.exportComfyMss') }}
+        {{ t('workflows.exportWorkflow') }}
       </n-button>
       <n-button secondary type="error" :disabled="saving" @click="emit('delete')">
         <template #icon><n-icon :component="TrashOutline" /></template>

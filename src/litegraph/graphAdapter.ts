@@ -40,6 +40,8 @@ export interface ComfyWorkflow {
   nodes: ComfyNode[]
   links: ComfyLink[]
   version: number
+  groups?: unknown[]
+  config?: Record<string, unknown>
   extra?: Record<string, unknown>
 }
 
@@ -101,6 +103,8 @@ export function litegraphToComfy(serialized: ISerialisedGraph | any): ComfyWorkf
     links,
     version: 1,
   }
+  if (Array.isArray(serialized.groups)) wf.groups = serialized.groups
+  if (serialized.config && typeof serialized.config === 'object') wf.config = serialized.config
   if (serialized.extra) wf.extra = serialized.extra
   return wf
 }

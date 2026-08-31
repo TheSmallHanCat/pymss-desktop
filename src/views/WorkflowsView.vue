@@ -37,6 +37,12 @@ import {
   isWorkflowEditorSurfaceLocked,
   isWorkflowLockedByNodeEditor,
 } from '@/utils/workflowEditorState'
+import { convertSimpleWorkflowToGraph } from '@/workflows/simpleToGraph'
+import { isGraphWorkflowDefinition, isSimpleWorkflowDefinition } from '@/workflows/formats'
+import {
+  countWorkflowSaveOutputs,
+  getWorkflowDefinitionIssue,
+} from '@/workflows/runtimeDefinition'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -53,13 +59,12 @@ const query = ref('')
 const importFileInputRef = ref<HTMLInputElement | null>(null)
 const simpleEditorOpen = ref(false)
 const simpleEditorWorkflow = ref<WorkflowEntry | null>(null)
-type SimpleSaveContinuation = 'stay' | 'advanced' | 'run'
+type SimpleSaveContinuation = 'stay' | 'run'
 const pendingSimpleSave = ref<{
   payload: SimpleWorkflowSavePayload
   continuation: SimpleSaveContinuation
 } | null>(null)
 const showRevisionConflict = ref(false)
-const newSimpleAdvancedBaselineIds = ref<string[] | null>(null)
 let unlistenNodeEditorClosed: UnlistenFn | undefined
 
 const deviceOptions = [
@@ -91,22 +96,16 @@ const isNodeEditorOpen = computed(() => isWorkflowEditorSurfaceLocked(
   simpleEditorOpen.value && !simpleEditorWorkflow.value,
 ))
 
-// Minimal local validation: a workflow needs nodes (comfy) or steps (yaml) and at
-// least one save target. Deep cycle/type validation is delegated to pymss.
-function minimalWorkflowError(definition: Record<string, unknown>): string {
-  if (!definition || typeof definition !== 'object') return t('workflows.stepsRequired')
-  if (Array.isArray(definition.steps)) {
-    // pymss YAML workflow
-    if (!definition.steps.length) return t('workflows.stepsRequired')
-    return ''
-  }
-  const nodes = Array.isArray(definition.nodes) ? definition.nodes as any[] : []
-  if (!nodes.length) return t('workflows.stepsRequired')
-  if (!nodes.some(n => String(n.type || '').toLowerCase().includes('save'))) return t('workflows.workflowNoSaveOutputs')
+function workflowDefinitionError(definition: Record<string, unknown>): string {
+  const issue = getWorkflowDefinitionIssue(definition)
+  if (issue === 'steps-required') return t('workflows.stepsRequired')
+  if (issue === 'no-save-outputs') return t('workflows.workflowNoSaveOutputs')
+  if (issue === 'invalid-definition') return t('workflows.workflowFormatInvalid')
+  if (issue === 'invalid-format') return t('workflows.workflowFormatInvalid')
   return ''
 }
 function workflowRunBlocked(definition: Record<string, unknown>) {
-  return Boolean(minimalWorkflowError(definition))
+  return Boolean(workflowDefinitionError(definition))
 }
 
 // ---- Per-item lightweight status (memoized) ----
@@ -117,24 +116,18 @@ function isWorkflowBlocked(item: WorkflowEntry) {
   return Boolean(workflowStatusMap.value[item.id])
 }
 
-// ---- Batch task estimate (batch input is now handled in-graph; stubbed) ----
-const workflowBatchTaskCounts = ref<Record<string, number | null>>({})
-
-function refreshWorkflowBatchTaskCounts() {
-  const next: Record<string, number | null> = {}
-  workflows.value.forEach((item) => { next[item.id] = null })
-  workflowBatchTaskCounts.value = next
-}
-
 // ---- Selected workflow overview data (simple-mode details; comfy graphs
 // show a read-only overview since their structure is free-form) ----
 import { hydrateSimpleWorkflow, analyzeComfyOverview } from '@/utils/workflowSimple'
 const selectedComfyOverview = computed(() => analyzeComfyOverview(selectedWorkflow.value?.definition))
-const isComfyWorkflow = computed(() => Boolean(selectedComfyOverview.value))
+const isComfyWorkflow = computed(() => isGraphWorkflowDefinition(selectedWorkflow.value?.definition))
+const isSimpleWorkflow = computed(() => isSimpleWorkflowDefinition(selectedWorkflow.value?.definition))
 const selectedDraft = computed(() =>
-  selectedWorkflow.value && !isComfyWorkflow.value ? hydrateSimpleWorkflow(selectedWorkflow.value.definition) : null)
+  isSimpleWorkflowDefinition(selectedWorkflow.value?.definition)
+    ? hydrateSimpleWorkflow(selectedWorkflow.value?.definition)
+    : null)
 const selectedSummary = computed((): { error: string } | null =>
-  selectedWorkflow.value ? { error: minimalWorkflowError(selectedWorkflow.value.definition) } : null)
+  selectedWorkflow.value ? { error: workflowDefinitionError(selectedWorkflow.value.definition) } : null)
 const selectedStemCount = computed(() =>
   selectedDraft.value && selectedDraft.value.steps.length
     ? selectedDraft.value.steps.reduce((total, step) => total + step.stems.length, 0)
@@ -157,18 +150,10 @@ const selectedModels = computed(() => {
   }
   return list
 })
-const selectedBatchConfigs = computed<unknown[]>(() => [])
-const selectedBatchTaskCount = computed(() => {
-  const id = selectedWorkflow.value?.id
-  if (!id) return null
-  const value = workflowBatchTaskCounts.value[id]
-  return typeof value === 'number' ? value : null
-})
 const selectedError = computed(() => selectedSummary.value?.error || '')
 const selectedSaveOutputCount = computed(() => {
   const def = selectedWorkflow.value?.definition
-  const nodes = def && Array.isArray(def.nodes) ? def.nodes as any[] : []
-  return nodes.filter(n => String(n.type || '').toLowerCase().includes('save')).length
+  return def ? countWorkflowSaveOutputs(def) : 0
 })
 const selectedReady = computed(() => Boolean(selectedWorkflow.value) && !selectedError.value)
 const selectedSimpleAnalysis = computed(() => selectedWorkflow.value
@@ -177,12 +162,9 @@ const selectedSimpleAnalysis = computed(() => selectedWorkflow.value
 const selectedSimpleReasons = computed(() => selectedSimpleAnalysis.value?.reasonCodes || [])
 
 const simpleReasonKeys: Record<SimpleWorkflowReasonCode, string> = {
-  utility_nodes: 'workflows.simpleReasonUtilityNodes',
-  unsupported_nodes: 'workflows.simpleReasonUnsupportedNodes',
-  custom_model_type: 'workflows.simpleReasonCustomModel',
-  comfy_metadata: 'workflows.simpleReasonComfyMetadata',
-  invalid_graph: 'workflows.simpleReasonInvalidGraph',
-  custom_save_behavior: 'workflows.simpleReasonCustomSave',
+  graph_workflow: 'workflows.simpleReasonGraphWorkflow',
+  advanced_parameters: 'workflows.simpleReasonAdvancedParameters',
+  invalid_definition: 'workflows.simpleReasonInvalidDefinition',
 }
 
 function simpleReasonLabel(reason: SimpleWorkflowReasonCode) {
@@ -192,30 +174,22 @@ function simpleReasonLabel(reason: SimpleWorkflowReasonCode) {
 async function updateSelectedWorkflowDefaults(patch: {
   defaultDevice?: string
   defaultFormat?: string
-  defaultNormalize?: boolean
 }) {
   const current = selectedWorkflow.value
   const draft = selectedDraft.value
-  if (!current || !draft || isNodeEditorOpen.value) return
+  if (!current || !draft || !selectedSimpleAnalysis.value?.editable || isNodeEditorOpen.value) return
   const definition = JSON.parse(JSON.stringify(current.definition)) as Record<string, unknown>
   const device = patch.defaultDevice ?? draft.defaultDevice
   const fmt = patch.defaultFormat ?? draft.defaultFormat
-  const normalize = patch.defaultNormalize ?? draft.defaultNormalize
-  if (Array.isArray(definition.steps)) {
-    // pymss YAML workflow
-    const defaults = (definition.defaults as Record<string, unknown>) || {}
-    defaults.device = device
-    defaults.output_format = fmt
-    const ip = (defaults.inference_params as Record<string, unknown>) || {}
-    ip.normalize = normalize
-    defaults.inference_params = ip
-    definition.defaults = defaults
-  } else {
-    // comfy graph: stash on extra.appDefaults
-    const extra = (definition.extra as Record<string, unknown>) || {}
-    extra.appDefaults = { ...((extra.appDefaults as object) || {}), device, output_format: fmt }
-    definition.extra = extra
-  }
+  const defaults = definition.defaults && typeof definition.defaults === 'object' && !Array.isArray(definition.defaults)
+    ? definition.defaults as Record<string, unknown>
+    : {}
+  defaults.device = device
+  defaults.output_format = fmt
+  const inference = (defaults.inference_params as Record<string, unknown>) || {}
+  inference.normalize = draft.defaultNormalize
+  defaults.inference_params = inference
+  definition.defaults = defaults
   try {
     const entry = await workflow.saveWorkflow({
       id: current.id,
@@ -224,6 +198,9 @@ async function updateSelectedWorkflowDefaults(patch: {
       definition,
       expectedUpdatedAt: current.updatedAt,
     })
+    // The selected workflow may change while persistence is in flight. Do
+    // not overwrite the newly selected editor fields with the old entry.
+    if (selectedWorkflowId.value !== current.id) return
     editWorkflow(entry)
   } catch (error) {
     message.error(error instanceof Error ? error.message : String(error))
@@ -323,16 +300,49 @@ function cancelSimpleWorkflow() {
   workflow.selectWorkflow('')
 }
 
-async function openAdvancedFromSimple(payload: SimpleWorkflowSavePayload, persistDraft: boolean) {
-  if (persistDraft) {
-    await saveSimpleWorkflow(payload, { continuation: 'advanced' })
-    return
+async function openAdvancedFromSimple(payload: SimpleWorkflowSavePayload) {
+  const confirmed = await confirmSimpleToAdvancedConversion()
+  if (!confirmed) return
+  try {
+    let sourceId = payload.id
+    let sourceDefinition = payload.definition
+    if (!sourceId) {
+      const source = await workflow.saveWorkflow({ ...payload, format: 'simple' })
+      sourceId = source.id
+      sourceDefinition = source.definition
+      editWorkflow(source)
+      simpleEditorWorkflow.value = cloneWorkflowEntry(source)
+    }
+    const definition = convertSimpleWorkflowToGraph(sourceDefinition, {
+      models: models.value,
+      sourceWorkflowId: sourceId,
+    })
+    const entry = await workflow.saveWorkflow({
+      name: t('workflows.advancedCopyName', { name: payload.name }),
+      description: payload.description,
+      definition,
+      format: 'graph',
+      convertedFrom: sourceId,
+    })
+    closeSimpleWorkflow()
+    editWorkflow(entry)
+    message.success(t('workflows.advancedCopyCreated'))
+    await openNodeEditor({ workflowId: entry.id, skipWarning: true })
+  } catch (error) {
+    message.error(`${t('workflows.advancedConversionFailed')}: ${error instanceof Error ? error.message : String(error)}`)
   }
-  const workflowId = simpleEditorWorkflow.value?.id
-  newSimpleAdvancedBaselineIds.value = workflowId
-    ? null
-    : workflows.value.map(item => item.id)
-  await openNodeEditor(workflowId ? { workflowId } : { forceNew: true })
+}
+
+function convertSelectedSimpleToAdvanced() {
+  const current = selectedWorkflow.value
+  if (!current || !isSimpleWorkflowDefinition(current.definition) || selectedError.value) return
+  void openAdvancedFromSimple({
+    id: current.id,
+    name: current.name,
+    description: current.description,
+    definition: current.definition,
+    expectedUpdatedAt: current.updatedAt,
+  })
 }
 
 async function saveSimpleWorkflow(
@@ -355,12 +365,7 @@ async function saveSimpleWorkflow(
     pendingSimpleSave.value = null
     showRevisionConflict.value = false
     editWorkflow(entry)
-    if (continuation === 'advanced') {
-      simpleEditorWorkflow.value = cloneWorkflowEntry(entry)
-      simpleEditorOpen.value = true
-      newSimpleAdvancedBaselineIds.value = null
-      await openNodeEditor({ workflowId: entry.id })
-    } else if (continuation === 'run') {
+    if (continuation === 'run') {
       closeSimpleWorkflow()
       workflow.selectWorkflow(entry.id)
       await router.push({ path: '/', query: { mode: 'workflow' } })
@@ -432,10 +437,34 @@ function confirmAdvancedWorkflowWarning() {
   })
 }
 
+function confirmSimpleToAdvancedConversion() {
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const finish = (value: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    dialog.warning({
+      title: t('workflows.convertAdvancedTitle'),
+      content: t('workflows.convertAdvancedContent'),
+      positiveText: t('workflows.convertAdvancedConfirm'),
+      negativeText: t('common.cancel'),
+      positiveButtonProps: { type: 'warning' },
+      negativeButtonProps: { secondary: true },
+      onPositiveClick: () => finish(true),
+      onNegativeClick: () => finish(false),
+      onClose: () => finish(false),
+    })
+  })
+}
+
 // ---- Node editor bridge ----
-async function openNodeEditor(options: { forceNew?: boolean; workflowId?: string } = {}) {
-  const confirmed = await confirmAdvancedWorkflowWarning()
-  if (!confirmed) return
+async function openNodeEditor(options: { forceNew?: boolean; workflowId?: string; skipWarning?: boolean } = {}) {
+  if (!options.skipWarning) {
+    const confirmed = await confirmAdvancedWorkflowWarning()
+    if (!confirmed) return
+  }
 
   const forceNew = options.forceNew === true
   const workflowId = forceNew ? '' : (options.workflowId || editingId.value || selectedWorkflowId.value || '')
@@ -453,29 +482,8 @@ async function openNodeEditor(options: { forceNew?: boolean; workflowId?: string
 }
 
 async function refreshAfterNodeEditorClosed() {
-  const baselineIds = newSimpleAdvancedBaselineIds.value
-  const restoreNewSimpleDraft = Boolean(
-    baselineIds
-    && simpleEditorOpen.value
-    && !simpleEditorWorkflow.value,
-  )
   workflow.markNodeEditorClosed()
   await workflow.reload()
-  if (restoreNewSimpleDraft && baselineIds) {
-    const baseline = new Set(baselineIds)
-    const created = workflows.value.find(item =>
-      item.id === selectedWorkflowId.value && !baseline.has(item.id))
-      || workflows.value.find(item => !baseline.has(item.id))
-    newSimpleAdvancedBaselineIds.value = null
-    if (created) {
-      openWorkflowFromList(created)
-    } else {
-      editingId.value = ''
-      workflow.selectWorkflow('')
-    }
-    return
-  }
-  newSimpleAdvancedBaselineIds.value = null
   const target = workflows.value.find(item => item.id === editingId.value)
     || workflow.selectedWorkflow
     || workflows.value[0]
@@ -522,12 +530,15 @@ function runSelected() {
 }
 
 // ---- comfy-mss import / export ----
-function triggerImportComfyMss() {
+function triggerImportWorkflow() {
   importFileInputRef.value?.click()
 }
 
 function workflowFileBasename(fileName: string) {
-  return fileName.replace(/\.[^.]+$/u, '').trim()
+  return fileName
+    .replace(/\.(?:comfy-mss|pymss-workflow)\.json$/iu, '')
+    .replace(/\.[^.]+$/u, '')
+    .trim()
 }
 
 function downloadJsonFile(fileName: string, payload: Record<string, unknown>) {
@@ -545,23 +556,15 @@ function workflowSlug(value: string) {
   return normalized || 'workflow'
 }
 
-function importWarningSummary(warnings: string[]) {
-  if (!warnings.length) return ''
-  if (warnings.length === 1) return warnings[0]
-  return `${warnings[0]}（另外还有 ${warnings.length - 1} 条提示）`
-}
-
-async function handleImportComfyMss(event: Event) {
+async function handleImportWorkflow(event: Event) {
   const input = event.target as HTMLInputElement | null
   const file = input?.files?.[0]
   if (!file) return
   try {
     const text = await file.text()
     const parsed = JSON.parse(text) as Record<string, unknown>
-    // Native comfy-mss JSON is stored verbatim. Structural validation runs at
-    // execution time via pymss.graph.load_comfy_file.
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as any).nodes)) {
-      throw new Error('Not a ComfyUI/comfy-mss workflow (missing nodes array)')
+    if (!isGraphWorkflowDefinition(parsed) && !isSimpleWorkflowDefinition(parsed)) {
+      throw new Error(t('workflows.workflowImportInvalid'))
     }
     const entry = await workflow.saveWorkflow({
       name: workflowFileBasename(file.name) || t('workflows.newWorkflow'),
@@ -569,21 +572,24 @@ async function handleImportComfyMss(event: Event) {
       definition: parsed,
     })
     editWorkflow(entry)
-    message.success(t('workflows.comfyImportSuccess'))
+    message.success(t('workflows.workflowImportSuccess'))
   } catch (error) {
-    message.error(`${t('workflows.comfyImportFailed')}: ${error instanceof Error ? error.message : String(error)}`)
+    message.error(`${t('workflows.workflowImportFailed')}: ${error instanceof Error ? error.message : String(error)}`)
   } finally {
     if (input) input.value = ''
   }
 }
 
-async function exportWorkflowComfyMss(
+async function exportWorkflowDefinition(
   workflowName: string,
   definition: Record<string, unknown>,
 ) {
   try {
     const payload = definition
-    const fileName = `${workflowSlug(workflowName || t('workflows.untitled'))}.comfy-mss.json`
+    const suffix = isGraphWorkflowDefinition(definition)
+      ? 'comfy-mss.json'
+      : 'pymss-workflow.json'
+    const fileName = `${workflowSlug(workflowName || t('workflows.untitled'))}.${suffix}`
     const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
     if (isTauri) {
       const content = `${JSON.stringify(payload, null, 2)}\n`
@@ -595,20 +601,20 @@ async function exportWorkflowComfyMss(
     } else {
       downloadJsonFile(fileName, payload)
     }
-    message.success(t('workflows.comfyExportSuccess'))
+    message.success(t('workflows.workflowExportSuccess'))
   } catch (error) {
-    message.error(`${t('workflows.comfyExportFailed')}: ${error instanceof Error ? error.message : String(error)}`)
+    message.error(`${t('workflows.workflowExportFailed')}: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
-async function exportSelectedComfyMss() {
+async function exportSelectedWorkflow() {
   const current = selectedWorkflow.value
   if (!current) return
-  await exportWorkflowComfyMss(current.name, current.definition)
+  await exportWorkflowDefinition(current.name, current.definition)
 }
 
 function exportSimpleWorkflow(payload: SimpleWorkflowSavePayload) {
-  void exportWorkflowComfyMss(payload.name, payload.definition)
+  void exportWorkflowDefinition(payload.name, payload.definition)
 }
 
 onMounted(async () => {
@@ -623,12 +629,6 @@ onUnmounted(() => {
 })
 
 watch(workflows, (items) => {
-  refreshWorkflowBatchTaskCounts()
-  if (
-    newSimpleAdvancedBaselineIds.value
-    && simpleEditorOpen.value
-    && !simpleEditorWorkflow.value
-  ) return
   const current = items.find(item => item.id === editingId.value)
   if (current) {
     // keep local meta in sync with store (e.g. after node editor save / reload)
@@ -652,7 +652,7 @@ watch(workflows, (items) => {
       class="wf-hidden-file-input"
       type="file"
       accept=".json,application/json"
-      @change="handleImportComfyMss"
+      @change="handleImportWorkflow"
     >
 
     <header class="page-header-compact">
@@ -661,9 +661,9 @@ watch(workflows, (items) => {
         <p>{{ t('workflows.subtitle') }}</p>
       </div>
       <div class="workflows-page__header-actions">
-        <n-button secondary @click="triggerImportComfyMss">
+        <n-button secondary @click="triggerImportWorkflow">
           <template #icon><n-icon :component="OpenOutline" /></template>
-          {{ t('workflows.importComfyMss') }}
+          {{ t('workflows.importWorkflow') }}
         </n-button>
         <n-button class="workflow-create-button" type="primary" @click="createSimpleWorkflow">
           <span class="workflow-create-button__mark" aria-hidden="true" />
@@ -826,7 +826,7 @@ watch(workflows, (items) => {
               <p v-else class="wf-muted">{{ t('workflows.noModelsConfigured') }}</p>
             </section>
 
-            <section v-if="selectedDraft" class="wf-section">
+            <section v-if="selectedDraft && selectedSimpleAnalysis?.editable" class="wf-section">
               <h3>{{ t('workflows.runParams') }}</h3>
               <div class="wf-param-grid">
                 <div class="wf-param">
@@ -866,23 +866,6 @@ watch(workflows, (items) => {
               <p class="wf-muted">{{ t('workflows.comfyReadOnlyHint') }}</p>
             </section>
 
-            <section v-if="selectedBatchConfigs.length" class="wf-section">
-              <h3>{{ t('workflows.batchInputTag') }}</h3>
-              <div class="wf-batch-list">
-                <div v-for="(config, index) in selectedBatchConfigs" :key="index" class="wf-batch">
-                  <strong>{{ (config as any).folder || t('workflows.batchInputFolderPlaceholder') }}</strong>
-                  <span>
-                    {{ t((config as any).recursive ? 'workflows.batchInputRecursiveOn' : 'workflows.batchInputRecursiveOff') }}
-                    ·
-                    {{ t((config as any).sortFiles ? 'workflows.batchInputSortOn' : 'workflows.batchInputSortOff') }}
-                  </span>
-                </div>
-              </div>
-              <span v-if="selectedBatchTaskCount !== null" class="wf-batch-count">
-                {{ t('workflows.batchInputEstimatedTasks', { count: selectedBatchTaskCount }) }}
-              </span>
-            </section>
-
             <div v-if="selectedError" class="wf-validation">
               <n-icon :component="AlertCircleOutline" />
               <span>{{ selectedError }}</span>
@@ -907,7 +890,17 @@ watch(workflows, (items) => {
                 <template #icon><n-icon :component="GitNetworkOutline" /></template>
                 {{ t('workflows.simpleMode') }}
               </n-button>
-              <n-button secondary size="large" @click="openNodeEditor()">
+              <n-button
+                v-if="isSimpleWorkflow"
+                secondary
+                size="large"
+                :disabled="Boolean(selectedError)"
+                @click="convertSelectedSimpleToAdvanced"
+              >
+                <template #icon><n-icon :component="GitNetworkOutline" /></template>
+                {{ t('workflows.convertToAdvancedCopy') }}
+              </n-button>
+              <n-button v-else-if="isComfyWorkflow" secondary size="large" @click="openNodeEditor()">
                 <template #icon><n-icon :component="GitNetworkOutline" /></template>
                 {{ t('workflows.openAdvancedEditor') }}
               </n-button>
@@ -926,9 +919,9 @@ watch(workflows, (items) => {
                 <template #icon><n-icon :component="CopyOutline" /></template>
                 {{ t('workflows.duplicate') }}
               </n-button>
-              <n-button quaternary @click="exportSelectedComfyMss">
+              <n-button quaternary @click="exportSelectedWorkflow">
                 <template #icon><n-icon :component="DownloadOutline" /></template>
-                {{ t('workflows.exportComfyMss') }}
+                {{ t('workflows.exportWorkflow') }}
               </n-button>
               <n-button quaternary type="error" @click="deleteSelected">
                 <template #icon><n-icon :component="TrashOutline" /></template>

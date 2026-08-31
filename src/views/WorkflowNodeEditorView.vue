@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useMessage, type InputInst } from 'naive-ui'
@@ -14,6 +14,12 @@ import {
   WorkflowRevisionConflictError,
   type WorkflowEntry,
 } from '@/stores/workflow'
+import {
+  isGraphWorkflowDefinition,
+  isWorkflowSaveNodeType,
+  isWorkflowSeparationNodeType,
+} from '@/workflows/formats'
+import { storeGraphDefaults } from '@/workflows/graphDefaults'
 
 const { t, locale } = useI18n()
 const route = useRoute()
@@ -37,6 +43,7 @@ const nameInputRef = ref<InputInst | null>(null)
 const loadedUpdatedAt = ref<number | undefined>()
 const showRevisionConflict = ref(false)
 const pendingDefinition = ref<Record<string, unknown> | null>(null)
+const formatError = ref('')
 
 const hasTauriWindow = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 const currentWindow = hasTauriWindow ? getCurrentWindow() : null
@@ -67,13 +74,14 @@ const modelOptions = computed(() => [...downloadedModels.value]
   })))
 
 const formError = computed(() => {
+  if (formatError.value) return formatError.value
   if (!name.value.trim()) return t('workflows.nameRequired')
   const nodes = Array.isArray(definition.value.nodes) ? definition.value.nodes as any[] : []
   if (!nodes.length) return t('workflows.stepsRequired')
   // Minimal validation: deep validation (cycles/dangling/unknown nodes) is
   // delegated to the pymss DAG engine at run time. We only block save on the
   // obvious structural issues and missing required nodes.
-  const hasOutput = nodes.some(n => String(n.type || '').toLowerCase().includes('save'))
+  const hasOutput = nodes.some(n => isWorkflowSaveNodeType(n.type))
   if (!hasOutput) return t('workflows.workflowNoSaveOutputs')
   return ''
 })
@@ -88,7 +96,7 @@ const missingModelNodes = computed(() => {
   const downloaded = new Set(downloadedModels.value.map(item => item.name))
   const missing: string[] = []
   for (const n of nodes) {
-    if (String(n.type).endsWith('separate')) {
+    if (isWorkflowSeparationNodeType(n.type)) {
       const raw = String((n as any).widgets_values?.[0] || '').trim()
       const model = raw.replace(/^\[[^\]]*\]\s*/, '').trim()
       if (model && !downloaded.has(model)) missing.push(String(n.id))
@@ -103,8 +111,14 @@ function createFreshDefinition(): Record<string, unknown> {
   return { last_node_id: 0, last_link_id: 0, nodes: [], links: [], version: 1 }
 }
 
+function restoreDefaultControls(defaults: { device: string; outputFormat: string }) {
+  defaultDevice.value = defaults.device
+  defaultFormat.value = defaults.outputFormat
+}
+
 function loadWorkflow(item?: WorkflowEntry | null) {
   if (!item) {
+    formatError.value = ''
     editingId.value = ''
     name.value = t('workflows.newWorkflow')
     description.value = ''
@@ -117,8 +131,17 @@ function loadWorkflow(item?: WorkflowEntry | null) {
   editingId.value = item.id
   name.value = item.name
   description.value = item.description
+  if (!isGraphWorkflowDefinition(item.definition)) {
+    formatError.value = t('workflows.graphEditorFormatRequired')
+    defaultDevice.value = 'auto'
+    defaultFormat.value = 'wav'
+    definition.value = createFreshDefinition()
+    loadedUpdatedAt.value = item.updatedAt
+    return
+  }
+  formatError.value = ''
   definition.value = item.definition && typeof item.definition === 'object' && Object.keys(item.definition).length
-    ? item.definition
+    ? JSON.parse(JSON.stringify(item.definition)) as Record<string, unknown>
     : createFreshDefinition()
   loadedUpdatedAt.value = item.updatedAt
   // Read defaults back from the graph's extra.appDefaults if present.
@@ -162,37 +185,12 @@ async function save(currentDefinition?: Record<string, unknown>) {
   const base = currentDefinition && typeof currentDefinition === 'object'
     ? currentDefinition
     : definition.value
-  const definitionToSave = injectDefaults(base, defaultDevice.value, defaultFormat.value)
+  const definitionToSave = storeGraphDefaults(base, {
+    device: defaultDevice.value,
+    outputFormat: defaultFormat.value,
+  })
   definition.value = definitionToSave
   await persistDefinition(definitionToSave)
-}
-
-/** Write device/output_format into every separate/save node's widgets and
- * stash them on extra.appDefaults so the editor UI stays in sync on reload. */
-function injectDefaults(def: Record<string, unknown>, device: string, format: string): Record<string, unknown> {
-  const clone = JSON.parse(JSON.stringify(def)) as Record<string, unknown>
-  const nodes = Array.isArray(clone.nodes) ? clone.nodes as any[] : []
-  for (const n of nodes) {
-    const type = String(n.type || '')
-    const wv = Array.isArray(n.widgets_values) ? n.widgets_values : []
-    if (type.endsWith('separate')) {
-      // widget order: [model_name, device, download_missing, source, device_ids, debug]
-      // (custom_mss_separate has model_type at idx 1, device at 2)
-      const devIdx = type === 'custom_mss_separate' ? 2 : 1
-      while (wv.length <= devIdx) wv.push(null)
-      wv[devIdx] = device || 'auto'
-      n.widgets_values = wv
-    } else if (type === 'pymss_save_audio') {
-      // widget order: [output_format, output_folder, sample_rate, ...]
-      while (wv.length <= 0) wv.push(null)
-      if (format) wv[0] = format.toLowerCase()
-      n.widgets_values = wv
-    }
-  }
-  const extra = ((clone.extra as Record<string, unknown>) || {})
-  extra.appDefaults = { ...(extra.appDefaults as object || {}), device: device || 'auto', output_format: format || 'wav' }
-  clone.extra = extra
-  return clone
 }
 
 async function reloadRevisionConflict() {
@@ -320,10 +318,6 @@ onBeforeUnmount(() => {
   unlistenCloseRequested?.()
 })
 
-watch([defaultDevice, defaultFormat], () => {
-  if (!loaded.value) return
-  definition.value = injectDefaults(definition.value, defaultDevice.value, defaultFormat.value)
-})
 </script>
 
 <template>
@@ -383,16 +377,27 @@ watch([defaultDevice, defaultFormat], () => {
       </div>
     </section>
 
+    <div v-if="loaded && formatError" class="workflow-format-error">
+      <n-alert type="error" :title="t('workflows.graphEditorFormatErrorTitle')">
+        {{ formatError }}
+      </n-alert>
+      <n-button type="primary" @click="closeEditor">{{ t('common.close') }}</n-button>
+    </div>
+
     <WorkflowNodeEditor
-      v-if="loaded"
+      v-else-if="loaded"
+      :key="`${editingId}:${loadedUpdatedAt || 0}`"
       v-model:definition="definition"
       :model-options="modelOptions"
       :models="models"
+      :default-device="defaultDevice"
+      :default-format="defaultFormat"
       :form-error="formError"
       :can-save="canSave"
       :advisory="missingModelNodes.length ? t('workflows.stepModelNotDownloaded', { id: missingModelNodes.join(', ') }) : ''"
       @save="save"
       @close="closeEditor"
+      @defaults-restored="restoreDefaultControls"
     />
 
     <WorkflowRevisionConflictModal
@@ -414,6 +419,15 @@ watch([defaultDevice, defaultFormat], () => {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
   -webkit-app-region: no-drag;
+}
+
+.workflow-format-error {
+  align-self: start;
+  display: grid;
+  justify-items: start;
+  gap: 14px;
+  width: min(640px, 100%);
+  margin: 48px auto 0;
 }
 
 .workflow-node-editor-page--custom-chrome {

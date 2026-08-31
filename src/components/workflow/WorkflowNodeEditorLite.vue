@@ -12,25 +12,41 @@ import { LGraph, LGraphCanvas, LiteGraph, type LGraphNode } from '@comfyorg/lite
 import '@comfyorg/litegraph/style.css'
 import { registerPymssNodes, setSeparateStems, applyModelOptions, refreshNodeModelOptions, NODE_SPECS, BUILTIN_SPECS } from '@/litegraph/registerNodes'
 import { litegraphToComfy, comfyLinksToLitegraph } from '@/litegraph/graphAdapter'
+import {
+  createWorkflowHistory,
+  recordWorkflowSnapshot,
+  redoWorkflowHistory,
+  replaceWorkflowHistoryCurrent,
+  resolveWorkflowHistoryShortcut,
+  undoWorkflowHistory,
+} from '@/litegraph/history'
 import { parseModelStems } from '@/utils/workflowSimple'
 import type { ModelEntry } from '@/stores/model'
 import type { NodeSpec } from '@/litegraph/nodeSpecs'
+import { isGraphWorkflowDefinition, normalizeGraphWorkflowDefinition } from '@/workflows/formats'
+import { applyGraphDefaultWidgets, type GraphDefaults } from '@/workflows/graphDefaults'
 
 // All node specs the palette offers (pymss nodes + ComfyUI builtin audio/string nodes).
 const ALL_SPECS: Record<string, NodeSpec> = { ...NODE_SPECS, ...BUILTIN_SPECS }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelOptions: { label: string; value: string }[]
   models: ModelEntry[]
+  defaultDevice?: string
+  defaultFormat?: string
   formError?: string
   /** Non-blocking warning shown next to the toolbar (e.g. missing models) */
   advisory?: string
   canSave?: boolean
-}>()
+}>(), {
+  defaultDevice: 'auto',
+  defaultFormat: 'wav',
+})
 const definition = defineModel<Record<string, unknown>>('definition', { required: true })
 const emit = defineEmits<{
   save: [definition: Record<string, unknown>]
   close: []
+  'defaults-restored': [defaults: GraphDefaults]
 }>()
 
 const { t } = useI18n()
@@ -40,55 +56,92 @@ const canvasRef = shallowRef<LGraphCanvas | null>(null)
 const showPalette = ref(false)
 const paletteQuery = ref('')
 const ready = ref(false)
+let configuringGraph = false
 
 // --- undo/redo (serialize snapshots) --------------------------------------
-const undoStack = shallowRef<{ past: any[]; future: any[] }>({ past: [], future: [] })
-let lastSnapshot = ''
-function snapshotForHistory() {
+const history = shallowRef(createWorkflowHistory())
+
+function serializeGraph() {
   const graph = graphRef.value
-  if (!graph) return
-  const snap = JSON.stringify(graph.serialize())
-  if (snap === lastSnapshot) return
-  if (lastSnapshot) {
-    undoStack.value = { past: [...undoStack.value.past.slice(-49), lastSnapshot], future: [] }
+  return graph ? JSON.stringify(graph.serialize()) : ''
+}
+
+function resetHistory() {
+  history.value = createWorkflowHistory(serializeGraph())
+}
+
+function readGraphDefaults(): GraphDefaults {
+  const extra = ((graphRef.value as any)?.extra || {}) as Record<string, unknown>
+  const defaults = (extra.appDefaults || {}) as Record<string, unknown>
+  return {
+    device: String(defaults.device || props.defaultDevice || 'auto'),
+    outputFormat: String(defaults.output_format || props.defaultFormat || 'wav'),
   }
-  lastSnapshot = snap
+}
+
+function writeGraphDefaults(defaults: GraphDefaults) {
+  const graph = graphRef.value as any
+  if (!graph) return
+  const extra = (graph.extra || {}) as Record<string, unknown>
+  const current = (extra.appDefaults || {}) as Record<string, unknown>
+  graph.extra = {
+    ...extra,
+    appDefaults: {
+      ...current,
+      device: defaults.device || 'auto',
+      output_format: defaults.outputFormat || 'wav',
+    },
+  }
+}
+
+function snapshotForHistory() {
+  history.value = recordWorkflowSnapshot(history.value, serializeGraph())
 }
 function restoreSnapshot(snap: string) {
   const graph = graphRef.value
   if (!graph) return
   const data = JSON.parse(snap)
-  graph.configure({
-    ...data,
-    links: Array.isArray(data.links) ? comfyLinksToLitegraph(data.links) : data.links,
-  })
-  for (const n of (graph.nodes as any[])) syncSeparateNodeStems(n)
-  lastSnapshot = snap
-  scheduleSnap()
+  configuringGraph = true
+  try {
+    graph.configure({
+      ...data,
+      links: Array.isArray(data.links) ? comfyLinksToLitegraph(data.links) : data.links,
+    })
+  } finally {
+    configuringGraph = false
+  }
+  for (const node of (graph.nodes as any[])) configureGraphNode(node)
+  // configure() invokes graph change callbacks; restoring history must not
+  // create another undo entry from those callbacks.
+  if (pendingSnap) cancelAnimationFrame(pendingSnap)
+  pendingSnap = 0
+  const restored = serializeGraph()
+  history.value = replaceWorkflowHistoryCurrent(history.value, restored)
+  definition.value = snapshotDefinition()
+  emit('defaults-restored', readGraphDefaults())
+  ;(canvasRef.value as any)?.setDirty(true, true)
 }
 function undo() {
-  const { past, future } = undoStack.value
-  if (!past.length) return
-  const current = lastSnapshot
-  const prev = past[past.length - 1]
-  undoStack.value = { past: past.slice(0, -1), future: current ? [current, ...future].slice(0, 50) : future }
-  restoreSnapshot(prev)
+  const step = undoWorkflowHistory(history.value)
+  if (!step.snapshot) return
+  history.value = step.history
+  restoreSnapshot(step.snapshot)
 }
 function redo() {
-  const { past, future } = undoStack.value
-  if (!future.length) return
-  const current = lastSnapshot
-  const next = future[0]
-  undoStack.value = { past: current ? [...past, current] : past, future: future.slice(1) }
-  restoreSnapshot(next)
+  const step = redoWorkflowHistory(history.value)
+  if (!step.snapshot) return
+  history.value = step.history
+  restoreSnapshot(step.snapshot)
 }
 function onCanvasKey(e: KeyboardEvent) {
-  const mod = e.ctrlKey || e.metaKey
-  if (mod && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) { e.preventDefault(); undo() }
-  else if (mod && ((e.key === 'z' && e.shiftKey) || e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo() }
+  const action = resolveWorkflowHistoryShortcut(e)
+  if (!action) return
+  e.preventDefault()
+  if (action === 'undo') undo()
+  else redo()
 }
-const canUndo = computed(() => undoStack.value.past.length > 0)
-const canRedo = computed(() => undoStack.value.future.length > 0)
+const canUndo = computed(() => history.value.past.length > 0)
+const canRedo = computed(() => history.value.future.length > 0)
 
 // --- theme: dark to match pymss-studio -------------------------------------
 function applyTheme() {
@@ -179,28 +232,29 @@ function loadDefinition(def: Record<string, unknown>) {
   const graph = graphRef.value
   if (!graph) return
   graph.clear()
-  const nodes = Array.isArray(def.nodes) ? def.nodes : []
-  const links = Array.isArray(def.links) ? def.links : []
+  const normalized = normalizeGraphWorkflowDefinition(def)
+  const nodes = Array.isArray(normalized.nodes) ? normalized.nodes : []
+  const links = Array.isArray(normalized.links) ? normalized.links : []
   // Configure from a comfy-shaped object litegraph can ingest.
   const data: any = {
     nodes,
     links: Array.isArray(links) ? comfyLinksToLitegraph(links) : links,
-    last_node_id: def.last_node_id ?? (nodes.length ? Math.max(...nodes.map((n: any) => Number(n.id))) : 0),
-    last_link_id: def.last_link_id ?? (links.length ? Math.max(...links.map((l: any) => Number(l[0]))) : 0),
-    groups: [],
+    last_node_id: normalized.last_node_id ?? (nodes.length ? Math.max(...nodes.map((n: any) => Number(n.id))) : 0),
+    last_link_id: normalized.last_link_id ?? (links.length ? Math.max(...links.map((l: any) => Number(l[0]))) : 0),
+    groups: Array.isArray(normalized.groups) ? normalized.groups : [],
+    config: normalized.config && typeof normalized.config === 'object' ? normalized.config : {},
+    extra: normalized.extra && typeof normalized.extra === 'object' ? normalized.extra : {},
     version: 1,
   }
-  graph.configure(data)
+  configuringGraph = true
+  try {
+    graph.configure(data)
+  } finally {
+    configuringGraph = false
+  }
   // After configure, rebuild dynamic stem outputs for separate nodes and
   // populate model_name combos with the current downloaded list.
-  for (const n of graph.nodes as any[]) {
-    n.onModelNameChanged = () => {
-      syncSeparateNodeStems(n)
-      ;(canvasRef.value as any)?.setDirty(true, true)
-    }
-    syncSeparateNodeStems(n)
-    refreshNodeModelOptions(n, modelValues.value)
-  }
+  for (const node of graph.nodes as any[]) configureGraphNode(node)
 }
 
 // --- lifecycle -------------------------------------------------------------
@@ -219,27 +273,38 @@ onMounted(() => {
   // 样式由 @comfyorg/litegraph/style.css 提供(在组件 <style> 外全局引入)。
   // Track link/property edits so separate node stems follow the chosen model.
   graph.onNodeAdded = (node: any) => {
-    node.onModelNameChanged = () => {
-      syncSeparateNodeStems(node)
-      ;(canvasRef.value as any)?.setDirty(true, true)
+    if (ready.value && !configuringGraph) {
+      applyGraphDefaultWidgets([node], {
+        device: props.defaultDevice,
+        outputFormat: props.defaultFormat,
+      }, { device: true, outputFormat: true })
     }
+    configureGraphNode(node)
+    if (ready.value) scheduleSnap()
   }
   resizeObserver = new ResizeObserver(() => (canvas as any).resize())
   resizeObserver.observe(canvasEl.value.parentElement || canvasEl.value)
   canvasEl.value.addEventListener('keydown', onCanvasKey)
   // Load existing definition (e.g. reopening an editor) or seed a starter graph.
-  if (definition.value && Object.keys(definition.value).length) {
+  if (isGraphWorkflowDefinition(definition.value) && (definition.value.nodes as unknown[]).length) {
     loadDefinition(definition.value)
-  } else {
+  } else if (isGraphWorkflowDefinition(definition.value) || !Object.keys(definition.value || {}).length) {
     seedStarterGraph()
+  } else {
+    return
   }
   graph.start()
   ready.value = true
+  writeGraphDefaults({ device: props.defaultDevice, outputFormat: props.defaultFormat })
   // Push the first snapshot up so the parent has a clean comfy dict immediately.
   definition.value = snapshotDefinition()
+  // The loaded/seeded graph is the baseline for the first undoable edit.
+  resetHistory()
 })
 
 onBeforeUnmount(() => {
+  if (pendingSnap) cancelAnimationFrame(pendingSnap)
+  pendingSnap = 0
   resizeObserver?.disconnect()
   canvasEl.value?.removeEventListener('keydown', onCanvasKey)
   try { graphRef.value?.stop?.() } catch { /* ignore */ }
@@ -259,6 +324,10 @@ function seedStarterGraph() {
   sep.pos = [460, 280]; graph.add(sep)
   const save = LiteGraph.createNode('pymss_save_audio'); if (!save) return
   save.pos = [840, 280]; graph.add(save)
+  applyGraphDefaultWidgets([sep, save], {
+    device: props.defaultDevice,
+    outputFormat: props.defaultFormat,
+  }, { device: true, outputFormat: true })
   load.connect(0, sep, 0)
   params.connect(0, sep, 1)
   sep.connect(0, save, 0)
@@ -278,6 +347,26 @@ watch(() => props.models, () => {
   for (const n of (graphRef.value?.nodes || []) as any[]) syncSeparateNodeStems(n)
 }, { deep: false })
 
+watch(
+  [() => props.defaultDevice, () => props.defaultFormat],
+  ([device, outputFormat]) => {
+    if (!ready.value || !graphRef.value) return
+    const current = readGraphDefaults()
+    const changed = {
+      device: device !== current.device,
+      outputFormat: outputFormat !== current.outputFormat,
+    }
+    if (!changed.device && !changed.outputFormat) return
+    applyGraphDefaultWidgets(graphRef.value.nodes as any[], {
+      device,
+      outputFormat,
+    }, changed)
+    writeGraphDefaults({ device, outputFormat })
+    ;(canvasRef.value as any)?.setDirty(true, true)
+    scheduleSnap()
+  },
+)
+
 // Propagate canvas edits up to the parent v-model (debounced via rAF).
 let pendingSnap = 0
 function scheduleSnap() {
@@ -291,7 +380,6 @@ function scheduleSnap() {
 watch(ready, (v) => {
   if (!v || !graphRef.value) return
   ;(graphRef.value as any).onAfterChange = scheduleSnap
-  ;(graphRef.value as any).onGraphConfigured = scheduleSnap
 })
 
 function onSave() {
@@ -305,7 +393,15 @@ function onAddNodeClick(type: string) {
   addNode(type)
   showPalette.value = false
   paletteQuery.value = ''
-  scheduleSnap()
+}
+
+function configureGraphNode(node: LGraphNode) {
+  ;(node as any).onModelNameChanged = () => {
+    syncSeparateNodeStems(node)
+    ;(canvasRef.value as any)?.setDirty(true, true)
+  }
+  syncSeparateNodeStems(node)
+  refreshNodeModelOptions(node, modelValues.value)
 }
 </script>
 
@@ -334,7 +430,7 @@ function onAddNodeClick(type: string) {
     </div>
 
     <div class="canvas-wrap">
-      <canvas ref="canvasEl" class="lg-canvas" />
+      <canvas ref="canvasEl" class="lg-canvas" tabindex="0" :aria-label="t('workflows.nodeEditor')" />
     </div>
   </div>
 </template>
