@@ -358,7 +358,9 @@ class BundledRuntimeFallbackTests(unittest.TestCase):
         self.assertEqual(state["source"], "bundled")
         self.assertEqual(Path(state["pythonPath"]).resolve(), self.bootstrap_python.resolve())
         self.assertIsNotNone(target)
-        self.assertEqual(target[3], self.bootstrap_python)
+        # Windows may spell the same temporary directory through its 8.3 alias
+        # after resolving the relative bundled-runtime path.
+        self.assertEqual(target[3].resolve(), self.bootstrap_python.resolve())
 
     def test_packaged_mlx_remains_listed_when_user_cpu_runtime_is_active(self):
         cpu_python = self.user_envs / "cpu" / "bin" / "python"

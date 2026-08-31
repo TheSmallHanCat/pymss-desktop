@@ -1,0 +1,7 @@
+# Dependencies imported by the Python unit-test suite.
+# Match the package bounds used by the shipped runtime manifest.  The CPU torch
+# wheel is installed by the workflow before this file so CI does not pull CUDA.
+librosa>=0.10.2,<0.11
+numpy>=1.26,<3
+pymss[proxy]>=2.1.3
+pyyaml>=6.0.1,<7

@@ -41,8 +41,8 @@ class OptionalRuntimePackageTests(unittest.TestCase):
         expected_identity = f"cuda-py{sys.version_info.major}{sys.version_info.minor}"
         self.assertEqual(optional_packages._runtime_identity(), expected_identity)
         self.assertEqual(
-            optional_packages._package_dir("funasr"),
-            self.envs_dir / "optional-packages" / expected_identity / "funasr",
+            optional_packages._package_dir("funasr").resolve(),
+            (self.envs_dir / "optional-packages" / expected_identity / "funasr").resolve(),
         )
 
     def test_status_prefers_managed_sidecar_version(self) -> None:

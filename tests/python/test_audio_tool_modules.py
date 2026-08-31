@@ -35,7 +35,11 @@ class AudioToolModuleTests(unittest.TestCase):
                 "chapters": [],
             }
             completed = mock.Mock(stdout=json.dumps(payload))
-            with mock.patch.object(inspect, "run_process", return_value=completed), mock.patch.object(inspect, "emit"):
+            with (
+                mock.patch.object(inspect, "ffprobe_path", return_value="ffprobe"),
+                mock.patch.object(inspect, "run_process", return_value=completed),
+                mock.patch.object(inspect, "emit"),
+            ):
                 result = inspect._inspect_audio({"inputPath": str(path)})
         self.assertEqual(result["format"]["duration"], 1.25)
         self.assertEqual(result["audioStreams"][0]["sampleRate"], 48000)
