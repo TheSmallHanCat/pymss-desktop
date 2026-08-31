@@ -66,7 +66,12 @@ export function useEditorLayout(options: UseEditorLayoutOptions) {
     '--asset-rail-width': `${assetRailWidth}px`,
     '--asset-panel-width': assetPanelVisible.value ? `${assetPanelWidth.value}px` : '0px',
     '--asset-resizer-width': assetResizerVisible.value ? `${resizerWidth}px` : '0px',
-    '--inspector-rail-width': inspectorVisible.value ? `${inspectorRailWidth}px` : '0px',
+    // The inspector toggle lives inside the panel. Only reserve the narrow
+    // launcher width while the panel is collapsed; an expanded inspector no
+    // longer carries a separate rail column.
+    '--inspector-rail-width': inspectorVisible.value && !inspectorPanelVisible.value
+      ? `${inspectorRailWidth}px`
+      : '0px',
     '--inspector-resizer-width': inspectorPanelVisible.value ? `${resizerWidth}px` : '0px',
     '--inspector-width': inspectorPanelVisible.value ? `${inspectorPanelWidth.value}px` : '0px',
   }))
@@ -79,7 +84,13 @@ export function useEditorLayout(options: UseEditorLayoutOptions) {
     return shellEl.value?.clientWidth || window.innerWidth || 0
   }
 
-  function getPanelCapacity() {
+  function getPanelCapacity(overrides: {
+    inspectorPanelVisible?: boolean
+    inspectorRailVisible?: boolean
+  } = {}) {
+    const nextInspectorPanelVisible = overrides.inspectorPanelVisible ?? inspectorPanelVisible.value
+    const nextInspectorRailVisible = overrides.inspectorRailVisible
+      ?? (inspectorVisible.value && !nextInspectorPanelVisible)
     return calculateEditorPanelCapacity({
       shellWidth: getShellWidth(),
       minCenterWidth,
@@ -89,8 +100,8 @@ export function useEditorLayout(options: UseEditorLayoutOptions) {
       assetPanelWidth: assetPanelWidth.value,
       inspectorPanelWidth: inspectorPanelWidth.value,
       assetPanelVisible: assetPanelVisible.value,
-      inspectorRailVisible: inspectorVisible.value,
-      inspectorPanelVisible: inspectorPanelVisible.value,
+      inspectorRailVisible: nextInspectorRailVisible,
+      inspectorPanelVisible: nextInspectorPanelVisible,
     })
   }
 
@@ -220,7 +231,7 @@ export function useEditorLayout(options: UseEditorLayoutOptions) {
     if (
       shouldExpand
       && assetPanelVisible.value
-      && getPanelCapacity().availableInspectorWidth < minInspectorWidth
+      && getPanelCapacity({ inspectorPanelVisible: true }).availableInspectorWidth < minInspectorWidth
     ) {
       isAssetCollapsed.value = true
     }

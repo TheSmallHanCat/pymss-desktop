@@ -37,6 +37,15 @@ type ManagedAudio = {
   balanceLeftGain?: GainNode | null
   balanceRightGain?: GainNode | null
   balanceMerger?: ChannelMergerNode | null
+  clarityFilter?: BiquadFilterNode | null
+  compressorNode?: DynamicsCompressorNode | null
+  effectDryGain?: GainNode | null
+  reverbNode?: ConvolverNode | null
+  reverbWetGain?: GainNode | null
+  delayNode?: DelayNode | null
+  delayFeedbackGain?: GainNode | null
+  delayWetGain?: GainNode | null
+  effectOutputGain?: GainNode | null
   meterSplitter?: ChannelSplitterNode | null
   meterAnalyserLeft?: AnalyserNode | null
   meterAnalyserRight?: AnalyserNode | null
@@ -91,6 +100,7 @@ export function useEditorPlayback(options: PlaybackOptions) {
   let masterMeterSplitter: ChannelSplitterNode | null = null
   let masterMeterAnalyserLeft: AnalyserNode | null = null
   let masterMeterAnalyserRight: AnalyserNode | null = null
+  let reverbImpulseBuffer: AudioBuffer | null = null
   const analyserBufferCache = new WeakMap<AnalyserNode, Uint8Array<ArrayBuffer>>()
 
   function resolveAudioUrl(path: string) {
@@ -176,6 +186,47 @@ export function useEditorPlayback(options: PlaybackOptions) {
     }
   }
 
+  function getReverbImpulseBuffer(ctx: AudioContext) {
+    if (reverbImpulseBuffer && reverbImpulseBuffer.sampleRate === ctx.sampleRate) return reverbImpulseBuffer
+    const length = Math.max(1, Math.floor(ctx.sampleRate * 1.35))
+    const buffer = ctx.createBuffer(2, length, ctx.sampleRate)
+    for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+      const data = buffer.getChannelData(channel)
+      for (let index = 0; index < data.length; index += 1) {
+        const decay = Math.pow(1 - index / data.length, 2.4)
+        const stereoDelay = channel === 1 && index < Math.floor(ctx.sampleRate * 0.013)
+        const noise = Math.sin((index + 1) * 12.9898 + channel * 78.233) * 43758.5453
+        const unitNoise = (noise - Math.floor(noise)) * 2 - 1
+        data[index] = stereoDelay ? 0 : unitNoise * decay * (index === 0 ? 0.7 : 0.22)
+      }
+    }
+    reverbImpulseBuffer = buffer
+    return buffer
+  }
+
+  function applyTrackEffects(entry: ManagedAudio, track: EditorTrack) {
+    if (!entry.clarityFilter || !entry.compressorNode || !entry.effectDryGain || !entry.reverbWetGain || !entry.delayWetGain || !entry.delayNode || !entry.delayFeedbackGain) return
+    const effects = track.effects
+    const reverb = clamp(Number(effects?.reverb ?? 0), 0, 1)
+    const delay = clamp(Number(effects?.delay ?? 0), 0, 1)
+    const delayTime = clamp(Number(effects?.delayTime ?? 0.24), 0.05, 1.2)
+    const clarity = clamp(Number(effects?.clarity ?? 0), 0, 1)
+    const compressor = clamp(Number(effects?.compressor ?? 0), 0, 1)
+    entry.clarityFilter.type = 'highpass'
+    entry.clarityFilter.frequency.value = 20 + clarity * 180
+    entry.clarityFilter.Q.value = 0.7
+    entry.compressorNode.threshold.value = compressor > 0 ? -36 + compressor * 14 : -100
+    entry.compressorNode.ratio.value = compressor > 0 ? 1 + compressor * 7 : 1
+    entry.compressorNode.knee.value = compressor > 0 ? 18 : 0
+    entry.compressorNode.attack.value = 0.003
+    entry.compressorNode.release.value = 0.25
+    entry.effectDryGain.gain.value = 1
+    entry.reverbWetGain.gain.value = reverb * 0.45
+    entry.delayWetGain.gain.value = delay * 0.38
+    entry.delayNode.delayTime.value = delayTime
+    entry.delayFeedbackGain.gain.value = delay * 0.52
+  }
+
   function applyMasterAudioSettings() {
     if (!masterInputGain || !masterBalanceLeftGain || !masterBalanceRightGain) return
     masterInputGain.gain.value = clamp(Number(editor.masterVolume || 0), 0, 2)
@@ -190,6 +241,7 @@ export function useEditorPlayback(options: PlaybackOptions) {
       const stereo = stereoGainForPan(track.pan)
       entry.balanceLeftGain.gain.value = stereo.left
       entry.balanceRightGain.gain.value = stereo.right
+      applyTrackEffects(entry, track)
       entry.audio.volume = 1
       entry.audio.muted = false
       return
@@ -242,6 +294,15 @@ export function useEditorPlayback(options: PlaybackOptions) {
     entry.balanceLeftGain?.disconnect()
     entry.balanceRightGain?.disconnect()
     entry.balanceMerger?.disconnect()
+    entry.clarityFilter?.disconnect()
+    entry.compressorNode?.disconnect()
+    entry.effectDryGain?.disconnect()
+    entry.reverbNode?.disconnect()
+    entry.reverbWetGain?.disconnect()
+    entry.delayNode?.disconnect()
+    entry.delayFeedbackGain?.disconnect()
+    entry.delayWetGain?.disconnect()
+    entry.effectOutputGain?.disconnect()
     entry.meterSplitter?.disconnect()
     entry.meterAnalyserLeft?.disconnect()
     entry.meterAnalyserRight?.disconnect()
@@ -281,6 +342,15 @@ export function useEditorPlayback(options: PlaybackOptions) {
       entry.balanceLeftGain = ctx.createGain()
       entry.balanceRightGain = ctx.createGain()
       entry.balanceMerger = ctx.createChannelMerger(2)
+      entry.clarityFilter = ctx.createBiquadFilter()
+      entry.compressorNode = ctx.createDynamicsCompressor()
+      entry.effectDryGain = ctx.createGain()
+      entry.reverbNode = ctx.createConvolver()
+      entry.reverbWetGain = ctx.createGain()
+      entry.delayNode = ctx.createDelay(1.2)
+      entry.delayFeedbackGain = ctx.createGain()
+      entry.delayWetGain = ctx.createGain()
+      entry.effectOutputGain = ctx.createGain()
       entry.meterSplitter = ctx.createChannelSplitter(2)
       entry.meterAnalyserLeft = ctx.createAnalyser()
       entry.meterAnalyserRight = ctx.createAnalyser()
@@ -296,10 +366,23 @@ export function useEditorPlayback(options: PlaybackOptions) {
 
       entry.balanceLeftGain.connect(entry.balanceMerger, 0, 0)
       entry.balanceRightGain.connect(entry.balanceMerger, 0, 1)
-      entry.balanceMerger.connect(entry.meterSplitter)
+      entry.reverbNode.buffer = getReverbImpulseBuffer(ctx)
+      entry.balanceMerger.connect(entry.clarityFilter)
+      entry.clarityFilter.connect(entry.compressorNode)
+      entry.compressorNode.connect(entry.effectDryGain)
+      entry.compressorNode.connect(entry.reverbNode)
+      entry.compressorNode.connect(entry.delayNode)
+      entry.delayNode.connect(entry.delayFeedbackGain)
+      entry.delayFeedbackGain.connect(entry.delayNode)
+      entry.effectDryGain.connect(entry.effectOutputGain)
+      entry.reverbNode.connect(entry.reverbWetGain)
+      entry.reverbWetGain.connect(entry.effectOutputGain)
+      entry.delayNode.connect(entry.delayWetGain)
+      entry.delayWetGain.connect(entry.effectOutputGain)
+      entry.effectOutputGain.connect(entry.meterSplitter)
       entry.meterSplitter.connect(entry.meterAnalyserLeft, 0)
       entry.meterSplitter.connect(entry.meterAnalyserRight, 1)
-      entry.balanceMerger.connect(masterInputGain)
+      entry.effectOutputGain.connect(masterInputGain)
       entry.graphEnabled = true
     } catch {
       entry.graphEnabled = false
@@ -309,6 +392,15 @@ export function useEditorPlayback(options: PlaybackOptions) {
       entry.balanceLeftGain = null
       entry.balanceRightGain = null
       entry.balanceMerger = null
+      entry.clarityFilter = null
+      entry.compressorNode = null
+      entry.effectDryGain = null
+      entry.reverbNode = null
+      entry.reverbWetGain = null
+      entry.delayNode = null
+      entry.delayFeedbackGain = null
+      entry.delayWetGain = null
+      entry.effectOutputGain = null
       entry.meterSplitter = null
       entry.meterAnalyserLeft = null
       entry.meterAnalyserRight = null
@@ -366,6 +458,11 @@ export function useEditorPlayback(options: PlaybackOptions) {
         source.channels,
         track.volume,
         track.pan,
+        track.effects?.reverb ?? 0,
+        track.effects?.delay ?? 0,
+        track.effects?.delayTime ?? 0.24,
+        track.effects?.clarity ?? 0,
+        track.effects?.compressor ?? 0,
         track.muted,
         track.solo,
         clip.start,

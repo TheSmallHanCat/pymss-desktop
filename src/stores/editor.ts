@@ -19,6 +19,7 @@ import type {
   EditorSourceRole,
   EditorClip,
   EditorTrack,
+  EditorTrackEffects,
   EditorAssetTreeNode,
 } from '@/types/editor'
 
@@ -30,6 +31,7 @@ export type {
   EditorSource,
   EditorSourceRole,
   EditorTrack,
+  EditorTrackEffects,
   EditorAssetTreeNode,
 } from '@/types/editor'
 
@@ -208,8 +210,19 @@ function duplicatedTrackColor(source: EditorSource) {
 function cloneTracks(tracks: EditorTrack[]) {
   return tracks.map((track) => ({
     ...track,
+    effects: track.effects ? { ...track.effects } : undefined,
     clips: track.clips?.map((clip) => ({ ...clip })),
   }))
+}
+
+function normalizeTrackEffects(effects?: Partial<EditorTrackEffects> | null): EditorTrackEffects {
+  return {
+    reverb: clamp(Number(effects?.reverb ?? 0), 0, 1),
+    delay: clamp(Number(effects?.delay ?? 0), 0, 1),
+    delayTime: clamp(Number(effects?.delayTime ?? 0.24), 0.05, 1.2),
+    clarity: clamp(Number(effects?.clarity ?? 0), 0, 1),
+    compressor: clamp(Number(effects?.compressor ?? 0), 0, 1),
+  }
 }
 
 function normalizeSource(source: Partial<EditorSource>): EditorSource {
@@ -350,6 +363,7 @@ function normalizeTrack(
     solo: Boolean(track.solo),
     fadeIn,
     fadeOut,
+    effects: normalizeTrackEffects(track.effects),
     type: track.type === 'recording' || role === 'recording'
       ? 'recording'
       : (track.type === 'audio' ? 'audio' : role),
@@ -453,6 +467,7 @@ function trackToExportTrack(track: EditorTrack, source?: EditorSource) {
     pan: track.pan,
     muted: track.muted,
     solo: track.solo,
+    effects: track.effects ? { ...track.effects } : undefined,
     clips,
   }
 }
@@ -1212,6 +1227,7 @@ export const useEditorStore = defineStore('editor', () => {
       solo: false,
       fadeIn: 0,
       fadeOut: 0,
+      effects: normalizeTrackEffects(),
       type: 'reference',
       clips: [normalizeClip({
         id: makeId('clip'),
@@ -1242,6 +1258,7 @@ export const useEditorStore = defineStore('editor', () => {
       solo: false,
       fadeIn: 0,
       fadeOut: 0,
+      effects: normalizeTrackEffects(),
       clips: [],
     }
     session.value.tracks.push(track)
@@ -1430,6 +1447,13 @@ export const useEditorStore = defineStore('editor', () => {
     const track = session.value?.tracks.find((item) => item.id === trackId)
     if (!track) return
     track.pan = clamp(Number(value), -1, 1)
+    if (interactionDepth.value === 0) scheduleSave()
+  }
+
+  function setTrackEffects(trackId: string, patch: Partial<EditorTrackEffects>) {
+    const track = session.value?.tracks.find((item) => item.id === trackId)
+    if (!track) return
+    track.effects = normalizeTrackEffects({ ...track.effects, ...patch })
     if (interactionDepth.value === 0) scheduleSave()
   }
 
@@ -1669,6 +1693,7 @@ export const useEditorStore = defineStore('editor', () => {
     toggleTrackFlag,
     setTrackVolume,
     setTrackPan,
+    setTrackEffects,
     setClipFades,
     setClipTiming,
     setMasterVolume,

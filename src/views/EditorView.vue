@@ -564,18 +564,16 @@ watch(
           class="editor-shell__inspector"
           :class="{ 'editor-shell__inspector--collapsed': !inspectorPanelVisible }"
         >
-          <div class="editor-shell__inspector-rail">
-            <button
-              type="button"
-              class="editor-shell__inspector-toggle"
-              :aria-pressed="inspectorPanelVisible"
-              :aria-label="inspectorPanelVisible ? t('common.collapse') : t('editor.inspectorTitle')"
-              @click="toggleInspectorPanel()"
-            >
-              <n-icon :component="OptionsOutline" />
-              <em>{{ t('editor.inspectorTitle') }}</em>
-            </button>
-          </div>
+          <button
+            type="button"
+            class="editor-shell__inspector-toggle"
+            :aria-pressed="inspectorPanelVisible"
+            :aria-label="inspectorPanelVisible ? t('common.collapse') : t('editor.inspectorTitle')"
+            @click="toggleInspectorPanel()"
+          >
+            <n-icon :component="OptionsOutline" />
+            <em>{{ t('editor.inspectorTitle') }}</em>
+          </button>
           <div class="editor-shell__inspector-panel">
             <EditorInspectorPanel
               :session="session"
@@ -588,10 +586,13 @@ watch(
               @rename-track="editor.renameTrack"
               @set-track-volume="setTrackVolume"
               @set-track-pan="setTrackPan"
+              @set-track-effects="editor.setTrackEffects"
               @begin-track-volume="editor.beginInteraction"
               @commit-track-volume="editor.commitInteraction"
               @begin-track-pan="editor.beginInteraction"
               @commit-track-pan="editor.commitInteraction"
+              @begin-track-effects="editor.beginInteraction"
+              @commit-track-effects="editor.commitInteraction"
               @set-clip-fades="setClipFades"
               @set-clip-timing="handleClipTiming"
               @begin-clip-timing="editor.beginInteraction"
@@ -788,10 +789,10 @@ watch(
   grid-row: 2;
   min-width: 0;
   min-height: 0;
-  display: grid;
-  grid-template-columns: var(--inspector-rail-width) minmax(0, var(--inspector-width));
-  border-left: 1px solid var(--outline);
   position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  border-left: 1px solid var(--outline);
   z-index: 5;
 }
 
@@ -799,31 +800,33 @@ watch(
   border-left-color: color-mix(in srgb, var(--outline) 48%, transparent);
 }
 
-.editor-shell__inspector-rail {
-  min-height: 0;
-  padding: 6px 4px;
-  border-right: 1px solid var(--outline);
-  background: color-mix(in srgb, var(--surface) 88%, var(--surface-1));
-}
-
 .editor-shell__inspector-toggle {
-  width: 100%;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  width: 26px;
+  height: 26px;
   display: grid;
   place-items: center;
   gap: 0;
-  padding: 6px 0;
+  padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   color: var(--on-surface-muted);
   background: transparent;
   cursor: pointer;
   transition: color 180ms ease, background 180ms ease;
 }
 
-.editor-shell__inspector-toggle:hover,
-.editor-shell__inspector-toggle[aria-pressed='true'] {
+.editor-shell__inspector-toggle:hover {
   color: var(--on-surface);
   background: var(--surface-2);
+}
+
+.editor-shell__inspector-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 72%, transparent);
+  outline-offset: 2px;
 }
 
 .editor-shell__inspector-toggle em {
@@ -831,9 +834,24 @@ watch(
 }
 
 .editor-shell__inspector-panel {
+  position: relative;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.editor-shell__inspector:not(.editor-shell__inspector--collapsed) :deep(.editor-inspector__titlebar) {
+  padding-right: 44px;
+}
+
+.editor-shell__inspector--collapsed .editor-shell__inspector-toggle {
+  top: 6px;
+  right: 4px;
+}
+
+.editor-shell__inspector--collapsed .editor-shell__inspector-panel {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .editor-shell__resizer {

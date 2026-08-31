@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { EditorClip, EditorSession, EditorSource } from '@/types/editor'
+import type { EditorClip, EditorSession, EditorSource, EditorTrackEffects } from '@/types/editor'
 import { formatTime } from '@/utils/editorTime'
 
 const props = defineProps<{
@@ -18,10 +18,13 @@ const emit = defineEmits<{
   renameTrack: [trackId: string, name: string, commit?: boolean]
   setTrackVolume: [trackId: string, value: number]
   setTrackPan: [trackId: string, value: number]
+  setTrackEffects: [trackId: string, patch: Partial<EditorTrackEffects>]
   beginTrackVolume: []
   commitTrackVolume: []
   beginTrackPan: []
   commitTrackPan: []
+  beginTrackEffects: []
+  commitTrackEffects: []
   setClipFades: [payload: {
     trackId: string
     clipId: string
@@ -45,11 +48,13 @@ const selectedClip = computed(() => (
   selectedTrack.value?.clips?.find((clip) => clip.id === props.selectedClipId) || null
 ))
 const renameDraft = ref('')
+const effectPreset = ref('custom')
 
 watch(
   selectedTrack,
   (track) => {
     renameDraft.value = track?.name || ''
+    effectPreset.value = 'custom'
   },
   { immediate: true },
 )
@@ -95,6 +100,21 @@ const fadeMax = computed(() => selectedClip.value?.duration || props.selectedSou
 const usesTrackFadeLabel = computed(() => (selectedTrack.value?.clips?.length || 0) === 1)
 const fadeInValue = computed(() => selectedClip.value?.fadeIn || 0)
 const fadeOutValue = computed(() => selectedClip.value?.fadeOut || 0)
+const trackEffects = computed<EditorTrackEffects>(() => selectedTrack.value?.effects || {
+  reverb: 0,
+  delay: 0,
+  delayTime: 0.24,
+  clarity: 0,
+  compressor: 0,
+})
+const effectPresetOptions = computed(() => [
+  { label: t('editor.effectPresetCustom'), value: 'custom' },
+  { label: t('editor.effectPresetOriginal'), value: 'original' },
+  { label: t('editor.effectPresetVocal'), value: 'vocal' },
+  { label: t('editor.effectPresetBackground'), value: 'background' },
+  { label: t('editor.effectPresetRecording'), value: 'recording' },
+  { label: t('editor.effectPresetSpace'), value: 'space' },
+])
 const clipOffsetMax = computed(() => Math.max(0, Number(props.selectedSource?.duration || 0) - Number(selectedClip.value?.duration || 0)))
 const clipDurationMax = computed(() => Math.max(0.01, Number(props.selectedSource?.duration || 0) - Number(selectedClip.value?.offset || 0)))
 
@@ -114,6 +134,32 @@ function updateFades(patch: { fadeIn?: number; fadeOut?: number }) {
     clipId: selectedClip.value.id,
     patch,
   })
+}
+
+function updateTrackEffects(patch: Partial<EditorTrackEffects>) {
+  if (!selectedTrack.value) return
+  effectPreset.value = 'custom'
+  emit('setTrackEffects', selectedTrack.value.id, patch)
+}
+
+function applyEffectPreset(value: string) {
+  if (!selectedTrack.value) return
+  const presets: Record<string, EditorTrackEffects> = {
+    original: { reverb: 0, delay: 0, delayTime: 0.24, clarity: 0, compressor: 0 },
+    vocal: { reverb: 0.12, delay: 0.02, delayTime: 0.18, clarity: 0.45, compressor: 0.5 },
+    background: { reverb: 0.06, delay: 0.08, delayTime: 0.32, clarity: 0.08, compressor: 0.16 },
+    recording: { reverb: 0.04, delay: 0, delayTime: 0.24, clarity: 0.62, compressor: 0.62 },
+    space: { reverb: 0.34, delay: 0.16, delayTime: 0.3, clarity: 0.1, compressor: 0.12 },
+  }
+  const preset = presets[value]
+  if (!preset) {
+    effectPreset.value = 'custom'
+    return
+  }
+  effectPreset.value = value
+  emit('beginTrackEffects')
+  emit('setTrackEffects', selectedTrack.value.id, preset)
+  emit('commitTrackEffects')
 }
 </script>
 
@@ -182,6 +228,111 @@ function updateFades(patch: { fadeIn?: number; fadeOut?: number }) {
           </div>
         </div>
       </section>
+
+      <details v-if="selectedTrack" class="inspector-group inspector-group--effects">
+        <summary class="inspector-group__header">
+          <strong>{{ t('editor.inspectorSectionEffects') }}</strong>
+          <span>{{ t('editor.inspectorEffectsContext') }}</span>
+        </summary>
+
+        <div class="inspector-group__body inspector-group__body--dense">
+          <label class="panel-field panel-field--compact">
+            <span class="panel-field__label">{{ t('editor.effectPreset') }}</span>
+            <n-select
+              :value="effectPreset"
+              :options="effectPresetOptions"
+              size="small"
+              @update:value="applyEffectPreset"
+            />
+          </label>
+
+          <p class="effect-hint">{{ t('editor.effectPresetHint') }}</p>
+
+          <label class="panel-field panel-field--compact">
+            <div class="panel-field__split panel-field__split--compact">
+              <span class="panel-field__label">{{ t('editor.effectClarity') }}</span>
+              <strong>{{ Math.round(trackEffects.clarity * 100) }}%</strong>
+            </div>
+            <n-slider
+              :value="trackEffects.clarity"
+              :min="0"
+              :max="1"
+              :step="0.01"
+              :tooltip="false"
+              @update:value="(value: number) => updateTrackEffects({ clarity: value })"
+              @dragstart="emit('beginTrackEffects')"
+              @dragend="emit('commitTrackEffects')"
+            />
+          </label>
+
+          <label class="panel-field panel-field--compact">
+            <div class="panel-field__split panel-field__split--compact">
+              <span class="panel-field__label">{{ t('editor.effectCompressor') }}</span>
+              <strong>{{ Math.round(trackEffects.compressor * 100) }}%</strong>
+            </div>
+            <n-slider
+              :value="trackEffects.compressor"
+              :min="0"
+              :max="1"
+              :step="0.01"
+              :tooltip="false"
+              @update:value="(value: number) => updateTrackEffects({ compressor: value })"
+              @dragstart="emit('beginTrackEffects')"
+              @dragend="emit('commitTrackEffects')"
+            />
+          </label>
+
+          <label class="panel-field panel-field--compact">
+            <div class="panel-field__split panel-field__split--compact">
+              <span class="panel-field__label">{{ t('editor.effectReverb') }}</span>
+              <strong>{{ Math.round(trackEffects.reverb * 100) }}%</strong>
+            </div>
+            <n-slider
+              :value="trackEffects.reverb"
+              :min="0"
+              :max="1"
+              :step="0.01"
+              :tooltip="false"
+              @update:value="(value: number) => updateTrackEffects({ reverb: value })"
+              @dragstart="emit('beginTrackEffects')"
+              @dragend="emit('commitTrackEffects')"
+            />
+          </label>
+
+          <label class="panel-field panel-field--compact">
+            <div class="panel-field__split panel-field__split--compact">
+              <span class="panel-field__label">{{ t('editor.effectDelay') }}</span>
+              <strong>{{ Math.round(trackEffects.delay * 100) }}%</strong>
+            </div>
+            <n-slider
+              :value="trackEffects.delay"
+              :min="0"
+              :max="1"
+              :step="0.01"
+              :tooltip="false"
+              @update:value="(value: number) => updateTrackEffects({ delay: value })"
+              @dragstart="emit('beginTrackEffects')"
+              @dragend="emit('commitTrackEffects')"
+            />
+          </label>
+
+          <label class="panel-field panel-field--compact">
+            <span class="panel-field__label">{{ t('editor.effectDelayTime') }}</span>
+            <n-input-number
+              :value="trackEffects.delayTime"
+              :min="0.05"
+              :max="1.2"
+              :step="0.01"
+              size="small"
+              :format="(value: number | null) => `${Number(value || 0).toFixed(2)} s`"
+              :parse="(value: string) => Number.parseFloat(value)"
+              @focus="emit('beginTrackEffects')"
+              @blur="emit('commitTrackEffects')"
+              @update:value="(value: number | null) => updateTrackEffects({ delayTime: numberOrZero(value) })"
+            />
+          </label>
+        </div>
+      </details>
 
       <section v-if="selectedTrack && selectedClip" class="inspector-group inspector-group--clip">
         <div class="inspector-group__header">
@@ -326,14 +477,15 @@ function updateFades(patch: { fadeIn?: number; fadeOut?: number }) {
   gap: 0;
   padding: 0;
   border-left: 0;
-  background: color-mix(in srgb, var(--surface) 90%, var(--surface-1));
+  background: color-mix(in srgb, var(--surface-2) 38%, var(--surface-1));
 }
 
 .editor-inspector__titlebar {
   display: grid;
   gap: 3px;
   padding: 9px 12px 8px;
-  border-bottom: 1px solid var(--outline);
+  border-bottom: 1px solid color-mix(in srgb, var(--outline) 76%, transparent);
+  background: var(--surface-1);
 }
 
 .editor-inspector__eyebrow {
@@ -382,9 +534,32 @@ function updateFades(patch: { fadeIn?: number; fadeOut?: number }) {
   display: grid;
   gap: 8px;
   padding: 9px 10px 10px;
-  border: 1px solid color-mix(in srgb, var(--outline) 42%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--surface) 94%, var(--surface-1));
+  border: 1px solid color-mix(in srgb, var(--outline) 70%, transparent);
+  border-radius: 8px;
+  background: var(--surface-1);
+  box-shadow: none;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.inspector-group--primary {
+  border-color: color-mix(in srgb, var(--outline) 78%, transparent);
+}
+
+.inspector-group--effects {
+  border-color: color-mix(in srgb, var(--primary-border) 50%, var(--outline));
+  background: color-mix(in srgb, var(--primary-soft) 10%, var(--surface-1));
+}
+
+.inspector-group--clip {
+  background: color-mix(in srgb, var(--surface-2) 20%, var(--surface-1));
+}
+
+.inspector-group--secondary {
+  background: color-mix(in srgb, var(--surface-2) 30%, var(--surface-1));
+}
+
+.inspector-group--source {
+  background: color-mix(in srgb, var(--surface-2) 36%, var(--surface-1));
 }
 
 details.inspector-group {
@@ -400,7 +575,7 @@ details.inspector-group[open] {
 }
 
 .inspector-group__header strong {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: color-mix(in srgb, var(--on-surface) 88%, var(--on-surface-muted));
@@ -411,12 +586,28 @@ details.inspector-group[open] {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
+  padding: 4px 6px 6px;
+  margin: -4px -6px 1px;
+  border-radius: 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--outline) 40%, transparent);
+  background: transparent;
 }
 
 summary.inspector-group__header {
   min-height: 16px;
   cursor: pointer;
   list-style: none;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+summary.inspector-group__header:hover {
+  background: color-mix(in srgb, var(--surface-2) 56%, transparent);
+}
+
+summary.inspector-group__header:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 72%, transparent);
+  outline-offset: 2px;
 }
 
 summary.inspector-group__header::-webkit-details-marker {
@@ -438,6 +629,8 @@ details.inspector-group[open] > summary.inspector-group__header::after {
   color: var(--on-surface-muted);
   font-size: 9px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .inspector-group__body {
@@ -459,9 +652,20 @@ details.inspector-group[open] > summary.inspector-group__header::after {
 }
 
 .panel-field__label {
-  color: var(--on-surface-muted);
+  color: color-mix(in srgb, var(--on-surface) 68%, var(--on-surface-muted));
   font-size: 11px;
   letter-spacing: 0;
+}
+
+.effect-hint {
+  margin: -2px 0 1px;
+  padding: 6px 7px;
+  border-left: 2px solid color-mix(in srgb, var(--primary) 64%, transparent);
+  border-radius: 0 6px 6px 0;
+  color: var(--on-surface-muted);
+  font-size: 10px;
+  line-height: 1.45;
+  background: color-mix(in srgb, var(--surface-2) 54%, transparent);
 }
 
 .panel-field__split {
@@ -579,15 +783,22 @@ details.inspector-group[open] > summary.inspector-group__header::after {
 .editor-inspector :deep(.n-input-number),
 .editor-inspector :deep(.n-base-selection),
 .editor-inspector :deep(.n-slider) {
-  --n-color: color-mix(in srgb, var(--surface) 90%, transparent) !important;
+  --n-color: color-mix(in srgb, var(--surface-1) 82%, var(--surface-2)) !important;
 }
 
 .editor-inspector :deep(.n-input),
 .editor-inspector :deep(.n-input-number .n-input) {
-  --n-border: 1px solid color-mix(in srgb, var(--outline) 34%, transparent) !important;
-  --n-border-hover: 1px solid color-mix(in srgb, var(--outline) 48%, transparent) !important;
-  --n-border-focus: 1px solid color-mix(in srgb, var(--primary) 38%, transparent) !important;
+  --n-border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent) !important;
+  --n-border-hover: 1px solid color-mix(in srgb, var(--primary-border) 82%, var(--outline)) !important;
+  --n-border-focus: 1px solid color-mix(in srgb, var(--primary) 56%, transparent) !important;
   --n-box-shadow-focus: 0 0 0 2px color-mix(in srgb, var(--primary-soft) 34%, transparent) !important;
+}
+
+.inspector-group--effects :deep(.n-base-selection),
+.inspector-group--effects :deep(.n-input),
+.inspector-group--effects :deep(.n-input-number .n-input) {
+  --n-color: var(--surface-1) !important;
+  --n-border: 1px solid color-mix(in srgb, var(--outline) 62%, transparent) !important;
 }
 
 .editor-inspector :deep(.n-slider-rail),

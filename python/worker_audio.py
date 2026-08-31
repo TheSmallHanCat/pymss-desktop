@@ -143,6 +143,75 @@ def _apply_stereo_pan(audio: Any, pan: float) -> Any:
     return output
 
 
+def _apply_track_effects(audio: Any, effects: Any, sample_rate: int) -> Any:
+    """Apply the editor's lightweight, non-destructive track effects."""
+    if not isinstance(effects, dict):
+        return audio
+    reverb = max(0.0, min(1.0, float(effects.get("reverb", 0) or 0)))
+    delay = max(0.0, min(1.0, float(effects.get("delay", 0) or 0)))
+    delay_time = max(0.05, min(1.2, float(effects.get("delayTime", 0.24) or 0.24)))
+    clarity = max(0.0, min(1.0, float(effects.get("clarity", 0) or 0)))
+    compressor = max(0.0, min(1.0, float(effects.get("compressor", 0) or 0)))
+    if reverb <= 0 and delay <= 0 and clarity <= 0 and compressor <= 0:
+        return audio
+
+    import numpy as np  # type: ignore
+
+    if audio.ndim == 1:
+        audio = audio.reshape(1, -1)
+    base = audio.astype(np.float32, copy=False)
+    rate = max(1, int(sample_rate))
+
+    if clarity > 0:
+        try:
+            from scipy.signal import lfilter  # type: ignore
+
+            cutoff = 20.0 + clarity * 180.0
+            rc = 1.0 / (2.0 * math.pi * cutoff)
+            alpha = rc / (rc + 1.0 / rate)
+            filtered = np.empty_like(base)
+            for channel in range(base.shape[0]):
+                filtered[channel] = lfilter([alpha, -alpha], [1.0, -alpha], base[channel])
+            base = filtered
+        except Exception:
+            # Keep export available in minimal runtimes without scipy.
+            pass
+
+    output_base = base.copy()
+    if compressor > 0:
+        threshold = 10.0 ** ((-36.0 + compressor * 14.0) / 20.0)
+        ratio = 1.0 + compressor * 7.0
+        magnitude = np.abs(output_base)
+        compressed = np.where(
+            magnitude > threshold,
+            threshold + (magnitude - threshold) / ratio,
+            magnitude,
+        )
+        output_base *= compressed / np.maximum(magnitude, 1e-6)
+
+    taps: list[tuple[int, float]] = []
+
+    # A short, deterministic multi-tap tail gives offline export the same
+    # musical character as the live Web Audio convolution preview without
+    # requiring an additional DSP dependency.
+    if reverb > 0:
+        for seconds, tap_gain in ((0.071, 0.34), (0.113, 0.27), (0.181, 0.21), (0.293, 0.15), (0.457, 0.10), (0.691, 0.06)):
+            taps.append((int(rate * seconds), reverb * tap_gain))
+
+    if delay > 0:
+        for repeat in range(1, 6):
+            taps.append((int(rate * delay_time * repeat), delay * (0.46 ** repeat)))
+
+    tail = max((delay_samples for delay_samples, _ in taps), default=0)
+    output = np.zeros((output_base.shape[0], output_base.shape[-1] + tail), dtype=np.float32)
+    output[:, :output_base.shape[-1]] = output_base
+    for delay_samples, gain in taps:
+        delay = max(1, delay_samples)
+        output[:, delay:delay + output_base.shape[-1]] += output_base * gain
+
+    return output
+
+
 def cmd_audio_metadata(payload: dict[str, Any]) -> int:
     path = payload.get("path")
     if not path:
@@ -354,6 +423,7 @@ def cmd_export_editor_mix(payload: dict[str, Any]) -> int:
                 if fade_out_samples > 0:
                     segment[:, -fade_out_samples:] *= _equal_power_fade(fade_out_samples, False)
 
+                segment = _apply_track_effects(segment, track.get("effects"), sr)
                 rendered_clips.append((start, segment, sr))
                 total_samples = max(total_samples, start + segment.shape[-1])
 

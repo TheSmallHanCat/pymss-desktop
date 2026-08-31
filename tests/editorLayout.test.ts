@@ -31,8 +31,9 @@ test('collapsing the asset panel makes room for the inspector without shrinking 
   const capacity = calculateEditorPanelCapacity({
     ...baseMetrics,
     assetPanelVisible: false,
+    inspectorRailVisible: false,
     inspectorPanelVisible: true,
   })
-  assert.equal(capacity.centerWidth, 634)
-  assert.equal(capacity.availableInspectorWidth, 382)
+  assert.equal(capacity.centerWidth, 668)
+  assert.equal(capacity.availableInspectorWidth, 416)
 })
