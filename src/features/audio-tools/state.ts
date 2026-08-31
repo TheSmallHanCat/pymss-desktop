@@ -3,6 +3,9 @@ import type { AudioToolKey } from './types'
 
 export type StoredAudioToolsState = {
   activeTool?: AudioToolKey
+  mergeSortBy?: 'name' | 'modified' | 'regex'
+  mergeSortDirection?: 'asc' | 'desc'
+  mergeRegex?: string
   midiModelPath?: string
   midiLanguage?: string
   asrModelMode?: 'preset' | 'local'

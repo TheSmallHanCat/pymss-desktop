@@ -48,7 +48,7 @@
   },
   "tools": {
     "title": "Tools",
-    "subtitle": "Modular utilities for conversion, audio analysis, speech recognition, slicing, and vocal-to-MIDI transcription.",
+    "subtitle": "Modular utilities for conversion, audio analysis, speech recognition, slicing, merging, and vocal-to-MIDI transcription.",
     "convertTitle": "Audio format conversion",
     "convertDescription": "Convert audio files in batches while normalizing sample rate, channels, and encoding quality.",
     "inputFiles": "Input audio",

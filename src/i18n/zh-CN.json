@@ -48,7 +48,7 @@
   },
   "tools": {
     "title": "小工具",
-    "subtitle": "提供格式转换、音频分析、语音识别、切片与歌声转 MIDI 等模块化音频工具。",
+    "subtitle": "提供格式转换、音频分析、语音识别、切片、合并与歌声转 MIDI 等模块化音频工具。",
     "convertTitle": "音频格式转换",
     "convertDescription": "批量转换音频格式，并统一采样率、声道与编码质量。",
     "inputFiles": "输入音频",

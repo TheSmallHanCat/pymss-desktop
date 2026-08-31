@@ -40,7 +40,9 @@ export type AudioToolResultBase = {
 }
 
 export type ConvertResult = AudioToolResultBase & { operation: 'convert' }
-export type MergeResult = AudioToolResultBase & { operation: 'merge'; merged?: number }
+export type MergeResult = AudioToolResultBase & {
+  operation: 'merge'; merged?: number; sortBy?: 'name' | 'modified' | 'regex'; sortDirection?: 'asc' | 'desc'
+}
 export type SdrResult = AudioToolResultBase & {
   operation: 'sdr'; sampleRate: number; sdr: number[]; averageSdr: number; siSdr: number[]; averageSiSdr: number
 }
