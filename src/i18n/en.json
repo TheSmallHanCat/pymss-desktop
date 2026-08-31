@@ -501,12 +501,7 @@
     "namingTokenModel": "Model or workflow",
     "namingTokenDate": "Date",
     "namingTokenTime": "Time",
-    "namingTokenLegacyTime": "Day-minute-second",
-    "workflowMissingSlots": "Input slots to fill: {names}",
-    "workflowSlotsReady": "{count} input slot(s) ready",
-    "workflowSelfContained": "Graph carries its own inputs — ready to run",
-    "workflowUnresolvedLoad": "{count} load node(s) have no input_name and no path; fix them in the editor",
-    "workflowMissingSlotFiles": "No file chosen for input slot(s): {names}"
+    "namingTokenLegacyTime": "Day-minute-second"
   },
   "audio": {
     "wavBitDepth": "WAV bit depth",
@@ -1127,7 +1122,7 @@
     "runtimeTorchMeta": "PyTorch runtime version",
     "runtimePymssMeta": "pymss core version",
     "runtimeManifestOutdated": "Manifest changed",
-    "runtimeManifestOutdatedHint": "Installed from an older manifest. Reinstall to match.",
+    "runtimeManifestOutdatedHint": "Installed from an older manifest. Update the core or reinstall to match.",
     "runtimeDetect": "Detect Only",
     "runtimeSwitchTitle": "Switch runtime environment?",
     "runtimeSwitchContent": "The current {current} environment is active. Switch to the already installed {target} environment?",
@@ -1550,6 +1545,6 @@
     "metricNodes": "nodes",
     "metricLinks": "links",
     "inputSlots": "Runtime input slots",
-    "comfyReadOnlyHint": "Advanced (comfy) workflows are free-form; this page shows a read-only overview. Edit the graph in the advanced editor; the inference page asks for files per input slot."
+    "comfyReadOnlyHint": "Advanced (comfy) workflows are free-form; this page shows a read-only overview. Edit the graph in the advanced editor; the inference page uses the shared input-file list."
   }
 }

@@ -267,7 +267,15 @@ const runtimeBackendCards = computed(() => {
       const diskBytes = app.runtimeEnvSizes[String(item.backend)]
       const pymssVersion = env?.pymssVersion || env?.packageVersions?.pymss || ''
       const pymssCoreVersion = env?.pymssCoreVersion || env?.packageVersions?.['pymss-core'] || ''
-      const coreUpdateAvailable = isActive && runtimeCoreUpdateAvailable(env, latestPymssVersion.value, latestPymssCoreVersion.value)
+      const manifestOutdated = runtimeManifestStatus(env, app.runtimeInfo?.manifestVersion) === 'outdated'
+      // A manifest mismatch can mean that the environment was created by an
+      // older app even when PyPI already reports the same pymss/core versions.
+      // Offer the no-Torch-reinstall core sync so the environment metadata and
+      // any manifest-declared pymss extras are brought up to date.
+      const coreUpdateAvailable = isActive && env?.coreUpdateSupported !== false && (
+        runtimeCoreUpdateAvailable(env, latestPymssVersion.value, latestPymssCoreVersion.value)
+        || manifestOutdated
+      )
       const gpuBackend = item.backend === 'cuda' || item.backend === 'rocm' || item.backend === 'mlx'
       // A cancelled or failed install leaves its venv behind without an install state, so the
       // backend reads as not installed while still holding gigabytes. Surface it so the space
@@ -279,7 +287,7 @@ const runtimeBackendCards = computed(() => {
         env,
         state,
         recommended: runtimeRecommendedBackend.value === item.backend,
-        manifestOutdated: runtimeManifestStatus(env, app.runtimeInfo?.manifestVersion) === 'outdated',
+        manifestOutdated,
         leftover,
         leftoverLabel: leftover && diskBytes ? formatBytes(diskBytes) : '',
         // Only warn on GPU backends: it explains why a card is there without hiding it, and

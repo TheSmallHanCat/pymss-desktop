@@ -501,12 +501,7 @@
     "namingTokenModel": "模型或工作流",
     "namingTokenDate": "日期",
     "namingTokenTime": "时间",
-    "namingTokenLegacyTime": "日分秒",
-    "workflowMissingSlots": "待填输入槽：{names}",
-    "workflowSlotsReady": "{count} 个输入槽已就绪",
-    "workflowSelfContained": "图自带输入，可直接运行",
-    "workflowUnresolvedLoad": "有 {count} 个加载节点未命名且非路径，请在编辑器填写 input_name 或文件路径",
-    "workflowMissingSlotFiles": "输入槽未选择文件：{names}"
+    "namingTokenLegacyTime": "日分秒"
   },
   "audio": {
     "wavBitDepth": "WAV 位深",
@@ -1127,7 +1122,7 @@
     "runtimeTorchMeta": "PyTorch 运行时版本",
     "runtimePymssMeta": "pymss 核心版本",
     "runtimeManifestOutdated": "清单已变更",
-    "runtimeManifestOutdatedHint": "按旧版依赖清单安装，重新安装可对齐。",
+    "runtimeManifestOutdatedHint": "按旧版依赖清单安装，更新内核或重新安装可对齐。",
     "runtimeDetect": "检测环境",
     "runtimeSwitchTitle": "确认切换运行环境",
     "runtimeSwitchContent": "当前使用 {current} 环境。是否切换到已安装的 {target} 环境？",
@@ -1550,6 +1545,6 @@
     "metricNodes": "节点",
     "metricLinks": "连线",
     "inputSlots": "运行时输入槽",
-    "comfyReadOnlyHint": "高级(comfy)工作流为自由结构，此处仅展示概览。请使用高级编辑器修改图；推理页会按输入槽提示选择文件。"
+    "comfyReadOnlyHint": "高级(comfy)工作流为自由结构，此处仅展示概览。请使用高级编辑器修改图；推理页使用统一输入文件列表。"
   }
 }

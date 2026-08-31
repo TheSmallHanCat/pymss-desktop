@@ -8,10 +8,15 @@ import type { WorkerEventConnectionStatus } from '@/stores/app'
 
 let unlistenWorkerEvents: UnlistenFn | undefined
 let registrationInFlight: Promise<void> | null = null
-const hasTauriEventApi = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+// Tauri injects its internals before normal application startup, but keeping
+// this check dynamic also covers delayed webview initialization and reconnects.
+function hasTauriEventApi() {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+}
 
 export async function registerWorkerEvents() {
-  if (!hasTauriEventApi || unlistenWorkerEvents) return
+  if (!hasTauriEventApi() || unlistenWorkerEvents) return
   if (!registrationInFlight) {
     registrationInFlight = listen('pymss://worker-event', (event) => {
       const app = useAppStore()

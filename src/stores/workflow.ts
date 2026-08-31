@@ -98,6 +98,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const selectedWorkflow = computed(() => workflows.value.find(item => item.id === selectedWorkflowId.value) || null)
   let persistQueue = Promise.resolve()
   let pendingPersistCount = 0
+  // Bootstrap and standalone node-editor windows can call initialize() at the
+  // same time. Share one in-flight load so a slower second read cannot race
+  // the first one and leave the editor with an empty/stale workflow list.
+  let initializationPromise: Promise<void> | null = null
 
   function persist() {
     const snapshot = JSON.parse(JSON.stringify({
@@ -129,7 +133,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   async function initialize() {
     if (initialized.value) return
-    await loadStoredState()
+    if (!initializationPromise) {
+      initializationPromise = loadStoredState().finally(() => {
+        initializationPromise = null
+      })
+    }
+    await initializationPromise
   }
 
   async function reload() {

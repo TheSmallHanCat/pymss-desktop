@@ -57,6 +57,8 @@ const showPalette = ref(false)
 const paletteQuery = ref('')
 const ready = ref(false)
 let configuringGraph = false
+let graphInitialized = false
+let awaitingInitialDefinition = false
 
 // --- undo/redo (serialize snapshots) --------------------------------------
 const history = shallowRef(createWorkflowHistory())
@@ -252,10 +254,74 @@ function loadDefinition(def: Record<string, unknown>) {
   } finally {
     configuringGraph = false
   }
+  if (nodes.length && graph.nodes.length === 0) {
+    throw new Error('LiteGraph did not restore any nodes from the workflow definition')
+  }
   // After configure, rebuild dynamic stem outputs for separate nodes and
   // populate model_name combos with the current downloaded list.
   for (const node of graph.nodes as any[]) configureGraphNode(node)
 }
+
+/**
+ * Initialize the canvas exactly once. A malformed or partially migrated
+ * persisted graph must not leave a running, empty canvas; seed an editable
+ * starter graph as a recovery point and keep the original error in the log.
+ */
+function initializeGraph() {
+  const graph = graphRef.value
+  if (!graph || graphInitialized) return
+
+  try {
+    if (isGraphWorkflowDefinition(definition.value) && Array.isArray(definition.value.nodes)
+      && definition.value.nodes.length) {
+      loadDefinition(definition.value)
+      awaitingInitialDefinition = false
+    } else {
+      // New workflows and malformed/legacy values both get a usable graph.
+      // The parent view rejects legacy formats before this component is shown.
+      seedStarterGraph()
+      awaitingInitialDefinition = true
+    }
+  } catch (error) {
+    console.error('[workflow-node-editor] failed to restore graph', error)
+    graph.clear()
+    seedStarterGraph()
+    awaitingInitialDefinition = true
+  }
+
+  graph.start()
+  ready.value = true
+  graphInitialized = true
+  writeGraphDefaults({ device: props.defaultDevice, outputFormat: props.defaultFormat })
+  // Push the first snapshot up so the parent has a clean comfy dict immediately.
+  definition.value = snapshotDefinition()
+  // The loaded/seeded graph is the baseline for the first undoable edit.
+  resetHistory()
+}
+
+// A standalone window can receive its persisted definition one tick after the
+// canvas mounts. If that happens, hydrate the live graph as soon as the
+// definition arrives instead of leaving the canvas at N: 0.
+watch(definition, () => {
+  const graph = graphRef.value
+  if (!ready.value || !graph || !awaitingInitialDefinition) return
+  if (!isGraphWorkflowDefinition(definition.value) || !Array.isArray(definition.value.nodes)
+    || !definition.value.nodes.length) return
+  // Ignore the component's own initial v-model snapshot. A standalone parent
+  // may still replace it with the persisted graph on a later tick; only that
+  // different definition should replace the starter graph.
+  if (JSON.stringify(definition.value) === JSON.stringify(snapshotDefinition())) return
+  try {
+    loadDefinition(definition.value)
+    awaitingInitialDefinition = false
+    resetHistory()
+    ;(canvasRef.value as any)?.setDirty(true, true)
+  } catch (error) {
+    console.error('[workflow-node-editor] failed to hydrate late graph definition', error)
+    graph.clear()
+    seedStarterGraph()
+  }
+})
 
 // --- lifecycle -------------------------------------------------------------
 let resizeObserver: ResizeObserver | null = null
@@ -286,20 +352,7 @@ onMounted(() => {
   resizeObserver.observe(canvasEl.value.parentElement || canvasEl.value)
   canvasEl.value.addEventListener('keydown', onCanvasKey)
   // Load existing definition (e.g. reopening an editor) or seed a starter graph.
-  if (isGraphWorkflowDefinition(definition.value) && (definition.value.nodes as unknown[]).length) {
-    loadDefinition(definition.value)
-  } else if (isGraphWorkflowDefinition(definition.value) || !Object.keys(definition.value || {}).length) {
-    seedStarterGraph()
-  } else {
-    return
-  }
-  graph.start()
-  ready.value = true
-  writeGraphDefaults({ device: props.defaultDevice, outputFormat: props.defaultFormat })
-  // Push the first snapshot up so the parent has a clean comfy dict immediately.
-  definition.value = snapshotDefinition()
-  // The loaded/seeded graph is the baseline for the first undoable edit.
-  resetHistory()
+  initializeGraph()
 })
 
 onBeforeUnmount(() => {

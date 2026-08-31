@@ -41,6 +41,7 @@ const editingName = ref(false)
 const nameBeforeEdit = ref('')
 const nameInputRef = ref<InputInst | null>(null)
 const loadedUpdatedAt = ref<number | undefined>()
+const editorKey = ref(0)
 const showRevisionConflict = ref(false)
 const pendingDefinition = ref<Record<string, unknown> | null>(null)
 const formatError = ref('')
@@ -197,7 +198,14 @@ async function reloadRevisionConflict() {
   if (!editingId.value) return
   await workflow.reload()
   const latest = workflows.value.find(item => item.id === editingId.value)
-  if (latest) loadWorkflow(latest)
+  if (latest) {
+    loadWorkflow(latest)
+    // Explicitly recreate the graph only when accepting a remote revision.
+    // Saving the current editor must keep its live LiteGraph instance; changing
+    // a key after every save briefly destroys the canvas and can leave a blank
+    // editor window.
+    editorKey.value += 1
+  }
   pendingDefinition.value = null
 }
 
@@ -386,7 +394,7 @@ onBeforeUnmount(() => {
 
     <WorkflowNodeEditor
       v-else-if="loaded"
-      :key="`${editingId}:${loadedUpdatedAt || 0}`"
+      :key="editorKey"
       v-model:definition="definition"
       :model-options="modelOptions"
       :models="models"

@@ -21,6 +21,12 @@ async function bootstrap() {
     if (!document.querySelector('#app')?.hasChildNodes()) app.mount('#app')
   }
 
+  // Mount the shell before optional persistence/runtime probes. A standalone
+  // workflow editor must not leave the whole window behind the boot splash if
+  // one of those IPC calls is delayed or unavailable; its stores can hydrate
+  // in the background while the route remains usable.
+  mounted()
+
   const settings = useSettingsStore(pinia)
   const appState = useAppStore(pinia)
   const updates = useUpdateStore(pinia)
@@ -34,15 +40,17 @@ async function bootstrap() {
   await tasks.initialize().catch((error) => {
     console.warn('Failed to initialize tasks', error)
   })
-  const workerEventsReady = connectWorkerEvents(appState)
-  mounted()
-  await workerEventsReady.catch((error) => {
-    console.warn('Failed to register worker events', error)
-  })
-
   const models = await import('@/stores/model').then((mod) => mod.useModelStore(pinia))
   const workflows = await import('@/stores/workflow').then((mod) => mod.useWorkflowStore(pinia))
   await Promise.allSettled([models.initialize(), workflows.initialize()])
+  // Register after the webview and dependent stores are ready. Tauri's event
+  // bridge can still be initializing while the entry module is evaluated;
+  // connecting here avoids a bootstrap race and lets early events update fully
+  // initialized stores.
+  const workerEventsReady = connectWorkerEvents(appState)
+  await workerEventsReady.catch((error) => {
+    console.warn('Failed to register worker events', error)
+  })
   initTheme(settings.themeMode, settings.themeAccent)
   try {
     const { invoke } = await import('@tauri-apps/api/core')

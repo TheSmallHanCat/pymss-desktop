@@ -241,7 +241,7 @@ const themeOverrides = computed(() => {
             </main>
           </div>
           <transition name="boot-fade">
-            <div v-if="!bootReady" class="boot-splash">
+            <div v-if="!bootReady && !isStandaloneRoute" class="boot-splash">
               <AppBrandMark class="boot-splash__mark" :size="58" shadow />
             <div class="boot-splash__copy">
               <strong>Pymss Studio</strong>

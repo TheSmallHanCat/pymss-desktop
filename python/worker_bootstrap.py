@@ -45,6 +45,16 @@ def _manifest() -> dict[str, Any]:
     return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
+def _pin_manifest_requirement(requirement: Any, version: str) -> str:
+    """Pin a manifest requirement while retaining any extras it declares."""
+    spec = str(requirement or "").strip()
+    name_match = re.match(r"([A-Za-z0-9_.-]+)", spec)
+    name = name_match.group(1) if name_match else "pymss"
+    extras_match = re.search(r"(\[[^\]]+\])", spec)
+    extras = extras_match.group(1) if extras_match else ""
+    return f"{name}{extras}=={version}"
+
+
 def _supported_backend(backend: str, manifest: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]] | None:
     normalized = str(backend or "").strip().lower()
     if not normalized or "/" in normalized or "\\" in normalized or normalized in {".", ".."}:
@@ -1240,6 +1250,7 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
     backend = str(payload.get("backend") or "").strip().lower()
     mirror = str(payload.get("mirror") or "auto").strip().lower()
     locale = str(payload.get("locale") or "").strip().lower()
+    manifest = _manifest()
     supported = _supported_backend(backend)
     if not supported:
         from worker_protocol import emit_error
@@ -1311,7 +1322,14 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
     command.extend(["--constraint", str(constraints_path)])
     if index_url:
         command.extend(["--index-url", index_url])
-    pymss_requirement = f"pymss=={target_pymss_version}"
+    # Keep extras declared by the shipped manifest (currently ``[proxy]``) when
+    # upgrading an environment created by an older manifest.  Installing only
+    # the bare distribution would leave newly declared optional dependencies
+    # absent even though the core package itself was updated successfully.
+    pymss_requirement = _pin_manifest_requirement(
+        manifest.get("common", {}).get("pymss"),
+        target_pymss_version,
+    )
     pymss_core_requirement = f"pymss-core=={target_pymss_core_version}"
     command.extend([pymss_requirement, pymss_core_requirement])
     try:
@@ -1342,6 +1360,7 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
         updated = {
             **(state or {}),
             "backend": backend,
+            "manifestVersion": manifest.get("manifestVersion"),
             "pythonPath": str(python_path),
             "logPath": str(log_path),
             "packages": probed.get("packages") or (state.get("packages") if state else None),

@@ -46,6 +46,77 @@ def _normalize_inputs(value: Any) -> dict[str, str]:
     return {str(k).strip(): str(v).strip() for k, v in value.items() if str(k).strip() and str(v).strip()}
 
 
+def _prepare_legacy_global_input(
+    payload: dict[str, Any],
+    input_path: str | None,
+    inputs: dict[str, str] | None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Keep the pre-input-slot workflow contract working for global files.
+
+    Older studio versions always supplied the selected file as ``input`` and
+    stored ``input.wav`` (or an empty value) in load-node widgets.  Newer
+    pymss runtimes require a named ``inputs`` mapping for those placeholders.
+    Build that mapping at the worker boundary so existing workflows and the
+    global input picker continue to use the selected file without rewriting
+    their persisted definitions.
+    """
+    merged_inputs = dict(inputs or {})
+    if not input_path:
+        return payload, merged_inputs
+    definition = payload.get("workflow")
+    if not isinstance(definition, dict) or not isinstance(definition.get("nodes"), list):
+        return payload, merged_inputs
+
+    # Do not mutate the payload retained by the caller; only the transient
+    # workflow file written for this task may be adjusted.
+    transient = json.loads(json.dumps(definition))
+    for node in transient.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("type") or "").strip()
+        widgets = node.get("widgets_values")
+        if not isinstance(widgets, list):
+            widgets = []
+        if node_type in {"pymss_load_audio", "LoadAudio"}:
+            # LiteGraph serializes an untouched optional widget as ``null``;
+            # normalize it the same way pymss' node executor does instead of
+            # turning it into the literal slot name "None".
+            input_name = str((widgets[1] if len(widgets) > 1 else "") or "").strip()
+            if input_name:
+                # The global picker is authoritative after the input-slot UI
+                # rollback, including for graphs saved with input_name.
+                merged_inputs[input_name] = input_path
+            else:
+                widget_name = str((widgets[0] if widgets else "") or "").strip()
+                if widget_name:
+                    merged_inputs[widget_name] = input_path
+                # pymss resolves an existing audio-widget path before looking
+                # at the legacy inputs mapping. Replace it in the transient
+                # graph as well, otherwise a graph saved with an embedded path
+                # would silently ignore the file selected on the inference page.
+                while len(widgets) <= 0:
+                    widgets.append("")
+                widgets[0] = input_path
+            node["widgets_values"] = widgets
+        elif node_type == "pymss_load_audio_batch":
+            input_name = str((widgets[3] if len(widgets) > 3 else "") or "").strip()
+            if input_name:
+                merged_inputs[input_name] = input_path
+            else:
+                # Legacy batch nodes had only folder/recursive/sort widgets.
+                # Give them a transient slot so the shared picker remains the
+                # authoritative source instead of silently scanning a stale
+                # folder (or an empty folder) from the saved graph.
+                input_name = "__pymss_studio_global_input__"
+                while len(widgets) <= 3:
+                    widgets.append("")
+                widgets[3] = input_name
+                merged_inputs[input_name] = input_path
+            node["widgets_values"] = widgets
+
+    return {**payload, "workflow": transient}, merged_inputs
+
+
 def _write_workflow_file(payload: dict[str, Any], task_id: str) -> tuple[Path, str]:
     """Write the workflow dict to a temp file and return (path, format).
 
@@ -105,7 +176,8 @@ def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
                inputs: dict[str, str] | None, output_dir: str, output_layout: str) -> dict[str, Any]:
     import pymss.graph as graph
 
-    workflow_path, fmt = _write_workflow_file(payload, task_id)
+    runtime_payload, runtime_inputs = _prepare_legacy_global_input(payload, input_path, inputs)
+    workflow_path, fmt = _write_workflow_file(runtime_payload, task_id)
     if not workflow_path.is_file():
         raise RuntimeError("Workflow definition is required")
 
@@ -119,7 +191,7 @@ def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
 
     # Output-folder naming follows the primary input: the explicit single
     # input, else the first value of the named inputs mapping.
-    primary = input_path or (list(inputs.values())[0] if inputs else "")
+    primary = input_path or (list(runtime_inputs.values())[0] if runtime_inputs else "")
     task_output_dir = _workflow_task_output_dir(output_dir, primary, output_layout)
     task_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -127,7 +199,7 @@ def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
         dag,
         output_dir=task_output_dir,
         input_path=input_path,
-        inputs=inputs,
+        inputs=runtime_inputs or None,
         progress_callback=_emit_progress(task_id),
         device=_resolve_device(payload),
         model_dir=payload.get("modelDir") or None,

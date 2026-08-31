@@ -88,6 +88,20 @@ class RuntimeReadinessTests(unittest.TestCase):
         self.assertFalse(payload["ready"])
 
 
+class ManifestRequirementTests(unittest.TestCase):
+    def test_pin_manifest_requirement_preserves_extras(self):
+        self.assertEqual(
+            worker_bootstrap._pin_manifest_requirement("pymss[proxy]>=2.1.3", "2.2.0"),
+            "pymss[proxy]==2.2.0",
+        )
+
+    def test_pin_manifest_requirement_handles_plain_requirement(self):
+        self.assertEqual(
+            worker_bootstrap._pin_manifest_requirement("pymss>=2.0.15", "2.2.0"),
+            "pymss==2.2.0",
+        )
+
+
 class MultipleEnvironmentTests(unittest.TestCase):
     """Each backend gets its own venv directory, so several environments coexist and the
     active one is just a pointer. These tests use stub interpreters — nothing is downloaded."""

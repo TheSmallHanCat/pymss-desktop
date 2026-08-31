@@ -491,7 +491,12 @@ async function openNodeEditor(options: { forceNew?: boolean; workflowId?: string
   }
 
   const forceNew = options.forceNew === true
-  const workflowId = forceNew ? '' : (options.workflowId || editingId.value || selectedWorkflowId.value || '')
+  // The overview's selected entry is the authoritative target. `editingId`
+  // can briefly lag while the store reloads after a standalone editor closes;
+  // preferring it here could reopen a different (or legacy) graph as blank.
+  const workflowId = forceNew
+    ? ''
+    : (options.workflowId || selectedWorkflow.value?.id || selectedWorkflowId.value || editingId.value || '')
   const isNewWorkflow = forceNew || !workflowId
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
     try {
@@ -929,7 +934,12 @@ watch(workflows, (items) => {
                 <template #icon><n-icon :component="GitNetworkOutline" /></template>
                 {{ t('workflows.convertToAdvancedCopy') }}
               </n-button>
-              <n-button v-else-if="isComfyWorkflow" secondary size="large" @click="openNodeEditor()">
+              <n-button
+                v-else-if="isComfyWorkflow"
+                secondary
+                size="large"
+                @click="openNodeEditor({ workflowId: selectedWorkflow?.id })"
+              >
                 <template #icon><n-icon :component="GitNetworkOutline" /></template>
                 {{ t('workflows.openAdvancedEditor') }}
               </n-button>
