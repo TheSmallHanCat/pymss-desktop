@@ -19,6 +19,7 @@ import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { storeToRefs } from 'pinia'
+import WorkflowCreateChooser from '@/components/workflow/WorkflowCreateChooser.vue'
 import WorkflowRevisionConflictModal from '@/components/workflow/WorkflowRevisionConflictModal.vue'
 import WorkflowSimpleCreator from '@/components/workflow/WorkflowSimpleCreator.vue'
 import { useModelStore } from '@/stores/model'
@@ -57,8 +58,10 @@ const name = ref('')
 const description = ref('')
 const query = ref('')
 const importFileInputRef = ref<HTMLInputElement | null>(null)
+const createChooserOpen = ref(false)
 const simpleEditorOpen = ref(false)
 const simpleEditorWorkflow = ref<WorkflowEntry | null>(null)
+type WorkflowCreateType = 'simple' | 'advanced'
 type SimpleSaveContinuation = 'stay' | 'run'
 const pendingSimpleSave = ref<{
   payload: SimpleWorkflowSavePayload
@@ -93,7 +96,7 @@ const filteredWorkflows = computed(() => {
 const isNodeEditorOpen = computed(() => isWorkflowEditorSurfaceLocked(
   nodeEditorOpenWorkflowId.value,
   selectedWorkflowId.value,
-  simpleEditorOpen.value && !simpleEditorWorkflow.value,
+  nodeEditorOpenWorkflowId.value === '__new__',
 ))
 
 function workflowDefinitionError(definition: Record<string, unknown>): string {
@@ -259,6 +262,27 @@ function createSimpleWorkflow() {
   workflow.selectWorkflow('')
   simpleEditorWorkflow.value = null
   simpleEditorOpen.value = true
+}
+
+function openWorkflowCreateChooser() {
+  if (nodeEditorOpenWorkflowId.value) return
+  createChooserOpen.value = true
+}
+
+async function createAdvancedWorkflow() {
+  closeSimpleWorkflow()
+  editingId.value = ''
+  name.value = ''
+  description.value = ''
+  await openNodeEditor({ forceNew: true, skipWarning: true })
+}
+
+function selectWorkflowCreateType(type: WorkflowCreateType) {
+  if (type === 'simple') {
+    createSimpleWorkflow()
+    return
+  }
+  void createAdvancedWorkflow()
 }
 
 function editSimpleWorkflow(item: WorkflowEntry) {
@@ -665,7 +689,12 @@ watch(workflows, (items) => {
           <template #icon><n-icon :component="OpenOutline" /></template>
           {{ t('workflows.importWorkflow') }}
         </n-button>
-        <n-button class="workflow-create-button" type="primary" @click="createSimpleWorkflow">
+        <n-button
+          class="workflow-create-button"
+          type="primary"
+          :disabled="Boolean(nodeEditorOpenWorkflowId)"
+          @click="openWorkflowCreateChooser"
+        >
           <span class="workflow-create-button__mark" aria-hidden="true" />
           {{ t('workflows.newWorkflow') }}
         </n-button>
@@ -705,7 +734,7 @@ watch(workflows, (items) => {
             <n-icon :component="GitNetworkOutline" />
             <strong>{{ t('workflows.emptyTitle') }}</strong>
             <span>{{ t('workflows.emptyDesc') }}</span>
-            <n-button class="workflow-create-button" type="primary" size="small" @click="createSimpleWorkflow">
+            <n-button class="workflow-create-button" type="primary" size="small" @click="openWorkflowCreateChooser">
               <span class="workflow-create-button__mark" aria-hidden="true" />
               {{ t('workflows.newWorkflow') }}
             </n-button>
@@ -733,7 +762,7 @@ watch(workflows, (items) => {
           <n-icon :component="GitNetworkOutline" />
           <strong>{{ t('workflows.overviewEmptyTitle') }}</strong>
           <span>{{ t('workflows.overviewEmptyDesc') }}</span>
-          <n-button class="workflow-create-button" type="primary" @click="createSimpleWorkflow">
+          <n-button class="workflow-create-button" type="primary" @click="openWorkflowCreateChooser">
             <span class="workflow-create-button__mark" aria-hidden="true" />
             {{ t('workflows.newWorkflow') }}
           </n-button>
@@ -942,6 +971,11 @@ watch(workflows, (items) => {
         </div>
       </main>
     </div>
+
+    <WorkflowCreateChooser
+      v-model:show="createChooserOpen"
+      @select="selectWorkflowCreateType"
+    />
 
     <WorkflowRevisionConflictModal
       v-model:show="showRevisionConflict"

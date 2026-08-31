@@ -358,17 +358,38 @@ function pickWorkflowSlotFile(slotName: string) {
     })
     .catch(() => {})
 }
-function workflowValidationError() {
-  if (!selectedWorkflow.value) return ''
-  const issue = getWorkflowDefinitionIssue(selectedWorkflow.value.definition)
+function workflowDefinitionError(definition: Record<string, unknown>): string {
+  const issue = getWorkflowDefinitionIssue(definition)
   if (issue === 'steps-required') return t('workflows.stepsRequired')
   if (issue === 'no-save-outputs') return t('workflows.workflowNoSaveOutputs')
   if (issue === 'invalid-definition') return t('workflows.workflowFormatInvalid')
   if (issue === 'invalid-format') return t('workflows.workflowFormatInvalid')
   return ''
 }
+
+const workflowIssueMap = computed(() => new Map(
+  workflows.value.map(item => [item.id, workflowDefinitionError(item.definition)]),
+))
+const runnableWorkflows = computed(() => workflows.value.filter(item => !workflowIssueMap.value.get(item.id)))
+
+function workflowIssue(item: WorkflowEntry): string {
+  return workflowIssueMap.value.get(item.id) || ''
+}
+
+function selectRunnableWorkflow(item: WorkflowEntry) {
+  if (workflowIssue(item)) return
+  workflow.selectWorkflow(item.id)
+}
+
+function workflowValidationError() {
+  if (!selectedWorkflow.value) return ''
+  return workflowDefinitionError(selectedWorkflow.value.definition)
+}
 const workflowStructureInvalid = computed(() => runMode.value === 'workflow' && Boolean(workflowValidationError()))
 const startStatusText = computed(() => {
+  if (runMode.value === 'workflow' && workflows.value.length && !runnableWorkflows.value.length) {
+    return t('separate.startHintNoRunnableWorkflow')
+  }
   if (runMode.value === 'workflow' && !selectedWorkflow.value) return t('separate.startHintNoWorkflow')
   const validationError = workflowValidationError()
   if (validationError) return validationError
@@ -1213,9 +1234,9 @@ watch(
   [workflows, selectedWorkflowId],
   ([list, current]) => {
     if (!list.length) return
-    if (!current || !list.some(item => item.id === current)) {
-      workflow.selectWorkflow(list[0].id)
-    }
+    const selected = list.find(item => item.id === current)
+    if (selected && !workflowIssueMap.value.get(selected.id)) return
+    workflow.selectWorkflow(list.find(item => !workflowIssueMap.value.get(item.id))?.id || '')
   },
   { immediate: true },
 )
@@ -2023,16 +2044,30 @@ async function retryCurrentTask() {
                     type="button"
                     role="option"
                     :aria-selected="selectedWorkflowId === item.id"
+                    :aria-disabled="Boolean(workflowIssue(item))"
+                    :disabled="Boolean(workflowIssue(item))"
+                    :title="workflowIssue(item) || item.name"
                     class="target-row"
-                    :class="{ 'target-row--active': selectedWorkflowId === item.id }"
-                    @click="workflow.selectWorkflow(item.id)"
+                    :class="{
+                      'target-row--active': selectedWorkflowId === item.id,
+                      'target-row--unavailable': Boolean(workflowIssue(item)),
+                    }"
+                    @click="selectRunnableWorkflow(item)"
                   >
                     <span class="target-row__radio"></span>
                     <span class="target-row__body">
-                      <span class="target-row__name" :title="item.name">{{ item.name }}</span>
+                      <span class="target-row__heading">
+                        <span class="target-row__name" :title="item.name">{{ item.name }}</span>
+                        <span v-if="workflowIssue(item)" class="target-row__unavailable">
+                          {{ t('separate.workflowUnavailable') }}
+                        </span>
+                      </span>
                       <span class="target-row__meta">
                         <span class="target-row__tag">{{ t('separate.workflow') }}</span>
                         <span class="target-row__desc" :title="item.description">{{ item.description || t('separate.workflowNoDescription') }}</span>
+                      </span>
+                      <span v-if="workflowIssue(item)" class="target-row__issue">
+                        {{ workflowIssue(item) }}
                       </span>
                     </span>
                   </button>
@@ -3325,6 +3360,14 @@ async function retryCurrentTask() {
     0 8px 22px color-mix(in srgb, var(--primary-glow) 18%, transparent);
 }
 
+.target-row--unavailable,
+.target-row--unavailable:hover {
+  cursor: not-allowed;
+  opacity: 0.72;
+  background: color-mix(in srgb, var(--surface-2) 34%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 24%, var(--outline));
+}
+
 .target-row__radio {
   flex: 0 0 auto;
   width: 16px;
@@ -3347,6 +3390,13 @@ async function retryCurrentTask() {
   gap: 3px;
 }
 
+.target-row__heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .target-row__name {
   min-width: 0;
   overflow: hidden;
@@ -3357,6 +3407,17 @@ async function retryCurrentTask() {
   letter-spacing: -0.01em;
 }
 .target-row--active .target-row__name { color: var(--primary-strong); }
+
+.target-row__unavailable {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface-2));
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.35;
+}
 
 .target-row__meta {
   min-width: 0;
@@ -3386,6 +3447,16 @@ async function retryCurrentTask() {
   white-space: nowrap;
   font-size: 11px;
   color: var(--on-surface-muted);
+  line-height: 1.4;
+}
+
+.target-row__issue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--danger);
+  font-size: 10.5px;
   line-height: 1.4;
 }
 
