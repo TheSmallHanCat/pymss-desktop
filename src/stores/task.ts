@@ -22,13 +22,13 @@ import {
   TERMINAL_TASK_STATUSES,
   type TaskStatus,
 } from '@/features/tasks/lifecycle'
+import { normalizeStemOutputs, stemFromOutputPath, type StemOutput } from '@/utils/stemOutputs'
 
 export type { TaskStatus } from '@/features/tasks/lifecycle'
+export type { StemOutput } from '@/utils/stemOutputs'
 
 export type OutputLayout = 'folders' | 'flat'
 export type ModelListSortMode = 'usage' | 'recent' | 'favorite' | 'name-asc' | 'name-desc'
-
-export type StemOutput = { stem: string; path: string }
 
 export type OutputNamingConfig = {
   enabled: boolean
@@ -255,16 +255,18 @@ function inputStemSegment(input: string, fallback: string) {
     .trim() || fallback
 }
 
-function outputsFromFiles(outputDir: string, files: string[], outputFormat = 'wav', outputPrefix?: string): StemOutput[] {
+function outputsFromFiles(outputDir: string, files: string[], outputFormat = 'wav', outputPrefix?: string, inputPath?: string): StemOutput[] {
   if (!files?.length) return []
   const separator = outputDir.includes('\\') ? '\\' : '/'
   const base = outputDir.replace(/[\\/]$/, '')
   return files.map((file) => {
-    const stemName = file.replace(/\.[^/.\\]+$/, '')
-    const fileName = outputPrefix ? `${outputPrefix}_${stemName}` : stemName
+    const rawPath = String(file || '').trim()
+    const rawStemName = rawPath.split(/[/\\]/).pop()?.replace(/\.[^/.\\]+$/, '') || ''
+    const outputFileName = outputPrefix ? `${outputPrefix}_${rawStemName}` : rawStemName
+    const isAbsolutePath = /^(?:[A-Za-z]:[\\/]|[\\/]{1,2})/.test(rawPath)
     return {
-      stem: stemName,
-      path: `${base}${separator}${fileName}.${outputFormat}`,
+      stem: stemFromOutputPath(rawStemName, inputPath),
+      path: isAbsolutePath ? rawPath : `${base}${separator}${outputFileName}.${outputFormat}`,
     }
   })
 }
@@ -340,9 +342,10 @@ function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
   const normalizedRunConfig = normalizeRunConfig(task.runConfig)
   const normalizedOutput = normalizeOutputPath(task.output)
   const normalizedFiles = task.files || []
-  const normalizedOutputs = task.outputs?.length
-    ? task.outputs
-    : outputsFromFiles(normalizedOutput, normalizedFiles, normalizedRunConfig?.outputFormat || 'wav', task.outputPrefix)
+  const workerOutputs = normalizeStemOutputs(task.outputs, task.input)
+  const normalizedOutputs = workerOutputs.length
+    ? workerOutputs
+    : outputsFromFiles(normalizedOutput, normalizedFiles, normalizedRunConfig?.outputFormat || 'wav', task.outputPrefix, task.input)
   const meta = STAGE_META[status]
   const startedAt = normalizeTimestamp(task.startedAt)
   const finishedAt = normalizeTimestamp(task.finishedAt)
@@ -1344,9 +1347,10 @@ export const useTaskStore = defineStore('task', () => {
         task.output = event.payload.outputDir
         if (task.runConfig?.outputLayout === 'flat') task.jobOutput = event.payload.outputDir
       }
-      task.outputs = event.payload?.outputs?.length
-        ? event.payload.outputs
-        : outputsFromFiles(task.output, task.files, event.payload?.outputFormat || 'wav', task.outputPrefix)
+      const normalizedOutputs = normalizeStemOutputs(event.payload?.outputs, task.input)
+      task.outputs = normalizedOutputs.length
+        ? normalizedOutputs
+        : outputsFromFiles(task.output, task.files, event.payload?.outputFormat || 'wav', task.outputPrefix, task.input)
       task.error = undefined
       touch(task)
       markTaskFinished(task, task.updatedAt)

@@ -7,7 +7,7 @@ if __package__:
 else:
     import _bootstrap as _worker_test_bootstrap
 
-from worker_workflows import _prepare_legacy_global_input
+from worker_workflows import _prepare_legacy_global_input, _workflow_output_stem
 
 
 class LegacyWorkflowInputTests(unittest.TestCase):
@@ -75,6 +75,29 @@ class LegacyWorkflowInputTests(unittest.TestCase):
 
         self.assertIs(transient, payload)
         self.assertEqual(inputs, {})
+
+
+class WorkflowOutputMetadataTests(unittest.TestCase):
+    def test_output_stem_matches_single_separation_for_prefixed_filename(self) -> None:
+        self.assertEqual(
+            _workflow_output_stem("D:/results/song/song_vocals.wav", "D:/Audio/song.wav"),
+            "vocals",
+        )
+
+    def test_output_stem_keeps_unprefixed_filename(self) -> None:
+        self.assertEqual(
+            _workflow_output_stem("D:/results/vocals.wav", "D:/Audio/song.wav"),
+            "vocals",
+        )
+
+    def test_output_stem_handles_windows_separators(self) -> None:
+        self.assertEqual(
+            _workflow_output_stem(r"D:\\results\\song\\song_vocals.wav", r"D:\\Audio\\song.wav"),
+            "vocals",
+        )
+
+    def test_output_stem_supports_graphs_without_primary_input(self) -> None:
+        self.assertEqual(_workflow_output_stem("D:/results/custom_mix.wav"), "custom_mix")
 
 
 if __name__ == "__main__":

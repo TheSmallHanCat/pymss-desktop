@@ -172,6 +172,26 @@ def _workflow_task_output_dir(output_dir: str, input_path: str, output_layout: s
     return Path(output_dir) / Path(input_path).stem if output_layout == "folders" else Path(output_dir)
 
 
+def _workflow_output_stem(path: str, input_path: str | None = None) -> str:
+    """Return the shared display stem used by single-separation results.
+
+    ``pymss.graph.run_dag`` returns saved file paths, and older graph
+    versions did not include a ``stem`` field in the task payload.  Depending
+    on the graph/save-node configuration, the filename may include the input
+    basename (for example ``song_vocals.wav``).  Strip that stable prefix so
+    advanced-workflow outputs use the same labels as regular separation.
+    """
+    raw_path = str(path or "").strip()
+    file_name = raw_path.replace("\\", "/").rsplit("/", 1)[-1]
+    stem = Path(file_name).stem.strip()
+    input_file_name = str(input_path or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+    input_stem = Path(input_file_name).stem.strip()
+    prefix = f"{input_stem}_"
+    if input_stem and stem.casefold().startswith(prefix.casefold()):
+        stem = stem[len(prefix):].strip()
+    return stem or file_name or "output"
+
+
 def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
                inputs: dict[str, str] | None, output_dir: str, output_layout: str) -> dict[str, Any]:
     import pymss.graph as graph
@@ -211,9 +231,17 @@ def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
         strict=True,
     )
     output_format = str(payload.get("outputFormat") or "wav").lower()
+    saved_paths = [str(path).strip() for path in saved if path is not None and str(path).strip()]
     return {
-        "files": saved,
-        "outputs": [{"path": p, "name": Path(p).name} for p in saved],
+        "files": saved_paths,
+        "outputs": [
+            {
+                "stem": _workflow_output_stem(path, primary),
+                "path": path,
+                "name": Path(path.replace("\\", "/")).name,
+            }
+            for path in saved_paths
+        ],
         "outputDir": str(task_output_dir.resolve()),
         "outputFormat": output_format,
     }
