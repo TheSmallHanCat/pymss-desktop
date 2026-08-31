@@ -194,7 +194,12 @@ def _workflow_output_stem(path: str, input_path: str | None = None) -> str:
 
 def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
                inputs: dict[str, str] | None, output_dir: str, output_layout: str) -> dict[str, Any]:
-    import pymss.graph as graph
+    try:
+        import pymss.graph as graph
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(
+            "Advanced workflows require pymss.graph. Update the runtime core from Settings and retry."
+        ) from exc
 
     runtime_payload, runtime_inputs = _prepare_legacy_global_input(payload, input_path, inputs)
     workflow_path, fmt = _write_workflow_file(runtime_payload, task_id)

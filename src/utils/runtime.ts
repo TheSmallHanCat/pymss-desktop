@@ -98,6 +98,20 @@ export function runtimeCoreUpdateAvailable(
   )
 }
 
+/**
+ * Whether an installed, user-managed environment needs a core synchronisation even when the
+ * package versions reported by PyPI are already current. This covers dependency-manifest changes
+ * and the graph API used by advanced workflows.
+ */
+export function runtimeCoreSyncAvailable(
+  env: InstalledRuntime | undefined,
+  currentManifestVersion: string | undefined,
+) {
+  if (!env || env.coreUpdateSupported === false) return false
+  return runtimeManifestStatus(env, currentManifestVersion) === 'outdated'
+    || env.pymssGraphAvailable === false
+}
+
 function versionGreaterThan(candidate: string | null | undefined, current: string | null | undefined) {
   const left = parseVersionParts(candidate)
   const right = parseVersionParts(current)

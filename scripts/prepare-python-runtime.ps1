@@ -185,7 +185,7 @@ if ($InitialBackend) {
         if ($rocmToolDirs.Count -gt 0) {
             $env:PATH = ($rocmToolDirs + $previousPath) -join ";"
         }
-        Invoke-NativeChecked -FilePath $envPython -Arguments @('-c', "import importlib.util, pymss, torch, librosa, av, yaml, tqdm; print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') is not None)")
+        Invoke-NativeChecked -FilePath $envPython -Arguments @('-c', "import importlib.util, pymss, pymss.graph, torch, librosa, av, yaml, tqdm; print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') is not None)")
 
         # Step 5: Read manifest version and write state files
         $manifestPath = Join-Path $root "python\runtime-manifest.json"
@@ -309,7 +309,7 @@ Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', 'install
 Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-m', 'pip', '--version')
 $previousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
 $env:PYTHONDONTWRITEBYTECODE = "1"
-Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-c', "import importlib.util, pymss, torch, librosa, av, yaml, tqdm; print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') is not None)")
+Invoke-NativeChecked -FilePath $runtimePython -Arguments @('-c', "import importlib.util, pymss, pymss.graph, torch, librosa, av, yaml, tqdm; print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available()); print('librosa', librosa.__version__); print('av', av.__version__); print('mlx', importlib.util.find_spec('mlx') is not None)")
 if ($null -eq $previousDontWriteBytecode) {
     Remove-Item Env:\PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
 } else {

@@ -14,7 +14,7 @@ import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-shell'
 import { useWorkflowStore } from '@/stores/workflow'
-import { activeRuntimeEnvironment, runtimeBackendLabel, runtimeCoreUpdateAvailable as hasRuntimeCoreUpdate } from '@/utils/runtime'
+import { activeRuntimeEnvironment, runtimeBackendLabel, runtimeCoreSyncAvailable, runtimeCoreUpdateAvailable as hasRuntimeCoreUpdate } from '@/utils/runtime'
 import { connectWorkerEvents } from '@/utils/events'
 
 const settings = useSettingsStore()
@@ -51,18 +51,28 @@ const deferredUpdatePrompt = computed(() => updates.updateIsPrerelease
   : t('settings.updateDeferredPrompt', { version: updates.latestVersion }))
 const manualUpdatePrompt = computed(() => updates.updateMessage || t('settings.updateManualInstallPrompt', { version: updates.latestVersion }))
 const activeRuntime = computed(() => activeRuntimeEnvironment(app.runtimeInfo))
-const runtimeCoreUpdateAvailable = computed(() => hasRuntimeCoreUpdate(
+const runtimeVersionUpdateAvailable = computed(() => hasRuntimeCoreUpdate(
   activeRuntime.value,
   app.runtimeCoreVersions?.packages?.pymss?.latestVersion,
   app.runtimeCoreVersions?.packages?.['pymss-core']?.latestVersion,
 ))
-const runtimeCorePromptContent = computed(() => t('settings.runtimeCoreStartupPrompt', {
-  backend: runtimeBackendLabel(activeRuntime.value?.backend || t('settings.envNotChecked')),
-  pymss: activeRuntime.value?.pymssVersion || activeRuntime.value?.packageVersions?.pymss || t('settings.runtimeCoreVersionUnknown'),
-  core: activeRuntime.value?.pymssCoreVersion || activeRuntime.value?.packageVersions?.['pymss-core'] || t('settings.runtimeCoreVersionUnknown'),
-  latest: app.runtimeCoreVersions?.packages?.pymss?.latestVersion || t('settings.runtimeCoreVersionUnknown'),
-  coreLatest: app.runtimeCoreVersions?.packages?.['pymss-core']?.latestVersion || t('settings.runtimeCoreVersionUnknown'),
-}))
+const runtimeManifestSyncRequired = computed(() => runtimeCoreSyncAvailable(
+  activeRuntime.value,
+  app.runtimeInfo?.manifestVersion,
+))
+const runtimeCoreUpdateAvailable = computed(() => runtimeVersionUpdateAvailable.value || runtimeManifestSyncRequired.value)
+const runtimeCorePromptContent = computed(() => t(
+  runtimeManifestSyncRequired.value && !runtimeVersionUpdateAvailable.value
+    ? 'settings.runtimeCoreStartupSyncPrompt'
+    : 'settings.runtimeCoreStartupPrompt',
+  {
+    backend: runtimeBackendLabel(activeRuntime.value?.backend || t('settings.envNotChecked')),
+    pymss: activeRuntime.value?.pymssVersion || activeRuntime.value?.packageVersions?.pymss || t('settings.runtimeCoreVersionUnknown'),
+    core: activeRuntime.value?.pymssCoreVersion || activeRuntime.value?.packageVersions?.['pymss-core'] || t('settings.runtimeCoreVersionUnknown'),
+    latest: app.runtimeCoreVersions?.packages?.pymss?.latestVersion || t('settings.runtimeCoreVersionUnknown'),
+    coreLatest: app.runtimeCoreVersions?.packages?.['pymss-core']?.latestVersion || t('settings.runtimeCoreVersionUnknown'),
+  },
+))
 
 const routeWarmupLoaders = [
   () => import('@/views/SeparateView.vue'),

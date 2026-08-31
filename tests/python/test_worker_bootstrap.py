@@ -30,7 +30,7 @@ MANIFEST = {
 }
 
 
-def probe_result(torch_backend="cpu", mlx=None, missing=()):
+def probe_result(torch_backend="cpu", mlx=None, missing=(), graph=True):
     packages = {name: name not in missing for name in COMMON_PACKAGES}
     if mlx is not None:
         packages["mlx"] = mlx
@@ -40,6 +40,7 @@ def probe_result(torch_backend="cpu", mlx=None, missing=()):
         "torchBackend": torch_backend,
         "acceleratorAvailable": torch_backend in {"cuda", "rocm"},
         "packages": packages,
+        "pymssGraphAvailable": graph,
     }
 
 
@@ -86,6 +87,11 @@ class RuntimeReadinessTests(unittest.TestCase):
     def test_broken_torch_is_never_ready(self):
         payload, _ = self._payload("darwin", probe_result("error:boom", mlx=True))
         self.assertFalse(payload["ready"])
+
+    def test_graph_capability_is_reported_without_affecting_basic_readiness(self):
+        payload, _ = self._payload("win32", probe_result("cpu", graph=False))
+        self.assertIs(payload["pymssGraphAvailable"], False)
+        self.assertTrue(payload["ready"])
 
 
 class ManifestRequirementTests(unittest.TestCase):

@@ -17,6 +17,7 @@ import {
   recommendedRuntimeBackend,
   runtimeAcceleratorReady,
   runtimeCoreUpdateAvailable,
+  runtimeCoreSyncAvailable,
   runtimeEnvironmentForBackend,
   runtimeManifestStatus,
   runtimeBackendLabel as runtimeBackendName,
@@ -197,6 +198,7 @@ type RuntimeBackendCard = {
   state: BackendCardState
   recommended: boolean
   manifestOutdated: boolean
+  workflowGraphUnavailable: boolean
   leftover: boolean
   leftoverLabel: string
   vendorMissing: boolean
@@ -268,13 +270,14 @@ const runtimeBackendCards = computed(() => {
       const pymssVersion = env?.pymssVersion || env?.packageVersions?.pymss || ''
       const pymssCoreVersion = env?.pymssCoreVersion || env?.packageVersions?.['pymss-core'] || ''
       const manifestOutdated = runtimeManifestStatus(env, app.runtimeInfo?.manifestVersion) === 'outdated'
+      const workflowGraphUnavailable = env?.pymssGraphAvailable === false
       // A manifest mismatch can mean that the environment was created by an
       // older app even when PyPI already reports the same pymss/core versions.
       // Offer the no-Torch-reinstall core sync so the environment metadata and
       // any manifest-declared pymss extras are brought up to date.
       const coreUpdateAvailable = isActive && env?.coreUpdateSupported !== false && (
         runtimeCoreUpdateAvailable(env, latestPymssVersion.value, latestPymssCoreVersion.value)
-        || manifestOutdated
+        || runtimeCoreSyncAvailable(env, app.runtimeInfo?.manifestVersion)
       )
       const gpuBackend = item.backend === 'cuda' || item.backend === 'rocm' || item.backend === 'mlx'
       // A cancelled or failed install leaves its venv behind without an install state, so the
@@ -288,6 +291,7 @@ const runtimeBackendCards = computed(() => {
         state,
         recommended: runtimeRecommendedBackend.value === item.backend,
         manifestOutdated,
+        workflowGraphUnavailable,
         leftover,
         leftoverLabel: leftover && diskBytes ? formatBytes(diskBytes) : '',
         // Only warn on GPU backends: it explains why a card is there without hiding it, and
@@ -507,9 +511,14 @@ async function detectRuntime() {
 async function updateRuntimeCore(card: { backend: RuntimeBackend; env?: InstalledRuntime }) {
   if (runtimeBusy.value) return
   const runtime = card.env || installedRuntimes.value.find((entry) => entry.backend === card.backend) || null
+  const versionUpdateAvailable = runtimeCoreUpdateAvailable(
+    runtime || undefined,
+    latestPymssVersion.value,
+    latestPymssCoreVersion.value,
+  )
   const confirmed = await confirmRuntimeAction(
     t('settings.runtimeCoreUpdateTitle'),
-    t('settings.runtimeCoreUpdateContent', {
+    t(versionUpdateAvailable ? 'settings.runtimeCoreUpdateContent' : 'settings.runtimeCoreSyncContent', {
       current: runtime?.pymssVersion || runtime?.packageVersions?.pymss || app.runtimeInfo?.pymssVersion || t('settings.runtimeCoreVersionUnknown'),
       latest: latestPymssVersion.value || t('settings.runtimeCoreVersionUnknown'),
       coreCurrent: runtime?.pymssCoreVersion || runtime?.packageVersions?.['pymss-core'] || app.runtimeInfo?.pymssCoreVersion || t('settings.runtimeCoreVersionUnknown'),
@@ -1441,13 +1450,23 @@ onMounted(async () => {
                   <n-tag v-if="card.manifestOutdated" :bordered="false" size="small" type="warning" round>
                     {{ t('settings.runtimeManifestOutdated') }}
                   </n-tag>
+                  <n-tag v-if="card.workflowGraphUnavailable" :bordered="false" size="small" type="warning" round>
+                    {{ t('settings.runtimeWorkflowSupportOutdated') }}
+                  </n-tag>
                 </div>
 
                 <p v-if="card.description" class="runtime-env-card__desc">{{ card.description }}</p>
                 <p v-if="card.offCatalog" class="runtime-env-card__desc">{{ t('settings.runtimeBackendUnsupported') }}</p>
                 <p v-if="card.vendorMissing" class="runtime-env-card__desc">{{ t('settings.runtimeVendorNotDetected') }}</p>
                 <p v-if="card.manifestOutdated" class="runtime-env-card__desc">
-                  {{ t('settings.runtimeManifestOutdatedHint') }}
+                  {{ card.env?.coreUpdateSupported === false
+                    ? t('settings.runtimeManifestOutdatedBundledHint')
+                    : t('settings.runtimeManifestOutdatedHint') }}
+                </p>
+                <p v-if="card.workflowGraphUnavailable" class="runtime-env-card__desc">
+                  {{ card.env?.coreUpdateSupported === false
+                    ? t('settings.runtimeWorkflowSupportBundledHint')
+                    : t('settings.runtimeWorkflowSupportHint') }}
                 </p>
 
                 <div v-if="card.env" class="runtime-env-card__meta">

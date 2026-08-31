@@ -10,6 +10,7 @@ import {
   runtimeAcceleratorReady,
   runtimeBackendLabel,
   runtimeCoreUpdateAvailable,
+  runtimeCoreSyncAvailable,
   runtimeEnvironmentForBackend,
   runtimeManifestStatus,
   runtimeSizeHint,
@@ -150,6 +151,18 @@ test('runtime core update is hidden for non-updatable bootstrap runtimes', () =>
 
 test('runtime core update is hidden when the installed version is newer than PyPI', () => {
   assert.equal(runtimeCoreUpdateAvailable({ pymssVersion: '2.0.20', pymssCoreVersion: '0.1.7' }, '2.0.19', '0.1.6'), false)
+})
+
+test('runtime core sync is available for an older dependency manifest', () => {
+  assert.equal(runtimeCoreSyncAvailable({ manifestVersion: '2026.07.2' }, '2026.08.1'), true)
+})
+
+test('runtime core sync is available when advanced workflow support is missing', () => {
+  assert.equal(runtimeCoreSyncAvailable({ manifestVersion: '2026.08.1', pymssGraphAvailable: false }, '2026.08.1'), true)
+})
+
+test('runtime core sync stays hidden for bundled environments', () => {
+  assert.equal(runtimeCoreSyncAvailable({ manifestVersion: '2026.07.2', coreUpdateSupported: false }, '2026.08.1'), false)
 })
 
 test('backend labels stay readable for unknown backends', () => {

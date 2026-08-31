@@ -56,6 +56,7 @@ export type RuntimeInfo = {
     packageVersions?: Record<string, string | null>
     pymssVersion?: string | null
     pymssCoreVersion?: string | null
+    pymssGraphAvailable?: boolean | null
   } | null
   installedEnvironments?: InstalledRuntime[]
   /** GPU vendors detected without torch ('nvidia' | 'amd' | 'intel'); empty when undetectable. */
@@ -69,6 +70,8 @@ export type RuntimeInfo = {
   packageVersions?: Record<string, string | null>
   pymssVersion?: string | null
   pymssCoreVersion?: string | null
+  /** Whether the pymss graph API required by advanced workflows is importable. */
+  pymssGraphAvailable?: boolean | null
   ready?: boolean
 }
 
@@ -87,6 +90,8 @@ export type InstalledRuntime = {
   packageVersions?: Record<string, string | null>
   pymssVersion?: string | null
   pymssCoreVersion?: string | null
+  /** Whether the pymss graph API required by advanced workflows is importable. */
+  pymssGraphAvailable?: boolean | null
   coreUpdateSupported?: boolean
 }
 

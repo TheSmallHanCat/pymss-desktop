@@ -110,7 +110,7 @@ PY
 fi
 PYTHONDONTWRITEBYTECODE=1 PYTHONHOME="$RUNTIME_HOME" "$PY" - <<'PY'
 import importlib.util
-import pymss, torch, librosa, av, yaml, tqdm
+import pymss, pymss.graph, torch, librosa, av, yaml, tqdm
 print('pymss', getattr(pymss, '__version__', 'unknown'), pymss.__file__)
 print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cuda_available', torch.cuda.is_available())
 print('librosa', librosa.__version__)

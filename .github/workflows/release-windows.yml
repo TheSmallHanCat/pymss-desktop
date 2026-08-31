@@ -133,6 +133,8 @@ jobs:
           Remove-Item $probeVenv -Recurse -Force
           & "$stage\python-runtime\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" env_info
           if ($LASTEXITCODE -ne 0) { throw "Staged CUDA env_info failed with exit code $LASTEXITCODE" }
+          & "$stage\python-runtime\runtime-envs\cuda\Scripts\python.exe" -c "import pymss.graph; print('pymss.graph ok')"
+          if ($LASTEXITCODE -ne 0) { throw "Staged CUDA pymss.graph import failed" }
           & "$stage\python-runtime\runtime-envs\cuda\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
           if ($LASTEXITCODE -ne 0) { throw "Staged CUDA list_models failed with exit code $LASTEXITCODE" }
           ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/python-runtime/runtime-envs" -RuntimeDir "$stage/python-runtime"
@@ -312,6 +314,8 @@ jobs:
           if (!(Test-Path "$stage\python-runtime\runtime-envs\cpu\Scripts\python.exe")) { throw "Staged CPU Python executable is missing" }
           & "$stage\python-runtime\runtime-envs\cpu\Scripts\python.exe" "$stage\python\worker.py" env_info
           if ($LASTEXITCODE -ne 0) { throw "Staged CPU env_info failed with exit code $LASTEXITCODE" }
+          & "$stage\python-runtime\runtime-envs\cpu\Scripts\python.exe" -c "import pymss.graph; print('pymss.graph ok')"
+          if ($LASTEXITCODE -ne 0) { throw "Staged CPU pymss.graph import failed" }
           & "$stage\python-runtime\runtime-envs\cpu\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
           if ($LASTEXITCODE -ne 0) { throw "Staged CPU list_models failed with exit code $LASTEXITCODE" }
            ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/python-runtime/runtime-envs" -RuntimeDir "$stage/python-runtime"
@@ -627,6 +631,8 @@ jobs:
           if (!(Test-Path "$stage\python-runtime\runtime-envs\rocm\Scripts\python.exe")) { throw "Staged ROCm Python executable is missing" }
           & "$stage\python-runtime\runtime-envs\rocm\Scripts\python.exe" "$stage\python\worker.py" env_info
           if ($LASTEXITCODE -ne 0) { throw "Staged ROCm env_info failed" }
+          & "$stage\python-runtime\runtime-envs\rocm\Scripts\python.exe" -c "import pymss.graph; print('pymss.graph ok')"
+          if ($LASTEXITCODE -ne 0) { throw "Staged ROCm pymss.graph import failed" }
           & "$stage\python-runtime\runtime-envs\rocm\Scripts\python.exe" "$stage\python\worker.py" list_models --payload "{}"
           if ($LASTEXITCODE -ne 0) { throw "Staged ROCm list_models failed" }
           ./scripts/prepare-python-runtime.ps1 -RewriteRuntimeEnvConfigs -TemplateRuntimeEnvConfigs -RuntimeEnvsDir "$stage/python-runtime/runtime-envs" -RuntimeDir "$stage/python-runtime"

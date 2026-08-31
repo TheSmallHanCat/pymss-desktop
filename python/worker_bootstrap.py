@@ -243,6 +243,8 @@ def _repaired_env_state(backend: str, state: dict[str, Any]) -> dict[str, Any]:
             "pymssCoreVersion": probed.get("pymssCoreVersion") or repaired.get("pymssCoreVersion"),
             "stateVersion": ENV_STATE_VERSION,
         })
+        if "pymssGraphAvailable" in probed:
+            repaired["pymssGraphAvailable"] = bool(probed["pymssGraphAvailable"])
     except Exception:
         # The truth is unavailable (broken or vanished interpreter). Drop the claim rather than
         # repeat a false one, and leave the file untouched so the next read tries again.
@@ -397,7 +399,7 @@ import importlib.util, json, platform
 from importlib import metadata
 packages = json.loads(%PACKAGES%)
 mapping = json.loads(%MAPPING%)
-result = {'pythonVersion': platform.python_version(), 'torchVersion': None, 'torchBackend': 'missing', 'acceleratorAvailable': False, 'packages': {}, 'packageVersions': {}, 'pymssVersion': None, 'pymssCoreVersion': None}
+result = {'pythonVersion': platform.python_version(), 'torchVersion': None, 'torchBackend': 'missing', 'acceleratorAvailable': False, 'packages': {}, 'packageVersions': {}, 'pymssVersion': None, 'pymssCoreVersion': None, 'pymssGraphAvailable': False}
 for name in packages:
     result['packages'][name] = importlib.util.find_spec(mapping.get(name, name)) is not None
     try:
@@ -406,6 +408,10 @@ for name in packages:
         result['packageVersions'][name] = None
 result['pymssVersion'] = result['packageVersions'].get('pymss')
 result['pymssCoreVersion'] = result['packageVersions'].get('pymss-core')
+try:
+    result['pymssGraphAvailable'] = importlib.util.find_spec('pymss.graph') is not None
+except Exception:
+    result['pymssGraphAvailable'] = False
 if importlib.util.find_spec('torch') is not None:
     try:
         import torch
@@ -496,6 +502,7 @@ def _installed_envs(manifest: dict[str, Any]) -> list[dict[str, Any]]:
                     "packageVersions": probed.get("packageVersions"),
                     "pymssVersion": probed.get("pymssVersion"),
                     "pymssCoreVersion": probed.get("pymssCoreVersion"),
+                    "pymssGraphAvailable": bool(probed.get("pymssGraphAvailable")),
                 })
         except Exception:
             pass
@@ -522,6 +529,7 @@ def _installed_envs(manifest: dict[str, Any]) -> list[dict[str, Any]]:
                 "packageVersions": {**(state.get("packageVersions") or {}), **package_versions},
                 "pymssVersion": package_versions.get("pymss") or state.get("pymssVersion"),
                 "pymssCoreVersion": package_versions.get("pymss-core") or state.get("pymssCoreVersion"),
+                "pymssGraphAvailable": state.get("pymssGraphAvailable"),
             })
             seen_backends.add(backend)
     return items
@@ -563,6 +571,8 @@ def _envs_with_live_active(
             "pymssVersion": active_probe.get("pymssVersion") or entry.get("pymssVersion"),
             "pymssCoreVersion": active_probe.get("pymssCoreVersion") or entry.get("pymssCoreVersion"),
         })
+        if "pymssGraphAvailable" in active_probe:
+            entry["pymssGraphAvailable"] = bool(active_probe["pymssGraphAvailable"])
         break
     return environments
 
@@ -718,6 +728,7 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
     package_versions = None
     pymss_version = None
     pymss_core_version = None
+    pymss_graph_available = None
     extra_names = _backend_extra_names(manifest, backend)
     # With no explicit backend the caller is asking "what am I running on"; on macOS that answer
     # depends on whether MLX is present, so probe for it even though no backend was requested.
@@ -738,6 +749,7 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
             package_versions = probed.get("packageVersions")
             pymss_version = probed.get("pymssVersion")
             pymss_core_version = probed.get("pymssCoreVersion")
+            pymss_graph_available = probed.get("pymssGraphAvailable")
             torch_version = probed.get("torchVersion")
             torch_backend = str(probed.get("torchBackend") or torch_backend)
             accelerator_available = bool(probed.get("acceleratorAvailable"))
@@ -746,6 +758,7 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
             package_versions = install_state.get("packageVersions")
             pymss_version = install_state.get("pymssVersion")
             pymss_core_version = install_state.get("pymssCoreVersion")
+            pymss_graph_available = install_state.get("pymssGraphAvailable")
             torch_version = install_state.get("torchVersion")
             torch_backend = str(install_state.get("torchBackend") or torch_backend)
             accelerator_available = bool(install_state.get("acceleratorAvailable"))
@@ -757,6 +770,7 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
             package_versions = probed.get("packageVersions")
             pymss_version = probed.get("pymssVersion")
             pymss_core_version = probed.get("pymssCoreVersion")
+            pymss_graph_available = probed.get("pymssGraphAvailable")
             import torch
             torch_version = torch.__version__
             torch_backend = "rocm" if getattr(torch.version, "hip", None) else "cuda" if getattr(torch.version, "cuda", None) else "cpu"
@@ -790,6 +804,7 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "packageVersions": package_versions,
         "pymssVersion": pymss_version,
         "pymssCoreVersion": pymss_core_version,
+        "pymssGraphAvailable": pymss_graph_available,
         # mlx is an optional extra: it must not drag readiness down when it was probed
         # speculatively (no backend requested). An explicit mlx backend still requires it below.
         "ready": all(v for k, v in packages.items() if k != "mlx" or backend == "mlx") and torch_backend != "missing" and not torch_backend.startswith("error:") and (
@@ -1210,6 +1225,7 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
             "packageVersions": probed.get("packageVersions"),
             "pymssVersion": probed.get("pymssVersion"),
             "pymssCoreVersion": probed.get("pymssCoreVersion"),
+            "pymssGraphAvailable": bool(probed.get("pymssGraphAvailable")),
         }
         _atomic_write_json(_env_state_path(backend), state)
         active = {
@@ -1348,6 +1364,8 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
             raise RuntimeError(f"pymss stayed at {probed.get('pymssVersion') or 'unknown'} after update; expected {target_pymss_version}")
         if probed.get("pymssCoreVersion") != target_pymss_core_version:
             raise RuntimeError(f"pymss-core stayed at {probed.get('pymssCoreVersion') or 'unknown'} after update; expected {target_pymss_core_version}")
+        if probed.get("pymssGraphAvailable") is False:
+            raise RuntimeError("pymss.graph is unavailable after the core update; retry the update or reinstall the runtime")
         expected_torch_backend = "cpu" if backend == "mlx" else backend
         if probed.get("torchBackend") != expected_torch_backend:
             raise RuntimeError(
@@ -1367,6 +1385,7 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
             "packageVersions": probed.get("packageVersions") or (state.get("packageVersions") if state else None),
             "pymssVersion": probed.get("pymssVersion") or (state.get("pymssVersion") if state else None),
             "pymssCoreVersion": probed.get("pymssCoreVersion") or (state.get("pymssCoreVersion") if state else None),
+            "pymssGraphAvailable": bool(probed.get("pymssGraphAvailable")),
             "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         if env_state_path:
