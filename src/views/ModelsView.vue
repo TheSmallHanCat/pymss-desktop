@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
-import { useMessage, useDialog } from 'naive-ui'
+import { useMessage, useDialog, type DropdownOption } from 'naive-ui'
 import { invoke } from '@tauri-apps/api/core'
 import {
   SearchOutline,
@@ -17,6 +17,7 @@ import {
   Star,
   StarOutline,
   AddCircleOutline,
+  EllipsisHorizontalOutline,
   LinkOutline,
   GridOutline,
   ListOutline,
@@ -89,6 +90,15 @@ const inferenceDraft = ref<Required<Pick<ModelDefaultInferenceParams, 'batch_siz
   overlap_size: 0,
   chunk_size: 0,
 })
+const contextMenuX = ref(0)
+const contextMenuY = ref(0)
+const contextMenuVisible = ref(false)
+const contextModel = ref<ModelEntry | null>(null)
+const showNoteEditor = ref(false)
+const noteEditorModel = ref<ModelEntry | null>(null)
+const noteDraft = ref('')
+const showInferenceEditor = ref(false)
+const inferenceEditorModel = ref<ModelEntry | null>(null)
 
 const categoryOptions = computed(() => {
   return buildModelCategoryOptionsFromPairs(categories.value, categoriesCn.value, locale.value, t('common.all'))
@@ -149,11 +159,6 @@ function modelUseCount(modelOrName: ModelEntry | string | null | undefined) {
 function toggleFavorite(model: ModelEntry, event?: MouseEvent) {
   event?.stopPropagation()
   modelStore.toggleModelFavorite(model.name)
-}
-
-function updateSelectedModelNote(value: string) {
-  if (!selectedInfo.value) return
-  modelStore.setModelNote(selectedInfo.value.name, value)
 }
 
 const sortedModels = computed(() => {
@@ -287,10 +292,6 @@ watch(sortedModels, (list) => {
   const maxPage = Math.max(1, Math.ceil(list.length / pageSize.value))
   if (page.value > maxPage) page.value = maxPage
 })
-
-watch(selectedInfo, (info) => {
-  syncInferenceDraft(info)
-}, { immediate: true })
 
 function categoryLabel(model: ModelEntry) {
   return getModelCategoryLabel(model, locale.value, '—')
@@ -444,6 +445,63 @@ function isModelBusy(model: ModelEntry) {
   return Boolean(task && task.status !== 'done')
 }
 
+const modelMenuOptions = computed<DropdownOption[]>(() => {
+  const model = contextModel.value
+  if (!model) return []
+
+  const options: DropdownOption[] = [
+    { key: 'detail', label: t('models.viewDetail') },
+    { key: 'note', label: t('models.editNote') },
+    { key: 'inference', label: t('models.editInferenceDefaults') },
+    {
+      key: 'open-directory',
+      label: t('models.openModelDir'),
+      disabled: !model.downloaded,
+    },
+    {
+      key: 'favorite',
+      label: isFavoriteModel(model) ? t('models.unfavorite') : t('models.favorite'),
+    },
+  ]
+  const task = downloadTasks.value[model.name]
+
+  if (isCustomModel(model)) {
+    options.push(
+      { type: 'divider', key: 'model-actions-divider' },
+      { key: 'relink', label: t('models.customRelink') },
+      { key: 'remove-custom', label: t('models.customRemoveConfirm') },
+    )
+  } else if (task && task.status !== 'done') {
+    options.push(
+      { type: 'divider', key: 'model-actions-divider' },
+      { key: 'download-detail', label: t('models.downloadDetail') },
+    )
+    if (['preparing', 'downloading'].includes(task.status)) {
+      options.push({ key: 'cancel-download', label: t('common.cancel') })
+    } else if (task.status !== 'preparing' && task.status !== 'downloading') {
+      options.push({
+        key: 'resume-download',
+        label: task.status === 'interrupted' ? t('models.continueDownload') : t('common.resume'),
+      })
+      if (['paused', 'cancelled', 'error', 'interrupted'].includes(task.status)) {
+        options.push({ key: 'delete', label: t('models.delete') })
+      }
+    }
+  } else if (model.downloaded) {
+    options.push(
+      { type: 'divider', key: 'model-actions-divider' },
+      { key: 'delete', label: t('models.delete') },
+    )
+  } else if (model.supported) {
+    options.push(
+      { type: 'divider', key: 'model-actions-divider' },
+      { key: 'download', label: t('common.download') },
+    )
+  }
+
+  return options
+})
+
 function inferenceValue(model: ModelEntry | null | undefined, key: keyof typeof inferenceDraft.value, fallback: number) {
   const value = model?.defaultInferenceParams?.[key]
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
@@ -477,17 +535,20 @@ function canResetInferenceDefaults(model: ModelEntry | null | undefined) {
 }
 
 function saveInferenceDefaults() {
-  if (!selectedInfo.value) return
-  modelStore.setModelInferenceOverrides(selectedInfo.value.name, inferenceDraft.value)
-  if (selectedModel.value === selectedInfo.value.name) {
+  const model = inferenceEditorModel.value
+  if (!model) return
+  modelStore.setModelInferenceOverrides(model.name, inferenceDraft.value)
+  if (selectedModel.value === model.name) {
+    const selected = modelStore.selectedInfo?.name === model.name ? modelStore.selectedInfo : model
     taskStore.applySelectedModelDefaults(
-      modelStore.selectedInfo ? modelStore.getModelBaseInferenceDefaults(selectedInfo.value.name) || modelStore.selectedInfo.defaultInferenceParams : undefined,
-      modelStore.selectedInfo?.modelType,
-      taskStore.getSavedModelState(selectedInfo.value.name),
-      modelStore.getModelInferenceOverrides(selectedInfo.value.name),
+      modelStore.getModelBaseInferenceDefaults(model.name) || selected.defaultInferenceParams,
+      selected.modelType,
+      taskStore.getSavedModelState(model.name),
+      modelStore.getModelInferenceOverrides(model.name),
       { force: true },
     )
   }
+  closeInferenceEditor()
   message.success(t('models.inferenceDefaultsSaved'))
 }
 
@@ -499,17 +560,20 @@ function storageModelTypeLabel(item: StorageListItem) {
 }
 
 function resetInferenceDefaults() {
-  if (!selectedInfo.value) return
-  if (hasInferenceOverride(selectedInfo.value)) {
-    modelStore.resetModelInferenceOverrides(selectedInfo.value.name)
+  const model = inferenceEditorModel.value
+  if (!model) return
+  if (hasInferenceOverride(model)) {
+    modelStore.resetModelInferenceOverrides(model.name)
   }
-  syncInferenceDraft(modelStore.selectedInfo)
-  if (selectedModel.value === selectedInfo.value?.name) {
+  const latest = modelStore.models.find((item) => item.name === model.name) || model
+  syncInferenceDraft(latest)
+  if (selectedModel.value === model.name) {
+    const selected = modelStore.selectedInfo?.name === model.name ? modelStore.selectedInfo : latest
     taskStore.applySelectedModelDefaults(
-      modelStore.selectedInfo ? modelStore.getModelBaseInferenceDefaults(selectedInfo.value.name) || modelStore.selectedInfo.defaultInferenceParams : undefined,
-      modelStore.selectedInfo?.modelType,
-      taskStore.getSavedModelState(selectedInfo.value.name),
-      modelStore.getModelInferenceOverrides(selectedInfo.value.name),
+      modelStore.getModelBaseInferenceDefaults(model.name) || selected.defaultInferenceParams,
+      selected.modelType,
+      taskStore.getSavedModelState(model.name),
+      modelStore.getModelInferenceOverrides(model.name),
       { force: true },
     )
   }
@@ -529,6 +593,124 @@ function selectModel(model: ModelEntry) {
   void modelStore.selectModel(model).catch((err) => {
     message.error(err instanceof Error ? err.message : String(err))
   })
+}
+
+function openModelContextMenu(event: MouseEvent, model: ModelEntry) {
+  contextModel.value = model
+  contextMenuVisible.value = false
+  contextMenuX.value = event.clientX
+  contextMenuY.value = event.clientY
+  window.requestAnimationFrame(() => {
+    contextMenuVisible.value = true
+  })
+}
+
+function closeModelContextMenu() {
+  contextMenuVisible.value = false
+  contextModel.value = null
+}
+
+function openModelNoteEditor(model: ModelEntry) {
+  noteEditorModel.value = model
+  noteDraft.value = modelNote(model)
+  showNoteEditor.value = true
+}
+
+function closeModelNoteEditor() {
+  showNoteEditor.value = false
+  noteEditorModel.value = null
+}
+
+function handleNoteEditorUpdate(value: boolean) {
+  showNoteEditor.value = value
+  if (!value) noteEditorModel.value = null
+}
+
+function saveModelNote() {
+  const model = noteEditorModel.value
+  if (!model) return
+  modelStore.setModelNote(model.name, noteDraft.value)
+  closeModelNoteEditor()
+  message.success(t('models.noteSaved'))
+}
+
+function openInferenceEditor(model: ModelEntry) {
+  inferenceEditorModel.value = model
+  syncInferenceDraft(model)
+  showInferenceEditor.value = true
+}
+
+function closeInferenceEditor() {
+  showInferenceEditor.value = false
+  inferenceEditorModel.value = null
+}
+
+function handleInferenceEditorUpdate(value: boolean) {
+  showInferenceEditor.value = value
+  if (!value) inferenceEditorModel.value = null
+}
+
+async function revealModelDirectory(model: ModelEntry) {
+  if (!model.downloaded || !model.modelPath) return
+  try {
+    await taskStore.revealPath(model.modelPath)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+function handleModelContextMenuSelect(key: string | number) {
+  const model = contextModel.value
+  closeModelContextMenu()
+  if (!model) return
+
+  if (key === 'detail') {
+    selectModel(model)
+    return
+  }
+  if (key === 'note') {
+    openModelNoteEditor(model)
+    return
+  }
+  if (key === 'inference') {
+    openInferenceEditor(model)
+    return
+  }
+  if (key === 'open-directory') {
+    void revealModelDirectory(model)
+    return
+  }
+  if (key === 'favorite') {
+    toggleFavorite(model)
+    return
+  }
+  if (key === 'download') {
+    void downloadModel(model)
+    return
+  }
+  if (key === 'download-detail') {
+    openDownloadDetail(model.name)
+    return
+  }
+  if (key === 'cancel-download') {
+    void cancelDownloadModel(model)
+    return
+  }
+  if (key === 'resume-download') {
+    void downloadModel(model)
+    return
+  }
+  if (key === 'relink') {
+    void relinkCustomModel(model)
+    return
+  }
+  if (key === 'remove-custom') {
+    confirmRemoveCustomModel(model)
+    return
+  }
+  if (key === 'delete') {
+    confirmDeleteModel(model)
+  }
 }
 
 function handleDetailDrawerUpdate(value: boolean) {
@@ -603,8 +785,7 @@ watch(downloadTasks, (value) => {
   })
 }, { deep: true })
 
-function confirmDeleteModel(model: ModelEntry, event?: MouseEvent) {
-  event?.stopPropagation()
+function confirmDeleteModel(model: ModelEntry) {
   if (isDeletingModel(model.name)) return
   dialog.warning({
     title: t('models.deleteConfirmTitle'),
@@ -639,8 +820,7 @@ function onCustomModelImported() {
   downloadedOnly.value = false
 }
 
-function confirmRemoveCustomModel(model: ModelEntry, event?: MouseEvent) {
-  event?.stopPropagation()
+function confirmRemoveCustomModel(model: ModelEntry) {
   // State exactly what will happen rather than describing both cases: this deletes files, and a
   // vague warning is the wrong thing to show before a destructive action. Only copies the app
   // made are ever deleted — the worker enforces that too.
@@ -930,6 +1110,7 @@ onMounted(() => {
             :aria-label="t('models.viewDetailAria', { name: model.name })"
             :aria-current="selectedModel === model.name ? 'true' : undefined"
             @click="selectModel(model)"
+            @contextmenu.stop.prevent="openModelContextMenu($event, model)"
             @keydown.enter.self.prevent="selectModel(model)"
             @keydown.space.self.prevent="selectModel(model)"
           >
@@ -950,6 +1131,17 @@ onMounted(() => {
                   <template #icon>
                     <n-icon :component="isFavoriteModel(model) ? Star : StarOutline" />
                   </template>
+                </n-button>
+                <n-button
+                  quaternary
+                  circle
+                  size="tiny"
+                  class="mc-more"
+                  :title="t('models.moreActions')"
+                  :aria-label="t('models.moreActions')"
+                  @click.stop="openModelContextMenu($event, model)"
+                >
+                  <template #icon><n-icon :component="EllipsisHorizontalOutline" /></template>
                 </n-button>
               </div>
               <span v-if="modelNote(model)" class="mc-note" :title="modelNote(model)">{{ modelNote(model) }}</span>
@@ -1003,15 +1195,12 @@ onMounted(() => {
               <span :class="['mc-state', model.downloaded ? 'mc-state--ok' : 'mc-state--warn']">
                 <n-icon :component="model.downloaded ? CheckmarkCircleOutline : LinkOutline" />
                 {{ model.downloaded ? t('models.customReady') : t('models.customFilesMissing') }}
-              </span>
-              <div class="mc-actions">
-                <n-button size="tiny" quaternary @click.stop="relinkCustomModel(model, $event)">
-                  <template #icon><n-icon :component="LinkOutline" /></template>
-                </n-button>
-                <n-button size="tiny" quaternary type="error" @click.stop="confirmRemoveCustomModel(model, $event)">
-                  <template #icon><n-icon :component="TrashOutline" /></template>
-                </n-button>
-              </div>
+               </span>
+               <div class="mc-actions">
+                 <n-button size="tiny" quaternary @click.stop="relinkCustomModel(model, $event)">
+                   <template #icon><n-icon :component="LinkOutline" /></template>
+                 </n-button>
+               </div>
             </template>
 
             <template v-else-if="!model.downloaded && downloadTasks[model.name] && downloadTasks[model.name].status !== 'done'">
@@ -1050,9 +1239,6 @@ onMounted(() => {
                 <n-icon :component="CheckmarkCircleOutline" />
                 {{ t('models.downloaded') }}
               </span>
-              <n-button size="tiny" quaternary type="error" @click.stop="confirmDeleteModel(model, $event)">
-                <template #icon><n-icon :component="TrashOutline" /></template>
-              </n-button>
             </template>
 
             <n-button
@@ -1090,6 +1276,101 @@ onMounted(() => {
         </div>
       </template>
     </div>
+
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :x="contextMenuX"
+      :y="contextMenuY"
+      :options="modelMenuOptions"
+      :show="contextMenuVisible"
+      @clickoutside="closeModelContextMenu"
+      @select="handleModelContextMenuSelect"
+    />
+
+    <n-modal
+      :show="showNoteEditor"
+      @update:show="handleNoteEditorUpdate"
+    >
+      <n-card
+        class="model-note-modal"
+        :title="t('models.editNote')"
+        :bordered="false"
+        closable
+        role="dialog"
+        aria-modal="true"
+        @close="closeModelNoteEditor"
+      >
+        <div v-if="noteEditorModel" class="model-note-modal__body">
+          <strong class="model-note-modal__name">{{ noteEditorModel.name }}</strong>
+          <n-input
+            v-model:value="noteDraft"
+            type="textarea"
+            :autosize="{ minRows: 4, maxRows: 8 }"
+            clearable
+            :maxlength="240"
+            show-count
+            :placeholder="t('models.notePlaceholder')"
+          />
+        </div>
+        <template #footer>
+          <div class="model-note-modal__footer">
+            <n-button secondary @click="closeModelNoteEditor">{{ t('common.cancel') }}</n-button>
+            <n-button type="primary" :disabled="!noteEditorModel" @click="saveModelNote">{{ t('common.save') }}</n-button>
+          </div>
+        </template>
+      </n-card>
+    </n-modal>
+
+    <n-modal
+      :show="showInferenceEditor"
+      @update:show="handleInferenceEditorUpdate"
+    >
+      <n-card
+        class="model-inference-modal"
+        :title="t('models.editInferenceDefaults')"
+        :bordered="false"
+        closable
+        role="dialog"
+        aria-modal="true"
+        @close="closeInferenceEditor"
+      >
+        <div v-if="inferenceEditorModel" class="model-inference-modal__body">
+          <strong class="model-inference-modal__name">{{ inferenceEditorModel.name }}</strong>
+          <p class="model-inference-modal__hint">{{ t('models.inferenceDefaultsHint') }}</p>
+          <div class="inference-editor-grid">
+            <label class="inference-editor-field">
+              <span>{{ t('inference.batchSize') }}</span>
+              <n-input-number v-model:value="inferenceDraft.batch_size" :min="1" :max="32" />
+            </label>
+            <label class="inference-editor-field">
+              <span>{{ t('inference.overlapSize') }}</span>
+              <n-input-number v-model:value="inferenceDraft.overlap_size" :min="0" :max="1048576" />
+            </label>
+            <label class="inference-editor-field">
+              <span>{{ t('inference.chunkSize') }}</span>
+              <n-input-number v-model:value="inferenceDraft.chunk_size" :min="0" :max="1048576" :step="1024" />
+            </label>
+          </div>
+        </div>
+        <template #footer>
+          <div class="model-inference-modal__footer">
+            <n-button
+              secondary
+              :disabled="!canResetInferenceDefaults(inferenceEditorModel)"
+              @click="resetInferenceDefaults"
+            >
+              {{ t('models.inferenceDefaultsReset') }}
+            </n-button>
+            <span class="model-inference-modal__footer-spacer" />
+            <n-button secondary @click="closeInferenceEditor">{{ t('common.cancel') }}</n-button>
+            <n-button type="primary" :disabled="!inferenceEditorModel" @click="saveInferenceDefaults">
+              {{ t('common.save') }}
+            </n-button>
+          </div>
+        </template>
+      </n-card>
+    </n-modal>
 
     <!-- Detail Modal -->
     <n-modal :show="showDetail" @update:show="handleDetailDrawerUpdate" @after-leave="handleDetailModalAfterLeave">
@@ -1164,25 +1445,6 @@ onMounted(() => {
 
             <n-divider style="margin:16px 0" />
 
-            <div class="detail-note-editor">
-              <div class="detail-section-head">
-                <strong>{{ t('models.note') }}</strong>
-                <span>{{ t('models.noteHint') }}</span>
-              </div>
-              <n-input
-                :value="modelNote(selectedInfo)"
-                type="textarea"
-                :autosize="{ minRows: 2, maxRows: 4 }"
-                clearable
-                :maxlength="240"
-                show-count
-                :placeholder="t('models.notePlaceholder')"
-                @update:value="updateSelectedModelNote"
-              />
-            </div>
-
-            <n-divider style="margin:16px 0" />
-
             <n-collapse class="detail-path-collapse" :default-expanded-names="[]">
               <n-collapse-item :title="t('models.path')" name="model-path">
                 <div class="detail-path-block">
@@ -1199,39 +1461,6 @@ onMounted(() => {
                 </div>
               </n-collapse-item>
             </n-collapse>
-
-            <n-divider style="margin:16px 0" />
-
-            <div class="detail-inference">
-              <div class="detail-section-head">
-                <strong>{{ t('models.inferenceDefaultsTitle') }}</strong>
-                <span>{{ t('models.inferenceDefaultsHint') }}</span>
-              </div>
-              <div class="inference-default-grid">
-                <label class="inference-default-field">
-                  <span>{{ t('inference.batchSize') }}</span>
-                  <n-input-number v-model:value="inferenceDraft.batch_size" :min="1" :max="32" style="width:100%" />
-                </label>
-                <label class="inference-default-field">
-                  <span>{{ t('inference.overlapSize') }}</span>
-                  <n-input-number v-model:value="inferenceDraft.overlap_size" :min="0" :max="1048576" style="width:100%" />
-                </label>
-                <label class="inference-default-field">
-                  <span>{{ t('inference.chunkSize') }}</span>
-                  <n-input-number v-model:value="inferenceDraft.chunk_size" :min="0" :max="1048576" :step="1024" style="width:100%" />
-                </label>
-              </div>
-              <div class="inference-default-actions">
-                <div>
-                  <n-button size="small" secondary :disabled="!canResetInferenceDefaults(selectedInfo)" @click="resetInferenceDefaults">
-                    {{ t('models.inferenceDefaultsReset') }}
-                  </n-button>
-                  <n-button size="small" type="primary" @click="saveInferenceDefaults">
-                    {{ t('common.save') }}
-                  </n-button>
-                </div>
-              </div>
-            </div>
 
             </div>
           </div>
@@ -1914,8 +2143,16 @@ onMounted(() => {
   opacity: 0.62;
 }
 
+.mc-more {
+  flex: 0 0 auto;
+  margin-top: -4px;
+  opacity: 0.62;
+}
+
 .model-card:hover .mc-favorite,
-.model-card--selected .mc-favorite {
+.model-card--selected .mc-favorite,
+.model-card:hover .mc-more,
+.model-card--selected .mc-more {
   opacity: 1;
 }
 
@@ -2003,6 +2240,95 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.model-note-modal {
+  width: min(460px, calc(100vw - 48px));
+  border-radius: 18px;
+}
+
+.model-note-modal__body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.model-note-modal__body :deep(.n-input) {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.model-note-modal__name {
+  overflow: hidden;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-note-modal__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.model-inference-modal {
+  width: min(560px, calc(100vw - 48px));
+  border-radius: 18px;
+}
+
+.model-inference-modal__body {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.model-inference-modal__name {
+  overflow: hidden;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-inference-modal__hint {
+  margin: 0;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.inference-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.inference-editor-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.inference-editor-field > span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.inference-editor-field :deep(.n-input-number) {
+  width: 100%;
+}
+
+.model-inference-modal__footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.model-inference-modal__footer-spacer {
+  flex: 1 1 auto;
 }
 
 
@@ -2172,58 +2498,6 @@ onMounted(() => {
   margin-top: 12px;
 }
 
-.detail-section-head {
-  display: grid;
-  gap: 4px;
-  margin-bottom: 10px;
-}
-
-.detail-section-head strong {
-  font-size: 13px;
-}
-
-.detail-section-head span {
-  font-size: 12px;
-  color: var(--on-surface-muted);
-  line-height: 1.5;
-}
-
-.detail-note-editor,
-.detail-inference {
-  display: grid;
-  gap: 10px;
-}
-
-.inference-default-grid {
-  display: grid;
-  gap: 10px;
-}
-
-.inference-default-field {
-  display: grid;
-  gap: 6px;
-}
-
-.inference-default-field > span {
-  font-size: 12px;
-  color: var(--on-surface-muted);
-}
-
-.inference-default-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.inference-default-actions > div {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-
 .header-actions {
   display: flex;
   align-items: center;
@@ -2389,6 +2663,14 @@ onMounted(() => {
   }
 }
 @media (max-width: 720px) {
+  .inference-editor-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .model-inference-modal__footer-spacer {
+    display: none;
+  }
+
   .model-detail-modal {
     width: calc(100vw - 28px);
     height: calc(100vh - 40px);

@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { useDialog, useMessage } from 'naive-ui'
+import { useDialog, useMessage, type DropdownOption } from 'naive-ui'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
@@ -37,7 +37,7 @@ import {
   resolveWorkflowRuntimeDefaults,
 } from '@/workflows/runtimeDefinition'
 import { useSettingsStore } from '@/stores/settings'
-import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
+import { useModelStore, type ModelDefaultInferenceParams, type ModelEntry } from '@/stores/model'
 import { useAppStore } from '@/stores/app'
 import { buildModelCategoryOptionsFromModels, getModelCategoryLabel } from '@/utils/modelCategory'
 import { matchesModelQuery } from '@/utils/modelSearch'
@@ -98,6 +98,20 @@ const modelCategoryFilter = ref('')
 const modelPage = ref(1)
 const modelPageSize = ref(12)
 const workflowSearch = ref('')
+const contextMenuX = ref(0)
+const contextMenuY = ref(0)
+const contextMenuVisible = ref(false)
+const contextMenuKind = ref<'model' | 'workflow' | null>(null)
+const contextModel = ref<ModelEntry | null>(null)
+const contextWorkflow = ref<WorkflowEntry | null>(null)
+const showModelNoteEditor = ref(false)
+const noteEditorModel = ref<ModelEntry | null>(null)
+const noteDraft = ref('')
+const showWorkflowMetaEditor = ref(false)
+const workflowMetaEditor = ref<WorkflowEntry | null>(null)
+const workflowNameDraft = ref('')
+const workflowNoteDraft = ref('')
+const workflowMetaSaving = ref(false)
 if (route.query.mode === 'workflow') runMode.value = 'workflow'
 const focusedSeparationJobId = ref<string | null>(null)
 const cancellingTaskId = ref<string | null>(null)
@@ -349,9 +363,136 @@ function workflowIssue(item: WorkflowEntry): string {
   return workflowIssueMap.value.get(item.id) || ''
 }
 
+const contextMenuOptions = computed<DropdownOption[]>(() => {
+  if (contextMenuKind.value === 'model' && contextModel.value) {
+    return [{ key: 'edit-model-note', label: t('models.editNote') }]
+  }
+  if (contextMenuKind.value === 'workflow' && contextWorkflow.value) {
+    return [{ key: 'edit-workflow-meta', label: t('workflows.editMeta') }]
+  }
+  return []
+})
+
 function selectRunnableWorkflow(item: WorkflowEntry) {
   if (workflowIssue(item)) return
   workflow.selectWorkflow(item.id)
+}
+
+function openSeparateContextMenu(
+  event: MouseEvent,
+  kind: 'model' | 'workflow',
+  target: ModelEntry | WorkflowEntry,
+) {
+  contextMenuKind.value = kind
+  contextModel.value = kind === 'model' ? target as ModelEntry : null
+  contextWorkflow.value = kind === 'workflow' ? target as WorkflowEntry : null
+  contextMenuVisible.value = false
+  contextMenuX.value = event.clientX
+  contextMenuY.value = event.clientY
+  window.requestAnimationFrame(() => {
+    contextMenuVisible.value = true
+  })
+}
+
+function closeSeparateContextMenu() {
+  contextMenuVisible.value = false
+  contextMenuKind.value = null
+  contextModel.value = null
+  contextWorkflow.value = null
+}
+
+function openModelNoteEditor(item: ModelEntry) {
+  noteEditorModel.value = item
+  noteDraft.value = modelNote(item.name)
+  showModelNoteEditor.value = true
+}
+
+function closeModelNoteEditor() {
+  showModelNoteEditor.value = false
+  noteEditorModel.value = null
+}
+
+function handleModelNoteEditorUpdate(value: boolean) {
+  showModelNoteEditor.value = value
+  if (!value) noteEditorModel.value = null
+}
+
+function saveModelNote() {
+  const item = noteEditorModel.value
+  if (!item) return
+  model.setModelNote(item.name, noteDraft.value)
+  closeModelNoteEditor()
+  message.success(t('models.noteSaved'))
+}
+
+function openWorkflowMetaEditor(item: WorkflowEntry) {
+  workflowMetaEditor.value = item
+  workflowNameDraft.value = item.name
+  workflowNoteDraft.value = item.description
+  showWorkflowMetaEditor.value = true
+}
+
+function closeWorkflowMetaEditor() {
+  showWorkflowMetaEditor.value = false
+  workflowMetaEditor.value = null
+}
+
+function handleWorkflowMetaEditorUpdate(value: boolean) {
+  showWorkflowMetaEditor.value = value
+  if (!value) workflowMetaEditor.value = null
+}
+
+async function saveWorkflowMeta() {
+  const current = workflowMetaEditor.value
+  if (!current || workflowMetaSaving.value) return
+  const trimmedName = workflowNameDraft.value.trim()
+  if (!trimmedName) {
+    message.error(t('workflows.nameRequired'))
+    return
+  }
+  const trimmedNote = workflowNoteDraft.value.trim()
+  if (trimmedName === current.name && trimmedNote === current.description) {
+    closeWorkflowMetaEditor()
+    return
+  }
+
+  const selectedIdBeforeSave = selectedWorkflowId.value
+  workflowMetaSaving.value = true
+  try {
+    await workflow.saveWorkflow({
+      id: current.id,
+      name: trimmedName,
+      description: trimmedNote,
+      definition: current.definition,
+      format: current.format,
+      formatVersion: current.formatVersion,
+      convertedFrom: current.convertedFrom,
+      expectedUpdatedAt: current.updatedAt,
+    })
+    // Saving a non-selected workflow should not change the workflow used by the current run.
+    if (selectedWorkflowId.value === current.id && selectedIdBeforeSave !== current.id) {
+      workflow.selectWorkflow(selectedIdBeforeSave)
+    }
+    closeWorkflowMetaEditor()
+    message.success(t('workflows.saved'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    workflowMetaSaving.value = false
+  }
+}
+
+function handleSeparateContextMenuSelect(key: string | number) {
+  const item = contextMenuKind.value === 'model' ? contextModel.value : contextWorkflow.value
+  closeSeparateContextMenu()
+  if (!item) return
+  if (key === 'edit-model-note' && 'name' in item) {
+    openModelNoteEditor(item as ModelEntry)
+    return
+  }
+  if (key === 'edit-workflow-meta' && 'id' in item) {
+    openWorkflowMetaEditor(item as WorkflowEntry)
+  }
 }
 
 function workflowValidationError() {
@@ -1904,10 +2045,11 @@ async function retryCurrentTask() {
                       :key="item.name"
                       type="button"
                       role="option"
-                       :aria-selected="ensembleEnabled ? ensembleModels.includes(item.name) : selectedModelName === item.name"
-                       class="target-row"
-                       :class="{ 'target-row--active': ensembleEnabled ? ensembleModels.includes(item.name) : selectedModelName === item.name }"
+                      :aria-selected="ensembleEnabled ? ensembleModels.includes(item.name) : selectedModelName === item.name"
+                      class="target-row"
+                      :class="{ 'target-row--active': ensembleEnabled ? ensembleModels.includes(item.name) : selectedModelName === item.name }"
                       @click="handleSelectModel(item)"
+                      @contextmenu.stop.prevent="openSeparateContextMenu($event, 'model', item)"
                     >
                       <span class="target-row__radio"></span>
                       <span class="target-row__body">
@@ -1977,7 +2119,6 @@ async function retryCurrentTask() {
                     role="option"
                     :aria-selected="selectedWorkflowId === item.id"
                     :aria-disabled="Boolean(workflowIssue(item))"
-                    :disabled="Boolean(workflowIssue(item))"
                     :title="workflowIssue(item) || item.name"
                     class="target-row"
                     :class="{
@@ -1985,6 +2126,7 @@ async function retryCurrentTask() {
                       'target-row--unavailable': Boolean(workflowIssue(item)),
                     }"
                     @click="selectRunnableWorkflow(item)"
+                    @contextmenu.stop.prevent="openSeparateContextMenu($event, 'workflow', item)"
                   >
                     <span class="target-row__radio"></span>
                     <span class="target-row__body">
@@ -2038,6 +2180,102 @@ async function retryCurrentTask() {
         </transition>
       </main>
     </div>
+
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :x="contextMenuX"
+      :y="contextMenuY"
+      :options="contextMenuOptions"
+      :show="contextMenuVisible"
+      @clickoutside="closeSeparateContextMenu"
+      @select="handleSeparateContextMenuSelect"
+    />
+
+    <n-modal
+      :show="showModelNoteEditor"
+      @update:show="handleModelNoteEditorUpdate"
+    >
+      <n-card
+        class="separate-note-modal"
+        :title="t('models.editNote')"
+        :bordered="false"
+        closable
+        role="dialog"
+        aria-modal="true"
+        @close="closeModelNoteEditor"
+      >
+        <div v-if="noteEditorModel" class="separate-note-modal__body">
+          <strong class="separate-note-modal__name">{{ noteEditorModel.name }}</strong>
+          <n-input
+            v-model:value="noteDraft"
+            type="textarea"
+            :autosize="{ minRows: 4, maxRows: 8 }"
+            clearable
+            :maxlength="240"
+            show-count
+            :placeholder="t('models.notePlaceholder')"
+          />
+        </div>
+        <template #footer>
+          <div class="separate-note-modal__footer">
+            <n-button secondary @click="closeModelNoteEditor">{{ t('common.cancel') }}</n-button>
+            <n-button type="primary" :disabled="!noteEditorModel" @click="saveModelNote">{{ t('common.save') }}</n-button>
+          </div>
+        </template>
+      </n-card>
+    </n-modal>
+
+    <n-modal
+      :show="showWorkflowMetaEditor"
+      @update:show="handleWorkflowMetaEditorUpdate"
+    >
+      <n-card
+        class="separate-workflow-meta-modal"
+        :title="t('workflows.editMeta')"
+        :bordered="false"
+        closable
+        role="dialog"
+        aria-modal="true"
+        @close="closeWorkflowMetaEditor"
+      >
+        <div v-if="workflowMetaEditor" class="separate-workflow-meta-modal__body">
+          <label class="separate-workflow-meta-modal__field">
+            <span>{{ t('workflows.name') }}</span>
+            <n-input
+              v-model:value="workflowNameDraft"
+              :disabled="workflowMetaSaving"
+              :placeholder="t('workflows.namePlaceholder')"
+              maxlength="120"
+              show-count
+            />
+          </label>
+          <label class="separate-workflow-meta-modal__field">
+            <span>{{ t('workflows.note') }}</span>
+            <n-input
+              v-model:value="workflowNoteDraft"
+              type="textarea"
+              :disabled="workflowMetaSaving"
+              :autosize="{ minRows: 4, maxRows: 8 }"
+              clearable
+              :maxlength="240"
+              show-count
+              :placeholder="t('workflows.notePlaceholder')"
+            />
+          </label>
+        </div>
+        <template #footer>
+          <div class="separate-workflow-meta-modal__footer">
+            <n-button secondary :disabled="workflowMetaSaving" @click="closeWorkflowMetaEditor">
+              {{ t('common.cancel') }}
+            </n-button>
+            <n-button type="primary" :loading="workflowMetaSaving" :disabled="!workflowMetaEditor" @click="saveWorkflowMeta">
+              {{ t('common.save') }}
+            </n-button>
+          </div>
+        </template>
+      </n-card>
+    </n-modal>
 
     <n-modal v-model:show="showEnsembleModal" :mask-closable="true">
       <n-card
@@ -3195,6 +3433,45 @@ async function retryCurrentTask() {
 .ensemble-config__fields label > span { color: var(--on-surface-muted); font-size: 12px; }
 .ensemble-weights { display: grid; gap: 5px; max-height: 78px; overflow-y: auto; padding-right: 4px; }
 .ensemble-weight { display: grid; grid-template-columns: minmax(0, 1fr) 120px; align-items: center; gap: 10px; }
+.separate-note-modal,
+.separate-workflow-meta-modal {
+  width: min(520px, calc(100vw - 48px));
+  border-radius: 18px;
+}
+.separate-note-modal__body,
+.separate-workflow-meta-modal__body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.separate-note-modal__name {
+  overflow: hidden;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.separate-workflow-meta-modal__field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.separate-workflow-meta-modal__field > span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+.separate-note-modal__body :deep(.n-input),
+.separate-workflow-meta-modal__field :deep(.n-input) {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.separate-note-modal__footer,
+.separate-workflow-meta-modal__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
 .ensemble-modal { width: min(720px, 92vw); }
 .ensemble-modal__intro { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 16px; color: var(--on-surface-muted); font-size: 12px; }
 .ensemble-modal__intro strong { color: var(--primary-strong); white-space: nowrap; }

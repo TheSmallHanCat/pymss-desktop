@@ -1,19 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useDialog, useMessage } from 'naive-ui'
+import { useDialog, useMessage, type DropdownOption } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
   AlertCircleOutline,
   CheckmarkCircle,
-  CopyOutline,
   CubeOutline,
-  DownloadOutline,
+  EllipsisHorizontalOutline,
   GitNetworkOutline,
   MusicalNotesOutline,
   OpenOutline,
   PlayOutline,
   SearchOutline,
-  TrashOutline,
 } from '@vicons/ionicons5'
 import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
@@ -68,6 +66,10 @@ const pendingSimpleSave = ref<{
   continuation: SimpleSaveContinuation
 } | null>(null)
 const showRevisionConflict = ref(false)
+const contextMenuX = ref(0)
+const contextMenuY = ref(0)
+const contextMenuVisible = ref(false)
+const contextWorkflow = ref<WorkflowEntry | null>(null)
 let unlistenNodeEditorClosed: UnlistenFn | undefined
 
 const deviceOptions = [
@@ -118,6 +120,44 @@ const workflowStatusMap = computed(() => Object.fromEntries(
 function isWorkflowBlocked(item: WorkflowEntry) {
   return Boolean(workflowStatusMap.value[item.id])
 }
+
+const workflowMenuOptions = computed<DropdownOption[]>(() => {
+  const current = contextWorkflow.value
+  if (!current) return []
+  const isSimpleDefinition = isSimpleWorkflowDefinition(current.definition)
+  const canEditSimple = isSimpleDefinition && analyzeSimpleWorkflow(current.definition).editable
+  const definitionError = workflowDefinitionError(current.definition)
+  const options: DropdownOption[] = [
+    {
+      key: 'edit',
+      label: canEditSimple
+        ? t('workflows.simpleMode')
+        : isSimpleDefinition
+            ? t('workflows.convertToAdvancedCopy')
+            : t('workflows.openAdvancedEditor'),
+      disabled: isSimpleDefinition && !canEditSimple && Boolean(definitionError),
+    },
+    {
+      key: 'run',
+      label: t('workflows.runWorkflowAction'),
+      disabled: isWorkflowBlocked(current),
+    },
+  ]
+  if (isSimpleDefinition && canEditSimple) {
+    options.push({
+      key: 'convert',
+      label: t('workflows.convertToAdvancedCopy'),
+      disabled: Boolean(definitionError),
+    })
+  }
+  options.push(
+    { type: 'divider', key: 'workflow-actions-divider' },
+    { key: 'duplicate', label: t('workflows.duplicate') },
+    { key: 'export', label: t('workflows.exportWorkflow') },
+    { key: 'delete', label: t('workflows.deleteConfirm') },
+  )
+  return options
+})
 
 // ---- Selected workflow overview data (simple-mode details; comfy graphs
 // show a read-only overview since their structure is free-form) ----
@@ -314,6 +354,73 @@ function openWorkflowFromList(item: WorkflowEntry) {
 function closeSimpleWorkflow() {
   simpleEditorOpen.value = false
   simpleEditorWorkflow.value = null
+}
+
+function openWorkflowContextMenu(event: MouseEvent, item: WorkflowEntry) {
+  contextWorkflow.value = item
+  contextMenuVisible.value = false
+  contextMenuX.value = event.clientX
+  contextMenuY.value = event.clientY
+  window.requestAnimationFrame(() => {
+    contextMenuVisible.value = true
+  })
+}
+
+function closeWorkflowContextMenu() {
+  contextMenuVisible.value = false
+  contextWorkflow.value = null
+}
+
+function openSelectedContextMenu(event: MouseEvent) {
+  const current = selectedWorkflow.value
+  if (!current) return
+  openWorkflowContextMenu(event, current)
+}
+
+function openWorkflowEditor(item: WorkflowEntry) {
+  editWorkflow(item)
+  if (isSimpleWorkflowDefinition(item.definition)) {
+    if (!analyzeSimpleWorkflow(item.definition).editable) {
+      convertSelectedSimpleToAdvanced()
+      return
+    }
+    editSimpleWorkflow(item)
+    return
+  }
+  closeSimpleWorkflow()
+  void openNodeEditor({ workflowId: item.id })
+}
+
+function handleWorkflowContextMenuSelect(key: string | number) {
+  const current = contextWorkflow.value
+  closeWorkflowContextMenu()
+  if (!current) return
+
+  if (key === 'edit') {
+    openWorkflowEditor(current)
+    return
+  }
+  if (key === 'run') {
+    editWorkflow(current)
+    router.push({ path: '/', query: { mode: 'workflow' } })
+    return
+  }
+  if (key === 'convert') {
+    editWorkflow(current)
+    convertSelectedSimpleToAdvanced()
+    return
+  }
+  if (key === 'duplicate') {
+    void duplicateWorkflow(current)
+    return
+  }
+  if (key === 'export') {
+    void exportWorkflowEntry(current)
+    return
+  }
+  if (key === 'delete') {
+    deleteWorkflow(current)
+  }
 }
 
 function cancelSimpleWorkflow() {
@@ -520,8 +627,8 @@ async function refreshAfterNodeEditorClosed() {
 }
 
 // ---- Actions ----
-async function duplicateSelected() {
-  const current = selectedWorkflow.value
+async function duplicateWorkflow(item: WorkflowEntry) {
+  const current = item
   if (!current) return
   const entry = await workflow.duplicateWorkflow(current.id)
   if (entry) {
@@ -530,8 +637,8 @@ async function duplicateSelected() {
   }
 }
 
-function deleteSelected() {
-  const current = selectedWorkflow.value
+function deleteWorkflow(item: WorkflowEntry) {
+  const current = item
   if (!current) return
   dialog.warning({
     title: t('workflows.deleteTitle'),
@@ -545,6 +652,12 @@ function deleteSelected() {
       message.success(t('workflows.deleted'))
     },
   })
+}
+
+function deleteSelected() {
+  const current = selectedWorkflow.value
+  if (!current) return
+  deleteWorkflow(current)
 }
 
 function runSelected() {
@@ -636,8 +749,7 @@ async function exportWorkflowDefinition(
   }
 }
 
-async function exportSelectedWorkflow() {
-  const current = selectedWorkflow.value
+async function exportWorkflowEntry(current: WorkflowEntry) {
   if (!current) return
   await exportWorkflowDefinition(current.name, current.definition)
 }
@@ -654,6 +766,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  closeWorkflowContextMenu()
   unlistenNodeEditorClosed?.()
 })
 
@@ -722,6 +835,7 @@ watch(workflows, (items) => {
               class="wf-row"
               :class="{ 'wf-row--active': item.id === selectedWorkflowId }"
               @click="openWorkflowFromList(item)"
+              @contextmenu.stop.prevent="openWorkflowContextMenu($event, item)"
             >
               <span class="wf-row__icon"><n-icon :component="GitNetworkOutline" /></span>
               <span class="wf-row__main">
@@ -954,17 +1068,9 @@ watch(workflows, (items) => {
               </n-button>
             </div>
             <div class="wf-actionbar__more">
-              <n-button quaternary @click="duplicateSelected">
-                <template #icon><n-icon :component="CopyOutline" /></template>
-                {{ t('workflows.duplicate') }}
-              </n-button>
-              <n-button quaternary @click="exportSelectedWorkflow">
-                <template #icon><n-icon :component="DownloadOutline" /></template>
-                {{ t('workflows.exportWorkflow') }}
-              </n-button>
-              <n-button quaternary type="error" @click="deleteSelected">
-                <template #icon><n-icon :component="TrashOutline" /></template>
-                {{ t('workflows.deleteConfirm') }}
+              <n-button quaternary @click="openSelectedContextMenu">
+                <template #icon><n-icon :component="EllipsisHorizontalOutline" /></template>
+                {{ t('workflows.moreActions') }}
               </n-button>
             </div>
           </footer>
@@ -981,6 +1087,17 @@ watch(workflows, (items) => {
         </div>
       </main>
     </div>
+
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :x="contextMenuX"
+      :y="contextMenuY"
+      :options="workflowMenuOptions"
+      :show="contextMenuVisible"
+      @clickoutside="closeWorkflowContextMenu"
+      @select="handleWorkflowContextMenuSelect"
+    />
 
     <WorkflowCreateChooser
       v-model:show="createChooserOpen"
