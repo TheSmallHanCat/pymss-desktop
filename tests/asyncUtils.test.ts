@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createFreshRunner } from '../src/utils/async.ts'
+import { createFreshRunner, retryWithDelays } from '../src/utils/async.ts'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -76,4 +76,38 @@ test('callers queued behind a rejected run still get a fresh value', async () =>
   const queued = runner()
   await assert.rejects(failing, /boom/)
   assert.equal(await queued, 2)
+})
+
+test('retryWithDelays recovers from a transient registration failure', async () => {
+  let attempts = 0
+  const waits: number[] = []
+  const result = await retryWithDelays(
+    async () => {
+      attempts += 1
+      if (attempts === 1) throw new Error('transient')
+      return 'connected'
+    },
+    [250, 750],
+    async delay => { waits.push(delay) },
+  )
+
+  assert.equal(result, 'connected')
+  assert.equal(attempts, 2)
+  assert.deepEqual(waits, [250])
+})
+
+test('retryWithDelays reports the final error after bounded attempts', async () => {
+  let attempts = 0
+  await assert.rejects(
+    retryWithDelays(
+      async () => {
+        attempts += 1
+        throw new Error(`failure-${attempts}`)
+      },
+      [10, 20],
+      async () => undefined,
+    ),
+    /failure-3/,
+  )
+  assert.equal(attempts, 3)
 })

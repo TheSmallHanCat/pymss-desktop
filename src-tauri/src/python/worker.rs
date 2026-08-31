@@ -761,6 +761,7 @@ fn is_background_terminal_event(command: &str, event_type: &str) -> bool {
         "infer" | "infer_workflow" => {
             matches!(event_type, "error" | "task_done" | "task_cancelled")
         }
+        "audio_tools" => matches!(event_type, "error" | "audio_tool_result" | "task_cancelled"),
         _ => matches!(event_type, "error"),
     }
 }
@@ -1048,9 +1049,17 @@ pub fn spawn_worker_background(
                                 terminal_task_ids.insert(envelope_task_id.to_string());
                             }
                         } else if envelope.event_type == "error" {
-                            let message = worker_error_message(&envelope);
-                            emit_task_error_to_all(&app, &registered_task_ids, message);
-                            terminal_task_ids.extend(registered_task_ids.iter().cloned());
+                            if let Some(request_id) = envelope
+                                .request_id
+                                .as_deref()
+                                .filter(|id| registered_task_ids.iter().any(|task_id| task_id == id))
+                            {
+                                terminal_task_ids.insert(request_id.to_string());
+                            } else {
+                                let message = worker_error_message(&envelope);
+                                emit_task_error_to_all(&app, &registered_task_ids, message);
+                                terminal_task_ids.extend(registered_task_ids.iter().cloned());
+                            }
                         } else {
                             terminal_task_ids.insert(task_id.clone());
                         }
@@ -1100,6 +1109,13 @@ pub fn spawn_worker_background(
                 ("durationMs", started_at.elapsed().as_millis().to_string()),
             ],
         );
+        if let Ok(mut cancelled) = app.state::<AppState>().cancelled_tasks.lock() {
+            for registered_task_id in &registered_task_ids {
+                if cancelled.remove(registered_task_id) {
+                    terminal_task_ids.insert(registered_task_id.clone());
+                }
+            }
+        }
         let missing_terminal_task_ids = registered_task_ids
             .iter()
             .filter(|task_id| !terminal_task_ids.contains(*task_id))
@@ -1119,6 +1135,13 @@ pub fn spawn_worker_background(
                         &app,
                         &missing_terminal_task_ids,
                         "worker exited unexpectedly".to_string(),
+                    );
+                }
+                Some(status) if status.success() && command_name == "audio_tools" => {
+                    emit_task_error_to_all(
+                        &app,
+                        &missing_terminal_task_ids,
+                        "worker exited without an audio tool result".to_string(),
                     );
                 }
                 _ => {}
@@ -1147,6 +1170,7 @@ pub fn spawn_worker_background(
 
 #[cfg(test)]
 mod tests {
+    use super::is_background_terminal_event;
     use serde_json::json;
     use std::fs;
     use std::path::Path;
@@ -1159,6 +1183,13 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn audio_tool_result_is_a_background_terminal_event() {
+        assert!(is_background_terminal_event("audio_tools", "audio_tool_result"));
+        assert!(is_background_terminal_event("audio_tools", "error"));
+        assert!(!is_background_terminal_event("audio_tools", "audio_tool_progress"));
     }
 
     fn write_bundled_pointer(root: &Path, backend: &str, python_path: &str) -> std::path::PathBuf {

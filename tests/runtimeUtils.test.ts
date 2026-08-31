@@ -77,6 +77,30 @@ test('active runtime environment follows active-runtime state', () => {
   assert.equal(preferredInstalledRuntimeBackend(info), 'cuda')
 })
 
+test('active runtime path comparison accepts the Windows long-path prefix', () => {
+  const info = {
+    installedBackend: 'cuda',
+    installState: { backend: 'cuda', pythonPath: '\\\\?\\D:\\Pymss\\runtime-envs\\cuda\\Scripts\\python.exe' },
+    installedEnvironments: [
+      { backend: 'cuda', pythonPath: 'd:/pymss/runtime-envs/cuda/Scripts/python.exe' },
+      { backend: 'cuda', pythonPath: 'd:/pymss/runtime-envs/other/Scripts/python.exe' },
+    ],
+  }
+  assert.equal(activeRuntimeEnvironment(info)?.pythonPath, 'd:/pymss/runtime-envs/cuda/Scripts/python.exe')
+})
+
+test('active runtime environment does not guess when the recorded path is stale', () => {
+  const info = {
+    installedBackend: 'cuda',
+    installState: { backend: 'cuda', pythonPath: 'missing/python.exe' },
+    installedEnvironments: [
+      { backend: 'cuda', pythonPath: 'first/python.exe' },
+      { backend: 'cuda', pythonPath: 'second/python.exe' },
+    ],
+  }
+  assert.equal(activeRuntimeEnvironment(info), undefined)
+})
+
 test('preferred installed backend falls back to the only installed environment', () => {
   assert.equal(preferredInstalledRuntimeBackend({
     installedEnvironments: [{ backend: 'cpu', pythonPath: 'user/cpu/python.exe' }],
@@ -102,6 +126,18 @@ test('runtime environment lookup prefers the active source when backend appears 
     ],
   }
   assert.equal(runtimeEnvironmentForBackend(info, 'cuda')?.pythonPath, 'package/python.exe')
+})
+
+test('runtime environment lookup does not guess when the active path is stale', () => {
+  const info = {
+    installedBackend: 'cuda',
+    installState: { backend: 'cuda', pythonPath: 'missing/python.exe' },
+    installedEnvironments: [
+      { backend: 'cuda', pythonPath: 'first/python.exe' },
+      { backend: 'cuda', pythonPath: 'second/python.exe' },
+    ],
+  }
+  assert.equal(runtimeEnvironmentForBackend(info, 'cuda'), undefined)
 })
 
 test('runtime core update is available when pymss-core alone is behind', () => {

@@ -59,6 +59,7 @@ export const useUpdateStore = defineStore('update', () => {
   const initialized = ref(false)
   const autoCheckCompleted = ref(false)
   let updateCheckInFlight: Promise<ManagedUpdate | null> | null = null
+  let initializeInFlight: Promise<void> | null = null
   let unlistenProgress: UnlistenFn | undefined
 
   const hasUpdate = computed(() => availableUpdate.value !== null)
@@ -99,42 +100,50 @@ export const useUpdateStore = defineStore('update', () => {
 
   async function initialize() {
     if (initialized.value) return
-    initialized.value = true
-    autoCheckCompleted.value = false
-    let payload: UpdateStorePayload | null = null
-    if (!isTauriRuntime()) {
-      try {
-        const raw = localStorage.getItem('pymss-studio:update-state')
-        payload = raw ? JSON.parse(raw) as UpdateStorePayload : null
-      } catch {
-        payload = null
-      }
-    } else {
-      payload = await loadAppStore<UpdateStorePayload>('update-state')
-    }
-    deferredVersion.value = String(payload?.deferredVersion || '')
-    deferredAt.value = String(payload?.deferredAt || '')
-    lastAcceptedVersion.value = String(payload?.lastAcceptedVersion || '')
-    if (isTauriRuntime()) {
-      unlistenProgress?.()
-      unlistenProgress = await listen<UpdateDownloadEvent>('pymss://managed-update-event', (event) => {
-        if (event.payload.event === 'Started') {
-          const total = Number(event.payload.data.contentLength || 0)
-          downloadTotalBytes.value = Number.isFinite(total) && total > 0 ? total : 0
-          downloadDownloadedBytes.value = 0
-          return
+    if (!initializeInFlight) {
+      initializeInFlight = (async () => {
+        autoCheckCompleted.value = false
+        let payload: UpdateStorePayload | null = null
+        if (!isTauriRuntime()) {
+          try {
+            const raw = localStorage.getItem('pymss-studio:update-state')
+            payload = raw ? JSON.parse(raw) as UpdateStorePayload : null
+          } catch {
+            payload = null
+          }
+        } else {
+          payload = await loadAppStore<UpdateStorePayload>('update-state')
         }
-        if (event.payload.event === 'Progress') {
-          const chunk = Number(event.payload.data.chunkLength || 0)
-          if (Number.isFinite(chunk) && chunk > 0) downloadDownloadedBytes.value += chunk
-          return
+        deferredVersion.value = String(payload?.deferredVersion || '')
+        deferredAt.value = String(payload?.deferredAt || '')
+        lastAcceptedVersion.value = String(payload?.lastAcceptedVersion || '')
+        if (isTauriRuntime()) {
+          const nextUnlisten = await listen<UpdateDownloadEvent>('pymss://managed-update-event', (event) => {
+            if (event.payload.event === 'Started') {
+              const total = Number(event.payload.data.contentLength || 0)
+              downloadTotalBytes.value = Number.isFinite(total) && total > 0 ? total : 0
+              downloadDownloadedBytes.value = 0
+              return
+            }
+            if (event.payload.event === 'Progress') {
+              const chunk = Number(event.payload.data.chunkLength || 0)
+              if (Number.isFinite(chunk) && chunk > 0) downloadDownloadedBytes.value += chunk
+              return
+            }
+            if (event.payload.event === 'Finished') {
+              if (downloadTotalBytes.value > 0) downloadDownloadedBytes.value = downloadTotalBytes.value
+              status.value = 'installing'
+            }
+          })
+          unlistenProgress?.()
+          unlistenProgress = nextUnlisten
         }
-        if (event.payload.event === 'Finished') {
-          if (downloadTotalBytes.value > 0) downloadDownloadedBytes.value = downloadTotalBytes.value
-          status.value = 'installing'
-        }
+        initialized.value = true
+      })().finally(() => {
+        initializeInFlight = null
       })
     }
+    return initializeInFlight
   }
 
   function hasPendingDeferredVersion(version: string) {

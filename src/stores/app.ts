@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { createFreshRunner } from '@/utils/async'
 import { isTauriRuntime } from '@/utils/appStore'
+import { registerWindowCloseGuard } from '@/utils/windowCloseGuards'
 
 export type EnvInfo = {
   pythonVersion?: string
@@ -113,11 +114,15 @@ export type DiagnosticItem = {
   detail?: string
 }
 
+export type WorkerEventConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error'
+
 export const useAppStore = defineStore('app', () => {
   const envInfo = ref<EnvInfo | null>(null)
   const envLoading = ref(false)
   const envCheckedOnce = ref(false)
   const workerEvents = ref<any[]>([])
+  const workerEventConnectionStatus = ref<WorkerEventConnectionStatus>('idle')
+  const workerEventConnectionError = ref('')
   const lastError = ref<string | null>(null)
   const runtimeInfo = ref<RuntimeInfo | null>(null)
   const runtimeInstallTaskId = ref<string | null>(null)
@@ -243,6 +248,11 @@ export const useAppStore = defineStore('app', () => {
 
   function clearWorkerEvents() {
     workerEvents.value = []
+  }
+
+  function setWorkerEventConnection(status: WorkerEventConnectionStatus, error = '') {
+    workerEventConnectionStatus.value = status
+    workerEventConnectionError.value = status === 'error' ? error : ''
   }
 
   async function checkEnv() {
@@ -391,6 +401,20 @@ export const useAppStore = defineStore('app', () => {
     return invoke<boolean>('cancel_runtime_install', { taskId: runtimeInstallTaskId.value })
   }
 
+  async function cancelRuntimeCoreUpdate() {
+    if (!runtimeCoreUpdateTaskId.value) return false
+    return invoke<boolean>('cancel_runtime_core_update', { taskId: runtimeCoreUpdateTaskId.value })
+  }
+
+  // Runtime installation is a background worker, not a separation task, so the
+  // title bar's task counter does not cover it. Cancel it before the window exits
+  // to avoid leaving pip/download processes behind.
+  registerWindowCloseGuard(async () => {
+    if (!isTauriRuntime()) return
+    if (runtimeInstallStatus.value === 'installing') await cancelRuntimeInstall()
+    if (runtimeCoreUpdateStatus.value === 'updating') await cancelRuntimeCoreUpdate()
+  }, 80)
+
   async function waitForRuntimeInstall(timeoutMs = 30 * 60 * 1000) {
     const startedAt = Date.now()
     while (runtimeInstallStatus.value === 'installing') {
@@ -480,6 +504,8 @@ export const useAppStore = defineStore('app', () => {
     envLoading,
     envCheckedOnce,
     workerEvents,
+    workerEventConnectionStatus,
+    workerEventConnectionError,
     lastError,
     diagnostics,
     envReady,
@@ -489,6 +515,7 @@ export const useAppStore = defineStore('app', () => {
     recordWorkerEvent,
     handleWorkerEvent,
     clearWorkerEvents,
+    setWorkerEventConnection,
     checkEnv,
     checkEnvInBackground,
     runtimeInfo,
@@ -512,6 +539,7 @@ export const useAppStore = defineStore('app', () => {
     checkRuntimeInfo,
     loadRuntimeCoreVersions,
     installRuntime,
+    cancelRuntimeCoreUpdate,
     updateRuntimeCore,
     activateRuntime,
     cancelRuntimeInstall,

@@ -23,6 +23,7 @@ export type AudioToolPhase =
   | 'recognizing_speech'
   | 'writing_transcript'
   | 'completed'
+  | 'cancelled'
   | 'failed'
 
 export type AudioToolFailure = { path: string; message: string }
@@ -88,7 +89,7 @@ export type AudioToolRecovery = {
   reason: 'disk_full' | 'incomplete_download'
 }
 export type AudioToolViewState = {
-  busy: boolean; anyBusy: boolean; hasResult: boolean; error: string; progress: AudioToolProgress
+  busy: boolean; cancelling: boolean; anyBusy: boolean; hasResult: boolean; error: string; progress: AudioToolProgress
   percentage: number; result: AudioToolResult | null; elapsedMs: number; logs: AudioToolLogEntry[]
   recovery: AudioToolRecovery | null
 }

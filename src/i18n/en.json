@@ -1,7 +1,10 @@
 {
   "app": {
     "name": "Pymss Studio",
-    "bootPreparing": "Initializing workspace..."
+    "bootPreparing": "Initializing workspace...",
+    "workerConnectionFailed": "Background connection failed",
+    "workerConnectionFailedDetail": "Tasks can still be submitted, but progress and completion updates may be delayed. Reconnect before continuing.",
+    "workerConnectionRetry": "Reconnect"
   },
   "nav": {
     "separate": "Separate",

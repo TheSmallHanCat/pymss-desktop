@@ -17,6 +17,7 @@ import type {
 
 const props = defineProps<{
   busy: boolean
+  cancelling: boolean
   hasResult: boolean
   error: string
   progress: AudioToolProgress
@@ -27,6 +28,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  cancel: []
   reveal: [path: string]
 }>()
 
@@ -69,11 +71,13 @@ const phaseLabels = computed<Record<AudioToolPhase, string>>(() => ({
   recognizing_speech: t('tools.phaseRecognizingSpeech'),
   writing_transcript: t('tools.phaseWritingTranscript'),
   completed: t('tools.phaseCompleted'),
+  cancelled: t('tasks.statusCancelled'),
   failed: t('tools.phaseFailed'),
 }))
 const statusLabel = computed(() => {
   if (props.error) return phaseLabels.value.failed
   if (props.busy) return phaseLabels.value[props.progress.phase]
+  if (props.progress.phase === 'cancelled') return phaseLabels.value.cancelled
   if (props.hasResult && props.result) return phaseLabels.value.completed
   return t('tools.statusReady')
 })
@@ -148,6 +152,7 @@ function showLogProgress(entry: AudioToolLogEntry) {
         'status-overview--success': hasResult && result && !error && !resultWarnings.length,
         'status-overview--warning': hasResult && result && !error && resultWarnings.length,
         'status-overview--error': error,
+        'status-overview--cancelled': !busy && !error && progress.phase === 'cancelled',
       }"
     >
       <header class="status-overview__header">
@@ -183,11 +188,20 @@ function showLogProgress(entry: AudioToolLogEntry) {
           <span :title="progress.current">{{ progress.current || t('tools.preparingTask') }}</span>
           <strong v-if="progress.total">{{ progress.completed }} / {{ progress.total }}</strong>
         </div>
+        <div class="progress-actions">
+          <n-button size="small" secondary :loading="cancelling" @click="emit('cancel')">
+            {{ t('common.cancel') }}
+          </n-button>
+        </div>
       </template>
 
       <div v-else-if="error" class="status-error" role="alert">
         <n-icon :component="AlertCircleOutline" />
         <span>{{ error }}</span>
+      </div>
+
+      <div v-else-if="progress.phase === 'cancelled'" class="status-empty status-empty--cancelled">
+        {{ t('tasks.statusCancelled') }}
       </div>
 
       <div v-else-if="!hasResult || !result" class="status-empty">
@@ -338,6 +352,12 @@ function showLogProgress(entry: AudioToolLogEntry) {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.progress-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
 }
 
 .status-state,

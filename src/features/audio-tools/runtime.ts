@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
+import { registerWindowCloseGuard } from '@/utils/windowCloseGuards'
 import type {
   AudioToolActivityState, AudioToolKey, AudioToolLogEntry, AudioToolPhase,
   AudioToolProgress, AudioToolRecovery, AudioToolResult, AudioToolViewState, AudioToolWarning,
@@ -18,6 +19,7 @@ const AUDIO_TOOL_PHASES = new Set<AudioToolPhase>([
 type WorkerEvent = {
   type: string
   requestId?: string | null
+  taskId?: string | null
   payload?: {
     operation?: AudioToolKey
     completed?: number
@@ -27,17 +29,31 @@ type WorkerEvent = {
     detail?: string
     code?: string
     recovery?: unknown
+    message?: string
+    [key: string]: unknown
   }
 }
 
 export type AudioToolRuntime = {
   busyTool: Ref<AudioToolKey | null>
+  cancelling: Ref<boolean>
   execute: (tool: AudioToolKey, payload: Record<string, unknown>) => Promise<AudioToolResult | null>
+  cancel: () => Promise<boolean>
   stateFor: (tool: AudioToolKey) => ComputedRef<AudioToolViewState>
   revealPath: (path: string) => Promise<void>
   start: () => Promise<void>
-  stop: () => void
 }
+
+type PendingAudioToolRequest = {
+  id: string
+  tool: AudioToolKey
+  resolve: (result: AudioToolResult) => void
+  reject: (error: Error) => void
+}
+
+class AudioToolCancelledError extends Error {}
+
+let sharedRuntime: AudioToolRuntime | undefined
 
 export const audioToolRuntimeKey: InjectionKey<AudioToolRuntime> = Symbol('audio-tool-runtime')
 
@@ -71,15 +87,18 @@ export function normalizeAudioToolRecovery(value: unknown): AudioToolRecovery | 
 }
 
 export function createAudioToolRuntime(): AudioToolRuntime {
+  if (sharedRuntime) return sharedRuntime
   const { t } = useI18n()
   const message = useMessage()
   const busyTool = ref<AudioToolKey | null>(null)
+  const cancelling = ref(false)
   const results = reactive<Partial<Record<AudioToolKey, AudioToolResult>>>({})
   const errors = reactive<Partial<Record<AudioToolKey, string>>>({})
   const recoveries = reactive<Partial<Record<AudioToolKey, AudioToolRecovery>>>({})
   const activities = reactive<Partial<Record<AudioToolKey, AudioToolActivityState>>>({})
-  const pendingRequestIds: Partial<Record<AudioToolKey, string>> = {}
+  let pendingRequest: PendingAudioToolRequest | undefined
   let unlistenWorker: UnlistenFn | undefined
+  let startInFlight: Promise<void> | undefined
   let elapsedTimer: ReturnType<typeof setInterval> | undefined
   let activityStartedAt = 0
   let timedTool: AudioToolKey | null = null
@@ -103,6 +122,7 @@ export function createAudioToolRuntime(): AudioToolRuntime {
       writing_segments: 'tools.phaseDetailWritingSegments', loading_asr_model: 'tools.phaseDetailLoadingAsrModel',
       recognizing_speech: 'tools.phaseDetailRecognizingSpeech', writing_transcript: 'tools.phaseDetailWritingTranscript',
       completed: 'tools.phaseDetailCompleted', failed: 'tools.phaseDetailFailed',
+      cancelled: 'tasks.statusCancelled',
     }
     return phase === 'started'
       ? t(keys[phase], { tool: t(`tools.${tool}Title`) })
@@ -183,17 +203,21 @@ export function createAudioToolRuntime(): AudioToolRuntime {
   async function execute(tool: AudioToolKey, payload: Record<string, unknown>) {
     if (busyTool.value) return null
     const requestId = `audio_tool_${tool}_${Date.now()}_${++requestSequence}`
-    pendingRequestIds[tool] = requestId
     busyTool.value = tool
+    cancelling.value = false
     delete results[tool]
     delete errors[tool]
     delete recoveries[tool]
     beginActivity(tool, activityTarget(tool, payload))
     try {
-      const response = await invoke<AudioToolResult>('run_audio_tool', {
-        payload: { operation: tool, ...payload, requestId },
+      await start()
+      const completion = new Promise<AudioToolResult>((resolve, reject) => {
+        pendingRequest = { id: requestId, tool, resolve, reject }
       })
-      if (pendingRequestIds[tool] === requestId) delete pendingRequestIds[tool]
+      await invoke<{ taskId: string; started: boolean }>('start_audio_tool', {
+        payload: { ...payload, operation: tool, requestId },
+      })
+      const response = await completion
       results[tool] = response
       const activity = activities[tool]
       const progress: AudioToolProgress = {
@@ -207,6 +231,19 @@ export function createAudioToolRuntime(): AudioToolRuntime {
       else message.success(t('tools.completed'))
       return response
     } catch (error) {
+      if (pendingRequest?.id === requestId) pendingRequest = undefined
+      if (error instanceof AudioToolCancelledError) {
+        delete errors[tool]
+        const activity = activities[tool]
+        const progress: AudioToolProgress = {
+          ...(activity?.progress || { completed: 0, total: 0, current: '' }),
+          phase: 'cancelled',
+        }
+        if (activity) activity.progress = progress
+        appendLog(tool, 'cancelled', progress)
+        message.info(t('tasks.cancelSuccess'))
+        return null
+      }
       const description = recoveries[tool]
         ? t('tools.asrModelIncompleteError')
         : describeError(error)
@@ -219,6 +256,28 @@ export function createAudioToolRuntime(): AudioToolRuntime {
     } finally {
       stopElapsedTimer()
       busyTool.value = null
+      cancelling.value = false
+    }
+  }
+
+  async function cancel() {
+    if (!pendingRequest || cancelling.value) return false
+    cancelling.value = true
+    try {
+      const accepted = await invoke<boolean>('cancel_task', { taskId: pendingRequest.id })
+      if (!accepted) {
+        // The Rust registry no longer knows this task (for example, the worker
+        // exited before its terminal event reached the UI). Reject the pending
+        // request instead of leaving the tool stuck in a permanent busy state.
+        const completion = pendingRequest
+        pendingRequest = undefined
+        cancelling.value = false
+        completion.reject(new Error('Audio tool task is no longer running'))
+      }
+      return accepted
+    } catch (error) {
+      cancelling.value = false
+      throw error
     }
   }
 
@@ -229,6 +288,7 @@ export function createAudioToolRuntime(): AudioToolRuntime {
       const result = results[tool] || null
       return {
         busy: busyTool.value === tool,
+        cancelling: busyTool.value === tool && cancelling.value,
         anyBusy: Boolean(busyTool.value),
         hasResult: result?.operation === tool,
         error: errors[tool] || '', progress,
@@ -246,36 +306,58 @@ export function createAudioToolRuntime(): AudioToolRuntime {
 
   async function start() {
     if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
-    unlistenWorker = await listen<WorkerEvent>('pymss://worker-event', (event) => {
-      const workerEvent = event.payload
-      if (workerEvent.type === 'error') {
-        const operation = workerEvent.payload?.operation
-        if (operation && workerEvent.requestId && pendingRequestIds[operation] === workerEvent.requestId) {
-          const recovery = normalizeAudioToolRecovery(workerEvent.payload?.recovery)
-          if (recovery) {
-            recoveries[operation] = recovery
-            errors[operation] = t('tools.asrModelIncompleteError')
+    if (unlistenWorker) return
+    if (!startInFlight) {
+      startInFlight = listen<WorkerEvent>('pymss://worker-event', (event) => {
+        const workerEvent = event.payload
+        const pending = pendingRequest
+        const eventId = workerEvent.requestId || workerEvent.taskId
+        if (workerEvent.type === 'error') {
+          if (pending && eventId === pending.id) {
+            const recovery = normalizeAudioToolRecovery(workerEvent.payload?.recovery)
+            if (recovery) {
+              recoveries[pending.tool] = recovery
+              errors[pending.tool] = t('tools.asrModelIncompleteError')
+            }
+            pendingRequest = undefined
+            pending.reject(new Error(String(workerEvent.payload?.message || 'Audio tool failed')))
           }
-          delete pendingRequestIds[operation]
+          return
         }
-        return
-      }
-      if (workerEvent.type !== 'audio_tool_progress') return
-      const payload = workerEvent.payload
-      if (!payload?.operation || payload.operation !== busyTool.value) return
-      recordProgress(payload.operation, {
-        completed: Math.max(0, Number(payload.completed || 0)), total: Math.max(0, Number(payload.total || 0)),
-        current: String(payload.current || ''), phase: normalizePhase(payload.phase),
-      }, typeof payload.detail === 'string' ? payload.detail : undefined)
-    })
+        if (workerEvent.type === 'task_cancelled') {
+          if (pending && eventId === pending.id) {
+            pendingRequest = undefined
+            pending.reject(new AudioToolCancelledError('Audio tool task cancelled'))
+          }
+          return
+        }
+        if (workerEvent.type === 'audio_tool_result') {
+          if (pending && eventId === pending.id) {
+            pendingRequest = undefined
+            pending.resolve(workerEvent.payload as AudioToolResult)
+          }
+          return
+        }
+        if (workerEvent.type !== 'audio_tool_progress') return
+        const payload = workerEvent.payload
+        if (!payload?.operation || payload.operation !== busyTool.value || (eventId && eventId !== pending?.id)) return
+        recordProgress(payload.operation, {
+          completed: Math.max(0, Number(payload.completed || 0)), total: Math.max(0, Number(payload.total || 0)),
+          current: String(payload.current || ''), phase: normalizePhase(payload.phase),
+        }, typeof payload.detail === 'string' ? payload.detail : undefined)
+      }).then((unlisten) => {
+        unlistenWorker = unlisten
+      }).finally(() => {
+        startInFlight = undefined
+      })
+    }
+    await startInFlight
   }
 
-  function stop() {
-    unlistenWorker?.()
-    unlistenWorker = undefined
-    for (const tool of Object.keys(pendingRequestIds) as AudioToolKey[]) delete pendingRequestIds[tool]
-    stopElapsedTimer()
-  }
+  registerWindowCloseGuard(async () => {
+    if (pendingRequest) await cancel()
+  }, 100)
 
-  return { busyTool, execute, stateFor, revealPath, start, stop }
+  sharedRuntime = { busyTool, cancelling, execute, cancel, stateFor, revealPath, start }
+  return sharedRuntime
 }

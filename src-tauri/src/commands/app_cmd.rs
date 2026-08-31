@@ -609,6 +609,15 @@ pub async fn cancel_runtime_install(
 }
 
 #[tauri::command]
+pub async fn cancel_runtime_core_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> AppResult<bool> {
+    cancel_task(app, state, task_id).await
+}
+
+#[tauri::command]
 pub async fn activate_runtime(app: AppHandle, payload: Value) -> AppResult<Value> {
     run_worker_with_payload(&app, "activate_runtime", Some(payload))
 }
@@ -1256,11 +1265,7 @@ fn write_editor_project(app: &AppHandle, project: &Value) -> AppResult<Value> {
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::Worker("missing editor project id".into()))?;
     let dir = editor_project_dir(app, project_id)?;
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(
-        dir.join("project.json"),
-        serde_json::to_string_pretty(project)?,
-    )?;
+    storage::write_json_file(&dir.join("project.json"), project)?;
     Ok(project.clone())
 }
 
@@ -1953,8 +1958,20 @@ pub async fn export_editor_mix(app: AppHandle, payload: Value) -> AppResult<Valu
 }
 
 #[tauri::command]
-pub async fn run_audio_tool(app: AppHandle, payload: Value) -> AppResult<Value> {
-    run_worker_with_payload(&app, "audio_tools", Some(payload))
+pub async fn start_audio_tool(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> AppResult<Value> {
+    let task_id = payload
+        .get("requestId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::Worker("missing audio tool request id".into()))?
+        .to_string();
+    spawn_worker_background(app, state, "audio_tools", task_id.clone(), payload)?;
+    Ok(serde_json::json!({ "taskId": task_id, "started": true }))
 }
 
 #[tauri::command]
@@ -1985,6 +2002,9 @@ pub async fn cancel_task(
                 tasks.remove(&id);
                 cancelled_task_ids.push(id);
             }
+        }
+        if let Ok(mut cancelled) = state.cancelled_tasks.lock() {
+            cancelled.extend(cancelled_task_ids.iter().cloned());
         }
         if let Ok(mut child) = child.lock() {
             let pid = child.id();

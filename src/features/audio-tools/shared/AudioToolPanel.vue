@@ -28,6 +28,7 @@ const state = runtime.stateFor(props.tool)
       <p>{{ statusHint }}</p>
       <AudioToolStatus
         :busy="state.busy"
+        :cancelling="state.cancelling"
         :has-result="state.hasResult"
         :error="state.error"
         :progress="state.progress"
@@ -35,6 +36,7 @@ const state = runtime.stateFor(props.tool)
         :result="state.result"
         :elapsed-ms="state.elapsedMs"
         :logs="state.logs"
+        @cancel="runtime.cancel"
         @reveal="runtime.revealPath"
       >
         <template v-if="$slots.result" #result="slotProps: { result: AudioToolResult }">

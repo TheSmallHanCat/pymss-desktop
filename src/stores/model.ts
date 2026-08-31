@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { loadAppStore, saveAppStore } from '@/utils/appStore'
+import { isTauriRuntime, loadAppStore, saveAppStore } from '@/utils/appStore'
 import { matchesModelQuery } from '@/utils/modelSearch'
 import { matchesModelSource, type ModelSourceFilter } from '@/utils/modelSource'
 import { useAppStore } from '@/stores/app'
+import { registerWindowCloseGuard } from '@/utils/windowCloseGuards'
 
 /** How the model library lays its entries out. */
 export type ModelViewMode = 'card' | 'list'
@@ -1543,6 +1544,28 @@ export const useModelStore = defineStore('model', () => {
     await loadModels()
     return result
   }
+
+  // Model downloads/imports/deletions use background workers but are not part of
+  // the separation task list. Stop any active worker before the main window closes.
+  registerWindowCloseGuard(async () => {
+    if (!isTauriRuntime()) return
+    const taskIds = new Set<string>()
+    Object.values(downloadTasks.value).forEach((task) => {
+      if (['preparing', 'downloading'].includes(task.status)) taskIds.add(task.taskId)
+    })
+    Object.values(deleteTasks.value).forEach((task) => {
+      if (task.status === 'deleting') taskIds.add(task.taskId)
+    })
+    if (residualCleanupState.value.active && residualCleanupState.value.taskId) {
+      taskIds.add(residualCleanupState.value.taskId)
+    }
+    if (customImportState.value.status === 'importing' && customImportState.value.taskId) {
+      taskIds.add(customImportState.value.taskId)
+    }
+    await Promise.all([...taskIds].map((taskId) =>
+      invoke<boolean>('cancel_task', { taskId }).catch(() => false),
+    ))
+  }, 70)
 
   return {
     initialized,

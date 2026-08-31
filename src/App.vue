@@ -15,6 +15,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-shell'
 import { useWorkflowStore } from '@/stores/workflow'
 import { activeRuntimeEnvironment, runtimeBackendLabel, runtimeCoreUpdateAvailable as hasRuntimeCoreUpdate } from '@/utils/runtime'
+import { connectWorkerEvents } from '@/utils/events'
 
 const settings = useSettingsStore()
 const app = useAppStore()
@@ -93,6 +94,12 @@ function startBackgroundWarmups() {
     if (!app.envInfo && !app.envLoading) {
       app.checkEnvInBackground().catch(() => {})
     }
+  })
+}
+
+async function reconnectWorkerEvents() {
+  await connectWorkerEvents(app).catch((error) => {
+    console.warn('Failed to reconnect worker events', error)
   })
 }
 
@@ -204,6 +211,22 @@ const themeOverrides = computed(() => {
         <div class="app-shell" :class="{ 'app-shell--editor': isStandaloneRoute, 'app-shell--workflow-node-editor': isWorkflowNodeEditorRoute, 'app-shell--native-titlebar': isMacOS, 'no-animations': !settings.animationsEnabled }">
           <div class="app-backdrop" />
           <TitleBar v-if="!isWorkflowNodeEditorRoute" />
+          <div v-if="app.workerEventConnectionStatus === 'error'" class="worker-event-alert">
+            <n-alert type="error" :show-icon="true">
+              <template #header>{{ t('app.workerConnectionFailed') }}</template>
+              <div class="worker-event-alert__content">
+                <span>{{ t('app.workerConnectionFailedDetail') }}</span>
+                <n-button
+                  size="small"
+                  secondary
+                  type="error"
+                  @click="reconnectWorkerEvents"
+                >
+                  {{ t('app.workerConnectionRetry') }}
+                </n-button>
+              </div>
+            </n-alert>
+          </div>
           <div class="app-body">
             <SideNav v-if="!isStandaloneRoute" />
             <main class="app-content">
@@ -354,6 +377,30 @@ const themeOverrides = computed(() => {
 .boot-fade-enter-from,
 .boot-fade-leave-to {
   opacity: 0;
+}
+
+.worker-event-alert {
+  position: absolute;
+  z-index: 110;
+  top: 52px;
+  left: 50%;
+  width: min(620px, calc(100vw - 32px));
+  transform: translateX(-50%);
+}
+
+.worker-event-alert__content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+@media (max-width: 640px) {
+  .worker-event-alert__content {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
 }
 
 .update-install-modal {

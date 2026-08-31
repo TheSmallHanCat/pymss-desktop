@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
+import { computed, onMounted, provide, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { audioTools } from '@/features/audio-tools/registry'
 import { audioToolRuntimeKey, createAudioToolRuntime } from '@/features/audio-tools/runtime'
@@ -23,7 +23,6 @@ const categories: Array<{ id: AudioToolCategory; titleKey: string }> = [
 const toolsByCategory = (category: AudioToolCategory) => audioTools.filter(tool => tool.category === category && !tool.hidden)
 let restored = false
 onMounted(async () => { const stored = await loadAudioToolsState(); if (stored?.activeTool && audioTools.some(tool => tool.id === stored.activeTool && !tool.hidden)) activeTool.value = stored.activeTool; restored = true; await runtime.start() })
-onUnmounted(() => runtime.stop())
 watch(activeTool, value => { if (restored) void updateAudioToolsState({ activeTool: value }) })
 </script>
 <template><div class="page tools-page audio-tools-page"><div class="page-header-compact"><div><h1>{{ t('tools.title') }}</h1><p>{{ t('tools.subtitle') }}</p></div></div>

@@ -27,13 +27,26 @@ export function runtimeBackendLabel(backend: RuntimeBackend | string | null | un
   const key = String(backend || '')
   return isKnownRuntimeBackend(key) ? RUNTIME_BACKEND_LABELS[key] : key.toUpperCase()
 }
+
+function runtimePathKey(path: string | null | undefined) {
+  let value = String(path || '').trim()
+  if (!value) return ''
+  if (/^\\\\\?\\UNC\\/i.test(value)) value = `\\\\${value.slice(8)}`
+  else if (/^\\\\\?\\/.test(value)) value = value.slice(4)
+  const windowsPath = /^[a-z]:[\\/]/i.test(value) || /^\\\\/.test(value)
+  if (windowsPath) return value.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase()
+  return value.replace(/\/+$/, '')
+}
+
 export function activeRuntimeEnvironment(info: RuntimeInfo | null | undefined): InstalledRuntime | undefined {
   const environments = info?.installedEnvironments || []
   const activeBackend = String(info?.installedBackend || info?.installState?.backend || '')
   if (activeBackend) {
     const activePythonPath = String(info?.installState?.pythonPath || '')
     const candidates = environments.filter((entry) => entry.backend === activeBackend)
-    return candidates.find((entry) => entry.pythonPath === activePythonPath) || candidates[0]
+    if (!activePythonPath) return candidates.length === 1 ? candidates[0] : undefined
+    const activePathKey = runtimePathKey(activePythonPath)
+    return candidates.find((entry) => runtimePathKey(entry.pythonPath) === activePathKey)
   }
 
   const backend = info?.packages?.mlx ? 'mlx' : info?.torchBackend
@@ -47,6 +60,10 @@ export function runtimeEnvironmentForBackend(
   const active = activeRuntimeEnvironment(info)
   // Prioritize the active environment if it matches the backend
   if (active?.backend === backend) return active
+  // An explicitly recorded backend with no matching active path is ambiguous.
+  // Do not silently select an arbitrary environment from the same backend.
+  const recordedBackend = String(info?.installedBackend || info?.installState?.backend || '')
+  if (recordedBackend === backend) return undefined
   // Otherwise return the first matching backend
   return (info?.installedEnvironments || []).find((entry) => entry.backend === backend)
 }
@@ -59,13 +76,11 @@ export function preferredInstalledRuntimeBackend(info: RuntimeInfo | null | unde
   const installed = (info?.installedEnvironments || [])
     .map((entry) => String(entry.backend || ''))
     .filter(isKnownRuntimeBackend)
-  
-  if (installed.length === 1) return installed[0]
-  
-  // When multiple backends exist, check if there's only one unique backend across all sources
+
+  // Multiple environments are safe to select only when they all use the same backend.
   const uniqueBackends = [...new Set(installed)]
   if (uniqueBackends.length === 1) return uniqueBackends[0]
-  
+
   return null
 }
 

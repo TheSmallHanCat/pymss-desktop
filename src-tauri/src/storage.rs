@@ -1,12 +1,21 @@
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use serde_json::Value;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Manager};
+
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
 
 const DATA_ROOT_ENV: &str = "PYMSS_STUDIO_DATA_ROOT";
 const DATA_ROOT_DIR_NAME: &str = ".pymss-studio";
 const LOCAL_DATA_ROOT_DIR_NAME: &str = "data";
+static JSON_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[cfg(windows)]
 const PORTABLE_MARKER_FILE_NAME: &str = "pymss-studio.portable";
 
@@ -233,6 +242,7 @@ fn store_file_name(name: &str) -> AppResult<&'static str> {
         "audio-tools" => Ok("audio-tools.json"),
         "workflow-state" => Ok("workflows.json"),
         "separate-state" => Ok("separate.json"),
+        "update-state" => Ok("update.json"),
         _ => Err(AppError::Worker(format!("unknown app store: {name}"))),
     }
 }
@@ -257,18 +267,83 @@ pub fn write_app_store(app: &AppHandle, name: &str, data: &Value) -> AppResult<(
     write_json_file(&path, data)
 }
 
-fn write_json_file(path: &Path, data: &Value) -> AppResult<()> {
+pub(crate) fn write_json_file(path: &Path, data: &Value) -> AppResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_string_pretty(data)?)?;
+    let content = serde_json::to_vec_pretty(data)?;
+    let sequence = JSON_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("store.json");
+    let temporary = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        sequence,
+    ));
+    let result = (|| -> AppResult<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)?;
+        file.write_all(&content)?;
+        file.sync_all()?;
+        drop(file);
+        replace_file(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(windows)]
+fn replace_file(temporary: &Path, destination: &Path) -> AppResult<()> {
+    if !destination.exists() {
+        std::fs::rename(temporary, destination)?;
+        return Ok(());
+    }
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let temporary = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let replaced = unsafe {
+        ReplaceFileW(
+            destination.as_ptr(),
+            temporary.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if replaced == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(temporary: &Path, destination: &Path) -> AppResult<()> {
+    std::fs::rename(temporary, destination)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_data_root, store_file_name};
+    use super::{
+        resolve_data_root, store_file_name, write_json_file, JSON_WRITE_SEQUENCE,
+    };
+    use serde_json::json;
     use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
 
     fn path(name: &str) -> PathBuf {
         PathBuf::from(name)
@@ -282,6 +357,29 @@ mod tests {
     #[test]
     fn audio_tools_has_a_store_file() {
         assert_eq!(store_file_name("audio-tools").unwrap(), "audio-tools.json");
+    }
+
+    #[test]
+    fn update_state_has_a_store_file() {
+        assert_eq!(store_file_name("update-state").unwrap(), "update.json");
+    }
+
+    #[test]
+    fn json_writes_replace_existing_content_without_leaving_temporary_files() {
+        let root = std::env::temp_dir().join(format!(
+            "pymss-storage-test-{}-{}",
+            std::process::id(),
+            JSON_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        ));
+        let path = root.join("settings.json");
+        write_json_file(&path, &json!({ "value": 1 })).unwrap();
+        write_json_file(&path, &json!({ "value": 2 })).unwrap();
+
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored, json!({ "value": 2 }));
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -1,7 +1,10 @@
 {
   "app": {
     "name": "Pymss Studio",
-    "bootPreparing": "正在初始化工作环境…"
+    "bootPreparing": "正在初始化工作环境…",
+    "workerConnectionFailed": "后台通信连接失败",
+    "workerConnectionFailedDetail": "任务仍可提交，但进度和完成状态可能无法及时更新。请重新连接后再继续操作。",
+    "workerConnectionRetry": "重新连接"
   },
   "nav": {
     "separate": "分离",

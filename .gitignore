@@ -40,6 +40,7 @@ Thumbs.db
 .claude/
 .serena/
 .playwright-mcp/
+.memory/
 
 # Local runtime outputs
 data/

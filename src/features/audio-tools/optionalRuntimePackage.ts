@@ -1,6 +1,7 @@
 import { ref, type Ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { registerWindowCloseGuard } from '../../utils/windowCloseGuards.ts'
 
 export type OptionalPackageStatus = {
   package: string
@@ -213,11 +214,21 @@ function createOptionalRuntimePackage(packageName: string): OptionalRuntimePacka
     if (!busy.value || !taskId.value || cancelling.value) return false
     cancelling.value = true
     try {
-      return await invoke<boolean>('cancel_task', { taskId: taskId.value })
+      const accepted = await invoke<boolean>('cancel_task', { taskId: taskId.value })
+      if (!accepted) {
+        const completion = pending
+        finishOperation()
+        completion?.reject(new Error('Optional package task is no longer running'))
+      }
+      return accepted
     } finally {
       cancelling.value = false
     }
   }
+
+  registerWindowCloseGuard(async () => {
+    if (busy.value) await cancel()
+  }, 70)
 
   return {
     status, checking, busy, error, action, taskId, cancelling, logs, showLog,

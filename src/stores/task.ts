@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, nextTick, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import i18n from '@/i18n'
-import { loadAppStore, saveAppStore } from '@/utils/appStore'
+import { isTauriRuntime, loadAppStore, saveAppStore } from '@/utils/appStore'
 import { useSettingsStore } from '@/stores/settings'
 import { useModelStore, type ModelDefaultInferenceParams } from '@/stores/model'
 import { useAppStore } from '@/stores/app'
@@ -13,7 +13,17 @@ import {
   prepareWorkflowDefinitionForRun,
   resolveWorkflowRuntimeDefaults,
 } from '@/workflows/runtimeDefinition'
-export type TaskStatus = 'queued' | 'preparing' | 'validating_input' | 'downloading_model' | 'ensuring_model' | 'loading_model' | 'separating' | 'writing_output' | 'done' | 'failed' | 'cancelled'
+import {
+  isInterruptedTaskStatus,
+  isTerminalTaskStatus,
+  resolveJobStatus,
+  selectQueuedJobGroups,
+  taskJobId,
+  TERMINAL_TASK_STATUSES,
+  type TaskStatus,
+} from '@/features/tasks/lifecycle'
+
+export type { TaskStatus } from '@/features/tasks/lifecycle'
 
 export type OutputLayout = 'folders' | 'flat'
 export type ModelListSortMode = 'usage' | 'recent' | 'favorite' | 'name-asc' | 'name-desc'
@@ -149,8 +159,7 @@ type ModelInferenceUiDefaults = {
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus']
 const VIDEO_EXTENSIONS = ['mp4', 'mkv', 'mov', 'avi', 'webm', 'flv']
 const CURRENT_INFERENCE_PARAMS_VERSION = 3
-const TERMINAL_STATUSES: TaskStatus[] = ['done', 'failed', 'cancelled']
-const INTERRUPTIBLE_STATUSES: TaskStatus[] = ['queued', 'preparing', 'validating_input', 'downloading_model', 'ensuring_model', 'loading_model', 'separating', 'writing_output']
+const TERMINAL_STATUSES: TaskStatus[] = [...TERMINAL_TASK_STATUSES]
 const NORMAL_LOG_LIMIT = 300
 const DEVELOPER_LOG_LIMIT = 1200
 
@@ -326,7 +335,7 @@ function resolveStageProgress(status: TaskStatus, current?: number, total?: numb
 function normalizeTask(task: Partial<SeparationTask>): SeparationTask {
   let status = normalizeStatus(task.status)
   let interrupted = false
-  if (INTERRUPTIBLE_STATUSES.includes(status)) {
+  if (isInterruptedTaskStatus(status)) {
     status = 'failed'
     interrupted = true
   }
@@ -638,10 +647,6 @@ export const useTaskStore = defineStore('task', () => {
     return persistedSeparateModelState.value[String(modelName || '').trim()]
   }
 
-  function taskJobId(task: SeparationTask) {
-    return task.jobId || task.batchId || task.id
-  }
-
   function buildJobs(sourceTasks: SeparationTask[]): SeparationJob[] {
     const groups = new Map<string, SeparationTask[]>()
     sourceTasks.forEach((task) => {
@@ -679,16 +684,6 @@ export const useTaskStore = defineStore('task', () => {
         progress: Math.round(progressTotal / sorted.length),
       }
     })
-  }
-
-  function resolveJobStatus(items: SeparationTask[]): TaskStatus {
-    if (items.some(item => !TERMINAL_STATUSES.includes(item.status))) return 'separating'
-    if (items.every(item => item.status === 'done')) return 'done'
-    if (items.every(item => item.status === 'cancelled')) return 'cancelled'
-    if (items.every(item => item.status === 'failed')) return 'failed'
-    if (items.some(item => item.status === 'done')) return 'done'
-    if (items.some(item => item.status === 'failed')) return 'failed'
-    return 'cancelled'
   }
 
   function getJobById(id: string | null | undefined) {
@@ -1242,14 +1237,20 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   function scheduleQueue() {
-    const available = maxConcurrentSeparations() - activeWorkerTasks.value.length
-    if (available <= 0) return
-    const nextTasks = tasks.value
-      .filter((task) => task.status === 'queued')
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .slice(0, available)
-    nextTasks.forEach((task) => {
-      void startQueuedTask(task.id)
+    // Browser-only previews cannot start a Rust worker. Keep restored queue items
+    // intact until the desktop runtime is available instead of failing them on boot.
+    if (!isTauriRuntime()) return
+    const nextJobs = selectQueuedJobGroups(tasks.value, maxConcurrentSeparations())
+    nextJobs.forEach((jobTasks) => {
+      if (jobTasks.length === 1) {
+        void startQueuedTask(jobTasks[0].id)
+        return
+      }
+      if (jobTasks[0].runConfig?.runMode === 'workflow') {
+        void startWorkflowBatchWorker(jobTasks)
+      } else {
+        void startBatchWorker(jobTasks)
+      }
     })
   }
 
@@ -1293,6 +1294,9 @@ export const useTaskStore = defineStore('task', () => {
       const stage = normalizeStatus(event.payload?.stage)
       setTaskStatus(taskId, stage, event.payload?.message || STAGE_META[stage].label, event.payload?.progress)
     } else if (event.type === 'task_progress') {
+      // Terminal states are monotonic. A worker may flush a progress line after
+      // cancellation or failure has already been observed; never resurrect it.
+      if (isTerminalTaskStatus(task.status)) return
       const stage = normalizeStatus(event.payload?.stage)
       const done = Number(event.payload?.done)
       const total = Number(event.payload?.total)
@@ -1316,7 +1320,7 @@ export const useTaskStore = defineStore('task', () => {
       const message = String(event.payload?.message || '')
       appendTaskLogs(task, settings.developerMode ? `[${level}] ${message}` : `${level}: ${message}`)
     } else if (event.type === 'error') {
-      if (task.status === 'cancelled') return
+      if (isTerminalTaskStatus(task.status)) return
       const codeValue = event.payload?.code
       const code = codeValue ? `[${codeValue}] ` : ''
       const message = resolveTaskErrorMessage(codeValue, event.payload?.message, task.input)
@@ -1338,6 +1342,7 @@ export const useTaskStore = defineStore('task', () => {
       if (!recoverable) markTaskFinished(task)
       appendTaskLogs(task, [`error: ${code}${message}`, detail ? `traceback:\n${detail}` : ''])
     } else if (event.type === 'task_done') {
+      if (isTerminalTaskStatus(task.status)) return
       task.status = 'done'
       markTaskStarted(task)
       task.message = 'Done'
@@ -1359,6 +1364,7 @@ export const useTaskStore = defineStore('task', () => {
       markTaskFinished(task, task.updatedAt)
       queuePersist()
     } else if (event.type === 'task_cancelled') {
+      if (isTerminalTaskStatus(task.status)) return
       task.status = 'cancelled'
       markTaskStarted(task)
       task.message = event.payload?.message || 'Cancelled'
@@ -1811,7 +1817,6 @@ export const useTaskStore = defineStore('task', () => {
     const targets = [...inputFiles.value]
     const jobId = createRunId('job')
     const settings = useSettingsStore()
-    const batchMode = targets.length > 1
     const outputLayout = normalizeOutputLayout(options.outputLayout)
     const jobOutput = normalizeOutputPath(options.outputDir || settings.outputDir)
     const outputNaming = normalizeOutputNaming(options.outputNaming)
@@ -1826,11 +1831,7 @@ export const useTaskStore = defineStore('task', () => {
       outputNaming,
     ))
     modelStore.recordModelUse(model)
-    if (batchMode) {
-      void startBatchWorker(createdTasks)
-    } else {
-      scheduleQueue()
-    }
+    scheduleQueue()
     return { succeeded: targets.length, failed: 0, total: targets.length, jobId, tasks: createdTasks }
   }
 
@@ -1896,7 +1897,6 @@ export const useTaskStore = defineStore('task', () => {
       throw new Error(i18n.global.t('separate.startHintNoInput'))
     }
     const jobId = createRunId('job')
-    const batchMode = targets.length > 1
     const outputLayout = normalizeOutputLayout(options.outputLayout)
     const jobOutput = normalizeOutputPath(options.outputDir || settings.outputDir)
     const outputNaming = normalizeOutputNaming(options.outputNaming)
@@ -1908,11 +1908,7 @@ export const useTaskStore = defineStore('task', () => {
       outputLayout,
       outputNaming,
     ))
-    if (batchMode) {
-      void startWorkflowBatchWorker(createdTasks)
-    } else {
-      scheduleQueue()
-    }
+    scheduleQueue()
     return { succeeded: targets.length, failed: 0, total: targets.length, jobId, tasks: createdTasks }
   }
   async function retryTask(taskId: string) {

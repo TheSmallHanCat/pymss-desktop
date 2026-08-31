@@ -4,7 +4,7 @@ import App from './App.vue'
 import router from './router'
 import i18n from './i18n'
 import { initTheme } from './utils/theme'
-import { registerWorkerEvents } from './utils/events'
+import { connectWorkerEvents } from './utils/events'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 import { useUpdateStore } from '@/stores/update'
@@ -34,13 +34,16 @@ async function bootstrap() {
   await tasks.initialize().catch((error) => {
     console.warn('Failed to initialize tasks', error)
   })
+  const workerEventsReady = connectWorkerEvents(appState)
   mounted()
+  await workerEventsReady.catch((error) => {
+    console.warn('Failed to register worker events', error)
+  })
 
   const models = await import('@/stores/model').then((mod) => mod.useModelStore(pinia))
   const workflows = await import('@/stores/workflow').then((mod) => mod.useWorkflowStore(pinia))
   await Promise.allSettled([models.initialize(), workflows.initialize()])
   initTheme(settings.themeMode, settings.themeAccent)
-  registerWorkerEvents()
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     const buildInfo = await invoke<{ version?: string; variant?: string; updateSupported?: boolean }>('get_build_info')

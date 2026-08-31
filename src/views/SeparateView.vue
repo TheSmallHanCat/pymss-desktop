@@ -29,6 +29,7 @@ import {
   ListOutline,
 } from '@vicons/ionicons5'
 import { useTaskStore, type ModelListSortMode, type OutputLayout, type SeparationTask, type StemOutput } from '@/stores/task'
+import { resolveJobStatus } from '@/features/tasks/lifecycle'
 import { useWorkflowStore, type WorkflowEntry } from '@/stores/workflow'
 import { WORKFLOW_FORMAT_VERSION } from '@/workflows/formats'
 import {
@@ -526,14 +527,10 @@ const currentBatchIsMulti = computed(() => currentBatchTotal.value > 1)
 const taskPanelState = computed<'ready' | 'running' | 'done' | 'failed' | 'cancelled'>(() => {
   const items = currentBatchTasks.value
   if (!items.length) return 'ready'
-  if (items.some(item => !['done', 'failed', 'cancelled'].includes(item.status))) return 'running'
-  if (items.every(item => item.status === 'done')) return 'done'
-  if (items.every(item => item.status === 'cancelled')) return 'cancelled'
-  if (items.every(item => item.status === 'failed')) return 'failed'
-  if (items.some(item => item.status === 'done')) return 'done'
-  if (items.some(item => item.status === 'failed')) return 'failed'
-  if (items.some(item => item.status === 'cancelled')) return 'cancelled'
-  return 'running'
+  const status = resolveJobStatus(items)
+  return ['done', 'failed', 'cancelled'].includes(status)
+    ? status as 'done' | 'failed' | 'cancelled'
+    : 'running'
 })
 const isConfigCompact = computed(() => taskPanelState.value !== 'ready')
 const isTerminalState = computed(() => ['done', 'failed', 'cancelled'].includes(taskPanelState.value))
