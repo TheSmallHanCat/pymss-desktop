@@ -5,6 +5,7 @@ import importlib.util
 import os
 import re
 import sys
+import time
 from contextlib import contextmanager, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
@@ -96,13 +97,39 @@ def _write_debug_line(path: str | None, line: str, max_bytes: int) -> None:
 
 def emit(event_type: str, payload: dict[str, Any] | None = None, *, request_id: str | None = None, task_id: str | None = None) -> None:
     payload = payload or {}
-    print(json.dumps({
+    message = json.dumps({
         "type": event_type,
         "requestId": request_id,
         "taskId": task_id,
         "timestamp": now_iso(),
         "payload": payload,
-    }, ensure_ascii=False), file=_PROTOCOL_STDOUT or sys.stdout, flush=True)
+    }, ensure_ascii=False)
+    stream = _PROTOCOL_STDOUT or sys.stdout
+    # Windows can transiently return ``[Errno 22] Invalid argument`` when the parent
+    # is draining a worker pipe while a long-running pip process is still producing output.
+    # A failed telemetry write must not turn a successful installation into a worker failure;
+    # retry the write briefly before surfacing a genuinely closed/broken pipe.
+    for attempt in range(3):
+        try:
+            _write_protocol_message(stream, message)
+            return
+        except OSError as error:
+            retryable = isinstance(error, BrokenPipeError) or error.errno in {5, 22, 32, 33}
+            if not retryable or attempt == 2:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def _write_protocol_message(stream: TextIO, message: str) -> None:
+    # Writing bytes avoids another Windows TextIOWrapper flush failure for redirected stdout;
+    # StringIO and other test/custom streams still use their regular text interface.
+    buffer = getattr(stream, "buffer", None)
+    if buffer is not None:
+        buffer.write((message + "\n").encode("utf-8"))
+        buffer.flush()
+    else:
+        stream.write(message + "\n")
+        stream.flush()
 
 
 def emit_error(

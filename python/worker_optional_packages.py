@@ -202,13 +202,22 @@ def _run_process(
     )
     assert process.stdout is not None
     recent: list[str] = []
-    for line in process.stdout:
-        message = line.rstrip()
-        if not message:
-            continue
-        recent.append(message)
-        recent = recent[-8:]
-        emit("optional_package_log", {"package": name, "action": action, "message": message}, task_id=task_id)
+    try:
+        for line in process.stdout:
+            message = line.rstrip()
+            if not message:
+                continue
+            recent.append(message)
+            recent = recent[-8:]
+            emit("optional_package_log", {"package": name, "action": action, "message": message}, task_id=task_id)
+    except Exception:
+        # A closed protocol pipe must also stop pip. Otherwise the failed worker leaves an
+        # installer running, and a second click can appear to fix the problem only because the
+        # orphaned first process finished writing the package in the background.
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        raise
     if process.wait() != 0:
         detail = recent[-1] if recent else f"pip exited with code {process.returncode}"
         raise RuntimeError(detail)

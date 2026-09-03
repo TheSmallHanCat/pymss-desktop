@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
   "description": "Main window permissions for Pymss Studio",
-  "windows": ["main", "editor-*", "workflow-node-editor-*"],
+  "windows": ["main", "editor-*", "workflow-node-editor-*", "workflow-simple-editor-*"],
   "permissions": [
     "core:default",
     "core:window:default",

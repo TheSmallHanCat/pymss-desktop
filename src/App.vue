@@ -36,10 +36,14 @@ const manualUpdateError = ref('')
 const runtimeCorePromptVisible = ref(false)
 const runtimeCorePromptShown = ref(false)
 let unlistenNodeEditorClosed: UnlistenFn | undefined
+let unlistenSimpleEditorClosed: UnlistenFn | undefined
+let unlistenSimpleEditorAction: UnlistenFn | undefined
 
 const isDark = computed(() => themeIsDark.value)
-const isStandaloneRoute = computed(() => route.path === '/editor' || route.path === '/workflow-node-editor')
+const isStandaloneRoute = computed(() => route.path === '/editor' || route.path === '/workflow-node-editor' || route.path === '/workflow-simple-editor')
 const isWorkflowNodeEditorRoute = computed(() => route.path === '/workflow-node-editor')
+const isWorkflowSimpleEditorRoute = computed(() => route.path === '/workflow-simple-editor')
+const isWorkflowEditorRoute = computed(() => isWorkflowNodeEditorRoute.value || isWorkflowSimpleEditorRoute.value)
 const isMacOS = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)
 const resolvedTheme = computed(() => {
   void isDark.value
@@ -74,11 +78,41 @@ const runtimeCorePromptContent = computed(() => t(
   },
 ))
 
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—'
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  const units = ['KB', 'MB', 'GB']
+  let value = bytes / 1024
+  let unit = units[0]
+  for (let index = 1; index < units.length && value >= 1024; index += 1) {
+    value /= 1024
+    unit = units[index]
+  }
+  return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${unit}`
+}
+
+function formatDuration(seconds: number | null) {
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return '—'
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return `${minutes}m ${remainder}s`
+}
+
+const downloadBytesLabel = computed(() => {
+  const downloaded = formatBytes(updates.downloadDownloadedBytes)
+  const total = updates.downloadTotalBytes > 0 ? formatBytes(updates.downloadTotalBytes) : '—'
+  return `${downloaded} / ${total}`
+})
+const downloadSpeedLabel = computed(() => formatBytes(updates.downloadSpeedBytesPerSecond) + '/s')
+const downloadEtaLabel = computed(() => formatDuration(updates.downloadEtaSeconds))
+
 const routeWarmupLoaders = [
   () => import('@/views/SeparateView.vue'),
   () => import('@/views/ModelsView.vue'),
   () => import('@/views/WorkflowsView.vue'),
   () => import('@/views/WorkflowNodeEditorView.vue'),
+  () => import('@/views/WorkflowSimpleEditorView.vue'),
   () => import('@/views/ResultsView.vue'),
   () => import('@/views/ToolsView.vue'),
   () => import('@/views/SettingsView.vue'),
@@ -141,7 +175,7 @@ async function openManualUpdate() {
 }
 
 function showRuntimeCorePrompt() {
-  if (runtimeCorePromptShown.value || !bootReady.value || !runtimeCoreUpdateAvailable.value) return
+  if (runtimeCorePromptShown.value || !bootReady.value || isStandaloneRoute.value || !runtimeCoreUpdateAvailable.value) return
   runtimeCorePromptShown.value = true
   runtimeCorePromptVisible.value = true
 }
@@ -184,11 +218,32 @@ onMounted(async () => {
       workflow.markNodeEditorClosed()
       void workflow.reload()
     })
+    unlistenSimpleEditorClosed = await listen('pymss://workflow-simple-editor-closed', () => {
+      workflow.markSimpleEditorClosed()
+      void workflow.reload()
+    })
+    unlistenSimpleEditorAction = await listen<{ action?: string; workflowId?: string }>('pymss://workflow-simple-editor-action', async (event) => {
+      // `WebviewWindow.emit` broadcasts to every webview.  Only the main
+      // window should react to an editor action; handling it inside the
+      // standalone editor would replace that window with the main route just
+      // before it is closed.
+      if (isStandaloneRoute.value) return
+      const payload = event.payload || {}
+      if (payload.action === 'run') {
+        // The editor has its own Pinia instance, so a newly-created workflow
+        // is not present in this window until the shared store is reloaded.
+        await workflow.reload()
+        if (payload.workflowId) workflow.selectWorkflow(payload.workflowId)
+        void router.push({ path: '/', query: { mode: 'workflow' } })
+      }
+    })
   }
 })
 
 onUnmounted(() => {
   unlistenNodeEditorClosed?.()
+  unlistenSimpleEditorClosed?.()
+  unlistenSimpleEditorAction?.()
 })
 
 watch([bootReady, showStartupOnboarding], () => {
@@ -203,7 +258,11 @@ watch([bootReady, () => updates.requiresManualInstall, () => updates.latestVersi
   showManualUpdatePrompt()
 }, { immediate: true })
 
-watch([bootReady, runtimeCoreUpdateAvailable], () => {
+watch([bootReady, isStandaloneRoute, runtimeCoreUpdateAvailable], () => {
+  if (isStandaloneRoute.value) {
+    runtimeCorePromptVisible.value = false
+    return
+  }
   showRuntimeCorePrompt()
 }, { immediate: true })
 
@@ -218,9 +277,9 @@ const themeOverrides = computed(() => {
     <n-notification-provider>
       <n-message-provider>
         <n-dialog-provider>
-        <div class="app-shell" :class="{ 'app-shell--editor': isStandaloneRoute, 'app-shell--workflow-node-editor': isWorkflowNodeEditorRoute, 'app-shell--native-titlebar': isMacOS, 'no-animations': !settings.animationsEnabled }">
+        <div class="app-shell" :class="{ 'app-shell--editor': isStandaloneRoute, 'app-shell--workflow-node-editor': isWorkflowEditorRoute, 'app-shell--native-titlebar': isMacOS, 'no-animations': !settings.animationsEnabled }">
           <div class="app-backdrop" />
-          <TitleBar v-if="!isWorkflowNodeEditorRoute" />
+          <TitleBar v-if="!isWorkflowEditorRoute" />
           <div v-if="app.workerEventConnectionStatus === 'error'" class="worker-event-alert">
             <n-alert type="error" :show-icon="true">
               <template #header>{{ t('app.workerConnectionFailed') }}</template>
@@ -241,7 +300,7 @@ const themeOverrides = computed(() => {
             <SideNav v-if="!isStandaloneRoute" />
             <main class="app-content">
               <router-view v-slot="{ Component, route }">
-                <component v-if="isWorkflowNodeEditorRoute" :is="Component" :key="route.fullPath" />
+                <component v-if="isWorkflowEditorRoute" :is="Component" :key="route.fullPath" />
                 <transition v-else name="page" mode="out-in">
                   <keep-alive include="ToolsView">
                     <component :is="Component" :key="route.path" />
@@ -325,15 +384,30 @@ const themeOverrides = computed(() => {
               :show-indicator="updates.downloadTotalBytes > 0"
               status="success"
             />
-            <p v-if="updates.status === 'downloading' && updates.downloadTotalBytes > 0" class="update-install-panel__meta">
-              {{ t('settings.updateDownloadProgress', { percent: updates.downloadProgressPercent }) }}
-            </p>
+            <div v-if="updates.status === 'downloading'" class="update-install-panel__stats">
+              <span>{{ t('settings.updateDownloadProgress', { percent: updates.downloadProgressPercent }) }}</span>
+              <span>{{ downloadBytesLabel }}</span>
+              <span>{{ t('settings.updateDownloadSpeed', { speed: downloadSpeedLabel }) }}</span>
+              <span>{{ t('settings.updateDownloadEta', { eta: downloadEtaLabel }) }}</span>
+            </div>
             <p v-else-if="updates.status === 'installing'" class="update-install-panel__meta">
               {{ t('settings.updateInstallRestarting') }}
             </p>
             <n-alert v-if="updates.status === 'failed' && updates.error" type="error" :bordered="false">
               {{ updates.error }}
             </n-alert>
+            <section v-if="updates.downloadLogs.length" class="update-install-panel__logs" aria-live="polite">
+              <div class="update-install-panel__logs-head">
+                <strong>{{ t('settings.updateDownloadLogs') }}</strong>
+                <span>{{ t('settings.updateDownloadLogHint') }}</span>
+              </div>
+              <div class="update-install-panel__log-list">
+                <div v-for="(entry, index) in updates.downloadLogs" :key="`${entry.at}-${index}`" class="update-install-panel__log-line">
+                  <time>{{ entry.at }}</time>
+                  <span>{{ entry.message }}</span>
+                </div>
+              </div>
+            </section>
             <div v-if="updates.status === 'failed'" class="update-install-panel__actions">
               <n-button secondary @click="updates.dismissInstallError()">{{ t('common.close') }}</n-button>
             </div>
@@ -414,12 +488,15 @@ const themeOverrides = computed(() => {
 }
 
 .update-install-modal {
-  width: min(440px, calc(100vw - 32px));
+  width: min(620px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
 }
 
 .update-install-panel {
   display: grid;
   gap: 16px;
+  max-height: min(640px, calc(100vh - 96px));
+  overflow-y: auto;
 }
 
 .update-install-panel__head {
@@ -442,8 +519,96 @@ const themeOverrides = computed(() => {
   margin: -6px 0 0;
 }
 
+.update-install-panel__stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--outline) 68%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 74%, transparent);
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.update-install-panel__stats span:nth-child(2n) {
+  color: var(--on-surface);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.update-install-panel__logs {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.update-install-panel__logs-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.update-install-panel__logs-head strong {
+  color: var(--on-surface);
+  font-size: 12px;
+}
+
+.update-install-panel__logs-head span {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+}
+
+.update-install-panel__log-list {
+  display: grid;
+  gap: 4px;
+  max-height: 148px;
+  overflow-y: auto;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--outline) 58%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-3) 58%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.update-install-panel__log-line {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  color: var(--on-surface-muted);
+}
+
+.update-install-panel__log-line time {
+  color: var(--primary-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.update-install-panel__log-line span {
+  overflow-wrap: anywhere;
+}
+
 .update-install-panel__actions {
   display: flex;
   justify-content: flex-end;
+}
+
+@media (max-width: 520px) {
+  .update-install-panel__stats {
+    grid-template-columns: 1fr;
+  }
+
+  .update-install-panel__stats span:nth-child(2n) {
+    text-align: left;
+  }
+
+  .update-install-panel__logs-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
 }
 </style>

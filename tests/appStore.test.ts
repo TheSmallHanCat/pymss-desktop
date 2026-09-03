@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { afterEach, beforeEach, describe, it } from 'node:test'
-import { saveAppStore } from '../src/utils/appStore.ts'
+import { loadAppStore, saveAppStore } from '../src/utils/appStore.ts'
 
 const values = new Map<string, string>()
 
@@ -45,6 +45,23 @@ describe('app store persistence', () => {
 
     assert.deepEqual(JSON.parse(values.get('pymss-studio:model-state') || 'null'), {
       revision: 2,
+    })
+  })
+
+  it('falls back to local storage for update state on an older backend', async () => {
+    const invoke = async () => {
+      throw 'worker error: unknown app store: update-state'
+    }
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { __TAURI_INTERNALS__: { invoke } },
+    })
+    values.set('pymss-studio:update-state', JSON.stringify({ deferredVersion: '0.0.14' }))
+
+    assert.deepEqual(await loadAppStore('update-state'), { deferredVersion: '0.0.14' })
+    await saveAppStore('update-state', { lastAcceptedVersion: '0.0.14' })
+    assert.deepEqual(JSON.parse(values.get('pymss-studio:update-state') || 'null'), {
+      lastAcceptedVersion: '0.0.14',
     })
   })
 })

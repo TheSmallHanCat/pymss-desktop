@@ -130,7 +130,7 @@ test('adapter preserves editor metadata required by workflow round-trips', () =>
     config: { alignToGrid: true },
     extra: {
       appDefaults: { device: 'cuda', output_format: 'flac' },
-      pymssStudio: { convertedFromFormat: 'simple', sourceWorkflowId: 'workflow-1' },
+      pymssStudio: { editorVersion: 1 },
     },
   }
   const graph = new LGraph()

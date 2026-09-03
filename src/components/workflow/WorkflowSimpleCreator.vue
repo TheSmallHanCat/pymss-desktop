@@ -12,6 +12,7 @@ import type { WorkflowEntry } from '@/stores/workflow'
 import {
   buildSimpleWorkflowDefinition,
   configuredStemsFor,
+  createDefaultSimpleEditorUi,
   createStepDraft,
   hydrateSimpleWorkflow,
   type SimpleDraft,
@@ -27,7 +28,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   save: [payload: SimpleWorkflowSavePayload]
-  'open-advanced': [payload: SimpleWorkflowSavePayload]
   run: [payload: SimpleWorkflowSavePayload]
   duplicate: [payload: SimpleWorkflowSavePayload]
   export: [payload: SimpleWorkflowSavePayload]
@@ -97,16 +97,28 @@ function reconcileConfiguredStems() {
   steps.value.forEach((step) => {
     const stems = configuredStems(step.model)
     if (!stems.length) return
-    if (stems.length === step.stems.length && stems.every((stem, index) => stem === step.stems[index])) return
     const previousSave = step.save || {}
+    const hadSavedStems = Object.keys(previousSave).length > 0
+    const hadConfiguredStems = step.stems.length > 0
     const previousSaveByStem = new Map(Object.entries(previousSave)
       .filter(([, value]) => Boolean(value?.trim()))
       .map(([stem, value]) => [stem.toLowerCase(), value]))
+    const previousNames = step.outputNames || {}
+    const stemsChanged = stems.length !== step.stems.length || stems.some((stem, index) => stem !== step.stems[index])
     step.stems = stems
+    step.outputNames = Object.fromEntries(stems.map(stem => [
+      stem,
+      previousNames[stem] || defaultSaveFileName(),
+    ]))
     step.save = Object.fromEntries(stems
-      .map(stem => [stem, previousSave[stem] || previousSaveByStem.get(stem.toLowerCase()) || ''] as const)
+      .map(stem => [
+        stem,
+        previousSave[stem]
+        || previousSaveByStem.get(stem.toLowerCase())
+        || (!hadSavedStems && !hadConfiguredStems ? 'Default' : ''),
+      ] as const)
       .filter(([, value]) => Boolean(value.trim())))
-    changed = true
+    changed = changed || stemsChanged
   })
   if (changed) clearInvalidInputs()
 }
@@ -132,28 +144,64 @@ function updateStepModel(step: SimpleStepDraft, modelName: string) {
   step.model = modelName
   const stems = configuredStems(modelName)
   step.stems = stems
-  step.save = Object.fromEntries(stems.map(stem => [stem, step.save?.[stem] || stem]))
+  step.outputNames = Object.fromEntries(stems.map(stem => [stem, step.outputNames?.[stem] || defaultSaveFileName()]))
+  step.save = Object.fromEntries(saveableStems(step).map(stem => [stem, step.save?.[stem] || 'Default']))
   clearInvalidInputs()
 }
 
-function savedStems(step: SimpleStepDraft) {
-  return step.stems.filter(stem => Boolean(step.save?.[stem]?.trim()))
+function defaultSaveFileName() {
+  return `%filename%_%stem%_%model%.${defaultFormat.value || 'wav'}`
 }
 
-function updateSaveDirectory(step: SimpleStepDraft, stem: string, value: string | null) {
+function saveableStems(step: SimpleStepDraft) {
+  return step.stems
+}
+
+function savedStems(step: SimpleStepDraft) {
+  return saveableStems(step).filter(stem => Boolean(step.save?.[stem]?.trim()))
+}
+
+function updateSaveFileName(step: SimpleStepDraft, stem: string, value: string | null) {
   if (!savedStems(step).includes(stem)) return
-  step.save = {
-    ...step.save,
-    [stem]: value?.trim() || stem,
-  }
+  step.outputNames = { ...step.outputNames, [stem]: value?.trim() || defaultSaveFileName() }
 }
 
 function updateSavedStems(step: SimpleStepDraft, values: string[]) {
   const selected = new Set(values)
-  step.save = Object.fromEntries(step.stems
+  step.save = Object.fromEntries(saveableStems(step)
     .filter(stem => selected.has(stem))
-    .map(stem => [stem, step.save?.[stem] || stem]))
+    .map(stem => [stem, step.save?.[stem] || 'Default']))
 }
+
+function syncSaveTargets() {
+  steps.value.forEach((step) => {
+    step.save = Object.fromEntries(Object.entries(step.save || {})
+      .filter(([stem, value]) => step.stems.includes(stem) && Boolean(value?.trim())))
+    step.stems.forEach((stem) => {
+      if (!step.outputNames?.[stem]?.trim()) {
+        step.outputNames = { ...step.outputNames, [stem]: defaultSaveFileName() }
+      }
+    })
+  })
+}
+
+watch(() => steps.value.map(step => `${step.id}:${step.input}:${step.stems.join(',')}`).join('|'), () => syncSaveTargets())
+watch(defaultFormat, (next, previous) => {
+  if (!previous || next === previous) return
+  const previousDefault = `%filename%_%stem%_%model%.${previous}`
+  const nextDefault = `%filename%_%stem%_%model%.${next}`
+  steps.value.forEach((step) => {
+    const outputNames = { ...step.outputNames }
+    let changed = false
+    Object.entries(outputNames).forEach(([stem, value]) => {
+      if (value === previousDefault) {
+        outputNames[stem] = nextDefault
+        changed = true
+      }
+    })
+    if (changed) step.outputNames = outputNames
+  })
+})
 
 function addStep() {
   steps.value.push(createStepDraft(steps.value.length))
@@ -170,6 +218,7 @@ const generatedDefinition = computed(() => buildSimpleWorkflowDefinition({
   defaultFormat: defaultFormat.value,
   defaultNormalize: defaultNormalize.value,
   steps: steps.value,
+  ui: createDefaultSimpleEditorUi(steps.value),
 }))
 
 const formError = computed(() => {
@@ -184,6 +233,7 @@ const formError = computed(() => {
     }
     if (!step.stems.length) return t('workflows.stepStemsRequired', { id: label })
   }
+  if (!steps.value.some(step => savedStems(step).length)) return t('workflows.stepSaveRequired', { id: t('workflows.finalOutput') })
   // Deep validation (model availability, step graph) is delegated to pymss at run time.
   return ''
 })
@@ -211,9 +261,6 @@ function payload(): SimpleWorkflowSavePayload {
       </div>
       <div class="simple-creator__actions">
         <n-button secondary @click="emit('cancel')">{{ t('common.cancel') }}</n-button>
-        <n-button secondary :disabled="!canSubmit" @click="emit('open-advanced', payload())">
-          {{ t('workflows.convertToAdvancedCopy') }}
-        </n-button>
         <n-button type="primary" :loading="saving" :disabled="!canSubmit" @click="emit('save', payload())">
           {{ t('common.save') }}
         </n-button>
@@ -285,20 +332,20 @@ function payload(): SimpleWorkflowSavePayload {
               :value="savedStems(step)"
               multiple
               filterable
-              :options="step.stems.map(stem => ({ label: stem, value: stem }))"
+              :options="saveableStems(step).map(stem => ({ label: stem, value: stem }))"
               :placeholder="t('workflows.saveStemsPlaceholder')"
               @update:value="updateSavedStems(step, $event)"
             />
           </label>
           <div v-if="savedStems(step).length" class="simple-step__filenames">
-            <span>{{ t('workflows.saveDirectory') }}</span>
+            <span>{{ t('workflows.saveFilename') }}</span>
             <label v-for="stem in savedStems(step)" :key="`${step.id}:${stem}`">
               <span>{{ stem }}</span>
               <n-input
-                :value="step.save[stem]"
+                :value="step.outputNames[stem]"
                 size="small"
-                :placeholder="stem"
-                @update:value="(value: string) => updateSaveDirectory(step, stem, value)"
+                :placeholder="defaultSaveFileName()"
+                @update:value="(value: string) => updateSaveFileName(step, stem, value)"
               />
             </label>
           </div>
@@ -389,6 +436,8 @@ function payload(): SimpleWorkflowSavePayload {
 }
 
 .simple-creator label { min-width: 0; display: grid; gap: 5px; }
+.simple-creator__switch-row { display: flex; align-items: center; gap: 8px; min-height: 34px; }
+.simple-creator__switch-row small { color: var(--on-surface-muted); font-size: 11px; line-height: 1.35; }
 .simple-creator__description { grid-column: 1 / -1; }
 .simple-creator__steps-head > div { display: grid; gap: 4px; }
 

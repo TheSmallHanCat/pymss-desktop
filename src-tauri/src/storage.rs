@@ -4,6 +4,8 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
 #[cfg(windows)]
@@ -16,6 +18,9 @@ const DATA_ROOT_ENV: &str = "PYMSS_STUDIO_DATA_ROOT";
 const DATA_ROOT_DIR_NAME: &str = ".pymss-studio";
 const LOCAL_DATA_ROOT_DIR_NAME: &str = "data";
 static JSON_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+// Multiple WebView windows can autosave the same store at once. Serialize the temporary-file
+// replacement in the Rust process so a second writer never races the first ReplaceFileW call.
+static JSON_WRITE_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(windows)]
 const PORTABLE_MARKER_FILE_NAME: &str = "pymss-studio.portable";
 
@@ -268,6 +273,9 @@ pub fn write_app_store(app: &AppHandle, name: &str, data: &Value) -> AppResult<(
 }
 
 pub(crate) fn write_json_file(path: &Path, data: &Value) -> AppResult<()> {
+    let _write_guard = JSON_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -314,20 +322,30 @@ fn replace_file(temporary: &Path, destination: &Path) -> AppResult<()> {
         .encode_wide()
         .chain(Some(0))
         .collect::<Vec<_>>();
-    let replaced = unsafe {
-        ReplaceFileW(
-            destination.as_ptr(),
-            temporary.as_ptr(),
-            std::ptr::null(),
-            0,
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    };
-    if replaced == 0 {
-        return Err(std::io::Error::last_os_error().into());
+    for attempt in 0..4 {
+        let replaced = unsafe {
+            ReplaceFileW(
+                destination.as_ptr(),
+                temporary.as_ptr(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        if replaced != 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        // Antivirus/indexer scans and a just-released WebView handle can briefly hold the
+        // destination. Keep the temp file intact and retry only those transient Win32 errors.
+        let retryable = matches!(error.raw_os_error(), Some(5 | 32 | 33));
+        if !retryable || attempt == 3 {
+            return Err(error.into());
+        }
+        std::thread::sleep(Duration::from_millis(40 * (attempt + 1) as u64));
     }
-    Ok(())
+    unreachable!("ReplaceFileW retry loop must return")
 }
 
 #[cfg(not(windows))]

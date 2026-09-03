@@ -14,10 +14,12 @@ import { analyzeWorkflowInputs } from '@/utils/workflowInputs'
  * We now store this directly as a pymss YAML workflow dict:
  *
  *   { version: 1, defaults: { device, output_format, inference_params },
- *     steps: [ { id, model, input, stems, save, inference_params, ... } ] }
+ *     steps: [ { id, model, input, stems, save, output_names, ... } ] }
  *
  * pymss.workflow.load_workflow_data parses this and compile_workflow_to_dag
- * builds the DAG that run_dag executes. No more v2 graph schema in between.
+ * builds the DAG that run_dag executes. ``save`` keeps pymss' directory
+ * contract while ``output_names`` is consumed by the Studio worker to wire
+ * user-facing filename hints into each save node.
  */
 export type SimpleWorkflowSavePayload = {
   id?: string
@@ -38,6 +40,8 @@ export type PymssYamlStep = {
   input: string
   stems: string[]
   save: Record<string, unknown>
+  /** Studio-only filename templates keyed by output stem. */
+  output_names?: Record<string, string>
   inference_params?: Record<string, unknown>
   model_type?: string
   model_path?: string
@@ -56,6 +60,8 @@ export type PymssYamlWorkflow = {
     model_dir?: string | null
     inference_params?: Record<string, unknown>
   }
+  /** Studio-only canvas state; ignored by pymss at runtime. */
+  studio?: SimpleEditorUi
   steps: PymssYamlStep[]
 }
 
@@ -65,6 +71,15 @@ export type SimpleStepDraft = {
   input: string
   stems: string[]
   save: Record<string, string>
+  outputNames: Record<string, string>
+}
+
+export type SimpleEditorPoint = { x: number; y: number }
+
+export type SimpleEditorUi = {
+  editor: 'simple'
+  viewport: { x: number; y: number; zoom: number }
+  nodes: Record<string, SimpleEditorPoint>
 }
 
 export type SimpleDraft = {
@@ -72,6 +87,7 @@ export type SimpleDraft = {
   defaultFormat: string
   defaultNormalize: boolean
   steps: SimpleStepDraft[]
+  ui: SimpleEditorUi
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
@@ -118,7 +134,10 @@ export function analyzeComfyOverview(definition: unknown): ComfyOverview | null 
 /** Read a pymss YAML workflow dict into the editor's draft shape. */
 export function hydrateSimpleWorkflow(definition: unknown): SimpleDraft {
   if (!isRecord(definition) || !Array.isArray(definition.steps)) {
-    return { defaultDevice: 'auto', defaultFormat: 'wav', defaultNormalize: false, steps: [] }
+    return {
+      defaultDevice: 'auto', defaultFormat: 'wav', defaultNormalize: false,
+      steps: [], ui: createDefaultSimpleEditorUi(),
+    }
   }
   const defaults = isRecord(definition.defaults) ? definition.defaults : {}
   const inference = isRecord(defaults.inference_params) ? defaults.inference_params : {}
@@ -131,13 +150,21 @@ export function hydrateSimpleWorkflow(definition: unknown): SimpleDraft {
       stems: raw.stems == null
         ? []
         : (Array.isArray(raw.stems) ? raw.stems : [raw.stems]).map(s => String(s)),
-      save: isRecord(raw.save) ? Object.fromEntries(Object.entries(raw.save).map(([k, v]) => [k, String(v)])) : {},
+      save: isRecord(raw.save)
+        ? Object.fromEntries(Object.entries(raw.save)
+          .filter(([, value]) => value !== false && value !== null && value !== undefined && Boolean(String(value).trim()))
+          .map(([k, v]) => [k, String(v)]))
+        : {},
+      outputNames: isRecord(raw.output_names)
+        ? Object.fromEntries(Object.entries(raw.output_names).map(([k, v]) => [k, String(v)]))
+        : {},
     }))
   return {
     defaultDevice: String(defaults.device || 'auto'),
     defaultFormat: String(defaults.output_format || 'wav'),
     defaultNormalize: Boolean(inference.normalize),
     steps,
+    ui: hydrateSimpleEditorUi(definition.studio, steps),
   }
 }
 
@@ -150,14 +177,64 @@ export function buildSimpleWorkflowDefinition(draft: SimpleDraft): PymssYamlWork
       output_format: draft.defaultFormat || 'wav',
       inference_params: { normalize: Boolean(draft.defaultNormalize) },
     },
+    studio: normalizeSimpleEditorUi(draft.ui, draft.steps),
     steps: draft.steps.map((step, index) => ({
       id: step.id || `step${index + 1}`,
       model: step.model,
       input: step.input || 'input',
       stems: [...step.stems],
       save: { ...step.save },
+      output_names: { ...step.outputNames },
     })),
   }
+}
+
+export function createDefaultSimpleEditorUi(steps: SimpleStepDraft[] = []): SimpleEditorUi {
+  const nodes: Record<string, SimpleEditorPoint> = {
+    input: { x: 64, y: 220 },
+    save: { x: 1040, y: 220 },
+  }
+  steps.forEach((step, index) => {
+    nodes[step.id || `step${index + 1}`] = { x: 360 + index * 330, y: 190 + (index % 2) * 140 }
+  })
+  return { editor: 'simple', viewport: { x: 0, y: 0, zoom: 1 }, nodes }
+}
+
+function hydrateSimpleEditorUi(value: unknown, steps: SimpleStepDraft[]): SimpleEditorUi {
+  const fallback = createDefaultSimpleEditorUi(steps)
+  if (!isRecord(value)) return fallback
+  const viewportValue = isRecord(value.viewport) ? value.viewport : {}
+  const nodeValues = isRecord(value.nodes) ? value.nodes : {}
+  const x = Number(viewportValue.x)
+  const y = Number(viewportValue.y)
+  const zoom = Number(viewportValue.zoom)
+  const nodes = { ...fallback.nodes }
+  Object.entries(nodeValues).forEach(([id, point]) => {
+    if (!isRecord(point)) return
+    const px = Number(point.x)
+    const py = Number(point.y)
+    if (Number.isFinite(px) && Number.isFinite(py)) nodes[id] = { x: Math.round(px), y: Math.round(py) }
+  })
+  steps.forEach((step, index) => {
+    const id = step.id || `step${index + 1}`
+    if (!nodes[id]) nodes[id] = { x: 360 + index * 330, y: 190 + (index % 2) * 140 }
+  })
+  return {
+    editor: 'simple',
+    viewport: {
+      x: Number.isFinite(x) ? x : fallback.viewport.x,
+      y: Number.isFinite(y) ? y : fallback.viewport.y,
+      zoom: Number.isFinite(zoom) && zoom > 0 ? Math.min(2, Math.max(0.35, zoom)) : fallback.viewport.zoom,
+    },
+    nodes,
+  }
+}
+
+function normalizeSimpleEditorUi(value: SimpleEditorUi | undefined, steps: SimpleStepDraft[]): SimpleEditorUi {
+  const hydrated = hydrateSimpleEditorUi(value, steps)
+  const validIds = new Set(['input', 'save', ...steps.map((step, index) => step.id || `step${index + 1}`)])
+  hydrated.nodes = Object.fromEntries(Object.entries(hydrated.nodes).filter(([id]) => validIds.has(id)))
+  return hydrated
 }
 
 export function createStepDraft(index: number): SimpleStepDraft {
@@ -167,7 +244,70 @@ export function createStepDraft(index: number): SimpleStepDraft {
     input: index === 0 ? 'input' : '',
     stems: [],
     save: {},
+    outputNames: {},
   }
+}
+
+const SIMPLE_FILENAME_TOKENS = /%([A-Za-z_][A-Za-z0-9_]*)%/g
+const SIMPLE_AUDIO_SUFFIX = /\.(?:wav|flac|mp3|m4a)$/i
+const SIMPLE_INVALID_FILENAME_CHARS = /[\u0000-\u001f<>:"/\\|?*]+/g
+const SIMPLE_WINDOWS_RESERVED_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`),
+])
+
+export type SimpleOutputFilenamePreviewOptions = {
+  stem: string
+  model?: string
+  stepId?: string
+  index?: number
+  inputName?: string
+  outputFormat?: string
+}
+
+function filenamePart(value: unknown, fallback: string) {
+  const text = String(value || '').trim()
+  if (!text) return fallback
+  const basename = text.split(/[\\/]/).pop() || text
+  return basename.replace(/\.[^.]+$/, '') || fallback
+}
+
+/**
+ * Render the filename shown in the simple editor's save-node preview.
+ *
+ * The editor does not have a runtime input file yet, so `%filename%` uses
+ * `input.wav` as a stable example. Keep this in sync with the worker's
+ * `_render_simple_filename` sanitizer so users see the same extension and
+ * invalid-character handling before they run the workflow.
+ */
+export function renderSimpleOutputFilename(
+  template: unknown,
+  options: SimpleOutputFilenamePreviewOptions,
+) {
+  const inputName = filenamePart(options.inputName, 'input')
+  const model = filenamePart(options.model, 'model')
+  const stem = String(options.stem || '').trim() || 'output'
+  const stepId = String(options.stepId || '').trim() || 'step'
+  const index = String(Math.max(1, Number(options.index) || 1))
+  const format = String(options.outputFormat || 'wav').trim().replace(/^\./, '').toLowerCase() || 'wav'
+  const replacements: Record<string, string> = {
+    filename: inputName,
+    track: inputName,
+    stem,
+    model,
+    step: stepId,
+    index,
+  }
+  const rawTemplate = String(template || '%filename%_%stem%_%model%').trim()
+  const withoutSuffix = rawTemplate.replace(SIMPLE_AUDIO_SUFFIX, '')
+  const rendered = withoutSuffix.replace(SIMPLE_FILENAME_TOKENS, (token, key: string) => replacements[key.toLowerCase()] || token)
+  const safe = rendered.replace(SIMPLE_INVALID_FILENAME_CHARS, '_').trim().replace(/^[ .]+|[ .]+$/g, '')
+    || stem
+    || 'output'
+  const basename = safe.split('.', 1)[0].toUpperCase()
+  const normalized = SIMPLE_WINDOWS_RESERVED_NAMES.has(basename) ? `_${safe}` : safe
+  return `${normalized}.${format}`
 }
 
 /** Split a catalog model's instruments/target stem into a deduped stem list. */
@@ -198,17 +338,33 @@ type ModelEntryLike = {
   targetStem?: string
 }
 
-const SIMPLE_DEFINITION_FIELDS = new Set(['version', 'defaults', 'steps'])
+const SIMPLE_DEFINITION_FIELDS = new Set(['version', 'defaults', 'steps', 'studio'])
 const SIMPLE_DEFAULT_FIELDS = new Set(['device', 'output_format', 'inference_params'])
 const SIMPLE_INFERENCE_FIELDS = new Set(['normalize'])
-const SIMPLE_STEP_FIELDS = new Set(['id', 'model', 'input', 'stems', 'save'])
+const SIMPLE_STEP_FIELDS = new Set(['id', 'model', 'input', 'stems', 'save', 'output_names'])
 
 function hasUnsupportedFields(value: Record<string, unknown>, allowed: Set<string>): boolean {
   return Object.keys(value).some(key => !allowed.has(key))
 }
 
+function hasInvalidSimpleEditorUi(value: unknown): boolean {
+  if (value == null) return false
+  if (!isRecord(value) || value.editor !== 'simple') return true
+  if (!isRecord(value.viewport) || !isRecord(value.nodes)) return true
+  const viewport = value.viewport
+  if (![viewport.x, viewport.y, viewport.zoom].every(item => typeof item === 'number' && Number.isFinite(item))) return true
+  return Object.values(value.nodes).some(point => (
+    !isRecord(point)
+    || typeof point.x !== 'number'
+    || typeof point.y !== 'number'
+    || !Number.isFinite(point.x)
+    || !Number.isFinite(point.y)
+  ))
+}
+
 function usesAdvancedSimpleParameters(definition: Record<string, unknown>): boolean {
   if (hasUnsupportedFields(definition, SIMPLE_DEFINITION_FIELDS)) return true
+  if (hasInvalidSimpleEditorUi(definition.studio)) return true
   const defaults = isRecord(definition.defaults) ? definition.defaults : {}
   if (hasUnsupportedFields(defaults, SIMPLE_DEFAULT_FIELDS)) return true
 
@@ -217,8 +373,11 @@ function usesAdvancedSimpleParameters(definition: Record<string, unknown>): bool
 
   return (definition.steps as unknown[]).some((value) => {
     if (!isRecord(value) || hasUnsupportedFields(value, SIMPLE_STEP_FIELDS)) return true
-    if (!isRecord(value.save)) return value.save != null
-    return Object.values(value.save).some(target => typeof target !== 'string')
+    if (value.save != null && !isRecord(value.save)) return true
+    if (isRecord(value.save) && Object.values(value.save).some(target => typeof target !== 'string')) return true
+    if (value.output_names != null && !isRecord(value.output_names)) return true
+    return isRecord(value.output_names)
+      && Object.values(value.output_names).some(target => typeof target !== 'string')
   })
 }
 

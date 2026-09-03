@@ -264,6 +264,20 @@ class RuntimePathSafetyTests(unittest.TestCase):
         path = Path("runtime-envs") / "cpu"
         self.assertEqual(worker_bootstrap._normal_runtime_path(path), os.fspath(path))
 
+    def test_runtime_python_path_drops_extended_prefix_for_short_windows_paths(self):
+        # Rust may pass the canonicalized runtime root with ``\\\\?\\``.  The interpreter
+        # command must use a regular Win32 path so pip does not derive ``..\\Scripts`` from an
+        # extended site-packages path (which raises Errno 22 while installing entry points).
+        extended_root = Path(r"\\?\D:\workspace\runtime-envs")
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", extended_root), \
+             mock.patch.object(worker_bootstrap.os, "name", "nt"), \
+             mock.patch.object(sys, "platform", "win32"):
+            path = worker_bootstrap._env_python_path("cuda")
+
+        value = str(path)
+        self.assertNotIn("\\\\?\\", value)
+        self.assertTrue(value.replace("\\", "/").endswith("cuda/Scripts/python.exe"))
+
     def test_active_state_is_read_only_from_the_runtime_directory(self):
         python_path = self._make_env("cuda")
         active = self.envs_dir / "active-runtime.json"

@@ -151,7 +151,16 @@ def _env_dir(backend: str) -> Path:
 
 def _env_python_path(backend: str) -> Path:
     env_dir = _env_dir(backend)
-    return env_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    # ``runtime_envs_dir`` can originate from Rust's ``canonicalize`` and therefore carry
+    # Windows' ``\\\\?\\`` extended-path prefix.  Passing that path to a venv's Python makes
+    # pip build script destinations such as ``Lib\\site-packages\\..\\..\\Scripts``.  The
+    # Win32 path parser rejects the ``..`` components under the extended prefix and reports
+    # ``[Errno 22] Invalid argument`` while installing entry points (for example ``numba``).
+    # Use a normal path for the interpreter whenever it is representable by Win32; keep the
+    # extended form for unusually long paths so those installations still retain long-path
+    # support.
+    candidate = env_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    return _runtime_command_path(candidate)
 
 
 def _env_state_path(backend: str) -> Path:
@@ -628,7 +637,7 @@ def _is_bundled_bootstrap_python(path: Path) -> bool:
 def _target_runtime_from_payload(payload: dict[str, Any], backend: str) -> tuple[dict[str, Any] | None, Path, Path, Path] | None:
     if not _supported_backend(backend):
         return None
-    target_python = Path(str(payload.get("pythonPath"))) if payload.get("pythonPath") else None
+    target_python = _runtime_command_path(Path(str(payload.get("pythonPath")))) if payload.get("pythonPath") else None
 
     if target_python:
         if not target_python.is_file():
@@ -656,7 +665,7 @@ def _target_runtime_from_payload(payload: dict[str, Any], backend: str) -> tuple
         return state, env_dir, env_state_path, target_python
 
     active = _read_runtime_state()
-    active_python = Path(str(active.get("pythonPath"))) if active and active.get("pythonPath") else None
+    active_python = _runtime_command_path(Path(str(active.get("pythonPath")))) if active and active.get("pythonPath") else None
     if active and str(active.get("backend") or "").strip().lower() == backend and active_python and active_python.is_file():
         env_dir = _runtime_env_dir_for_python(active_python)
         env_state_path = env_dir / "pymss-runtime-state.json"
@@ -740,7 +749,7 @@ def _runtime_info_payload(payload: dict[str, Any]) -> dict[str, Any]:
     torch_backend = "missing"
     accelerator_available = False
     active_probe: dict[str, Any] | None = None
-    active_python = Path(str(install_state.get("pythonPath"))) if install_state and install_state.get("pythonPath") else None
+    active_python = _runtime_command_path(Path(str(install_state.get("pythonPath")))) if install_state and install_state.get("pythonPath") else None
     if active_python and active_python.is_file():
         try:
             probed = _probe_python_runtime(active_python, extra_names)
@@ -937,7 +946,7 @@ def cmd_delete_runtime(payload: dict[str, Any]) -> int:
         from worker_protocol import emit_error
         return emit_error("RUNTIME_BUNDLED_READ_ONLY", f"Bundled runtime {backend} cannot be deleted.")
     active = _read_runtime_state()
-    active_python = Path(str(active.get("pythonPath"))) if active and active.get("pythonPath") else None
+    active_python = _runtime_command_path(Path(str(active.get("pythonPath")))) if active and active.get("pythonPath") else None
     if active and active_python and _same_path(active_python, python_path):
         from worker_protocol import emit_error
         return emit_error("RUNTIME_DELETE_ACTIVE", f"Cannot delete the currently active runtime ({backend}). Switch to another environment first.")
@@ -974,6 +983,14 @@ def _normal_runtime_path(path: Path) -> str:
     if value.startswith("\\\\?\\"):
         return value[len("\\\\?\\"):]
     return value
+
+
+def _runtime_command_path(path: Path) -> Path:
+    """Use a regular Win32 path for short runtime commands, retaining long-path support."""
+    normal = _normal_runtime_path(path)
+    if os.name == "nt" and len(normal) < 240:
+        return Path(normal)
+    return path
 
 
 def _create_runtime_venv(env_dir: Path) -> None:
@@ -1050,10 +1067,10 @@ def _repair_runtime_venv_config(env_dir: Path) -> None:
     if not cfg.is_file() or not bootstrap.is_file():
         return
     content = "\n".join([
-        f"home = {bootstrap.parent}",
+        f"home = {_normal_runtime_path(bootstrap.parent)}",
         "include-system-site-packages = false",
-        f"executable = {bootstrap}",
-        f"command = {bootstrap} -m venv {env_dir}",
+        f"executable = {_normal_runtime_path(bootstrap)}",
+        f"command = {_normal_runtime_path(bootstrap)} -m venv {_normal_runtime_path(env_dir)}",
         "",
     ])
     if cfg.read_text(encoding="utf-8", errors="replace") != content:
@@ -1135,10 +1152,19 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
         _emit("runtime_install_stage", {"stage": stage, "command": "pip install " + " ".join(args)}, task_id)
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", env=os.environ.copy())
         assert process.stdout is not None
-        for line in process.stdout:
-            message = line.rstrip()
-            append_log(stage, message)
-            _emit("runtime_install_log", {"stage": stage, "message": message}, task_id)
+        try:
+            for line in process.stdout:
+                message = line.rstrip()
+                append_log(stage, message)
+                _emit("runtime_install_log", {"stage": stage, "message": message}, task_id)
+        except Exception:
+            # If the protocol pipe is gone, do not leave pip orphaned while the worker reports
+            # a failure.  An orphaned install can keep files locked and make the next click look
+            # like a successful retry only because the first attempt continued in the background.
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            raise
         if process.wait() != 0:
             raise RuntimeError(f"pip failed during {stage} with exit code {process.returncode}")
 
@@ -1161,6 +1187,11 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
         _repair_runtime_venv_config(env_dir)
         if not env_python.is_file():
             _create_runtime_venv(env_dir)
+            # A newly created venv writes pyvenv.cfg from the bootstrap interpreter.  When
+            # that interpreter was launched through a Windows extended path, venv copies the
+            # ``\\\\?\\`` prefix into the config.  Normalize it before the first pip process
+            # starts so fresh installs and repaired installs follow the same path rules.
+            _repair_runtime_venv_config(env_dir)
         elif not _runtime_python_works(env_python):
             rebuild_message = "existing environment interpreter is unusable; rebuilding"
             _emit("runtime_install_log", {"stage": "venv", "message": rebuild_message}, task_id)
@@ -1168,6 +1199,7 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
             shutil.rmtree(env_dir, ignore_errors=True)
             env_dir.mkdir(parents=True, exist_ok=True)
             _create_runtime_venv(env_dir)
+            _repair_runtime_venv_config(env_dir)
         elif not _runtime_pip_works(env_python):
             # A cancelled or older portable install can leave a runnable venv without pip. The
             # venv's ensurepip module may have been pruned already, so recreate it from the
@@ -1181,6 +1213,7 @@ def cmd_install_runtime(payload: dict[str, Any]) -> int:
             shutil.rmtree(env_dir, ignore_errors=True)
             env_dir.mkdir(parents=True, exist_ok=True)
             _create_runtime_venv(env_dir)
+            _repair_runtime_venv_config(env_dir)
         if rebuild_message:
             append_log("bootstrap", rebuild_message)
         _make_posix_venv_relocatable(env_dir)
@@ -1308,7 +1341,7 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
         return emit_error("RUNTIME_CORE_UPDATE_UNSUPPORTED", "The app bootstrap Python runtime cannot be updated in place", task_id=task_id)
     # Core update is only available for the currently active runtime
     active = _read_runtime_state()
-    active_python = Path(str(active.get("pythonPath"))) if active and active.get("pythonPath") else None
+    active_python = _runtime_command_path(Path(str(active.get("pythonPath")))) if active and active.get("pythonPath") else None
     if not active_python or not _same_path(active_python, python_path):
         from worker_protocol import emit_error
         return emit_error("RUNTIME_CORE_UPDATE_INACTIVE", "Core update is only available for the currently active runtime. Please switch to this environment first.", task_id=task_id, recoverable=True)
@@ -1353,10 +1386,18 @@ def cmd_update_runtime_core(payload: dict[str, Any]) -> int:
         _emit("runtime_core_update_stage", {"stage": "pymss", "command": f"pip install --upgrade {pymss_requirement} {pymss_core_requirement}"}, task_id)
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", env=os.environ.copy())
         assert process.stdout is not None
-        for line in process.stdout:
-            message = line.rstrip()
-            append_log("pymss", message)
-            _emit("runtime_core_update_log", {"stage": "pymss", "message": message}, task_id)
+        try:
+            for line in process.stdout:
+                message = line.rstrip()
+                append_log("pymss", message)
+                _emit("runtime_core_update_log", {"stage": "pymss", "message": message}, task_id)
+        except Exception:
+            # Do not leave pip running after a broken event pipe.  Otherwise a failed update can
+            # continue changing the environment and make the next click appear to repair it.
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            raise
         if process.wait() != 0:
             raise RuntimeError(f"pip failed with exit code {process.returncode}")
         probed = _probe_python_runtime(python_path, _backend_extra_names(_manifest(), backend))

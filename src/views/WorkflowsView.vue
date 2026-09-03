@@ -18,25 +18,19 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { storeToRefs } from 'pinia'
 import WorkflowCreateChooser from '@/components/workflow/WorkflowCreateChooser.vue'
-import WorkflowRevisionConflictModal from '@/components/workflow/WorkflowRevisionConflictModal.vue'
-import WorkflowSimpleCreator from '@/components/workflow/WorkflowSimpleCreator.vue'
 import { useModelStore } from '@/stores/model'
 import {
   useWorkflowStore,
-  WorkflowRevisionConflictError,
   type WorkflowEntry,
 } from '@/stores/workflow'
 import {
   analyzeSimpleWorkflow,
-  resolveWorkflowOpenMode,
   type SimpleWorkflowReasonCode,
-  type SimpleWorkflowSavePayload,
 } from '@/utils/workflowSimple'
 import {
   isWorkflowEditorSurfaceLocked,
   isWorkflowLockedByNodeEditor,
 } from '@/utils/workflowEditorState'
-import { convertSimpleWorkflowToGraph } from '@/workflows/simpleToGraph'
 import { isGraphWorkflowDefinition, isSimpleWorkflowDefinition } from '@/workflows/formats'
 import {
   countWorkflowSaveOutputs,
@@ -49,28 +43,21 @@ const message = useMessage()
 const dialog = useDialog()
 const workflow = useWorkflowStore()
 const model = useModelStore()
-const { workflows, selectedWorkflowId, selectedWorkflow, nodeEditorOpenWorkflowId } = storeToRefs(workflow)
-const { downloadedModels, models } = storeToRefs(model)
+const { workflows, selectedWorkflowId, selectedWorkflow, nodeEditorOpenWorkflowId, simpleEditorOpenWorkflowId } = storeToRefs(workflow)
+const { downloadedModels } = storeToRefs(model)
 const editingId = ref('')
 const name = ref('')
 const description = ref('')
 const query = ref('')
 const importFileInputRef = ref<HTMLInputElement | null>(null)
 const createChooserOpen = ref(false)
-const simpleEditorOpen = ref(false)
-const simpleEditorWorkflow = ref<WorkflowEntry | null>(null)
 type WorkflowCreateType = 'simple' | 'advanced'
-type SimpleSaveContinuation = 'stay' | 'run'
-const pendingSimpleSave = ref<{
-  payload: SimpleWorkflowSavePayload
-  continuation: SimpleSaveContinuation
-} | null>(null)
-const showRevisionConflict = ref(false)
 const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const contextMenuVisible = ref(false)
 const contextWorkflow = ref<WorkflowEntry | null>(null)
 let unlistenNodeEditorClosed: UnlistenFn | undefined
+let unlistenSimpleEditorClosed: UnlistenFn | undefined
 
 const deviceOptions = [
   { label: 'Auto', value: 'auto' },
@@ -95,11 +82,11 @@ const filteredWorkflows = computed(() => {
   )
 })
 
-const isNodeEditorOpen = computed(() => isWorkflowEditorSurfaceLocked(
-  nodeEditorOpenWorkflowId.value,
-  selectedWorkflowId.value,
-  nodeEditorOpenWorkflowId.value === '__new__',
+const isNodeEditorOpen = computed(() => (
+  isWorkflowEditorSurfaceLocked(nodeEditorOpenWorkflowId.value, selectedWorkflowId.value, nodeEditorOpenWorkflowId.value === '__new__')
+  || isWorkflowEditorSurfaceLocked(simpleEditorOpenWorkflowId.value, selectedWorkflowId.value, simpleEditorOpenWorkflowId.value === '__new__')
 ))
+const isAnyEditorOpen = computed(() => Boolean(nodeEditorOpenWorkflowId.value || simpleEditorOpenWorkflowId.value))
 
 function workflowDefinitionError(definition: Record<string, unknown>): string {
   const issue = getWorkflowDefinitionIssue(definition)
@@ -127,34 +114,27 @@ const workflowMenuOptions = computed<DropdownOption[]>(() => {
   const isSimpleDefinition = isSimpleWorkflowDefinition(current.definition)
   const canEditSimple = isSimpleDefinition && analyzeSimpleWorkflow(current.definition).editable
   const definitionError = workflowDefinitionError(current.definition)
+  const locked = isWorkflowLockedByNodeEditor(nodeEditorOpenWorkflowId.value, current.id)
+    || isWorkflowLockedByNodeEditor(simpleEditorOpenWorkflowId.value, current.id)
   const options: DropdownOption[] = [
     {
       key: 'edit',
-      label: canEditSimple
+      label: isSimpleDefinition
         ? t('workflows.simpleMode')
-        : isSimpleDefinition
-            ? t('workflows.convertToAdvancedCopy')
-            : t('workflows.openAdvancedEditor'),
-      disabled: isSimpleDefinition && !canEditSimple && Boolean(definitionError),
+        : t('workflows.openAdvancedEditor'),
+      disabled: locked || (isSimpleDefinition && (!canEditSimple || Boolean(definitionError))),
     },
     {
       key: 'run',
       label: t('workflows.runWorkflowAction'),
-      disabled: isWorkflowBlocked(current),
+      disabled: isWorkflowBlocked(current) || locked,
     },
   ]
-  if (isSimpleDefinition && canEditSimple) {
-    options.push({
-      key: 'convert',
-      label: t('workflows.convertToAdvancedCopy'),
-      disabled: Boolean(definitionError),
-    })
-  }
   options.push(
     { type: 'divider', key: 'workflow-actions-divider' },
     { key: 'duplicate', label: t('workflows.duplicate') },
     { key: 'export', label: t('workflows.exportWorkflow') },
-    { key: 'delete', label: t('workflows.deleteConfirm') },
+    { key: 'delete', label: t('workflows.deleteConfirm'), disabled: locked },
   )
   return options
 })
@@ -291,26 +271,32 @@ async function saveMeta() {
   description.value = entry.description
 }
 
-function cloneWorkflowEntry(item: WorkflowEntry) {
-  return JSON.parse(JSON.stringify(item)) as WorkflowEntry
+async function openSimpleEditor(options: { forceNew?: boolean; workflowId?: string } = {}) {
+  const forceNew = options.forceNew === true
+  const workflowId = forceNew ? '' : (options.workflowId || selectedWorkflow.value?.id || selectedWorkflowId.value || '')
+  const isNewWorkflow = forceNew || !workflowId
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    try {
+      await invoke('open_workflow_simple_editor_window', { payload: { workflowId, newWorkflow: isNewWorkflow } })
+      workflow.markSimpleEditorOpen(isNewWorkflow ? '__new__' : workflowId)
+      return
+    } catch (error) {
+      console.warn('Failed to open workflow simple editor window, falling back to route navigation', error)
+    }
+  }
+  await router.push({ path: '/workflow-simple-editor', query: isNewWorkflow ? { new: '1' } : { workflowId } })
 }
 
 function createSimpleWorkflow() {
-  editingId.value = ''
-  name.value = ''
-  description.value = ''
-  workflow.selectWorkflow('')
-  simpleEditorWorkflow.value = null
-  simpleEditorOpen.value = true
+  void openSimpleEditor({ forceNew: true })
 }
 
 function openWorkflowCreateChooser() {
-  if (nodeEditorOpenWorkflowId.value) return
+  if (isAnyEditorOpen.value) return
   createChooserOpen.value = true
 }
 
 async function createAdvancedWorkflow() {
-  closeSimpleWorkflow()
   editingId.value = ''
   name.value = ''
   description.value = ''
@@ -327,33 +313,13 @@ function selectWorkflowCreateType(type: WorkflowCreateType) {
 
 function editSimpleWorkflow(item: WorkflowEntry) {
   if (!analyzeSimpleWorkflow(item.definition).editable) return
-  simpleEditorWorkflow.value = cloneWorkflowEntry(item)
-  simpleEditorOpen.value = true
+  void openSimpleEditor({ workflowId: item.id })
 }
 
-function openWorkflowFromList(item: WorkflowEntry) {
+function selectWorkflowFromList(item: WorkflowEntry) {
+  // Selecting a row only changes the overview. Opening an editor is an
+  // explicit action from the overview or the context menu.
   editWorkflow(item)
-  const openMode = resolveWorkflowOpenMode(item.definition)
-  if (isWorkflowLockedByNodeEditor(nodeEditorOpenWorkflowId.value, item.id)) {
-    if (openMode === 'simple') {
-      if (!simpleEditorOpen.value || simpleEditorWorkflow.value?.id !== item.id) {
-        editSimpleWorkflow(item)
-      }
-    } else {
-      closeSimpleWorkflow()
-    }
-    return
-  }
-  if (openMode === 'simple') {
-    editSimpleWorkflow(item)
-    return
-  }
-  closeSimpleWorkflow()
-}
-
-function closeSimpleWorkflow() {
-  simpleEditorOpen.value = false
-  simpleEditorWorkflow.value = null
 }
 
 function openWorkflowContextMenu(event: MouseEvent, item: WorkflowEntry) {
@@ -381,14 +347,22 @@ function openWorkflowEditor(item: WorkflowEntry) {
   editWorkflow(item)
   if (isSimpleWorkflowDefinition(item.definition)) {
     if (!analyzeSimpleWorkflow(item.definition).editable) {
-      convertSelectedSimpleToAdvanced()
+      message.warning(t('workflows.simpleEditUnsupported'))
       return
     }
     editSimpleWorkflow(item)
     return
   }
-  closeSimpleWorkflow()
   void openNodeEditor({ workflowId: item.id })
+}
+
+function reopenActiveEditor() {
+  if (simpleEditorOpenWorkflowId.value) {
+    if (simpleEditorOpenWorkflowId.value === '__new__') void openSimpleEditor({ forceNew: true })
+    else void openSimpleEditor({ workflowId: simpleEditorOpenWorkflowId.value })
+    return
+  }
+  void openNodeEditor()
 }
 
 function handleWorkflowContextMenuSelect(key: string | number) {
@@ -405,11 +379,6 @@ function handleWorkflowContextMenuSelect(key: string | number) {
     router.push({ path: '/', query: { mode: 'workflow' } })
     return
   }
-  if (key === 'convert') {
-    editWorkflow(current)
-    convertSelectedSimpleToAdvanced()
-    return
-  }
   if (key === 'duplicate') {
     void duplicateWorkflow(current)
     return
@@ -421,129 +390,6 @@ function handleWorkflowContextMenuSelect(key: string | number) {
   if (key === 'delete') {
     deleteWorkflow(current)
   }
-}
-
-function cancelSimpleWorkflow() {
-  closeSimpleWorkflow()
-  editingId.value = ''
-  name.value = ''
-  description.value = ''
-  workflow.selectWorkflow('')
-}
-
-async function openAdvancedFromSimple(payload: SimpleWorkflowSavePayload) {
-  const confirmed = await confirmSimpleToAdvancedConversion()
-  if (!confirmed) return
-  try {
-    let sourceId = payload.id
-    let sourceDefinition = payload.definition
-    if (!sourceId) {
-      const source = await workflow.saveWorkflow({ ...payload, format: 'simple' })
-      sourceId = source.id
-      sourceDefinition = source.definition
-      editWorkflow(source)
-      simpleEditorWorkflow.value = cloneWorkflowEntry(source)
-    }
-    const definition = convertSimpleWorkflowToGraph(sourceDefinition, {
-      models: models.value,
-      sourceWorkflowId: sourceId,
-    })
-    const entry = await workflow.saveWorkflow({
-      name: t('workflows.advancedCopyName', { name: payload.name }),
-      description: payload.description,
-      definition,
-      format: 'graph',
-      convertedFrom: sourceId,
-    })
-    closeSimpleWorkflow()
-    editWorkflow(entry)
-    message.success(t('workflows.advancedCopyCreated'))
-    await openNodeEditor({ workflowId: entry.id, skipWarning: true })
-  } catch (error) {
-    message.error(`${t('workflows.advancedConversionFailed')}: ${error instanceof Error ? error.message : String(error)}`)
-  }
-}
-
-function convertSelectedSimpleToAdvanced() {
-  const current = selectedWorkflow.value
-  if (!current || !isSimpleWorkflowDefinition(current.definition) || selectedError.value) return
-  void openAdvancedFromSimple({
-    id: current.id,
-    name: current.name,
-    description: current.description,
-    definition: current.definition,
-    expectedUpdatedAt: current.updatedAt,
-  })
-}
-
-async function saveSimpleWorkflow(
-  payload: SimpleWorkflowSavePayload,
-  options: {
-    continuation?: SimpleSaveContinuation
-    force?: boolean
-    saveCopy?: boolean
-  } = {},
-) {
-  const continuation = options.continuation || 'stay'
-  try {
-    const entry = await workflow.saveWorkflow({
-      ...payload,
-      id: options.saveCopy ? undefined : payload.id,
-      name: options.saveCopy ? `${payload.name} Copy` : payload.name,
-      expectedUpdatedAt: options.saveCopy ? undefined : payload.expectedUpdatedAt,
-      force: options.force,
-    })
-    pendingSimpleSave.value = null
-    showRevisionConflict.value = false
-    editWorkflow(entry)
-    if (continuation === 'run') {
-      closeSimpleWorkflow()
-      workflow.selectWorkflow(entry.id)
-      await router.push({ path: '/', query: { mode: 'workflow' } })
-    } else {
-      simpleEditorWorkflow.value = cloneWorkflowEntry(entry)
-      message.success(t('workflows.saved'))
-    }
-  } catch (error) {
-    if (error instanceof WorkflowRevisionConflictError) {
-      pendingSimpleSave.value = { payload, continuation }
-      showRevisionConflict.value = true
-      return
-    }
-    message.error(error instanceof Error ? error.message : String(error))
-  }
-}
-
-async function reloadSimpleConflict() {
-  const pending = pendingSimpleSave.value
-  if (!pending?.payload.id) return
-  await workflow.reload()
-  const latest = workflows.value.find(item => item.id === pending.payload.id)
-  if (latest) {
-    editWorkflow(latest)
-    simpleEditorWorkflow.value = cloneWorkflowEntry(latest)
-  }
-  pendingSimpleSave.value = null
-}
-
-function saveSimpleConflictCopy() {
-  const pending = pendingSimpleSave.value
-  if (!pending) return
-  void saveSimpleWorkflow(pending.payload, { continuation: pending.continuation, saveCopy: true })
-}
-
-function overwriteSimpleConflict() {
-  const pending = pendingSimpleSave.value
-  if (!pending) return
-  void saveSimpleWorkflow(pending.payload, { continuation: pending.continuation, force: true })
-}
-
-function runSimpleWorkflow(payload: SimpleWorkflowSavePayload) {
-  void saveSimpleWorkflow(payload, { continuation: 'run' })
-}
-
-function duplicateSimpleWorkflow(payload: SimpleWorkflowSavePayload) {
-  void saveSimpleWorkflow(payload, { saveCopy: true })
 }
 
 function confirmAdvancedWorkflowWarning() {
@@ -559,28 +405,6 @@ function confirmAdvancedWorkflowWarning() {
       content: t('workflows.advancedWarningContent'),
       positiveText: t('workflows.advancedWarningContinue'),
       negativeText: t('workflows.advancedWarningCancel'),
-      positiveButtonProps: { type: 'warning' },
-      negativeButtonProps: { secondary: true },
-      onPositiveClick: () => finish(true),
-      onNegativeClick: () => finish(false),
-      onClose: () => finish(false),
-    })
-  })
-}
-
-function confirmSimpleToAdvancedConversion() {
-  return new Promise<boolean>((resolve) => {
-    let settled = false
-    const finish = (value: boolean) => {
-      if (settled) return
-      settled = true
-      resolve(value)
-    }
-    dialog.warning({
-      title: t('workflows.convertAdvancedTitle'),
-      content: t('workflows.convertAdvancedContent'),
-      positiveText: t('workflows.convertAdvancedConfirm'),
-      negativeText: t('common.cancel'),
       positiveButtonProps: { type: 'warning' },
       negativeButtonProps: { secondary: true },
       onPositiveClick: () => finish(true),
@@ -617,13 +441,18 @@ async function openNodeEditor(options: { forceNew?: boolean; workflowId?: string
   await router.push({ path: '/workflow-node-editor', query: isNewWorkflow ? { new: '1' } : { workflowId } })
 }
 
-async function refreshAfterNodeEditorClosed() {
-  workflow.markNodeEditorClosed()
+async function refreshAfterNodeEditorClosed(kind: 'advanced' | 'simple') {
+  if (kind === 'advanced') workflow.markNodeEditorClosed()
+  else workflow.markSimpleEditorClosed()
   await workflow.reload()
-  const target = workflows.value.find(item => item.id === editingId.value)
-    || workflow.selectedWorkflow
+  // Standalone editors persist the selected workflow in the shared store. Use
+  // that refreshed selection first so saving a newly-created workflow does not
+  // snap the overview back to the entry that was selected before the window
+  // opened.
+  const target = workflow.selectedWorkflow
+    || workflows.value.find(item => item.id === editingId.value)
     || workflows.value[0]
-  if (target) openWorkflowFromList(target)
+  if (target) editWorkflow(target)
 }
 
 // ---- Actions ----
@@ -648,16 +477,10 @@ function deleteWorkflow(item: WorkflowEntry) {
     onPositiveClick: async () => {
       const deletedId = current.id
       await workflow.deleteWorkflow(current.id)
-      if (simpleEditorWorkflow.value?.id === deletedId) closeSimpleWorkflow()
+      if (simpleEditorOpenWorkflowId.value === deletedId) workflow.markSimpleEditorClosed()
       message.success(t('workflows.deleted'))
     },
   })
-}
-
-function deleteSelected() {
-  const current = selectedWorkflow.value
-  if (!current) return
-  deleteWorkflow(current)
 }
 
 function runSelected() {
@@ -754,20 +577,20 @@ async function exportWorkflowEntry(current: WorkflowEntry) {
   await exportWorkflowDefinition(current.name, current.definition)
 }
 
-function exportSimpleWorkflow(payload: SimpleWorkflowSavePayload) {
-  void exportWorkflowDefinition(payload.name, payload.definition)
-}
-
 onMounted(async () => {
   if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
   unlistenNodeEditorClosed = await listen('pymss://workflow-node-editor-closed', () => {
-    void refreshAfterNodeEditorClosed()
+    void refreshAfterNodeEditorClosed('advanced')
+  })
+  unlistenSimpleEditorClosed = await listen('pymss://workflow-simple-editor-closed', () => {
+    void refreshAfterNodeEditorClosed('simple')
   })
 })
 
 onUnmounted(() => {
   closeWorkflowContextMenu()
   unlistenNodeEditorClosed?.()
+  unlistenSimpleEditorClosed?.()
 })
 
 watch(workflows, (items) => {
@@ -778,7 +601,7 @@ watch(workflows, (items) => {
     description.value = current.description
   } else if (items.length) {
     const preferred = items.find(item => item.id === selectedWorkflowId.value) || items[0]
-    openWorkflowFromList(preferred)
+    editWorkflow(preferred)
   } else {
     editingId.value = ''
     name.value = ''
@@ -810,7 +633,7 @@ watch(workflows, (items) => {
         <n-button
           class="workflow-create-button"
           type="primary"
-          :disabled="Boolean(nodeEditorOpenWorkflowId)"
+          :disabled="isAnyEditorOpen"
           @click="openWorkflowCreateChooser"
         >
           <span class="workflow-create-button__mark" aria-hidden="true" />
@@ -834,7 +657,7 @@ watch(workflows, (items) => {
               type="button"
               class="wf-row"
               :class="{ 'wf-row--active': item.id === selectedWorkflowId }"
-              @click="openWorkflowFromList(item)"
+              @click="selectWorkflowFromList(item)"
               @contextmenu.stop.prevent="openWorkflowContextMenu($event, item)"
             >
               <span class="wf-row__icon"><n-icon :component="GitNetworkOutline" /></span>
@@ -862,22 +685,7 @@ watch(workflows, (items) => {
       </aside>
 
       <main class="console__stage">
-        <WorkflowSimpleCreator
-          v-if="simpleEditorOpen"
-          :key="simpleEditorWorkflow ? `${simpleEditorWorkflow.id}:${simpleEditorWorkflow.updatedAt}` : 'new'"
-          :workflow="simpleEditorWorkflow"
-          :models="downloadedModels"
-          :saving="workflow.isSaving"
-          @save="saveSimpleWorkflow"
-          @open-advanced="openAdvancedFromSimple"
-          @run="runSimpleWorkflow"
-          @duplicate="duplicateSimpleWorkflow"
-          @export="exportSimpleWorkflow"
-          @delete="deleteSelected"
-          @cancel="cancelSimpleWorkflow"
-        />
-
-        <div v-else-if="!selectedWorkflow || selectedSimpleAnalysis?.editable" class="wf-overview-empty">
+        <div v-if="!selectedWorkflow" class="wf-overview-empty">
           <n-icon :component="GitNetworkOutline" />
           <strong>{{ t('workflows.overviewEmptyTitle') }}</strong>
           <span>{{ t('workflows.overviewEmptyDesc') }}</span>
@@ -1019,7 +827,7 @@ watch(workflows, (items) => {
               <span>{{ selectedError }}</span>
             </div>
 
-            <section v-if="selectedSimpleAnalysis && !selectedSimpleAnalysis.editable" class="wf-simple-blockers">
+            <section v-if="isSimpleWorkflow && selectedSimpleAnalysis && !selectedSimpleAnalysis.editable" class="wf-simple-blockers">
               <strong>{{ t('workflows.advancedModeRequired') }}</strong>
               <ul>
                 <li v-for="reason in selectedSimpleReasons" :key="reason">{{ simpleReasonLabel(reason) }}</li>
@@ -1039,17 +847,7 @@ watch(workflows, (items) => {
                 {{ t('workflows.simpleMode') }}
               </n-button>
               <n-button
-                v-if="isSimpleWorkflow"
-                secondary
-                size="large"
-                :disabled="Boolean(selectedError)"
-                @click="convertSelectedSimpleToAdvanced"
-              >
-                <template #icon><n-icon :component="GitNetworkOutline" /></template>
-                {{ t('workflows.convertToAdvancedCopy') }}
-              </n-button>
-              <n-button
-                v-else-if="isComfyWorkflow"
+                v-if="isComfyWorkflow"
                 secondary
                 size="large"
                 @click="openNodeEditor({ workflowId: selectedWorkflow?.id })"
@@ -1082,7 +880,7 @@ watch(workflows, (items) => {
             <n-icon :component="GitNetworkOutline" />
             <strong>{{ t('workflows.nodeEditorOpenedTitle') }}</strong>
             <span>{{ t('workflows.nodeEditorOpenedHint') }}</span>
-            <n-button secondary @click="openNodeEditor()">{{ t('workflows.backToNodeEditor') }}</n-button>
+            <n-button secondary @click="reopenActiveEditor">{{ t('workflows.backToNodeEditor') }}</n-button>
           </div>
         </div>
       </main>
@@ -1104,13 +902,6 @@ watch(workflows, (items) => {
       @select="selectWorkflowCreateType"
     />
 
-    <WorkflowRevisionConflictModal
-      v-model:show="showRevisionConflict"
-      :workflow-name="pendingSimpleSave?.payload.name || simpleEditorWorkflow?.name || ''"
-      @reload="reloadSimpleConflict"
-      @save-copy="saveSimpleConflictCopy"
-      @overwrite="overwriteSimpleConflict"
-    />
   </div>
 </template>
 

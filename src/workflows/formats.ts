@@ -38,6 +38,12 @@ export function isGraphWorkflowDefinition(definition: unknown): definition is Re
  */
 export function hasInvalidSimpleStructure(definition: Record<string, unknown>): boolean {
   if (!Array.isArray(definition.steps)) return true
+  if (definition.studio != null && !isRecord(definition.studio)) return true
+  if (isRecord(definition.studio)) {
+    if (definition.studio.editor !== 'simple') return true
+    if (definition.studio.viewport != null && !isRecord(definition.studio.viewport)) return true
+    if (definition.studio.nodes != null && !isRecord(definition.studio.nodes)) return true
+  }
   if (definition.defaults != null && !isRecord(definition.defaults)) return true
   const defaults = isRecord(definition.defaults) ? definition.defaults : {}
   if (defaults.inference_params != null && !isRecord(defaults.inference_params)) return true
@@ -71,33 +77,57 @@ export function isWorkflowSaveNodeType(value: unknown): boolean {
   return WORKFLOW_SAVE_NODE_TYPES.has(String(value || ''))
 }
 
-const LEGACY_SIMPLE_SAVE_FILENAME = /^%filename%_.+\.(?:wav|flac|mp3|m4a)$/iu
+const LEGACY_SIMPLE_SAVE_FILENAME = /\.(?:wav|flac|mp3|m4a)$/iu
+const DEFAULT_SIMPLE_OUTPUT_NAME = '%filename%_%stem%_%model%'
 
 /**
  * Early Studio builds labelled the YAML save-map value as a filename even
- * though pymss defines it as an output subdirectory. Migrate only that exact
- * generated template; user-authored directory names remain untouched.
+ * though pymss defines it as an output subdirectory. Migrate generated values
+ * to the current flat-file representation while leaving ordinary folder
+ * names (which do not have an audio suffix) untouched.
  */
 export function normalizeSimpleWorkflowDefinition(
   definition: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!Array.isArray(definition.steps)) return definition
   let changed = false
-  const steps = definition.steps.map((value) => {
+  const base = { ...definition }
+  if (Object.prototype.hasOwnProperty.call(base, 'save_intermediate')) {
+    // Saving is represented by explicit links to the save node. Drop the
+    // retired global switch when an older definition is loaded.
+    delete base.save_intermediate
+    changed = true
+  }
+  const defaults = isRecord(base.defaults) ? base.defaults : {}
+  const outputFormat = typeof defaults.output_format === 'string' && defaults.output_format.trim()
+    ? defaults.output_format.trim().toLowerCase()
+    : 'wav'
+  const steps = (definition.steps as unknown[]).map((value) => {
     if (!isRecord(value) || !isRecord(value.save)) return value
     let saveChanged = false
+    const outputNames = isRecord(value.output_names) ? { ...value.output_names } : {}
     const save = Object.fromEntries(Object.entries(value.save).map(([stem, target]) => {
-      if (typeof target !== 'string' || !LEGACY_SIMPLE_SAVE_FILENAME.test(target.trim())) {
-        return [stem, target]
+      if (typeof target !== 'string') return [stem, target]
+      const trimmed = target.trim()
+      if (LEGACY_SIMPLE_SAVE_FILENAME.test(trimmed)) {
+        saveChanged = true
+        outputNames[stem] = trimmed
+        return [stem, 'Default']
       }
-      saveChanged = true
-      return [stem, stem]
+      // The current creator used the stem itself as the directory name. Treat
+      // that generated convention as a flat output and preserve custom names.
+      if (trimmed.localeCompare(stem, undefined, { sensitivity: 'accent' }) === 0) {
+        saveChanged = true
+        outputNames[stem] = outputNames[stem] || `${DEFAULT_SIMPLE_OUTPUT_NAME}.${outputFormat}`
+        return [stem, 'Default']
+      }
+      return [stem, target]
     }))
     if (!saveChanged) return value
     changed = true
-    return { ...value, save }
+    return { ...value, save, output_names: outputNames }
   })
-  return changed ? { ...definition, steps } : definition
+  return changed ? { ...base, steps } : definition
 }
 
 /**

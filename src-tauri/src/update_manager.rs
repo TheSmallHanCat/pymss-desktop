@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{UpdaterBuilder, UpdaterExt};
 use url::Url;
@@ -238,6 +238,8 @@ pub async fn start(
     }
 
     let mut emitted_start = false;
+    let mut downloaded_bytes = 0_u64;
+    let download_started_at = Instant::now();
     let app_for_progress = app.clone();
     let bytes = update
         .download(
@@ -246,12 +248,20 @@ pub async fn start(
                     emitted_start = true;
                     let _ = app_for_progress.emit(UPDATE_EVENT, serde_json::json!({
                         "event": "Started",
-                        "data": { "contentLength": content_length },
+                        "data": { "contentLength": content_length, "downloadedBytes": 0 },
                     }));
                 }
+                downloaded_bytes = downloaded_bytes.saturating_add(chunk_length as u64);
+                let elapsed = download_started_at.elapsed().as_secs_f64().max(0.001);
+                let speed_bytes_per_second = downloaded_bytes as f64 / elapsed;
                 let _ = app_for_progress.emit(UPDATE_EVENT, serde_json::json!({
                     "event": "Progress",
-                    "data": { "chunkLength": chunk_length },
+                    "data": {
+                        "chunkLength": chunk_length,
+                        "downloadedBytes": downloaded_bytes,
+                        "contentLength": content_length,
+                        "speedBytesPerSecond": speed_bytes_per_second,
+                    },
                 }));
             },
             || {
@@ -788,20 +798,31 @@ fn replace_executable(current: &Path, replacement: &Path, backup: Option<&Path>)
     let current = current.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
     let replacement = replacement.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
     let backup = backup.map(|path| path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>());
-    let replaced = unsafe {
-        ReplaceFileW(
-            current.as_ptr(),
-            replacement.as_ptr(),
-            backup.as_ref().map_or(std::ptr::null(), |path| path.as_ptr()),
-            0,
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    };
-    if replaced == 0 {
-        return Err(std::io::Error::last_os_error().into());
+    for attempt in 0..4 {
+        let replaced = unsafe {
+            ReplaceFileW(
+                current.as_ptr(),
+                replacement.as_ptr(),
+                backup.as_ref().map_or(std::ptr::null(), |path| path.as_ptr()),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        if replaced != 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        // The updater helper runs immediately after the main process exits. Windows Defender,
+        // indexers, or a just-released process handle can briefly keep the executable locked;
+        // retry those transient sharing errors before rolling the update back.
+        let retryable = matches!(error.raw_os_error(), Some(5 | 32 | 33));
+        if !retryable || attempt == 3 {
+            return Err(error.into());
+        }
+        thread::sleep(Duration::from_millis(80 * (attempt + 1) as u64));
     }
-    Ok(())
+    unreachable!("ReplaceFileW retry loop must return")
 }
 
 #[cfg(not(windows))]

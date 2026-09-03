@@ -17,6 +17,7 @@ Contract (payload fields, sent by stores/task.ts via start_workflow_inference):
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import traceback
 from pathlib import Path
@@ -192,6 +193,237 @@ def _workflow_output_stem(path: str, input_path: str | None = None) -> str:
     return stem or file_name or "output"
 
 
+_SIMPLE_FILENAME_TOKENS = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%")
+_AUDIO_SUFFIX = re.compile(r"\.(?:wav|flac|mp3|m4a)$", re.IGNORECASE)
+_INVALID_FILENAME_CHARS = re.compile(r'[\x00-\x1f<>:"/\\|?*]+')
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
+def _simple_output_names(definition: dict[str, Any]) -> bool:
+    """Return whether a simple definition uses Studio filename metadata."""
+    steps = definition.get("steps")
+    return isinstance(steps, list) and any(
+        isinstance(step, dict)
+        and isinstance(step.get("output_names"), dict)
+        and bool(step.get("output_names"))
+        for step in steps
+    )
+
+
+def _prepare_simple_runtime_definition(definition: dict[str, Any]) -> dict[str, Any]:
+    """Make Studio's file-oriented save settings explicit for pymss.
+
+    pymss YAML treats ``save`` values as subdirectory names. The simple editor
+    stores those entries as ``Default`` and keeps user-facing filename
+    templates in ``output_names``. For definitions created by the new editor,
+    force the default directory and apply the workflow output format to every
+    save node; imported YAML without this metadata keeps its original behavior.
+    """
+    has_output_names = _simple_output_names(definition)
+    has_legacy_intermediate_policy = "save_intermediate" in definition
+    if not has_output_names and "studio" not in definition and not has_legacy_intermediate_policy:
+        return definition
+    transient = json.loads(json.dumps(definition))
+    # ``studio`` is editor-only metadata and is not part of pymss' YAML
+    # schema. Keep it in the persisted Studio record, but never pass it to
+    # the runtime parser.
+    transient.pop("studio", None)
+    # Saving is controlled solely by explicit save-node links. Older
+    # definitions may still carry the retired global switch; ignore it.
+    transient.pop("save_intermediate", None)
+    if not has_output_names:
+        return transient
+    defaults = transient.get("defaults")
+    output_format = "wav"
+    if isinstance(defaults, dict):
+        output_format = str(defaults.get("output_format") or "wav").strip().lower() or "wav"
+    for step in transient.get("steps", []):
+        if (
+            not isinstance(step, dict)
+            or not isinstance(step.get("output_names"), dict)
+            or not step.get("output_names")
+        ):
+            continue
+        save = step.get("save")
+        if isinstance(save, dict):
+            step["save"] = {str(stem): ("Default" if target not in (None, False, "") else target)
+                             for stem, target in save.items()}
+        if not str(step.get("output_format") or "").strip():
+            step["output_format"] = output_format
+    return transient
+
+
+def _render_simple_filename(template: Any, *, input_path: str, stem: str, model: str,
+                            step_id: str, index: int, output_format: str) -> str:
+    """Render and sanitize a Studio simple-workflow filename template."""
+    value = str(template or "%filename%_%stem%_%model%").strip()
+    value = _AUDIO_SUFFIX.sub("", value)
+    input_stem = Path(input_path).stem if input_path else "audio"
+    model_stem = Path(model).stem if model else "model"
+    replacements = {
+        "filename": input_stem,
+        "track": input_stem,
+        "stem": stem,
+        "model": model_stem,
+        "step": step_id,
+        "index": str(index),
+    }
+    value = _SIMPLE_FILENAME_TOKENS.sub(lambda match: replacements.get(match.group(1).lower(), match.group(0)), value)
+    # Keep Unicode (including Chinese input names) while removing path
+    # separators, control characters and Windows-reserved device names. The
+    # pymss graph sanitizer is intentionally ASCII-only, so using it here would
+    # turn `小蓝背心 - 灯火通明` into the broken `-__` prefix seen by users.
+    safe = _INVALID_FILENAME_CHARS.sub("_", value).strip(" .") or stem or "audio"
+    if safe.upper().split(".", 1)[0] in _WINDOWS_RESERVED_NAMES:
+        safe = f"_{safe}"
+    return f"{safe or stem or 'audio'}.{output_format}"
+
+
+def _apply_simple_output_names(dag: Any, definition: dict[str, Any], *, input_path: str,
+                               output_format: str, output_dir: Path | None = None) -> list[dict[str, str]]:
+    """Wire per-save filename constants into compiled YAML save nodes.
+
+    The returned stem list follows the save-node insertion order. It lets the
+    worker keep the logical stem in result metadata even when a user-selected
+    filename no longer contains the stem name.
+    """
+    import pymss.graph as graph
+
+    steps = definition.get("steps")
+    if not isinstance(steps, list):
+        return []
+    next_link_id = max(
+        (int(link.link_id) for node in dag.nodes for link in node.inputs
+         if link is not None and isinstance(link.link_id, int)),
+        default=0,
+    ) + 1
+    output_index = 0
+    reserved_names: set[str] = set()
+    output_metadata: list[dict[str, str]] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        step_id = str(step.get("id") or "").strip()
+        save = step.get("save")
+        names = step.get("output_names")
+        if not step_id or not isinstance(save, dict) or not isinstance(names, dict):
+            continue
+        model = str(step.get("model") or "").strip()
+        step_output_format = str(step.get("output_format") or output_format).strip().lower() or output_format
+        for stem, target in save.items():
+            if target in (None, False, ""):
+                continue
+            stem_name = str(stem).strip()
+            if not stem_name:
+                continue
+            node_id = f"save:{step_id}:{stem_name}"
+            save_node = next((node for node in dag.nodes if str(node.id) == node_id), None)
+            if save_node is None:
+                continue
+            hint = names.get(stem_name)
+            if hint is None:
+                hint = next((value for key, value in names.items() if str(key).lower() == stem_name.lower()), None)
+            output_index += 1
+            filename = _render_simple_filename(
+                hint,
+                input_path=input_path,
+                stem=stem_name,
+                model=model,
+                step_id=step_id,
+                index=output_index,
+                output_format=step_output_format,
+            )
+            if output_dir is not None:
+                candidate = Path(filename)
+                base = candidate.stem
+                suffix = candidate.suffix
+                for collision_index in range(1, 1000):
+                    name = filename if collision_index == 1 else f"{base}_{collision_index}{suffix}"
+                    if name.casefold() in reserved_names or (output_dir / name).exists():
+                        continue
+                    filename = name
+                    break
+                reserved_names.add(filename.casefold())
+            output_metadata.append({"stem": stem_name, "filename": filename})
+            # Use an ASCII-only temporary hint because the installed pymss
+            # graph sanitizer strips Unicode. The file is renamed to the
+            # user-facing Unicode filename after run_dag completes.
+            filename_hint = f"pymss_studio_{output_index:04d}"
+            constant_id = f"studio:filename:{step_id}:{stem_name}"
+            # The compiler emits eight slots for pymss_save_audio. Slot 1 is the
+            # filename STRING input; keeping the remaining widgets untouched
+            # preserves sample-rate and codec settings.
+            while len(save_node.inputs) <= 1:
+                save_node.inputs.append(None)
+            save_node.inputs[1] = graph.DAGLink(
+                link_id=next_link_id,
+                source_node_id=constant_id,
+                source_slot=0,
+                target_node_id=save_node.id,
+                target_slot=1,
+                type=graph.STRING,
+            )
+            next_link_id += 1
+            if not any(node.id == constant_id for node in dag.nodes):
+                dag.nodes.append(graph.DAGNode(
+                    id=constant_id,
+                    type="StringConstant",
+                    inputs=[],
+                    # pymss_save_audio appends the selected codec extension.
+                    data={"widgets_values": [filename_hint]},
+                    title=constant_id,
+                ))
+    return output_metadata
+
+
+def _finalize_simple_output_paths(
+    saved_paths: list[str],
+    output_metadata: list[dict[str, str]],
+    output_dir: Path,
+) -> list[str]:
+    """Rename graph-produced temporary files to Studio's Unicode filenames."""
+    if len(saved_paths) != len(output_metadata):
+        return saved_paths
+    finalized: list[str] = []
+    reserved_names: set[str] = set()
+    for source_value, metadata in zip(saved_paths, output_metadata):
+        source = Path(source_value)
+        filename = str(metadata.get("filename") or "").strip()
+        if not filename:
+            finalized.append(source_value)
+            continue
+        candidate = output_dir / filename
+        base = candidate.stem
+        suffix = candidate.suffix
+        for collision_index in range(1, 1000):
+            target = candidate if collision_index == 1 else output_dir / f"{base}_{collision_index}{suffix}"
+            if target == source:
+                candidate = target
+                break
+            if target.name.casefold() in reserved_names or target.exists():
+                continue
+            candidate = target
+            break
+        reserved_names.add(candidate.name.casefold())
+        if source != candidate:
+            if not source.is_file():
+                finalized.append(str(source))
+                continue
+            try:
+                source.replace(candidate)
+            except OSError:
+                # Keep the actual path when another process has the temporary
+                # file open; the task still reports a valid generated output.
+                finalized.append(str(source))
+                continue
+        finalized.append(str(candidate))
+    return finalized
+
+
 def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
                inputs: dict[str, str] | None, output_dir: str, output_layout: str) -> dict[str, Any]:
     try:
@@ -202,24 +434,45 @@ def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
         ) from exc
 
     runtime_payload, runtime_inputs = _prepare_legacy_global_input(payload, input_path, inputs)
+    primary = input_path or (list(runtime_inputs.values())[0] if runtime_inputs else "")
+    workflow_definition = runtime_payload.get("workflow")
+    if isinstance(workflow_definition, dict) and "steps" in workflow_definition:
+        runtime_payload = {
+            **runtime_payload,
+            "workflow": _prepare_simple_runtime_definition(workflow_definition),
+        }
+    # Output-folder naming follows the primary input: the explicit single
+    # input, else the first value of the named inputs mapping.
+    task_output_dir = _workflow_task_output_dir(output_dir, primary, output_layout)
+
     workflow_path, fmt = _write_workflow_file(runtime_payload, task_id)
     if not workflow_path.is_file():
         raise RuntimeError("Workflow definition is required")
 
+    simple_output_metadata: list[dict[str, str]] = []
+    output_format = str(payload.get("outputFormat") or "").strip().lower()
+    output_format = output_format or "wav"
     if fmt == "yaml":
         import pymss.workflow as pwf
         data = json.loads(workflow_path.read_text(encoding="utf-8"))
+        if not str(payload.get("outputFormat") or "").strip():
+            defaults = data.get("defaults")
+            if isinstance(defaults, dict):
+                output_format = str(defaults.get("output_format") or output_format).strip().lower() or output_format
         wf = pwf.load_workflow_data(data)
         dag = graph.compile_workflow_to_dag(wf)
+        if _simple_output_names(data):
+            simple_output_metadata = _apply_simple_output_names(
+                dag,
+                data,
+                input_path=primary,
+                output_format=output_format,
+                output_dir=task_output_dir,
+            )
     else:
         dag = graph.load_comfy_file(workflow_path)
 
-    # Output-folder naming follows the primary input: the explicit single
-    # input, else the first value of the named inputs mapping.
-    primary = input_path or (list(runtime_inputs.values())[0] if runtime_inputs else "")
-    task_output_dir = _workflow_task_output_dir(output_dir, primary, output_layout)
     task_output_dir.mkdir(parents=True, exist_ok=True)
-
     saved = graph.run_dag(
         dag,
         output_dir=task_output_dir,
@@ -230,22 +483,25 @@ def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
         model_dir=payload.get("modelDir") or None,
         download=bool(payload.get("downloadMethod") and payload.get("downloadMethod") != "never"),
         source=str(payload.get("source") or "modelscope"),
-        output_format=str(payload.get("outputFormat") or "wav").lower() or None,
+        output_format=output_format,
         audio_params=payload.get("audioParams") if isinstance(payload.get("audioParams"), dict) else None,
         debug=bool(payload.get("debug")),
         strict=True,
     )
-    output_format = str(payload.get("outputFormat") or "wav").lower()
     saved_paths = [str(path).strip() for path in saved if path is not None and str(path).strip()]
+    output_stems: list[str] = []
+    if fmt == "yaml" and len(simple_output_metadata) == len(saved_paths):
+        saved_paths = _finalize_simple_output_paths(saved_paths, simple_output_metadata, task_output_dir)
+        output_stems = [item["stem"] for item in simple_output_metadata]
     return {
         "files": saved_paths,
         "outputs": [
             {
-                "stem": _workflow_output_stem(path, primary),
+                "stem": output_stems[index] if output_stems else _workflow_output_stem(path, primary),
                 "path": path,
                 "name": Path(path.replace("\\", "/")).name,
             }
-            for path in saved_paths
+            for index, path in enumerate(saved_paths)
         ],
         "outputDir": str(task_output_dir.resolve()),
         "outputFormat": output_format,

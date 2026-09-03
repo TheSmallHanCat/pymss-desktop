@@ -30,8 +30,13 @@ type ManagedUpdate = {
 
 type UpdateDownloadEvent =
   | { event: 'Started'; data: { contentLength?: number | null } }
-  | { event: 'Progress'; data: { chunkLength?: number } }
+  | { event: 'Progress'; data: { chunkLength?: number; downloadedBytes?: number; contentLength?: number | null; speedBytesPerSecond?: number } }
   | { event: 'Finished'; data?: null }
+
+export type UpdateLogEntry = {
+  at: string
+  message: string
+}
 
 function isPrereleaseVersion(version: string) {
   return /^\d+\.\d+\.\d+-/.test(version.trim())
@@ -54,6 +59,8 @@ export const useUpdateStore = defineStore('update', () => {
   const lastAcceptedVersion = ref('')
   const downloadDownloadedBytes = ref(0)
   const downloadTotalBytes = ref(0)
+  const downloadSpeedBytesPerSecond = ref(0)
+  const downloadLogs = ref<UpdateLogEntry[]>([])
   const installErrorVisible = ref(false)
   const installFailed = ref(false)
   const initialized = ref(false)
@@ -61,6 +68,8 @@ export const useUpdateStore = defineStore('update', () => {
   let updateCheckInFlight: Promise<ManagedUpdate | null> | null = null
   let initializeInFlight: Promise<void> | null = null
   let unlistenProgress: UnlistenFn | undefined
+  let lastProgressLogAt = 0
+  let lastProgressLogPercent = -1
 
   const hasUpdate = computed(() => availableUpdate.value !== null)
   const isBusy = computed(() => ['checking', 'downloading', 'installing'].includes(status.value))
@@ -69,6 +78,11 @@ export const useUpdateStore = defineStore('update', () => {
   const downloadProgressPercent = computed(() => {
     if (downloadTotalBytes.value <= 0) return 0
     return Math.min(100, Math.round((downloadDownloadedBytes.value / downloadTotalBytes.value) * 100))
+  })
+  const downloadEtaSeconds = computed(() => {
+    if (downloadTotalBytes.value <= 0 || downloadSpeedBytesPerSecond.value <= 0) return null
+    const remaining = Math.max(0, downloadTotalBytes.value - downloadDownloadedBytes.value)
+    return Math.ceil(remaining / downloadSpeedBytesPerSecond.value)
   })
   const hasDeferredUpdate = computed(() => Boolean(deferredVersion.value))
   const updateIsPrerelease = computed(() => {
@@ -112,7 +126,14 @@ export const useUpdateStore = defineStore('update', () => {
             payload = null
           }
         } else {
-          payload = await loadAppStore<UpdateStorePayload>('update-state')
+          try {
+            payload = await loadAppStore<UpdateStorePayload>('update-state')
+          } catch (error) {
+            // Update state is optional; keep the progress listener alive even
+            // when a damaged or older store backend cannot read it.
+            console.warn('Failed to load update state', error)
+            payload = null
+          }
         }
         deferredVersion.value = String(payload?.deferredVersion || '')
         deferredAt.value = String(payload?.deferredAt || '')
@@ -123,15 +144,32 @@ export const useUpdateStore = defineStore('update', () => {
               const total = Number(event.payload.data.contentLength || 0)
               downloadTotalBytes.value = Number.isFinite(total) && total > 0 ? total : 0
               downloadDownloadedBytes.value = 0
+              downloadSpeedBytesPerSecond.value = 0
+              appendDownloadLog(downloadTotalBytes.value > 0
+                ? `Download started (${(downloadTotalBytes.value / 1024 / 1024).toFixed(1)} MB)`
+                : 'Download started (size unavailable)')
               return
             }
             if (event.payload.event === 'Progress') {
-              const chunk = Number(event.payload.data.chunkLength || 0)
-              if (Number.isFinite(chunk) && chunk > 0) downloadDownloadedBytes.value += chunk
+              const data = event.payload.data
+              const chunk = Number(data.chunkLength || 0)
+              const reportedDownloaded = Number(data.downloadedBytes)
+              if (Number.isFinite(reportedDownloaded) && reportedDownloaded >= 0) {
+                downloadDownloadedBytes.value = Math.max(downloadDownloadedBytes.value, reportedDownloaded)
+              } else if (Number.isFinite(chunk) && chunk > 0) {
+                downloadDownloadedBytes.value += chunk
+              }
+              const reportedTotal = Number(data.contentLength || 0)
+              if (Number.isFinite(reportedTotal) && reportedTotal > 0) downloadTotalBytes.value = reportedTotal
+              const speed = Number(data.speedBytesPerSecond || 0)
+              if (Number.isFinite(speed) && speed >= 0) downloadSpeedBytesPerSecond.value = speed
+              appendProgressLog(downloadDownloadedBytes.value, downloadTotalBytes.value, downloadSpeedBytesPerSecond.value)
               return
             }
             if (event.payload.event === 'Finished') {
               if (downloadTotalBytes.value > 0) downloadDownloadedBytes.value = downloadTotalBytes.value
+              downloadSpeedBytesPerSecond.value = 0
+              appendDownloadLog('Download finished; preparing installation')
               status.value = 'installing'
             }
           })
@@ -174,6 +212,29 @@ export const useUpdateStore = defineStore('update', () => {
   function resetDownloadProgress() {
     downloadDownloadedBytes.value = 0
     downloadTotalBytes.value = 0
+    downloadSpeedBytesPerSecond.value = 0
+    downloadLogs.value = []
+    lastProgressLogAt = 0
+    lastProgressLogPercent = -1
+  }
+
+  function appendDownloadLog(message: string) {
+    const normalized = message.trim()
+    if (!normalized) return
+    const at = new Date().toISOString().slice(11, 19)
+    downloadLogs.value = [...downloadLogs.value.slice(-39), { at, message: normalized }]
+  }
+
+  function appendProgressLog(downloaded: number, total: number, speed: number) {
+    const percent = total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : -1
+    const now = Date.now()
+    if (percent >= 0 && percent !== 100 && percent - lastProgressLogPercent < 10 && now - lastProgressLogAt < 1500) return
+    if (percent < 0 && now - lastProgressLogAt < 1500) return
+    lastProgressLogAt = now
+    lastProgressLogPercent = percent
+    const progress = percent >= 0 ? ` ${percent}%` : ''
+    const speedLabel = speed > 0 ? ` ${(speed / 1024 / 1024).toFixed(1)} MB/s` : ''
+    appendDownloadLog(`Download progress${progress}${speedLabel}`)
   }
 
   async function checkForUpdates(manual = false) {
@@ -245,6 +306,7 @@ export const useUpdateStore = defineStore('update', () => {
     }
     status.value = 'downloading'
     resetDownloadProgress()
+    appendDownloadLog(`Preparing update ${update.currentVersion} -> ${update.version}`)
     error.value = ''
     installErrorVisible.value = false
     installFailed.value = false
@@ -257,6 +319,7 @@ export const useUpdateStore = defineStore('update', () => {
         expectedVersion: update.version,
       })
       status.value = 'installing'
+      appendDownloadLog('Update package staged; restarting application')
       lastAcceptedVersion.value = update.version
       deferredVersion.value = ''
       deferredAt.value = ''
@@ -267,6 +330,7 @@ export const useUpdateStore = defineStore('update', () => {
       return true
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err)
+      appendDownloadLog(`Update failed: ${error.value}`)
       status.value = 'failed'
       installErrorVisible.value = true
       installFailed.value = true
@@ -327,6 +391,9 @@ export const useUpdateStore = defineStore('update', () => {
     lastCheckedAt,
     downloadDownloadedBytes,
     downloadTotalBytes,
+    downloadSpeedBytesPerSecond,
+    downloadEtaSeconds,
+    downloadLogs,
     downloadProgressPercent,
     installErrorVisible,
     installFailed,

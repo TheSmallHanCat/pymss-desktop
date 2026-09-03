@@ -33,13 +33,15 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed)
-                && window.label().starts_with("workflow-node-editor")
+                && (window.label().starts_with("workflow-node-editor")
+                    || window.label().starts_with("workflow-simple-editor"))
             {
-                let _ = window.app_handle().emit_to(
-                    "main",
-                    "pymss://workflow-node-editor-closed",
-                    serde_json::json!({ "label": window.label() }),
-                );
+                let event = if window.label().starts_with("workflow-simple-editor") {
+                    "pymss://workflow-simple-editor-closed"
+                } else {
+                    "pymss://workflow-node-editor-closed"
+                };
+                let _ = window.app_handle().emit_to("main", event, serde_json::json!({ "label": window.label() }));
             }
         })
         .plugin(tauri_plugin_dialog::init())
@@ -119,6 +121,7 @@ fn main() {
             commands::app_cmd::relink_editor_sources,
             commands::app_cmd::open_editor_window,
             commands::app_cmd::open_workflow_node_editor_window,
+            commands::app_cmd::open_workflow_simple_editor_window,
             commands::app_cmd::pick_media_files,
             commands::app_cmd::pick_audio_files,
             commands::app_cmd::pick_single_audio_file,

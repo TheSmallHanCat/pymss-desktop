@@ -1283,6 +1283,12 @@ pub async fn close_current_window(window: tauri::WebviewWindow) -> AppResult<()>
             "pymss://workflow-node-editor-closed",
             serde_json::json!({ "label": label }),
         );
+    } else if label.starts_with("workflow-simple-editor") {
+        let _ = app_handle.emit_to(
+            "main",
+            "pymss://workflow-simple-editor-closed",
+            serde_json::json!({ "label": label }),
+        );
     }
     Ok(())
 }
@@ -1380,6 +1386,58 @@ pub async fn open_workflow_node_editor_window(app: AppHandle, payload: Value) ->
     Ok(
         serde_json::json!({ "workflowId": workflow_id, "label": label, "opened": true, "reused": false }),
     )
+}
+
+#[tauri::command]
+pub async fn open_workflow_simple_editor_window(app: AppHandle, payload: Value) -> AppResult<Value> {
+    let workflow_id = payload
+        .get("workflowId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let new_workflow = payload
+        .get("newWorkflow")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let label = if workflow_id.trim().is_empty() {
+        "workflow-simple-editor-new".to_string()
+    } else {
+        format!("workflow-simple-editor-{}", safe_file_name(&workflow_id))
+    };
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.set_focus();
+        return Ok(serde_json::json!({ "workflowId": workflow_id, "label": label, "opened": true, "reused": true }));
+    }
+    let url = if workflow_id.trim().is_empty() {
+        if new_workflow {
+            "index.html#/workflow-simple-editor?new=1".to_string()
+        } else {
+            "index.html#/workflow-simple-editor".to_string()
+        }
+    } else {
+        let encoded_id: String = url::form_urlencoded::byte_serialize(workflow_id.as_bytes()).collect();
+        format!("index.html#/workflow-simple-editor?workflowId={}", encoded_id)
+    };
+    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
+        .title("Pymss Studio Simple Workflow Editor")
+        .inner_size(1440.0, 900.0)
+        .min_inner_size(1180.0, 720.0)
+        .resizable(true)
+        .minimizable(true)
+        .maximizable(true)
+        .closable(true)
+        .decorations(cfg!(target_os = "macos"))
+        .visible(false)
+        .focused(true)
+        .on_page_load(|window, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        })
+        .build()
+        .map_err(|error| AppError::Worker(error.to_string()))?;
+    Ok(serde_json::json!({ "workflowId": workflow_id, "label": label, "opened": true, "reused": false }))
 }
 
 #[tauri::command]

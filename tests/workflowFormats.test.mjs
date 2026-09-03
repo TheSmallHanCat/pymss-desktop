@@ -21,7 +21,6 @@ const {
   normalizeGraphWorkflowDefinition,
   normalizeSimpleWorkflowDefinition,
 } = await vite.ssrLoadModule('/src/workflows/formats.ts')
-const { convertSimpleWorkflowToGraph } = await vite.ssrLoadModule('/src/workflows/simpleToGraph.ts')
 const {
   countWorkflowSaveOutputs,
   getWorkflowDefinitionIssue,
@@ -35,9 +34,21 @@ const {
 } = await vite.ssrLoadModule('/src/workflows/graphDefaults.ts')
 const {
   analyzeSimpleWorkflow,
+  buildSimpleWorkflowDefinition,
+  createDefaultSimpleEditorUi,
+  hydrateSimpleWorkflow,
+  renderSimpleOutputFilename,
   resolveWorkflowOpenMode,
 } = await vite.ssrLoadModule('/src/utils/workflowSimple.ts')
-const { analyzeWorkflowInputs } = await vite.ssrLoadModule('/src/utils/workflowInputs.ts')
+const {
+  canConnectSimple,
+  cleanupSimpleDraft,
+  connectSimple,
+  disconnectSimple,
+  simpleOutputRef,
+  simpleSaveTarget,
+  simpleStepInputTarget,
+} = await vite.ssrLoadModule('/src/utils/simpleWorkflowEditor.ts')
 
 function simpleFixture() {
   return {
@@ -118,17 +129,38 @@ test('legacy custom separator widgets migrate without mutating stored input', ()
   assert.equal(normalizeGraphWorkflowDefinition(currentWithTrailingValue), currentWithTrailingValue)
 })
 
-test('legacy simple save filename templates migrate to output directories', () => {
+test('legacy simple save filename templates migrate to flat output names', () => {
   const legacy = simpleFixture()
+  legacy.save_intermediate = false
   legacy.steps[0].save.vocals = '%filename%_vocals_first.wav'
   legacy.steps[1].save.clean = 'mastered'
   const normalized = normalizeSimpleWorkflowDefinition(legacy)
 
   assert.notEqual(normalized, legacy)
+  assert.equal(Object.hasOwn(normalized, 'save_intermediate'), false)
   assert.equal(legacy.steps[0].save.vocals, '%filename%_vocals_first.wav')
-  assert.equal(normalized.steps[0].save.vocals, 'vocals')
+  assert.equal(normalized.steps[0].save.vocals, 'Default')
+  assert.equal(normalized.steps[0].output_names.vocals, '%filename%_vocals_first.wav')
   assert.equal(normalized.steps[1].save.clean, 'mastered')
   assert.equal(normalizeSimpleWorkflowDefinition(normalized), normalized)
+})
+
+test('legacy simple custom audio filenames migrate regardless of template prefix', () => {
+  const legacy = simpleFixture()
+  legacy.steps[0].save.vocals = 'lead-vocal.flac'
+  const normalized = normalizeSimpleWorkflowDefinition(legacy)
+
+  assert.equal(normalized.steps[0].save.vocals, 'Default')
+  assert.equal(normalized.steps[0].output_names.vocals, 'lead-vocal.flac')
+})
+
+test('simple creator stem directories migrate to the default file template', () => {
+  const legacy = simpleFixture()
+  legacy.steps[0].save.vocals = 'vocals'
+  const normalized = normalizeSimpleWorkflowDefinition(legacy)
+
+  assert.equal(normalized.steps[0].save.vocals, 'Default')
+  assert.equal(normalized.steps[0].output_names.vocals, '%filename%_%stem%_%model%.flac')
 })
 
 test('workflow validation follows the detected definition format', () => {
@@ -215,6 +247,91 @@ test('simple editor opens only definitions it can round-trip without data loss',
     editable: false,
     reasonCodes: ['invalid_definition'],
   })
+})
+
+test('simple editor layout metadata round-trips and legacy definitions receive defaults', () => {
+  const legacy = simpleFixture()
+  const hydratedLegacy = hydrateSimpleWorkflow(legacy)
+  assert.equal(hydratedLegacy.ui.editor, 'simple')
+  assert.ok(hydratedLegacy.ui.nodes.input)
+  assert.ok(hydratedLegacy.ui.nodes[legacy.steps[0].id])
+
+  const ui = createDefaultSimpleEditorUi(hydratedLegacy.steps)
+  ui.viewport = { x: 18, y: -24, zoom: 1.25 }
+  ui.nodes[legacy.steps[0].id] = { x: 512, y: 96 }
+  const definition = buildSimpleWorkflowDefinition({ ...hydratedLegacy, ui })
+  const restored = hydrateSimpleWorkflow(definition)
+  assert.deepEqual(restored.ui.viewport, ui.viewport)
+  assert.deepEqual(restored.ui.nodes[legacy.steps[0].id], { x: 512, y: 96 })
+  assert.equal(analyzeSimpleWorkflow(definition).editable, true)
+})
+
+test('simple filename preview follows edited template and output format', () => {
+  assert.equal(
+    renderSimpleOutputFilename('%filename%_%stem%_%model%', {
+      inputName: '小蓝背心 - 灯火通明.mp3',
+      stem: 'Instrumental',
+      model: 'melband_roformer_instvox_duality_v2.ckpt',
+      stepId: 'step1',
+      index: 1,
+      outputFormat: 'wav',
+    }),
+    '小蓝背心 - 灯火通明_Instrumental_melband_roformer_instvox_duality_v2.wav',
+  )
+  assert.equal(
+    renderSimpleOutputFilename('mix-%index%-%track%.flac', {
+      inputName: 'input.wav',
+      stem: 'vocals',
+      model: 'model.pth',
+      stepId: 'step2',
+      index: 2,
+      outputFormat: 'mp3',
+    }),
+    'mix-2-input.mp3',
+  )
+})
+
+test('simple node editor enforces forward-only links and cleans deleted references', () => {
+  const draft = hydrateSimpleWorkflow({
+    version: 1,
+    defaults: { device: 'cpu', output_format: 'wav' },
+    save_intermediate: false,
+    steps: [
+      { id: 'step1', model: 'one', input: 'input', stems: ['vocals', 'music'], save: {} },
+      { id: 'step2', model: 'two', input: 'step1.vocals', stems: ['clean'], save: {} },
+    ],
+  })
+  assert.equal(canConnectSimple(draft, 'input', simpleStepInputTarget('step2')).ok, true)
+  assert.equal(canConnectSimple(draft, 'step1.music', simpleStepInputTarget('step1')).ok, false)
+  assert.equal(canConnectSimple(draft, 'step2.clean', simpleStepInputTarget('step1')).ok, false)
+  assert.equal(canConnectSimple(draft, 'step1.vocals', 'save').ok, true)
+  assert.equal(canConnectSimple(draft, 'step1.music', 'save').ok, true)
+  connectSimple(draft, 'step1.music', 'save')
+  assert.equal(draft.steps[0].save.music, 'Default')
+  assert.equal(draft.steps[0].outputNames.music, '%filename%_%stem%_%model%')
+  assert.equal(disconnectSimple(draft, simpleSaveTarget('step1', 'music')), true)
+  assert.deepEqual(draft.steps[0].save, {})
+  draft.steps.splice(0, 1)
+  cleanupSimpleDraft(draft)
+  assert.equal(draft.steps[0].input, '')
+})
+
+test('simple node editor keeps unselected stems available for downstream steps', () => {
+  const draft = hydrateSimpleWorkflow({
+    version: 1,
+    defaults: { device: 'cpu', output_format: 'wav' },
+    save_intermediate: false,
+    steps: [
+      { id: 'step1', model: 'one', input: 'input', stems: ['vocals', 'music'], save: { music: 'Default' } },
+      { id: 'step2', model: 'two', input: 'input', stems: ['clean'], save: {} },
+    ],
+  })
+  assert.equal(canConnectSimple(draft, simpleOutputRef('step1', 'vocals'), simpleStepInputTarget('step2')).ok, true)
+  connectSimple(draft, simpleOutputRef('step1', 'vocals'), simpleStepInputTarget('step2'))
+  cleanupSimpleDraft(draft)
+  assert.equal(draft.steps[1].input, 'step1.vocals')
+  assert.deepEqual(draft.steps[0].save, { music: 'Default' })
+  assert.equal(canConnectSimple(draft, simpleOutputRef('step1', 'vocals'), 'save').ok, true)
 })
 
 test('simple runtime preparation materializes defaults without mutating the stored workflow', () => {
@@ -357,118 +474,4 @@ test('graph defaults metadata and live widgets update independently', () => {
   assert.equal(nodes[0].widgets[1].value, 'cuda')
   assert.equal(nodes[2].widgets[0].value, 'mp3')
   assert.equal(source.nodes[0].widgets_values[1], 'cpu')
-})
-
-test('simple workflow promotion creates an independent connected graph', () => {
-  const source = simpleFixture()
-  const before = structuredClone(source)
-  const graph = convertSimpleWorkflowToGraph(source, {
-    sourceWorkflowId: 'workflow-1',
-    models: [{ name: 'second.pth', modelType: 'vr' }],
-  })
-
-  assert.deepEqual(source, before, 'conversion must not mutate the simple workflow')
-  assert.equal(detectWorkflowFormat(graph), 'graph')
-  assert.equal(graph.extra.pymssStudio.sourceWorkflowId, 'workflow-1')
-  assert.equal(graph.extra.appDefaults.device, 'cuda')
-  assert.equal(graph.extra.appDefaults.output_format, 'flac')
-
-  const nodes = graph.nodes
-  const links = graph.links
-  assert.deepEqual(nodes.map(node => node.type), [
-    'input_audio',
-    'pymss_mss_params',
-    'mss_separate',
-    'pymss_save_audio',
-    'pymss_vr_params',
-    'vr_separate',
-    'pymss_save_audio',
-  ])
-  assert.deepEqual(nodes[0].widgets_values, [])
-  assert.deepEqual(analyzeWorkflowInputs(graph), {
-    slots: [],
-    selfContained: 0,
-    unresolved: [],
-  })
-  assert.equal(nodes[1].widgets_values[3], true, 'global normalize default is preserved')
-  assert.equal(nodes[3].widgets_values[0], 'flac')
-
-  const firstSeparate = nodes.find(node => node.type === 'mss_separate')
-  const secondSeparate = nodes.find(node => node.type === 'vr_separate')
-  const chained = links.find(link => link[1] === firstSeparate.id && link[3] === secondSeparate.id)
-  assert.ok(chained, 'the second step must consume the selected upstream stem')
-  assert.equal(chained[2], 0, 'vocals is the first interleaved audio output')
-  assert.equal(chained[4], 0)
-})
-
-test('simple workflow promotion preserves global inference defaults and step overrides', () => {
-  const source = simpleFixture()
-  source.defaults.inference_params = {
-    batch_size: 4,
-    overlap_size: 1024,
-    chunk_size: 4096,
-    normalize: true,
-    enable_tta: true,
-    standardize: true,
-  }
-  source.steps[1].inference_params = {
-    batch_size: 2,
-    window_size: 768,
-    aggression: 7,
-  }
-  source.steps[1].use_tta = false
-  const graph = convertSimpleWorkflowToGraph(source, {
-    models: [{ name: 'second.pth', modelType: 'vr' }],
-  })
-  const mssParams = graph.nodes.find(node => node.type === 'pymss_mss_params')
-  const vrParams = graph.nodes.find(node => node.type === 'pymss_vr_params')
-
-  assert.deepEqual(mssParams.widgets_values, [4, '1024', '4096', true, true, true])
-  assert.deepEqual(vrParams.widgets_values, [2, 768, 7, false, false, false, 0.2, true])
-})
-
-test('simple workflow promotion preserves model directories and registered user models', () => {
-  const source = simpleFixture()
-  source.defaults.model_dir = 'D:/Models'
-  source.steps[0] = {
-    ...source.steps[0],
-    model: 'Local vocals',
-    model_path: 'D:/Weights/local.ckpt',
-    config_path: 'D:/Weights/local.yaml',
-    model_type: 'bs_roformer',
-    model_dir: 'D:/Models',
-  }
-  const graph = convertSimpleWorkflowToGraph(source, {
-    models: [{
-      name: 'Local vocals',
-      modelType: 'bs_roformer',
-      modelPath: 'D:/Weights/local.ckpt',
-      source: 'user',
-    }],
-  })
-  const custom = graph.nodes.find(node => node.type === 'custom_mss_separate')
-
-  assert.deepEqual(custom.widgets_values.slice(0, 3), ['Local vocals', 'bs_roformer', 'cuda'])
-  assert.equal(graph.extra.appDefaults.model_dir, 'D:/Models')
-})
-
-test('simple workflow promotion rejects custom paths that the graph cannot resolve', () => {
-  const source = simpleFixture()
-  source.steps[0].model = ''
-  source.steps[0].model_path = 'D:/Weights/unregistered.ckpt'
-  source.steps[0].model_type = 'bs_roformer'
-
-  assert.throws(
-    () => convertSimpleWorkflowToGraph(source),
-    /unregistered model_path/,
-  )
-})
-
-test('simple workflow promotion rejects a dangling step input', () => {
-  const source = simpleFixture()
-  source.steps[1].input = 'missing.vocals'
-  assert.throws(
-    () => convertSimpleWorkflowToGraph(source),
-    /Unknown input reference/,
-  )
 })

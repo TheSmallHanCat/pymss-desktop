@@ -466,7 +466,6 @@ async function saveWorkflowMeta() {
       definition: current.definition,
       format: current.format,
       formatVersion: current.formatVersion,
-      convertedFrom: current.convertedFrom,
       expectedUpdatedAt: current.updatedAt,
     })
     // Saving a non-selected workflow should not change the workflow used by the current run.
@@ -1909,8 +1908,8 @@ async function retryCurrentTask() {
                     <div class="preview-track-list">
                       <div v-for="output in group.outputs" :key="`${group.taskId}:${output.path}`" class="preview-track">
                         <div class="preview-track__title">
-                          <strong>{{ output.stem }}</strong>
-                          <small :title="output.path">{{ shortenMiddle(output.path, 68) }}</small>
+                          <strong :title="output.path">{{ getFileName(output.path) }}</strong>
+                          <small :title="output.path">{{ output.stem }}</small>
                         </div>
                         <n-button circle secondary size="small" @click="toggleOutputPlayback(output)">
                           <template #icon>
@@ -4032,6 +4031,17 @@ async function retryCurrentTask() {
 
 .preview-track__title strong {
   font-size: 13px;
+}
+
+.preview-track__title small {
+  width: fit-content;
+  max-width: 100%;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary-soft) 58%, transparent);
+  color: var(--primary-strong);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .preview-track__slider {

@@ -89,9 +89,6 @@ function select(type: WorkflowCreateType) {
         </button>
       </div>
 
-      <p class="workflow-create-chooser__conversion">
-        {{ t('workflows.createTypeConversionHint') }}
-      </p>
     </div>
   </n-modal>
 </template>
@@ -214,15 +211,6 @@ function select(type: WorkflowCreateType) {
   color: var(--primary-strong);
   font-size: 13px;
   font-weight: 650;
-}
-
-.workflow-create-chooser__conversion {
-  margin: 0;
-  padding-top: 14px;
-  border-top: 1px solid var(--outline);
-  color: var(--on-surface-muted);
-  font-size: 12px;
-  line-height: 1.6;
 }
 
 @media (max-width: 680px) {

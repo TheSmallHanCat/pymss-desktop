@@ -16,7 +16,6 @@ export type WorkflowEntry = {
   definition: Record<string, unknown>
   format: WorkflowFormat
   formatVersion: number
-  convertedFrom?: string
   createdAt: number
   updatedAt: number
 }
@@ -41,7 +40,6 @@ export type SaveWorkflowInput = {
   definition: Record<string, unknown>
   format?: WorkflowFormat
   formatVersion?: number
-  convertedFrom?: string
   expectedUpdatedAt?: number
   force?: boolean
 }
@@ -83,7 +81,6 @@ function normalizeWorkflow(input: Partial<WorkflowEntry>): WorkflowEntry | null 
     formatVersion: Number.isFinite(Number(input.formatVersion))
       ? Number(input.formatVersion)
       : WORKFLOW_FORMAT_VERSION,
-    ...(input.convertedFrom ? { convertedFrom: String(input.convertedFrom) } : {}),
     createdAt: Number.isFinite(Number(input.createdAt)) ? Number(input.createdAt) : now,
     updatedAt: Number.isFinite(Number(input.updatedAt)) ? Number(input.updatedAt) : now,
   }
@@ -93,6 +90,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const workflows = ref<WorkflowEntry[]>([])
   const selectedWorkflowId = ref('')
   const nodeEditorOpenWorkflowId = ref('')
+  const simpleEditorOpenWorkflowId = ref('')
   const initialized = ref(false)
   const isSaving = ref(false)
   const selectedWorkflow = computed(() => workflows.value.find(item => item.id === selectedWorkflowId.value) || null)
@@ -172,9 +170,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
       formatVersion: Number.isFinite(Number(input.formatVersion))
         ? Number(input.formatVersion)
         : existing?.formatVersion || WORKFLOW_FORMAT_VERSION,
-      ...(input.convertedFrom || existing?.convertedFrom
-        ? { convertedFrom: input.convertedFrom || existing?.convertedFrom }
-        : {}),
       createdAt: existing?.createdAt || now,
       updatedAt: now,
     }
@@ -192,6 +187,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     workflows.value = workflows.value.filter(item => item.id !== id)
     if (selectedWorkflowId.value === id) selectedWorkflowId.value = workflows.value[0]?.id || ''
     if (nodeEditorOpenWorkflowId.value === id) nodeEditorOpenWorkflowId.value = ''
+    if (simpleEditorOpenWorkflowId.value === id) simpleEditorOpenWorkflowId.value = ''
     await persist()
   }
 
@@ -204,7 +200,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
       definition: JSON.parse(JSON.stringify(source.definition)) as Record<string, unknown>,
       format: source.format,
       formatVersion: source.formatVersion,
-      convertedFrom: source.convertedFrom,
     })
   }
 
@@ -221,10 +216,19 @@ export const useWorkflowStore = defineStore('workflow', () => {
     nodeEditorOpenWorkflowId.value = ''
   }
 
+  function markSimpleEditorOpen(workflowId: string) {
+    simpleEditorOpenWorkflowId.value = workflowId
+  }
+
+  function markSimpleEditorClosed() {
+    simpleEditorOpenWorkflowId.value = ''
+  }
+
   return {
     workflows,
     selectedWorkflowId,
     nodeEditorOpenWorkflowId,
+    simpleEditorOpenWorkflowId,
     selectedWorkflow,
     initialized,
     isSaving,
@@ -236,5 +240,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     selectWorkflow,
     markNodeEditorOpen,
     markNodeEditorClosed,
+    markSimpleEditorOpen,
+    markSimpleEditorClosed,
   }
 })
