@@ -97,6 +97,11 @@ def _read_runtime_state() -> dict[str, Any] | None:
     if state and state.get("pythonPath"):
         supported = _supported_backend(str(state.get("backend") or ""))
         if supported:
+            # Rust may persist the active interpreter using the Windows extended-path
+            # prefix (``\\?\\``), while the configured runtime root can use a regular
+            # drive path.  Normalize the interpreter before deriving its environment
+            # directory so an otherwise valid active environment is not discarded.
+            state["pythonPath"] = str(_runtime_command_path(Path(str(state["pythonPath"]))))
             try:
                 env_dir = _runtime_env_dir_for_python(Path(str(state["pythonPath"])))
             except (OSError, ValueError):
@@ -546,7 +551,9 @@ def _installed_envs(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _same_path(left: Any, right: Any) -> bool:
     try:
-        return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(os.path.normpath(str(right)))
+        left_path = _normal_runtime_path(Path(str(left))) if os.name == "nt" else str(left)
+        right_path = _normal_runtime_path(Path(str(right))) if os.name == "nt" else str(right)
+        return os.path.normcase(os.path.normpath(left_path)) == os.path.normcase(os.path.normpath(right_path))
     except Exception:
         return False
 
@@ -598,20 +605,34 @@ def _runtime_env_dir_for_python(python_path: Path) -> Path:
     return python_path.parent.parent if python_path.parent.name.lower() in {"scripts", "bin"} else python_path.parent
 
 
+def _path_is_within(path: Path, root: Path) -> bool:
+    """Check containment while accepting mixed regular/extended Windows path spellings."""
+    candidates = [(path, root)]
+    normalized_path = Path(_normal_runtime_path(path))
+    normalized_root = Path(_normal_runtime_path(root))
+    if normalized_path != path or normalized_root != root:
+        candidates.append((normalized_path, normalized_root))
+    for child, parent in candidates:
+        try:
+            if child.resolve().is_relative_to(parent.resolve()):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def _is_user_runtime_env(env_dir: Path) -> bool:
-    try:
-        return env_dir.resolve().is_relative_to(RUNTIME_ENVS_DIR.resolve())
-    except (OSError, ValueError):
-        return False
+    # ``canonicalize`` on Windows can add ``\\?\\`` to one side only.  Compare both
+    # spellings so a short-path command path still belongs to the configured runtime root
+    # and is not rejected as an outside interpreter.  The original spelling is retained as
+    # the first candidate so genuinely long paths keep their extended-path support.
+    return _path_is_within(env_dir, RUNTIME_ENVS_DIR)
 
 
 def _is_bundled_runtime_env(env_dir: Path) -> bool:
     if not BUNDLED_RUNTIME_ENVS_DIR:
         return False
-    try:
-        return env_dir.resolve().is_relative_to(BUNDLED_RUNTIME_ENVS_DIR.resolve())
-    except (OSError, ValueError):
-        return False
+    return _path_is_within(env_dir, BUNDLED_RUNTIME_ENVS_DIR)
 
 
 def _bundled_bootstrap_python() -> Path | None:
@@ -629,7 +650,7 @@ def _bundled_bootstrap_python() -> Path | None:
 def _is_bundled_bootstrap_python(path: Path) -> bool:
     bundled = _bundled_bootstrap_python()
     try:
-        return bool(bundled and path.resolve() == bundled.resolve())
+        return bool(bundled and _same_path(path.resolve(), bundled.resolve()))
     except OSError:
         return False
 

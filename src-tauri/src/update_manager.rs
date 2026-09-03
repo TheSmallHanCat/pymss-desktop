@@ -23,7 +23,9 @@ use std::os::windows::process::CommandExt;
 use std::os::windows::ffi::OsStrExt;
 
 #[cfg(windows)]
-use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+use windows_sys::Win32::Storage::FileSystem::{
+    MoveFileExW, ReplaceFileW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+};
 
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -44,6 +46,9 @@ const MAX_UPDATE_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_UPDATE_FILES: usize = 10_000;
 const MAX_UPDATE_EXTRACTED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const UPDATE_MUTEX_NAME: &str = "Local\\PymssStudioManagedUpdate";
+// Apply an upper bound to connection setup and stalled reads without imposing a total
+// deadline on the archive download. Managed update archives can be large on slower links.
+const MANAGED_UPDATE_IO_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -421,9 +426,15 @@ fn resolve_update_endpoint(channel: UpdateChannel, endpoint_override: Option<Str
     Ok(managed_endpoint(channel))
 }
 
+fn configure_updater_client_timeouts(client: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    client
+        .connect_timeout(MANAGED_UPDATE_IO_TIMEOUT)
+        .read_timeout(MANAGED_UPDATE_IO_TIMEOUT)
+}
+
 fn configure_updater(app: &AppHandle, builder: UpdaterBuilder) -> AppResult<UpdaterBuilder> {
     let Some(state) = app.try_state::<AppState>() else {
-        return Ok(builder);
+        return Ok(builder.configure_client(configure_updater_client_timeouts));
     };
     let proxy_settings = state
         .proxy_settings
@@ -431,11 +442,11 @@ fn configure_updater(app: &AppHandle, builder: UpdaterBuilder) -> AppResult<Upda
         .map_err(|_| AppError::Worker("proxy_settings lock poisoned".into()))?
         .clone();
     match proxy_settings.mode.as_str() {
-        "none" => Ok(builder.no_proxy()),
+        "none" => Ok(builder.no_proxy().configure_client(configure_updater_client_timeouts)),
         "custom" => {
             let value = proxy_settings.url.trim();
             if value.is_empty() {
-                return Ok(builder.no_proxy());
+                return Ok(builder.no_proxy().configure_client(configure_updater_client_timeouts));
             }
             let normalized = if value.contains("://") {
                 value.to_string()
@@ -448,10 +459,10 @@ fn configure_updater(app: &AppHandle, builder: UpdaterBuilder) -> AppResult<Upda
                 .map_err(|error| AppError::Worker(format!("Invalid updater proxy URL: {error}")))?;
             let no_proxy = NoProxy::from_string(&proxy_settings.bypass);
             Ok(builder.configure_client(move |client| {
-                client.proxy(proxy.clone().no_proxy(no_proxy.clone()))
+                configure_updater_client_timeouts(client).proxy(proxy.clone().no_proxy(no_proxy.clone()))
             }))
         }
-        _ => Ok(builder),
+        _ => Ok(builder.configure_client(configure_updater_client_timeouts)),
     }
 }
 
@@ -850,8 +861,46 @@ fn write_update_transaction(root: &Path, backup: &Path, phase: UpdatePhase) -> A
     let mut file = fs::File::create(&temporary)?;
     file.write_all(&content)?;
     file.sync_all()?;
-    fs::rename(&temporary, &path)?;
-    Ok(())
+    let result = replace_transaction_file(&temporary, &path);
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn replace_transaction_file(temporary: &Path, destination: &Path) -> AppResult<()> {
+    #[cfg(windows)]
+    {
+        // std::fs::rename does not replace an existing destination on Windows. MoveFileExW
+        // performs the marker swap in place without requiring the executable replacement path.
+        let destination = destination.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+        let temporary = temporary.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+        for attempt in 0..4 {
+            let replaced = unsafe {
+                MoveFileExW(
+                    temporary.as_ptr(),
+                    destination.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            };
+            if replaced != 0 {
+                return Ok(());
+            }
+            let error = std::io::Error::last_os_error();
+            let retryable = matches!(error.raw_os_error(), Some(5 | 32 | 33));
+            if !retryable || attempt == 3 {
+                return Err(error.into());
+            }
+            thread::sleep(Duration::from_millis(40 * (attempt + 1) as u64));
+        }
+        unreachable!("MoveFileExW retry loop must return");
+    }
+
+    #[cfg(not(windows))]
+    {
+        fs::rename(temporary, destination)?;
+        Ok(())
+    }
 }
 
 fn set_update_phase(root: &Path, backup: &Path, phase: UpdatePhase) -> AppResult<()> {
@@ -1246,7 +1295,7 @@ fn rollback_managed_update(
 
 #[cfg(test)]
 mod tests {
-    use super::{distribution_at, managed_endpoint, pending_archive_path, restore_portable_backup, update_archive_path, update_auto_install_supported, update_requires_manual_install, update_stage_path, update_manual_install_message, validate_payload_path, validate_update_version, DistributionKind, UpdateChannel, MAX_UPDATE_ARCHIVE_BYTES};
+    use super::{distribution_at, managed_endpoint, pending_archive_path, read_update_transaction, restore_portable_backup, update_archive_path, update_auto_install_supported, update_requires_manual_install, update_stage_path, update_manual_install_message, validate_payload_path, validate_update_version, write_update_transaction, DistributionKind, UpdateChannel, UpdatePhase, MAX_UPDATE_ARCHIVE_BYTES};
     use serde_json::json;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1297,6 +1346,24 @@ mod tests {
             managed_endpoint(UpdateChannel::Stable).as_str(),
             "https://github.com/pymss-project/pymss-studio/releases/download/updater/stable-v1-windows-x64-update.json",
         );
+    }
+
+    #[test]
+    fn update_transaction_can_advance_from_prepared_to_replacing() {
+        let root = std::env::temp_dir().join(format!(
+            "pymss-update-transaction-test-{}",
+            std::process::id()
+        ));
+        let backup = root.join(".pymss-studio-update-backup-test");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        write_update_transaction(&root, &backup, UpdatePhase::Prepared).unwrap();
+        write_update_transaction(&root, &backup, UpdatePhase::Replacing).unwrap();
+
+        let transaction = read_update_transaction(&root).unwrap().unwrap();
+        assert_eq!(transaction.phase, UpdatePhase::Replacing);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

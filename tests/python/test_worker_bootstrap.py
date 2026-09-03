@@ -278,6 +278,32 @@ class RuntimePathSafetyTests(unittest.TestCase):
         self.assertNotIn("\\\\?\\", value)
         self.assertTrue(value.replace("\\", "/").endswith("cuda/Scripts/python.exe"))
 
+    @unittest.skipUnless(os.name == "nt", "Windows extended paths are not available on POSIX")
+    def test_active_state_with_an_extended_python_path_is_recognized(self):
+        python_path = self._make_env("cuda")
+        active = self.envs_dir / "active-runtime.json"
+        extended = "\\\\?\\" + str(python_path.resolve())
+        active.write_text(json.dumps({
+            "backend": "cuda",
+            "pythonPath": extended,
+        }), encoding="utf-8")
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", self.envs_dir), \
+             mock.patch.object(worker_bootstrap, "ACTIVE_RUNTIME_FILE", active), \
+             mock.patch.object(sys, "platform", "win32"):
+            state = worker_bootstrap._read_runtime_state()
+        self.assertIsNotNone(state)
+        self.assertEqual(state["backend"], "cuda")
+        self.assertNotIn("\\\\?\\", state["pythonPath"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows extended paths are not available on POSIX")
+    def test_explicit_target_accepts_normal_path_when_runtime_root_is_extended(self):
+        python_path = self._make_env("cuda")
+        extended_root = Path("\\\\?\\" + str(self.envs_dir.resolve()))
+        with mock.patch.object(worker_bootstrap, "RUNTIME_ENVS_DIR", extended_root), \
+             mock.patch.object(sys, "platform", "win32"):
+            target = worker_bootstrap._target_runtime_from_payload({"pythonPath": str(python_path)}, "cuda")
+        self.assertIsNotNone(target)
+
     def test_active_state_is_read_only_from_the_runtime_directory(self):
         python_path = self._make_env("cuda")
         active = self.envs_dir / "active-runtime.json"

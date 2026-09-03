@@ -325,7 +325,14 @@ export const useUpdateStore = defineStore('update', () => {
       deferredAt.value = ''
       installErrorVisible.value = false
       installFailed.value = false
-      await persistState()
+      try {
+        await persistState()
+      } catch (persistError) {
+        // The helper is already waiting for this process to exit. A persistence failure must
+        // not enter the outer error path and leave the helper blocked indefinitely.
+        appendDownloadLog('Update state could not be saved; continuing with restart')
+        console.warn('Failed to persist update state after staging update', persistError)
+      }
       await exit(0)
       return true
     } catch (err) {
