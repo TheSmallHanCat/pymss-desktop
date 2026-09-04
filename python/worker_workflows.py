@@ -433,6 +433,16 @@ def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
             "Advanced workflows require pymss.graph. Update the runtime core from Settings and retry."
         ) from exc
 
+    # pymss 2.1.3 resamples workflow inputs to the model rate but stamps the
+    # returned graph artifacts with the original input rate.  Install the
+    # graph-level contract fix before compiling/executing either YAML or Comfy
+    # definitions: each separation stage decides whether its model needs a
+    # private resample and carries that rate onto the returned artifact. Newer
+    # pymss.graph versions that own this contract are left untouched.
+    from pymss_graph_compat import install_sample_rate_contract
+
+    install_sample_rate_contract(graph)
+
     runtime_payload, runtime_inputs = _prepare_legacy_global_input(payload, input_path, inputs)
     primary = input_path or (list(runtime_inputs.values())[0] if runtime_inputs else "")
     workflow_definition = runtime_payload.get("workflow")
