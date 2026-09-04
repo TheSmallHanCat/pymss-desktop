@@ -368,7 +368,14 @@ const themeOverrides = computed(() => {
             </n-button>
           </template>
         </n-modal>
-        <n-modal :show="updates.isInstallOverlayVisible" preset="card" :mask-closable="false" :closable="false" class="update-install-modal" :bordered="false">
+        <n-modal
+          :show="updates.isInstallOverlayVisible"
+          preset="card"
+          :mask-closable="false"
+          :closable="false"
+          class="update-install-modal"
+          :bordered="false"
+        >
           <div class="update-install-panel">
             <div class="update-install-panel__head">
               <strong>
@@ -487,14 +494,17 @@ const themeOverrides = computed(() => {
   }
 }
 
-.update-install-modal {
-  width: min(620px, calc(100vw - 32px));
-  max-width: calc(100vw - 32px);
+:global(.update-install-modal) {
+  /* Keep the progress dialog compact on desktop while fitting narrow windows. */
+  width: clamp(320px, 44vw, 520px);
+  max-width: calc(100vw - 24px);
+  box-sizing: border-box;
 }
 
 .update-install-panel {
   display: grid;
   gap: 16px;
+  min-width: 0;
   max-height: min(640px, calc(100vh - 96px));
   overflow-y: auto;
 }

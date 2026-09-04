@@ -741,13 +741,6 @@ const updateBadgeTone = computed(() => {
   if (updates.status === 'checking' || updates.status === 'downloading' || updates.status === 'installing') return 'warning'
   return 'default'
 })
-const updateBadgeType = computed(() => {
-  if (updates.updateIsPrerelease) return 'warning'
-  if (updateBadgeTone.value === 'success') return 'success'
-  if (updateBadgeTone.value === 'error') return 'error'
-  if (updateBadgeTone.value === 'warning') return 'warning'
-  return 'default'
-})
 const updateSupported = computed(() => {
   return buildInfo.value?.updateSupported === true || app.buildInfoUpdateSupported
 })
@@ -852,15 +845,6 @@ async function installUpdate() {
   }
 }
 
-async function deferUpdate() {
-  if (!updates.hasUpdate) return
-  try {
-    await updates.deferUntilNextLaunch()
-    message.success(t('settings.updateDeferredSaved'))
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : String(error))
-  }
-}
 const SCALE_FACTOR_PRESET_VALUES = [0.75, 0.9, 1, 1.1, 1.25, 1.5] as const
 const scaleFactorPercent = computed(() => formatScaleFactorLabel(scaleFactor.value))
 const scaleSliderIndex = computed({
@@ -1165,31 +1149,49 @@ onMounted(async () => {
               <span>{{ t('settings.update') }}</span>
             </div>
             <div class="update-panel">
-              <div class="update-panel__headline">
-                <div>
-                  <strong>{{ updateStatusLabel }}</strong>
-                  <p>{{ !updateSupported ? t('settings.updateUnsupportedHint') : updates.requiresManualInstall ? (updates.updateMessage || t('settings.updateManualInstallPrompt', { version: updates.latestVersion })) : t('settings.updateStatusHint') }}</p>
+              <div class="update-panel__overview">
+                <div class="update-panel__headline">
+                  <span class="update-panel__status-dot" :class="`update-panel__status-dot--${updateBadgeTone}`" aria-hidden="true" />
+                  <div>
+                    <strong>{{ updateStatusLabel }}</strong>
+                    <p>{{ !updateSupported ? t('settings.updateUnsupportedHint') : updates.requiresManualInstall ? (updates.updateMessage || t('settings.updateManualInstallPrompt', { version: updates.latestVersion })) : t('settings.updateStatusHint') }}</p>
+                  </div>
                 </div>
-                <div class="update-panel__tags">
-                  <n-tag :type="updateBadgeType" size="small">{{ updates.latestVersion || appVersion }}</n-tag>
-                  <n-tag v-if="updates.updateIsPrerelease" type="warning" size="small">{{ t('settings.updatePrereleaseBadge') }}</n-tag>
+                <div v-if="updates.updateIsPrerelease" class="update-panel__tags">
+                  <n-tag type="warning" size="small">{{ t('settings.updatePrereleaseBadge') }}</n-tag>
+                </div>
+              </div>
+              <div class="update-panel__version-flow">
+                <div class="update-panel__version-card update-panel__version-card--current">
+                  <span>{{ t('settings.updateCurrentVersionLabel') }}</span>
+                  <strong>{{ appVersion }}</strong>
+                </div>
+                <span class="update-panel__version-arrow" aria-hidden="true">→</span>
+                <div class="update-panel__version-card" :class="{ 'update-panel__version-card--target': updates.latestVersion }">
+                  <span>{{ updates.latestVersion ? t('settings.updateAvailable') : t('settings.updateLatestVersion') }}</span>
+                  <strong>{{ updates.latestVersion || appVersion }}</strong>
                 </div>
               </div>
               <div class="update-panel__meta">
-                <span>{{ t('settings.updateCurrentVersion', { version: appVersion }) }}</span>
                 <span>{{ t('settings.updateLastChecked', { time: updateLastCheckedLabel }) }}</span>
                 <span v-if="updateReleaseDateLabel">{{ t('settings.updateReleaseDate', { time: updateReleaseDateLabel }) }}</span>
               </div>
-              <n-select
-                :value="updateChannel"
-                :options="updateChannelOptions"
-                :disabled="!updateSupported || updates.isBusy"
-                size="small"
-                @update:value="changeUpdateChannel"
-              />
+              <div class="update-panel__channel">
+                <span>{{ t('settings.updateChannelLabel') }}</span>
+                <n-select
+                  :value="updateChannel"
+                  :options="updateChannelOptions"
+                  :disabled="!updateSupported || updates.isBusy"
+                  size="small"
+                  @update:value="changeUpdateChannel"
+                />
+              </div>
               <p class="update-panel__notes update-panel__notes--muted">{{ updateChannel === 'prerelease' ? t('settings.updateChannelPrereleaseHint') : t('settings.updateChannelStableHint') }}</p>
-              <p v-if="updates.releaseNotes" class="update-panel__notes">{{ updates.releaseNotes }}</p>
-              <p v-else class="update-panel__notes update-panel__notes--muted">{{ t('settings.updateNoNotes') }}</p>
+              <div class="update-panel__release-notes">
+                <span>{{ t('settings.updateReleaseNotesLabel') }}</span>
+                <p v-if="updates.releaseNotes" class="update-panel__notes">{{ updates.releaseNotes }}</p>
+                <p v-else class="update-panel__notes update-panel__notes--muted">{{ t('settings.updateNoNotes') }}</p>
+              </div>
               <div class="update-panel__actions">
                 <n-button secondary :loading="updateChecking" :disabled="!updateSupported || updates.isBusy" @click="checkForUpdates(true)">
                   <template #icon>
@@ -1208,9 +1210,6 @@ onMounted(async () => {
                     <n-icon :component="OpenOutline" />
                   </template>
                   {{ t('settings.updateOpenGitHub') }}
-                </n-button>
-                <n-button v-if="!updates.requiresManualInstall" secondary :disabled="!updateSupported || !updates.hasUpdate || updates.isBusy" @click="deferUpdate">
-                  {{ t('settings.updateRemindLater') }}
                 </n-button>
               </div>
             </div>
@@ -2396,12 +2395,47 @@ onMounted(async () => {
   gap: 12px;
 }
 
-.update-panel__headline {
+.update-panel__overview {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--primary) 20%, var(--outline));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--primary-softer) 70%, var(--surface));
+}
+
+.update-panel__headline {
+  display: flex;
+  align-items: flex-start;
   gap: 12px;
   min-width: 0;
+}
+
+.update-panel__status-dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--on-surface-muted);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--on-surface-muted) 14%, transparent);
+}
+
+.update-panel__status-dot--success {
+  background: var(--success);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 15%, transparent);
+}
+
+.update-panel__status-dot--warning {
+  background: var(--warning);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 15%, transparent);
+}
+
+.update-panel__status-dot--error {
+  background: var(--danger);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 15%, transparent);
 }
 
 .update-panel__headline strong {
@@ -2426,6 +2460,50 @@ onMounted(async () => {
   gap: 6px;
 }
 
+.update-panel__version-flow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: stretch;
+  gap: 10px;
+}
+
+.update-panel__version-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--outline);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.update-panel__version-card span {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.update-panel__version-card strong {
+  overflow: hidden;
+  color: var(--on-surface);
+  font-size: 17px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-panel__version-card--target {
+  border-color: color-mix(in srgb, var(--success) 35%, var(--outline));
+  background: color-mix(in srgb, var(--success) 8%, var(--surface-2));
+}
+
+.update-panel__version-arrow {
+  align-self: center;
+  color: var(--on-surface-muted);
+  font-size: 20px;
+  font-weight: 700;
+}
+
 .update-panel__meta {
   display: flex;
   flex-wrap: wrap;
@@ -2433,6 +2511,31 @@ onMounted(async () => {
   color: var(--on-surface-muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.update-panel__channel {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  align-items: center;
+  gap: 12px;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.update-panel__channel .n-select {
+  width: min(100%, 320px);
+}
+
+.update-panel__release-notes {
+  display: grid;
+  gap: 6px;
+}
+
+.update-panel__release-notes > span {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .update-panel__notes {
@@ -2454,6 +2557,33 @@ onMounted(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+@media (max-width: 640px) {
+  .update-panel__overview {
+    flex-direction: column;
+  }
+
+  .update-panel__tags {
+    justify-content: flex-start;
+  }
+
+  .update-panel__version-flow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .update-panel__version-arrow {
+    justify-self: center;
+    transform: rotate(90deg);
+  }
+
+  .update-panel__channel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .update-panel__channel .n-select {
+    width: 100%;
+  }
 }
 
 .about-detail-grid {

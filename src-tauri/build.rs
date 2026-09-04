@@ -15,6 +15,9 @@ fn main() {
         "PYMSS_BUILD_VARIANT",
         "PYMSS_BUILD_UPDATE_SUPPORTED",
         "PYMSS_BUILD_OFFICIAL",
+        // Local update fixtures use a separate signing key; make Cargo
+        // invalidate the binary whenever that compile-time override changes.
+        "PYMSS_UPDATE_PUBLIC_KEY",
     ] {
         println!("cargo:rerun-if-env-changed={key}");
         if let Ok(value) = std::env::var(key) {

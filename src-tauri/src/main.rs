@@ -5,6 +5,7 @@ mod error;
 mod model_dir_migration;
 mod python;
 mod session_log;
+mod single_instance;
 mod state;
 mod storage;
 mod terminal;
@@ -20,6 +21,20 @@ fn main() {
     if let Some(code) = update_manager::recover_interrupted_update_from_startup() {
         std::process::exit(code);
     }
+    // Managed-update/helper modes return above. Normal launches acquire a
+    // process-wide mutex so a second launch focuses the existing UI instead
+    // of creating another WebView process and conflicting with the updater.
+    let _single_instance = match single_instance::acquire_or_focus() {
+        Ok(Some(guard)) => Some(guard),
+        Ok(None) => return,
+        Err(error) => {
+            // A mutex failure is rare (for example, a restricted user
+            // session). Keep the application usable, while making the loss
+            // of single-instance enforcement visible in diagnostics.
+            eprintln!("Unable to create the single-instance mutex: {error}");
+            None
+        }
+    };
     terminal::attach_parent();
 
     let builder = tauri::Builder::default()

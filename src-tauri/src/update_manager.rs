@@ -6,6 +6,7 @@ use reqwest::{NoProxy, Proxy};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::Cursor;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -39,7 +40,13 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const UPDATE_EVENT: &str = "pymss://managed-update-event";
 const UPDATE_ROOT: &str = "https://github.com/pymss-project/pymss-studio/releases/download/updater";
 const UPDATE_GENERATION: &str = "v1";
-const UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE5NzUyREY2NjAyNDVDQjAKUldTd1hDUmc5aTExcVFtUGM3ajB4R09ueU9xM3B6RG9xRDVKaUM0di9Qc1BpSGhYMXRFNUJvSWQK";
+const DEFAULT_UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE5NzUyREY2NjAyNDVDQjAKUldTd1hDUmc5aTExcVFtUGM3ajB4R09ueU9xM3B6RG9xRDVKaUM0di9Qc1BpSGhYMXRFNUJvSWQK";
+// Test fixtures can provide a matching signing key without changing the
+// production key embedded in release builds.
+const UPDATE_PUBLIC_KEY: &str = match option_env!("PYMSS_UPDATE_PUBLIC_KEY") {
+    Some(value) => value,
+    None => DEFAULT_UPDATE_PUBLIC_KEY,
+};
 // Replace the executable last so an interrupted update can still boot the old UI and recover.
 const MANAGED_PATHS: [&str; 3] = ["python", "bin", "Pymss Studio.exe"];
 const MAX_UPDATE_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
@@ -49,6 +56,7 @@ const UPDATE_MUTEX_NAME: &str = "Local\\PymssStudioManagedUpdate";
 // Apply an upper bound to connection setup and stalled reads without imposing a total
 // deadline on the archive download. Managed update archives can be large on slower links.
 const MANAGED_UPDATE_IO_TIMEOUT: Duration = Duration::from_secs(45);
+const MANAGED_UPDATE_PROCESS_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -295,8 +303,13 @@ pub fn run_helper_from_args() -> Option<i32> {
             let version = args.next()?.to_string_lossy().to_string();
             let signature = args.next()?.to_string_lossy().to_string();
             let result = apply_managed_update(pid, root.clone(), archive, version, signature, mode == "--apply-managed-update-elevated");
-            if result.is_err() {
-                let _ = recover_or_relaunch(&root, mode == "--apply-managed-update-elevated");
+            if let Err(error) = &result {
+                eprintln!("Managed update helper failed: {error}");
+                append_helper_log(&root, &format!("update failed: {error}"));
+                if let Err(recovery_error) = recover_or_relaunch(&root, mode == "--apply-managed-update-elevated") {
+                    eprintln!("Managed update recovery failed: {recovery_error}");
+                    append_helper_log(&root, &format!("recovery failed: {recovery_error}"));
+                }
             }
             result
         }
@@ -328,9 +341,17 @@ pub fn recover_interrupted_update_from_startup() -> Option<i32> {
     };
     let _update_mutex = match acquire_update_mutex() {
         Ok(mutex) => mutex,
+        Err(AppError::Worker(message)) if message == "Another managed update is already in progress" => {
+            eprintln!("Managed update recovery is waiting for another update process: {message}");
+            // The active updater holds this mutex while it launches the new
+            // application and verifies the replacement.  Let the new process
+            // continue booting; exiting here makes the helper treat the
+            // update as failed and roll the files back to the old version.
+            return None;
+        }
         Err(error) => {
-            eprintln!("Managed update recovery is waiting for another update process: {error}");
-            return Some(0);
+            eprintln!("Unable to acquire the managed update mutex during startup recovery: {error}");
+            return Some(1);
         }
     };
     let backup = PathBuf::from(&transaction.backup_dir);
@@ -540,7 +561,7 @@ fn spawn_helper(args: &[std::ffi::OsString], elevated: bool) -> AppResult<()> {
 }
 
 fn recover_interrupted_update(pid: u32, root: PathBuf, backup: PathBuf, elevated: bool) -> AppResult<()> {
-    wait_for_process_exit(pid)?;
+    wait_for_process_exit(pid, &root.join("Pymss Studio.exe"))?;
     let _update_mutex = acquire_update_mutex()?;
     if distribution_at(&root).is_none() {
         return Err(AppError::Worker("The recovery target is not a managed Pymss Studio installation".into()));
@@ -554,7 +575,7 @@ fn recover_interrupted_update(pid: u32, root: PathBuf, backup: PathBuf, elevated
     if !backup.is_dir() {
         if transaction.phase == UpdatePhase::Prepared {
             quarantine_update_transaction(&root)?;
-            launch_application(&root, elevated)?;
+            relaunch_application_if_needed(&root, elevated)?;
             return Ok(());
         }
         return Err(AppError::Worker("Interrupted update backup is missing; the transaction marker was retained for recovery".into()));
@@ -562,7 +583,7 @@ fn recover_interrupted_update(pid: u32, root: PathBuf, backup: PathBuf, elevated
     restore_portable_backup(&root, &backup)?;
     clear_recovered_transaction(&root)?;
     let _ = fs::remove_dir_all(&backup);
-    launch_application(&root, elevated)?;
+    relaunch_application_if_needed(&root, elevated)?;
     Ok(())
 }
 
@@ -577,7 +598,7 @@ fn recover_or_relaunch(root: &Path, elevated: bool) -> AppResult<()> {
         if !backup.is_dir() {
             if transaction.phase == UpdatePhase::Prepared {
                 quarantine_update_transaction(root)?;
-                launch_application(root, elevated)?;
+                relaunch_application_if_needed(root, elevated)?;
                 return Ok(());
             }
             return Err(AppError::Worker("Update backup is missing; the transaction marker was retained for recovery".into()));
@@ -586,8 +607,22 @@ fn recover_or_relaunch(root: &Path, elevated: bool) -> AppResult<()> {
         clear_recovered_transaction(root)?;
         let _ = fs::remove_dir_all(&backup);
     }
-    launch_application(root, elevated)?;
+    relaunch_application_if_needed(root, elevated)?;
     Ok(())
+}
+
+fn append_helper_log(root: &Path, message: &str) {
+    let path = root.join("data").join("logs").join("update-helper.log");
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let _ = writeln!(file, "{timestamp} {message}");
+    }
 }
 
 fn temp_path(prefix: &str, extension: &str) -> PathBuf {
@@ -682,7 +717,7 @@ fn apply_managed_update(
     signature: String,
     elevated: bool,
 ) -> AppResult<()> {
-    wait_for_process_exit(pid)?;
+    wait_for_process_exit(pid, &root.join("Pymss Studio.exe"))?;
     let _update_mutex = acquire_update_mutex()?;
     validate_update_version(&version)?;
     let distribution = distribution_at(&root)
@@ -806,15 +841,15 @@ fn apply_managed_update(
 
 #[cfg(windows)]
 fn replace_executable(current: &Path, replacement: &Path, backup: Option<&Path>) -> AppResult<()> {
-    let current = current.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
-    let replacement = replacement.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
-    let backup = backup.map(|path| path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>());
+    let current_wide = current.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    let replacement_wide = replacement.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    let backup_wide = backup.map(|path| path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>());
     for attempt in 0..4 {
         let replaced = unsafe {
             ReplaceFileW(
-                current.as_ptr(),
-                replacement.as_ptr(),
-                backup.as_ref().map_or(std::ptr::null(), |path| path.as_ptr()),
+                current_wide.as_ptr(),
+                replacement_wide.as_ptr(),
+                backup_wide.as_ref().map_or(std::ptr::null(), |path| path.as_ptr()),
                 0,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -829,11 +864,61 @@ fn replace_executable(current: &Path, replacement: &Path, backup: Option<&Path>)
         // retry those transient sharing errors before rolling the update back.
         let retryable = matches!(error.raw_os_error(), Some(5 | 32 | 33));
         if !retryable || attempt == 3 {
+            // ReplaceFileW can be rejected by some writable locations (for example, when the
+            // volume does not allow creating the optional backup in the same operation). Keep
+            // the rollback contract by moving the old executable to the transaction backup,
+            // then moving the staged executable into place.
+            match replace_executable_with_moves(current, replacement, backup) {
+                Ok(()) => return Ok(()),
+                Err(fallback_error) => {
+                    eprintln!("Executable replacement failed with {error}; fallback also failed with {fallback_error}");
+                }
+            }
             return Err(error.into());
         }
         thread::sleep(Duration::from_millis(80 * (attempt + 1) as u64));
     }
     unreachable!("ReplaceFileW retry loop must return")
+}
+
+#[cfg(windows)]
+fn replace_executable_with_moves(current: &Path, replacement: &Path, backup: Option<&Path>) -> AppResult<()> {
+    let current = current.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    let replacement = replacement.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    if let Some(backup) = backup {
+        let backup = backup.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+        let moved_old = unsafe { MoveFileExW(current.as_ptr(), backup.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+        if moved_old == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let moved_new = unsafe { MoveFileExW(replacement.as_ptr(), current.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+        if moved_new == 0 {
+            let replacement_error = std::io::Error::last_os_error();
+            let restored = unsafe {
+                MoveFileExW(
+                    backup.as_ptr(),
+                    current.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            };
+            if restored == 0 {
+                eprintln!("Unable to restore executable after fallback replacement failed: {}", std::io::Error::last_os_error());
+            }
+            return Err(replacement_error.into());
+        }
+        return Ok(());
+    }
+    let moved = unsafe {
+        MoveFileExW(
+            replacement.as_ptr(),
+            current.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]
@@ -1069,26 +1154,38 @@ fn verify_elevated_application(_root: &Path) -> AppResult<()> {
 }
 
 #[cfg(windows)]
-fn wait_for_process_exit(pid: u32) -> AppResult<()> {
+fn wait_for_process_exit(pid: u32, executable: &Path) -> AppResult<()> {
+    let path = quote_powershell_arg(&executable.to_string_lossy());
+    let timeout_ms = MANAGED_UPDATE_PROCESS_WAIT_TIMEOUT.as_millis();
+    let command_text = format!(
+        "$deadline = [DateTime]::UtcNow.AddMilliseconds({timeout_ms}); do {{ $main = Get-Process -Id {pid} -ErrorAction SilentlyContinue; $samePath = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {{ try {{ $_.Path -eq {path} }} catch {{ $false }} }}); if ($null -eq $main -and $samePath.Count -eq 0) {{ exit 0 }}; Start-Sleep -Milliseconds 100 }} while ([DateTime]::UtcNow -lt $deadline); exit 1"
+    );
     let mut command = Command::new("powershell.exe");
     command
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &format!("Wait-Process -Id {pid} -ErrorAction SilentlyContinue"),
-        ])
+        .args(["-NoProfile", "-NonInteractive", "-Command", &command_text])
         .creation_flags(CREATE_NO_WINDOW);
     let status = command.status()?;
     if status.success() {
         Ok(())
     } else {
-        Err(AppError::Worker("Unable to wait for the application process to exit".into()))
+        Err(AppError::Worker("Timed out waiting for all application processes to exit before updating".into()))
     }
 }
 
+fn relaunch_application_if_needed(root: &Path, elevated: bool) -> AppResult<()> {
+    #[cfg(windows)]
+    if application_is_running(&root.join("Pymss Studio.exe"))? {
+        // A second copy can still be alive after an update attempt failed. Do not
+        // launch another copy on top of it; repeated retries would otherwise
+        // accumulate processes and keep the executable locked.
+        return Ok(());
+    }
+    let _ = launch_application(root, elevated)?;
+    Ok(())
+}
+
 #[cfg(not(windows))]
-fn wait_for_process_exit(_pid: u32) -> AppResult<()> {
+fn wait_for_process_exit(_pid: u32, _executable: &Path) -> AppResult<()> {
     Err(AppError::Worker("Managed updates are supported only on Windows".into()))
 }
 
