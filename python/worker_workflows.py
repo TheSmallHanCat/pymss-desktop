@@ -349,10 +349,11 @@ def _apply_simple_output_names(dag: Any, definition: dict[str, Any], *, input_pa
                     break
                 reserved_names.add(filename.casefold())
             output_metadata.append({"stem": stem_name, "filename": filename})
-            # Use an ASCII-only temporary hint because the installed pymss
-            # graph sanitizer strips Unicode. The file is renamed to the
-            # user-facing Unicode filename after run_dag completes.
-            filename_hint = f"pymss_studio_{output_index:04d}"
+            # pymss graph sanitizer now natively supports Unicode filenames.
+            # Use the target filename stem directly so files are created with
+            # their intended names; _finalize_simple_output_paths acts as a no-op
+            # when source and target match, while remaining compatible with older runtimes.
+            filename_hint = Path(filename).stem
             constant_id = f"studio:filename:{step_id}:{stem_name}"
             # The compiler emits eight slots for pymss_save_audio. Slot 1 is the
             # filename STRING input; keeping the remaining widgets untouched
@@ -433,16 +434,6 @@ def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
             "Advanced workflows require pymss.graph. Update the runtime core from Settings and retry."
         ) from exc
 
-    # pymss 2.1.3 resamples workflow inputs to the model rate but stamps the
-    # returned graph artifacts with the original input rate.  Install the
-    # graph-level contract fix before compiling/executing either YAML or Comfy
-    # definitions: each separation stage decides whether its model needs a
-    # private resample and carries that rate onto the returned artifact. Newer
-    # pymss.graph versions that own this contract are left untouched.
-    from pymss_graph_compat import install_sample_rate_contract
-
-    install_sample_rate_contract(graph)
-
     runtime_payload, runtime_inputs = _prepare_legacy_global_input(payload, input_path, inputs)
     primary = input_path or (list(runtime_inputs.values())[0] if runtime_inputs else "")
     workflow_definition = runtime_payload.get("workflow")
@@ -503,16 +494,29 @@ def _run_pymss(payload: dict[str, Any], task_id: str, input_path: str | None,
     if fmt == "yaml" and len(simple_output_metadata) == len(saved_paths):
         saved_paths = _finalize_simple_output_paths(saved_paths, simple_output_metadata, task_output_dir)
         output_stems = [item["stem"] for item in simple_output_metadata]
+
+    records = getattr(saved, "records", None) or []
+    record_map = {Path(r.path).resolve(): r for r in records if getattr(r, "path", None)}
+    outputs: list[dict[str, Any]] = []
+    for index, path in enumerate(saved_paths):
+        rec = record_map.get(Path(path).resolve())
+        stem = output_stems[index] if index < len(output_stems) else ""
+        if not stem and rec and rec.stem:
+            stem = rec.stem
+        if not stem:
+            stem = _workflow_output_stem(path, primary)
+        item: dict[str, Any] = {
+            "stem": stem,
+            "path": path,
+            "name": Path(path.replace("\\", "/")).name,
+        }
+        if rec and rec.sample_rate:
+            item["sampleRate"] = rec.sample_rate
+        outputs.append(item)
+
     return {
         "files": saved_paths,
-        "outputs": [
-            {
-                "stem": output_stems[index] if output_stems else _workflow_output_stem(path, primary),
-                "path": path,
-                "name": Path(path.replace("\\", "/")).name,
-            }
-            for index, path in enumerate(saved_paths)
-        ],
+        "outputs": outputs,
         "outputDir": str(task_output_dir.resolve()),
         "outputFormat": output_format,
     }
